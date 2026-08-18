@@ -62,10 +62,6 @@ KERN_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align
 USER_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align
 # Must match share/ld/user-aarch64.ld.
 USER_LOAD_ADDR  := 0x40200000
-# Well clear of the kernel image (linked at 0x40080000) and below
-# USER_LOAD_ADDR; QEMU's generic -device loader places the initramfs image
-# here, and sys/kern/kern_exec.c reads it from there directly.
-INITRAMFS_ADDR  := 0x40100000
 QEMU            := qemu-system-aarch64
 QEMU_FLAGS      := -M virt -cpu cortex-a53 -nographic
 endif
@@ -78,10 +74,6 @@ KERN_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64gc -mabi=lp64d -mstrict-align
 USER_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64imac -mabi=lp64 -mstrict-align
 # Must match share/ld/user-riscv64.ld.
 USER_LOAD_ADDR  := 0x80200000
-# Well clear of the kernel image (linked at 0x80000000) and below
-# USER_LOAD_ADDR; QEMU's generic -device loader places the initramfs image
-# here, and sys/kern/kern_exec.c reads it from there directly.
-INITRAMFS_ADDR  := 0x80100000
 QEMU            := qemu-system-riscv64
 QEMU_FLAGS      := -M virt -bios none -nographic
 endif
@@ -100,9 +92,5 @@ CRT1   := $(LIBDIR)/crt1.o
 USER_LDSCRIPT := $(TOPDIR)/share/ld/user-$(ARCH).ld
 KERN_LDSCRIPT := $(TOPDIR)/sys/arch/$(ARCH)/conf/kern.ld
 
-MOTD_ELF  := $(OBJTOP)/bin/motd/motd
-MOTD_BIN  := $(OBJTOP)/bin/motd/motd.bin
 KERNEL_ELF := $(OBJTOP)/sys/kernel.elf
 
-MKFSIMG      := $(OBJTOP)/tools/mkfsimg/mkfsimg
-INITRAMFS_IMG := $(OBJTOP)/sys/initramfs.img

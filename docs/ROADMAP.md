@@ -30,27 +30,25 @@ initialises its object pools, reports them, and powers the machine off.
 - Console output with a small formatter, `panic`, and a halt path that ends
   the machine rather than spinning.
 - A project-owned libc and C runtime startup object.
-- A system call trap path, an unprivileged-mode entry, a read-only RAM disk
-  and a kernel-internal VFS, all left over from the banner demo that
-  preceded this work.
+- A trap path and an unprivileged-mode entry, neither of them reached.
 
 This shares its build system and its architecture support with the design,
 and almost nothing else. There is no scheduler, no IPC, no handle table, and
 no MMU. The object pools exist but the objects themselves are still empty
 structures, filled in by the stage that gives each type its behaviour.
 
-**The banner demo is no longer on the boot path.** `/bin/motd`, the loader
-that ran it, and the in-kernel filesystem behind it are still in the tree and
-still compile, but nothing reaches them. They were how the tree proved a
-system call worked before there was anything else; the vertical slice
-replaces that path rather than extending it, so they are dead weight to be
-removed rather than a demo to keep working.
+**The banner demo is gone.** `/bin/motd`, the host tool that built its RAM
+disk, the in-kernel VFS and file table, and the loader that ran it have all
+been deleted. They were how the tree proved a system call worked before
+there was anything else, and the vertical slice replaces that path rather
+than extending it. Nothing in the kernel contradicts the design now.
 
-**Four files contradict the design and are known to be temporary.**
-`sys/kern/vfs.c`, `sys/kern/ramfs.c`, `sys/kern/kern_file.c` and
-`sys/kern/kern_exec.c` put the filesystem and the program loader inside the
-kernel. The design makes both ordinary processes. They should not be
-mistaken for the intended shape.
+The C library and the userland linker scripts stay. Nothing links against
+them yet, and they are kept building so that they do not rot before the
+stage that spawns the first process needs them.
+
+---
+
 ## 2. How This Plan Is Organised
 
 Four rules shape the ordering, and they are worth stating because they explain
@@ -104,8 +102,8 @@ operations the read path uses, and no others.
 *Not needed.* The MMU, cohorts, SMP, paging, namespaces, introspection, and the
 submission engine. The slice uses one operation per trap and nothing more.
 
-*Done when* the client prints the file's contents, and the three kernel
-filesystem files are deleted.
+*Done when* the client prints the file's contents, served from outside the
+kernel.
 
 *Would falsify.* Whether send, receive and reply with donation is as small as
 assumed. **Whether timelines earn a separate object at all**, or whether

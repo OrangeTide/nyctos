@@ -182,130 +182,58 @@ are rather than trusting `PATH`.
 
 ## Project layout
 
-The tree follows the layout of a BSD source tree: `sys` is the kernel,
-`lib` is the userland libraries, `bin` is the userland programs, `include`
-is the headers those programs compile against, `tools` holds host-side
-build utilities, `etc` holds data files staged onto the initramfs, and
-`share/mk` holds the make fragments that tie it all together.
+The tree follows the layout of a BSD source tree: `sys` is the kernel, `lib`
+is the userland libraries, `bin` is the userland programs, `include` is the
+headers those programs compile against, and `share/mk` holds the make
+fragments that tie it all together.
+
+`bin` is empty and `lib` builds a C library nothing links against yet. Both
+are kept because the stage that spawns the first process needs them, and
+letting them rot in the meantime would cost more than building them does.
 
 ```
 .
-├── Makefile                 # top level: recurses into lib, bin, tools, sys in that order
+├── Makefile                 # top level: recurses into lib, bin, tools, sys
 ├── LICENSES/                # Apache-2.0 and 0BSD license texts
-├── _out/                    # generated: <target-triplet>/ mirroring the source tree
+├── _out/                    # generated: <target-triplet>/ mirroring the tree
 ├── docs/                    # design, roadmap, proposals, coding style
-├── etc/
-│   └── motd                 # a data file staged onto the initramfs, read by /bin/motd
 ├── share/
 │   ├── mk/                  # toolchain config and shared build rules
 │   └── ld/                  # userland linker scripts, one per arch
-├── include/                 # userland headers: stdio.h, string.h, unistd.h, fcntl.h, sys/types.h
+├── include/                 # userland headers
 ├── lib/
-│   ├── csu/<arch>/crt1.S    # C runtime startup: stack, .bss, main(), exit()
+│   ├── csu/<arch>/crt1.S    # C runtime startup
 │   └── libc/                # the C library
-│       ├── arch/<arch>/sys/ # system call trap stub
-│       ├── sys/             # system call wrappers (write, open, read, close, _exit)
-│       ├── stdio/ stdlib/ string/
-│       └── include/         # libc-private headers
-├── bin/
-│   └── motd/                # the first userland program: prints the banner and /etc/motd
-├── tools/
-│   └── mkfsimg/mkfsimg.c         # host tool: builds the initramfs image at build time
 └── sys/                     # the kernel
     ├── sys/
-    │   ├── syscall.h        # kernel/libc syscall ABI
-    │   ├── tfs.h             # the initramfs on-disk format; ABI between mkfsimg and ramfs.c
-    │   └── vfs.h              # the kernel-internal VFS interface
-    ├── kern/                 # machine-independent: init, console, loader, syscalls, VFS
-    │   ├── vfs.c              # the VFS layer: today, a thin forward to ramfs
-    │   ├── ramfs.c            # the ramdisk driver: parses the TFS image
-    │   └── kern_file.c        # the open file table backing the read/write/close syscalls
+    │   ├── config.h         # build-time pool sizes
+    │   ├── pool.h           # static pools and the 20/44 identifier layout
+    │   ├── object.h         # the kernel object types and their pools
+    │   ├── syscall.h        # the old numbered ABI, awaiting replacement
+    │   └── systm.h          # kernel-internal prototypes
+    ├── kern/                # machine-independent
+    │   ├── init_main.c      # kernel_main
+    │   ├── kern_object.c    # the pool instances
+    │   ├── kern_syscall.c   # the trap path
+    │   ├── subr_mem.c       # memset, memcpy
+    │   ├── subr_pool.c      # the pool mechanism
+    │   └── subr_prf.c       # console output, formatting, panic
     └── arch/
         ├── aarch64/
-        │   ├── boot.S           # reset entry, EL2→EL1 drop, .bss, stack, vectors
-        │   ├── exception.S      # EL1 vector table and SVC system call path
+        │   ├── boot.S           # reset entry, EL2->EL1 drop, .bss, stack
+        │   ├── exception.S      # EL1 vector table and SVC path
+        │   ├── halt.c           # PSCI power off and reset
         │   ├── machdep.S        # drop to EL0
-        │   ├── uart.c           # PL011 UART driver (QEMU virt @ 0x09000000)
+        │   ├── uart.c           # PL011 UART (QEMU virt @ 0x09000000)
         │   └── conf/kern.ld     # places the kernel at 0x40080000
         └── riscv64/
             ├── boot.S           # reset entry, .bss, stack, mtvec
-            ├── exception.S      # M-mode trap entry and ecall system call path
+            ├── exception.S      # M-mode trap entry and ecall path
+            ├── halt.c           # SiFive test finisher
             ├── machdep.S        # PMP setup and drop to U-mode
-            ├── uart.c           # 16550A UART driver (QEMU virt @ 0x10000000)
+            ├── uart.c           # 16550A UART (QEMU virt @ 0x10000000)
             └── conf/kern.ld     # places the kernel at 0x80000000
 ```
-
-## The initramfs
-
-`/bin/motd` and `/etc/motd` live on a RAM disk populated at boot time,
-rather than being embedded in the kernel image directly. The pieces:
-
-- **The on-disk format** ([sys/sys/tfs.h](sys/sys/tfs.h)) is TFS: a
-  header, a flat table of `{ name, offset, size }` directory entries, and
-  the file data itself. There are no subdirectories — a name like
-  `bin/motd` is one opaque string compared whole — which is the same
-  shape QNX's IFS and Plan 9's boot floppy use for a boot-time root.
-- **`tools/mkfsimg`** is a *host* tool: it runs on the machine doing the
-  build, not the target, and assembles a TFS image out of ordinary files
-  on disk (`bin/motd=<path>`, `etc/motd=<path>`, ...). This is the same
-  division of labour as `makefs`/`genromfs`: a small offline tool builds
-  the boot filesystem once, so the on-target driver only ever has to read
-  it.
-- **QEMU loads the image itself**: the top-level `Makefile`'s `run`
-  target hands the built `initramfs.img` to QEMU's generic
-  `-device loader,file=...,addr=INITRAMFS_ADDR`, which places it verbatim
-  in RAM at a fixed physical address (`INITRAMFS_ADDR` in
-  [share/mk/nyc.own.mk](share/mk/nyc.own.mk)) alongside the kernel — the
-  same mechanism QEMU uses to load firmware/coprocessor blobs, not a
-  Linux-specific boot convention. The kernel doesn't need to be told the
-  image's size: the TFS header is self-describing (magic, file count,
-  and each entry's own offset/size), so `ramfs_init()` only needs the
-  fixed address.
-- **`sys/kern/ramfs.c`** is the RAM disk driver: it parses the TFS image
-  by linear scan of its directory table.
-- **`sys/kern/vfs.c`** is the VFS layer proper. There is exactly one
-  filesystem today, so `vfs_lookup()` forwards straight to `ramfs.c`; this
-  is the seam where a table of mounted filesystems goes if a second
-  backing store ever shows up.
-- **`sys/kern/kern_file.c`** is a small open file table backing the
-  `open`/`read`/`close` system calls, mapping a file descriptor to a
-  vnode and a read offset.
-
-`exec_user()` in [sys/kern/kern_exec.c](sys/kern/kern_exec.c) now looks
-`bin/motd` up through the VFS instead of trusting a linker symbol, which
-is what makes it possible for `/bin/motd` itself to `open()` and `read()`
-`/etc/motd` off the same filesystem from userland.
-
-## How a userland program reaches the console
-
-`/bin/motd` is no longer embedded in the kernel image directly; it's
-looked up on the initramfs at boot (see "The initramfs" above) and copied
-to the address it was linked for before the kernel drops to unprivileged
-mode at its entry point:
-
-```
-bin/motd  puts()  ─────▶  libc write()  ─────▶  svc / ecall
-                                                    │
-                                                    ▼
-           UART  ◀─────  kernel console  ◀─────  trap handler
-```
-
-`/bin/motd` also opens and reads `/etc/motd` off the same initramfs,
-through the same trap path:
-
-```
-bin/motd  open()/read()  ───▶  libc  ───▶  svc / ecall
-                                              │
-                                              ▼
-                          kern_file.c  ◀───  trap handler
-                              │
-                              ▼
-                          vfs.c ──▶ ramfs.c ──▶ initramfs.img
-```
-
-System call numbers live in [sys/sys/syscall.h](sys/sys/syscall.h), which
-is the single ABI header shared by the kernel and libc.
-
 
 ## Building
 
@@ -345,43 +273,39 @@ make run                  # aarch64 (the default)
 make ARCH=riscv64 run     # riscv64
 ```
 
-Both run QEMU with `-nographic`, so console I/O appears directly in your
-terminal. Expected output looks like:
+Both run QEMU with `-nographic`, so console output appears directly in your
+terminal. Expected output:
 
 ```
 Nyctos/aarch64 kernel booting
-init: exec /bin/motd
-    _   __           __
-   / | / /_  _______/ /_____  _____
-  /  |/ / / / / ___/ __/ __ \/ ___/
- / /|  / /_/ / /__/ /_/ /_/ (__  )
-/_/ |_/\__, /\___/\__/\____/____/
-      /____/
-
-
-Hello, world from userspace on aarch64!
-
-Welcome to Nyctos. This message was read from /etc/motd on the
-initramfs by /bin/motd, using open(2) and read(2).
-init: /bin/motd (pid 1) exited; nothing left to run; system halted
+pools: invariants ok
+pools:
+  proc: 16 slots, 8 bytes each, 384 bytes total
+  thread: 64 slots, 8 bytes each, 1536 bytes total
+  channel: 32 slots, 8 bytes each, 768 bytes total
+  grant: 64 slots, 8 bytes each, 1536 bytes total
+  timeline: 64 slots, 8 bytes each, 1536 bytes total
+  timer: 32 slots, 8 bytes each, 768 bytes total
+  program: 8 slots, 8 bytes each, 192 bytes total
+  kernel object memory: 6720 bytes
+stage 1 complete
 ```
 
-To exit QEMU, press `Ctrl-A` then `X`.
+The kernel then powers the machine off, so QEMU exits on its own. A panic
+does the same, having printed why. On riscv64 the exit status distinguishes
+them, because the SiFive test finisher carries a code; PSCI `SYSTEM_OFF` on
+aarch64 does not, so there the console is the only signal.
 
 ## Memory map notes
 
-| Arch    | Kernel load address | Initramfs load address | Userland load address | Why                                                                                       | UART            |
-|---------|----------------------|------------------------|------------------------|--------------------------------------------------------------------------------------------|-----------------|
-| aarch64 | `0x40080000`         | `0x40100000`           | `0x40200000`           | QEMU `virt` RAM starts at `0x40000000`; the `-kernel` loader places ELF images at `+0x80000` by default | PL011 @ `0x09000000` |
-| riscv64 | `0x80000000`         | `0x80100000`           | `0x80200000`           | QEMU `virt` RAM base; with `-bios none` the reset vector jumps straight here                | 16550A @ `0x10000000` |
+| Arch | Kernel load address | Why | UART |
+| --- | --- | --- | --- |
+| aarch64 | `0x40080000` | QEMU `virt` RAM starts at `0x40000000`; the `-kernel` loader places ELF images at `+0x80000` by default | PL011 @ `0x09000000` |
+| riscv64 | `0x80000000` | QEMU `virt` RAM base; with `-bios none` the reset vector jumps straight here | 16550A @ `0x10000000` |
 
-The userland load address appears in two places that must agree: the
-userland linker script in `share/ld/`, and `USER_LOAD_ADDR` in
-[share/mk/nyc.own.mk](share/mk/nyc.own.mk), which the kernel's loader is
-compiled with. The initramfs load address works the same way:
-`INITRAMFS_ADDR` is compiled into the kernel and is also the `addr=`
-QEMU's `-device loader` is given, so both sides agree on where the image
-landed without needing a devicetree lookup.
+`USER_LOAD_ADDR` in [share/mk/nyc.own.mk](share/mk/nyc.own.mk) must agree
+with the userland linker script in `share/ld/`. Nothing loads userland yet,
+so the two only have to agree again when the first process is spawned.
 
 ## Coding style
 
@@ -410,11 +334,10 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   via `ARCH`). This keeps the build system's variables simple and
   unambiguous instead of juggling per-architecture state in a single run;
   building for both architectures just means running `make` twice.
-- The filesystem is a read-only RAM disk built once at compile time by a
-  host tool; there is no way to create, write, or delete files at runtime,
-  and no subdirectories.
-- Userland runs unprivileged, but with the MMU off there is no memory
-  protection behind that: a userland bug can still scribble on the kernel.
+- Nothing runs in user mode. The privilege drop and the trap path exist but
+  no process reaches them, so the whole system is the kernel.
+- There is no memory protection. Tier 0 is flat memory by design, and the
+  MMU arrives in milestone 4.
 
 ## Next steps
 

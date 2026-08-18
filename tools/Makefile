@@ -4,6 +4,6 @@
 
 include $(TOPDIR)/share/mk/nyc.own.mk
 
-SUBDIR := mkfsimg
+SUBDIR :=
 
 include $(TOPDIR)/share/mk/nyc.subdir.mk

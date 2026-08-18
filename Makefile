@@ -13,9 +13,8 @@ export TOPDIR
 
 include $(TOPDIR)/share/mk/nyc.own.mk
 
-# Order matters: libc and crt1 must exist before /bin/motd links against
-# them; /bin/motd and mkfsimg must both exist before sys builds the
-# initramfs image QEMU loads alongside the kernel.
+# libc is built but nothing links against it yet; it is kept building so it
+# does not rot before the stage that spawns the first process needs it.
 SUBDIR := lib bin tools sys
 
 .PHONY: all clean cleandir run gh-pages
@@ -24,8 +23,7 @@ all clean:
 	@for d in $(SUBDIR); do $(MAKE) -C $$d $@ || exit $$?; done
 
 run: all
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) \
-		-device loader,file=$(INITRAMFS_IMG),addr=$(INITRAMFS_ADDR)
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
 
 # Removes every architecture's build products, not just this one's.
 cleandir:
