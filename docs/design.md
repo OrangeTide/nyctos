@@ -1,16 +1,16 @@
 ---
 title: Nyctos
-subtitle: Architecture White Paper
+subtitle: Design
 tagline: |
-  A Tiered Protection Micro-RTOS with Driver Cohorts,
-  Per-Process Namespaces, and a Fence-Ordered Submission Engine
-revision: "4"
+  A microkernel whose interface does not depend on
+  whether the hardware has a memory management unit
+revision: "5"
 logo: logo.svg
 ---
 
 # Part I — Overview
 
-This part is **informative**. It describes what Nyctos is and why it is arranged the way it is, and states no requirements. Nothing here binds an implementation.
+This part describes what Nyctos is and why it is arranged the way it is.
 
 ---
 
@@ -18,33 +18,35 @@ This part is **informative**. It describes what Nyctos is and why it is arranged
 
 ### 1.1 The Problem
 
-Real-time systems are built twice.
+Small systems are built twice.
 
-Below a certain size you get a small kernel with no memory protection: one address space, drivers linked into the application, a scheduler measured in kilobytes, and worst-case timing you can actually compute. Above it you get a general-purpose kernel with processes, virtual memory and isolation, at the cost of a system whose worst case nobody can state.
+Below a certain size you get a small kernel with no memory protection: one address space, drivers linked into the application, and a scheduler measured in kilobytes. Above it you get a general-purpose kernel with processes, virtual memory and isolation. The line between them is drawn by hardware, by whether the part has a memory management unit, and software does not cross it.
 
-The line between them is drawn by hardware, by whether the part has a protection unit and whether it has a memory management unit, and software does not cross it. A product family that spans the line maintains two systems, and moving a component from one to the other is a rewrite rather than a port. The decision about which system a component belongs to is therefore made early, on incomplete information, and is expensive to revisit.
+A product family that spans the line maintains two systems, and moving a component from one to the other is a rewrite rather than a port. The decision about which system a component belongs to is therefore made early, on incomplete information, and is expensive to revisit.
 
-There is a second problem, unrelated to size. In a system built from cooperating processes, work crosses boundaries constantly, and every crossing is a chance to lose the priority of whoever asked. A high-priority thread reads a file; the filesystem runs at its own priority; the block driver runs at another; the request completes when it completes. Priority inheritance across message passing is a well-understood fix and most systems that need it have it. Then the same systems reintroduce the problem at the first asynchronous mechanism they add, whether a worker thread pool, an I/O submission ring or an asynchronous pager, because those mechanisms execute work somewhere other than where it was requested, and priority does not follow.
+The usual response is to treat the small system as a cut-down version of the large one, sharing a name and a build system and very little else. The application-level interface differs, so the code differs, so the two diverge until only the branding is common.
 
 ### 1.2 What Nyctos Is
 
-A microkernel real-time operating system that takes both problems as structural rather than incidental.
+A microkernel whose application-level interface does not depend on whether the hardware has a memory management unit.
 
-**The same application-level interface runs on all three classes of hardware.** Flat memory with no protection unit, region-based protection, and a full memory management unit are treated as three levels of *enforcement* of one set of rules, not as three systems. A program written against the interface runs on any of them, and what changes is whether the hardware can catch it breaking the rules.
+Flat memory and a full MMU are treated as two levels of *enforcement* of one set of rules, not as two systems. A program written against the interface runs on either, and what changes is whether the hardware can catch it breaking the rules. The rule that makes this work is a rule about how to choose rules, and it is stated in section 2.1.
 
-**Priority follows work across every boundary, and mechanisms that break that are rejected.** Not only across message passing, but through page faults, through locks, and through the batch submission engine. Where a faster design would sever the connection between a requester's priority and the execution of its work, the specification takes the slower one and says so.
+Everything else follows from holding that commitment while keeping the kernel small enough to read.
 
-Everything else in the design follows from holding those two commitments at once.
+### 1.3 What Is Claimed, and What Is Not
 
-### 1.3 Three Claims, Stated Carefully
+This document describes a system that has not been built. That fact governs how the rest of it should be read, so it is stated here rather than buried.
 
-Each of these is easy to overstate, and an overstated version would be false. They are given in their true form here and defended in Part II.
+**Nothing here has been implemented or measured.** No code corresponding to this design exists. Every statement about cost, size or latency is an intention, and none of them is a result. Where this document sounds confident, that confidence is about the reasoning and not about the outcome.
 
-**Bounded kernel time, not bounded wall clock.** A batch of operations has a statically bounded execution time inside the kernel, because the operation array is linear and finite. Its wall-clock completion is not bounded, because some operations block. The operations that may block are enumerated in one place and nowhere else.
+**One property is structural rather than empirical.** Kernel memory is statically bounded: there is no kernel heap at either tier, every object comes from a build-time pool, and kernel memory consumption is therefore a property of the configuration rather than of application behaviour. This follows from the design rather than from measurement, so it is the one claim that does not wait on an implementation. What it costs is that exhausting a pool means a rebuild.
 
-**Interrupt latency is stated per tier, not in general.** The smaller tiers disable interrupts inside the kernel and bound latency by preemption point placement, which is analyzable but has a floor. The largest tier enables interrupts with fine-grained locking, which removes the floor and complicates the analysis. There is no single number, and any port that has not measured its own has not made the claim.
+**A second is bounded by construction rather than by measurement.** A submitted batch of operations has a statically bounded execution time inside the kernel, because the operation array is linear and finite and carries no branches. Its wall-clock completion is not bounded, because some operations block, and the operations that may block are enumerated in one place and nowhere else. This is a claim about structure and not about speed, and it says nothing about how long any of it takes.
 
-**Kernel memory is statically bounded.** There is no kernel heap, at any tier. Every object comes from a build-time pool, so kernel memory consumption is a property of the configuration and cannot be driven upward by application behaviour.
+**Three mechanisms are explicitly provisional**, and are marked as such where they are described. Timelines as the single object a thread waits on (section 9) are elegant on paper and have not been shown to earn a separate object. Per-process namespaces assembled in the C library (section 20) are a large break from Unix expectations, and whether they are workable or merely defensible is not yet known. The submission engine (section 17) is the most novel thing here and therefore the most likely to be a mistake; it is deliberately built so that removing it costs nothing else. Any of the three could be removed by what an implementation teaches.
+
+The roadmap names the milestone at which these questions get answered, and it is deliberately small.
 
 ---
 
@@ -52,35 +54,43 @@ Each of these is easy to overstate, and an overstated version would be false. Th
 
 Six ideas, and the cost of holding them.
 
-### 2.1 One Contract, Three Enforcements
+### 2.1 One Contract, Two Enforcements
 
 The tiers differ in what they can enforce and never in what things mean. The rule that makes this work is a rule about how to choose rules:
 
-> Choose the contract that the strongest tier enforces in hardware and the weakest tier merely trusts.
+> Choose the contract that the stronger tier enforces in hardware and the weaker tier merely trusts.
 
-Applied to memory, this gives move semantics: when a buffer is sent, the sender loses access to it until reply. The tier with an MMU enforces that by unmapping. The tier with a protection unit enforces it by reprogramming a region. The tier with neither does not enforce it at all, and a program that violates the rule will not fault.
+Applied to memory, this gives move semantics: when a buffer is sent, the sender loses access to it until reply. The tier with an MMU enforces that by unmapping. The tier with neither does not enforce it at all, and a program that violates the rule will not fault.
 
-A correct program therefore behaves identically on all three, and the only thing the weakest tier loses is the ability to catch an incorrect one. That has a practical consequence worth more than it first appears: the same source can be developed on hardware that enforces and deployed on hardware that does not, so a class of bug that is invisible on the target is findable off it.
+A correct program therefore behaves identically on both, and the only thing the weaker tier loses is the ability to catch an incorrect one. That has a practical consequence worth more than it first appears: the same source can be developed on hardware that enforces and deployed on hardware that does not, so a class of bug that is invisible on the target is findable off it.
 
 The alternative, a contract permitting shared access with a convention against touching, is unenforceable on every tier and is therefore not a contract at all.
 
-### 2.2 Priority Follows Work
+### 2.2 Everything Crosses the Same Boundary
 
-A request executes at the priority of whoever is waiting for it. This is stated as an invariant rather than a feature, and it is why several mechanisms in the system look the way they do rather than the way they usually look.
+A page fault, a driver completion, a timer expiry and an application request all become either a message or a timeline advance. There is no privileged path that bypasses the general mechanisms.
 
-A server handling a request runs at its client's priority for the duration. A thread taking a page fault has that fault serviced at *its* priority, because the fault is modelled as a message the faulting thread sends rather than an event delivered to a pager. A batch of I/O operations executes in the submitting thread's own context, at its own priority, with no worker pool anywhere. That costs the parallelism a worker pool would have provided and gains the property that a low-priority thread's I/O cannot delay a high-priority thread's.
-
-The general shape: **wherever a mechanism could execute work somewhere other than where it was requested, it does not.** Concurrency comes from hardware, several transfers in flight at once, rather than from kernel threads.
+This is the property that keeps the kernel small enough to hold in mind. A reader who understands message passing and timelines understands the whole system rather than a part of it, and a mechanism that would have needed its own delivery path instead reuses one that already exists and is already debugged.
 
 ### 2.3 One Thing To Wait On
 
 A thread waits on exactly one kind of object, whatever it is waiting for.
 
-Driver completion, interrupt delivery, timer expiry and thread exit are all advances of a monotonic counter called a timeline. An interrupt handler advances a timeline and returns; a timer advances one on schedule; a thread's exit advances its own. A driver blocked on a DMA transfer and a task blocked on its next activation are doing the same thing.
+Driver completion, interrupt delivery, timer expiry and thread exit are all advances of a monotonic counter called a timeline. An interrupt handler advances a timeline and returns; a timer advances one on schedule; a thread's exit advances its own. A driver blocked on a transfer and a task blocked on its next activation are doing the same thing.
 
-This is worth more than the tidiness suggests, because it makes the blocking relation in the system a **chain rather than a graph**. A thread blocks on one object at a time, so priority donation walks in one direction with no branching, deadlock detection is that same walk with a bound on it, and cancellation can release a thread from whatever it is waiting on without knowing which mechanism blocked it.
+The payoff is that the blocking relation in the system is a **chain rather than a graph**. A thread blocks on one object at a time, so priority donation walks in one direction with no branching, deadlock detection is that same walk with a bound on it, and cancellation can release a thread from whatever it is waiting on without knowing which mechanism blocked it.
 
-### 2.4 Dependencies as Data
+**This is the design's most provisional idea.** The argument above is a good one and it has not been tested. A driver that blocks in receive and never touches a timeline is a real possibility, in which case the object is ceremony and should go. The first implementation is arranged to find out.
+
+### 2.4 Priority Follows Work
+
+A request executes at the priority of whoever is waiting for it.
+
+A server handling a request runs at its client's priority for the duration. A thread taking a page fault has that fault serviced at *its* priority, because the fault is modelled as a message the faulting thread sends rather than an event delivered to a pager. The general shape is that wherever a mechanism could execute work somewhere other than where it was requested, it does not, and concurrency comes from hardware rather than from kernel threads.
+
+This is the property a real-time system needs, and it is why several mechanisms here look the way they do rather than the way they usually look. It is not the reason the system exists. Priority inheritance is present in the message-passing path from the beginning, because retrofitting it into a working system is harder than building with it, but the system is not presented as a real-time operating system and makes no timing guarantees. Section 21 collects the priority mechanisms in one place.
+
+### 2.5 Dependencies as Data
 
 A thread can submit an ordered batch of operations in one call. The submission language has no branches, no loops and no bytecode. It is a flat array of entries.
 
@@ -88,53 +98,51 @@ That is sufficient because ordering constraints are expressed as **fences rather
 
 Removing branches removes the need for an in-kernel verifier, which would otherwise be the largest security-critical component in the system and catastrophic to get wrong on a tier with no hardware protection. It also makes the cost of a submission the sum of its entries, computable without running it.
 
-### 2.5 An Explicit Trade: Driver Cohorts
+This is the newest idea here and the one most likely to be wrong. It is kept strictly separable from the rest for that reason: section 23 defines a calling convention for a single operation, and section 17 extends it to many. Nothing else in the design requires the extension to exist.
+
+### 2.6 An Explicit Trade: Driver Cohorts
 
 Related drivers can be grouped into a cohort that shares one protection domain, so that a filesystem and the block driver beneath it exchange scatter-gather lists without crossing a boundary.
 
 The cost is stated rather than minimised: **the cohort is the unit of recovery.** A member that faults may have corrupted any peer arbitrarily, and nothing can establish that it did not, so all of them are torn down and restarted together. A bug in a minor driver takes down the storage stack.
 
-That is the whole content of the feature. It is offered because zero-copy I/O paths are worth real money in throughput, and it is bounded by making cohort membership a build-time decision that deserves attention rather than a convenient way to group related code.
+That is the whole content of the feature. It is offered because zero-copy I/O paths are worth real throughput, and it is bounded by making cohort membership a build-time decision that deserves attention rather than a convenient way to group related code. It is also meaningless without protection domains, so it does nothing at all on the flat-memory tier.
 
-### 2.6 Statically Configured, Everywhere
+### 2.7 Statically Configured, Everywhere
 
-Object counts are fixed when the system is built, on the multicore application processor as much as on the microcontroller. The tiers differ in protection hardware, not in how dynamic they are.
+Object counts are fixed when the system is built, on the application processor as much as on the microcontroller. The tiers differ in protection hardware, not in how dynamic they are.
 
 This removes a large class of error paths, since allocation failure moves from being reachable on nearly every call to being a configuration error visible at integration time, and it makes the kernel's memory footprint computable from build settings. It costs the ability to grow: a system that exhausts a pool is reconfigured and rebuilt.
 
-### 2.7 The Shape of the System
+### 2.8 The Shape of the System
 
 The kernel provides thread contexts, a scheduler, synchronous message passing, timelines, and a handle table. Nothing else is inside it. File systems, network stacks, device drivers, pagers, loaders and supervisors are ordinary processes, and the filesystem namespace is assembled in the C library.
 
-Three properties of the arrangement are worth noticing before the detail arrives.
-
-**Everything crosses the same boundary.** A page fault, a driver completion, a timer expiry and an application request all become either a message or a timeline advance. There is no privileged path that bypasses the general mechanisms, which is why a reader who understands message passing and timelines understands the whole system rather than a part of it.
-
 **Authority flows downward from a single root.** The kernel grants nothing on request. A process reaches only what its parent placed in its handle table, and the root process holds everything at boot. There is no ambient authority anywhere, including no global filesystem root.
 
-**The system is a set of replaceable parts.** Nyctos is meant to arrive as a working system and not only as a kernel. The loader, the pager, the supervisor, the filesystem, the drivers and the C library that assembles the namespace are named roles with defined interfaces, and components filling them are supplied so that a vendor starts with a system rather than with a kernel and a plan. Each is an ordinary process, and each reaches the others through message passing and timelines and through nothing else. A vendor with its own filesystem substitutes it and keeps the rest, because the parts depend on the interfaces between them and not on each other's internals. This is why the specification leaves the policy inside those roles open, restart policy in section 18.3 being the clearest case. It is the Unix arrangement of small utilities that compose, rather than a framework that has to be adopted whole.
+**The system is meant to be a set of replaceable parts.** Nyctos is intended to arrive as a working system and not only as a kernel. The loader, the pager, the supervisor, the filesystem, the drivers and the C library that assembles the namespace are named roles with defined interfaces, and each is an ordinary process reaching the others through message passing and timelines and through nothing else. Substituting one should keep the rest, because the parts depend on the interfaces between them and not on each other's internals. This is why the policy inside those roles is left open, restart policy in section 19.3 being the clearest case.
 
 ```{=typst}
 #figure(include "fig/architecture.typ", caption: [Nyctos system architecture.])
 ```
 
-### 2.8 What This Costs
+### 2.9 What This Costs
 
 Every item here is a consequence of something above, and a reader deciding whether the design suits them should weigh these first.
 
-**The total writable working set must fit in RAM.** Mapping exists to load read-only program and library text. There is no copy-on-write and no swap, because without dirty tracking an evicted writable page cannot be safely written back. This is the right answer for a real-time system, whose working set should not be paged out anyway, and it is the wrong answer for anything that wants to overcommit memory.
+**The total writable working set must fit in RAM.** Mapping exists to load read-only program and library text. There is no copy-on-write and no swap, because without dirty tracking an evicted writable page cannot be safely written back. This is the wrong answer for anything that wants to overcommit memory.
 
 **A fault in one cohort member destroys the cohort.** Discussed above. The alternative is unsound rather than merely slower.
 
 **Exhausting a pool means a rebuild.** There is no runtime growth to fall back on.
 
-**A server waiting on several unrelated sources needs a thread for each.** There is no multi-wait primitive. On the smallest tier, where RAM is measured in kilobytes, a stack per event source is a real cost.
+**A server waiting on several unrelated sources needs a thread for each.** There is no multi-wait primitive. On the flat-memory tier, where RAM is measured in kilobytes, a stack per event source is a real cost.
 
 **POSIX software needs work.** There is no `mmap` in the usual sense, no ambient filesystem root, and no global namespace. A compatibility layer can supply the familiar shapes over the native interface, and it is a layer rather than a thin shim.
 
-**The weakest tier cannot catch its own violations.** Tier 0 trusts the memory contract entirely. A program that breaks it there produces no fault and no diagnostic, which is why the same program should be exercised on a tier that enforces.
+**The weaker tier cannot catch its own violations.** The flat-memory tier trusts the memory contract entirely. A program that breaks it there produces no fault and no diagnostic, which is why the same program should be exercised on a tier that enforces.
 
-**Replaceable parts mean interfaces that are expensive to change.** A component can only be substituted against an interface stable enough for someone else to have written to, so the boundaries between the loader, the pager, the filesystem and the drivers must be fixed early and then held. Moving one afterwards costs a coordinated change across parties who did not agree to it, and that cost is the price of the arrangement in section 2.7 rather than an accident of it. Boundaries that shift freely with each release would keep the freedom and give up the substitution.
+**Replaceable parts mean interfaces that are expensive to change.** A component can only be substituted against an interface stable enough for someone else to have written to. Those boundaries must be fixed early and then held, and moving one afterwards costs a coordinated change. That cost is the price of the arrangement in section 2.8 rather than an accident of it.
 
 **Introspection cannot discover.** A debugger can inspect only what it holds a handle to, so inspection follows the supervision tree. There is no way to attach to an arbitrary running process that was not arranged to be observable. This is the capability model applied consistently, and it is inconvenient exactly when debugging is hardest.
 ---
@@ -164,7 +172,7 @@ Two contributions are load-bearing enough to name up front. **Jochen Liedtke's**
 - Elphinstone and Heiser, [*From L3 to seL4: What Have We Learnt in 20 Years of L4 Microkernels?*](https://sigops.org/s/conferences/sosp/2013/papers/p133-elphinstone.pdf), SOSP, 2013.
 - [L4Re IPC concepts](https://l4re.org/doc/l4re_concepts_ipc.html)
 
-**seL4** (Gerwin Klein, Kevin Elphinstone, Gernot Heiser, and the Trustworthy Systems group) contributes the memory model in section 8 and the timing methodology in sections 12.3 and 22. The property adopted is not retype itself but its consequence, that kernel memory becomes a property of configuration rather than workload. seL4 is also why the interrupt latency claim is stated per tier: its WCET work quantified the cost of the interrupts-disabled approach honestly, including conceding what it cannot do, and that honesty is worth imitating.
+**seL4** (Gerwin Klein, Kevin Elphinstone, Gernot Heiser, and the Trustworthy Systems group) contributes the memory model in section 8. The property adopted is not retype itself but its consequence, that kernel memory becomes a property of configuration rather than workload. seL4 is also the reason this document states interrupt latency per tier rather than in general: its WCET work quantified the cost of the interrupts-disabled approach honestly, including conceding what it cannot do, and that honesty is worth imitating even where no measurement is being claimed.
 
 - Klein et al., [*seL4: Formal Verification of an OS Kernel*](https://plsyssec.github.io/cse227-spring25/papers/sel4.pdf), SOSP, 2009.
 - Blackham et al., [*Timing Analysis of a Protected Operating System Kernel*](https://abhikrc.com/pdf/rtss11-os.pdf), RTSS, 2011.
@@ -180,19 +188,19 @@ Two contributions are load-bearing enough to name up front. **Jochen Liedtke's**
 
 - [Zircon kernel concepts](https://fuchsia.dev/fuchsia-src/concepts/kernel/concepts) and [signals](https://fuchsia.dev/fuchsia-src/concepts/kernel/signals)
 - [Zircon pager object](https://fuchsia.dev/fuchsia-src/reference/kernel_objects/pager)
-- [RFC-0226: Zircon Pager Writeback](https://fuchsia.dev/fuchsia-src/contribute/governance/rfcs/0226_zircon_pager_writeback), the reference for the writeback item in section 28.
+- [RFC-0226: Zircon Pager Writeback](https://fuchsia.dev/fuchsia-src/contribute/governance/rfcs/0226_zircon_pager_writeback), the reference for the writeback item in `PROPOSALS.md`.
 
 **LK, the Little Kernel** (Travis Geiselbrecht) is the model for Tier 0. The bitmap ready queue with count-leading-zeros lookup, wait queues as the single blocking primitive, and the proposition that a useful preemptive kernel fits in a few thousand lines on a part with no MMU all come from LK. It is also the reference for the interrupts-enabled, fine-grained-locking alternative adopted at Tier 2.
 
 - [littlekernel/lk](https://github.com/littlekernel/lk) and its [kernel API documentation](https://github.com/littlekernel/lk/wiki/Kernel-APIs-And-Primitives)
 
-**Erlang/OTP** (Joe Armstrong, Robert Virding, Mike Williams) contributes the supervision model of section 26.3. The parts adopted are restart intensity, a bound on restarts within a window, and escalation to the parent supervisor when that bound is exceeded, rather than the endless respawn that Unix `init` established as the default and that every later Unix retrofitted a limit onto. The distinction between a restart group and the protection domain it sits in is also OTP's, arrived at there as the difference between `one_for_one` and `rest_for_one`.
+**Erlang/OTP** (Joe Armstrong, Robert Virding, Mike Williams) contributes the supervision model of section 24.3. The parts adopted are restart intensity, a bound on restarts within a window, and escalation to the parent supervisor when that bound is exceeded, rather than the endless respawn that Unix `init` established as the default and that every later Unix retrofitted a limit onto. The distinction between a restart group and the protection domain it sits in is also OTP's, arrived at there as the difference between `one_for_one` and `rest_for_one`.
 
 - Armstrong, [*Making Reliable Distributed Systems in the Presence of Software Errors*](https://erlang.org/download/armstrong_thesis_2003.pdf), PhD thesis, 2003.
 
-**ARINC 653** is the precedent for per-child recovery policy as build-time data (section 26.2). Its health monitoring tables map an error, at process, partition or module level, onto a fixed recovery action chosen when the system is integrated, with no runtime policy engine anywhere. That is the same answer this design reaches from the static configuration constraint, and it is worth knowing that a certified avionics standard got there first.
+**ARINC 653** is the precedent for per-child recovery policy as build-time data (section 24.2). Its health monitoring tables map an error, at process, partition or module level, onto a fixed recovery action chosen when the system is integrated, with no runtime policy engine anywhere. That is the same answer this design reaches from the static configuration constraint, and it is worth knowing that a certified avionics standard got there first.
 
-**Genode** (Norman Feske) is the reference for a root process that routes services between children it describes declaratively, and for the observation that boot modules are best served by the smallest possible read-only service rather than understood by the kernel. Section 26.4 takes the second and declines the first, since a static system can compute its routing at build time rather than describing it in a configuration the root process must parse.
+**Genode** (Norman Feske) is the reference for a root process that routes services between children it describes declaratively, and for the observation that boot modules are best served by the smallest possible read-only service rather than understood by the kernel. Section 24.4 takes the second and declines the first, since a static system can compute its routing at build time rather than describing it in a configuration the root process must parse.
 
 - Feske, [*Genode Operating System Framework*](https://genode.org/documentation/genode-foundations/index), foundations manual.
 
@@ -210,8 +218,9 @@ Two contributions are load-bearing enough to name up front. **Jochen Liedtke's**
 | Move semantics on transfer | 6.1, 7.4 | L4 grant, Zircon handle transfer |
 | No kernel heap, statically bounded objects | 8 | seL4 |
 | BootInfo-shaped handoff to a root task | 8.1 | seL4 |
-| WCET methodology, interrupt latency metric | 13.3, 34 | seL4 |
 | Preemption points as the latency lever | 11.3, 17.7 | seL4 |
+| Submission chaining with LINK | 17.5 | io_uring |
+| Fences as submitted dependencies | 17.2 | GPU pushbuffer practice, Android sync_file |
 | Mount table in libc | 20 | VSTa |
 | Cohort scheduling nodes | 11.5 | VSTa scheduling tree |
 | Per-process reentrancy modes | 10.3 | VSTa |
@@ -227,9 +236,7 @@ Two contributions are load-bearing enough to name up front. **Jochen Liedtke's**
 | Peer-closed as timeline abandonment | 9.3 | Zircon event pairs |
 | Bitmap ready queue, CLZ lookup | 11.2 | LK |
 | Interrupts enabled with fine-grained locks | 13.3 | LK, Zircon |
-| Submission chaining with LINK | 17.5 | io_uring |
 | Monotonic timeline over binary fence | 9.1 | Vulkan timeline semaphores |
-| Fences as submitted dependencies | 17.2 | GPU pushbuffer practice, Android sync_file |
 | Owner-in-word PI lock protocol | 21.1 | Linux futex |
 | Partitioned scheduling with migration | 11.4 | Real-time scheduling literature, see 3.3 |
 | Recovery action per child, fixed at build | 26.2 | ARINC 653 health monitoring |
@@ -259,7 +266,7 @@ Two contributions are load-bearing enough to name up front. **Jochen Liedtke's**
 
 ### 3.4 Graphics and I/O Lineage
 
-The submission engine owes more to graphics and storage stacks than to operating systems research.
+The submission engine and timelines owe more to graphics and storage stacks than to operating systems research.
 
 **Vulkan timeline semaphores** are the direct model for section 9.1. The properties adopted are the monotonic 64-bit counter, one object per pipeline rather than one per transfer, and the legality of waiting on a value before anything has promised to signal it, which removes the wait-before-signal race binary fences impose.
 
@@ -271,7 +278,7 @@ The submission engine owes more to graphics and storage stacks than to operating
 - [Linux sync_file documentation](https://docs.kernel.org/driver-api/sync_file.html)
 - [Linux dma-buf and dma-fence documentation](https://docs.kernel.org/driver-api/dma-buf.html)
 
-**GPU pushbuffers** are the structural model for a linear, branchless, in-order instruction stream in which ordering constraints are expressed as fence waits rather than control flow. Revision 1 used the pushbuffer as an analogy; revision 2 onward takes it literally.
+**GPU pushbuffers** are the structural model for section 17: a linear, branchless, in-order instruction stream in which ordering constraints are expressed as fence waits rather than control flow.
 
 **io_uring** contributes chain semantics. Its execution model is deliberately inverted here, for the reason in section 3.5.
 
@@ -304,7 +311,7 @@ Recording rejected designs is as useful as recording adopted ones, because the r
 
 **Global multiprocessor scheduling.** Better average responsiveness and automatic load balancing, at the cost of a contended lock on every scheduling decision and substantially harder worst-case analysis.
 
-**Untyped memory and retype, from seL4.** Adopted in consequence, not in mechanism. Section 8 gets the statically bounded kernel through build-time pools. Because Tier 2 is also statically configured, retype is not deferred but genuinely unnecessary, and it is not in section 28.
+**Untyped memory and retype, from seL4.** Adopted in consequence, not in mechanism. Section 8 gets the statically bounded kernel through build-time pools. Because Tier 2 is also statically configured, retype is not deferred but genuinely unnecessary.
 
 **POSIX `mmap` semantics.** Copy-on-write, anonymous mappings, and writable file-backed mappings are all absent, following Plan 9 and Inferno. Section 15.1 explains what this removes: transparent dirty tracking, swap, and a write fault that can block on a plain store instruction.
 
@@ -320,37 +327,37 @@ Systems consulted for comparison that did not directly contribute a mechanism, b
 
 ### 3.7 Status of This Document
 
-This is a design specification, not an implementation report. No code corresponding to it has been written or measured, so every performance and latency statement is a design target or a citation of someone else's measurement, never a result. Section 24 specifies what a port must measure to make the claims checkable.
+This is a design document, not an implementation report. No code corresponding to it has been written or measured, so every statement about performance, size or latency is an intention or a citation of someone else's measurement, never a result of this work. `ROADMAP.md` says what is being built first and what that would settle.
 
 Errors of attribution in this section are mine, not the cited authors'. Corrections are welcome.
 
 ---
 
-# Part II — Specification
+# Part II — The System
 
-This part is **normative**. An implementation that violates a rule stated here is not Nyctos. Where a decision is left to the implementation, this part says so explicitly.
+This part describes the system in detail: what each mechanism is, how it behaves, and why it was chosen over the alternatives. It is a design, not a standard. Nothing in it has been built.
 
 ---
 
 ## 4. Scope
 
-This part specifies Nyctos completely enough to be implemented independently. It is normative: where it states a rule, an implementation that violates the rule is not Nyctos, and where it leaves something to the implementation it says so.
+This part describes Nyctos in enough detail to be implemented. Where a decision is genuinely open, it says so rather than inventing an answer.
 
-Sections 5 through 22 give the semantics. Section 23 gives the binding between those semantics and the machine, and section 29 gives the C interface. Section 27 specifies the filesystem protocol, which is normative because the substitutability claimed in section 2.7 rests on it. Section 24 states what an implementation must demonstrate and what a port must measure. Section 28 lists what is deliberately unspecified and under what evidence each omission may be filled.
+Sections 5 through 22 give the semantics. Section 23 gives the binding between those semantics and the machine, and section 26 gives the C interface. Section 25 gives the filesystem protocol, which matters more than its length suggests, because the substitutability claimed in section 2.8 rests on it.
 
-**Three sections in this part are not normative, and each says so at its head.** Section 19 assembles mechanisms specified elsewhere into the shape of a driver and defines nothing of its own, and section 26 does the same for the root process. Section 25 writes out resource containers, which section 28 defers pending evidence, so that the gate names something specific rather than gesturing at it. An implementation may ignore all three entirely.
+**Two sections assemble rather than define.** Section 19 puts the mechanisms of earlier sections into the shape of a driver, and section 24 does the same for the root process. Neither introduces anything new. They exist because the shape of a driver and the shape of the first process are the clearest evidence for or against the claims in section 2.
 
-Part III suggests an order in which to build all of this and a subset sufficient for a first implementation. Nothing there is binding, and this part is complete without it.
+Part III suggests what a port supplies underneath all of this. `ROADMAP.md` gives the order to build it in, and `PROPOSALS.md` holds what is deliberately left out.
 
-**Normative language.** *Must* and *must not* state requirements: violating one means the implementation does not conform. *May* grants permission and marks a genuine choice, which an implementation is free to make either way. *Should* marks advice strong enough to state but not a conformance condition, and appears rarely; where this part means to require something it says must.
+**Language.** This document says *must* where a choice would break something stated elsewhere, and the reason is always given nearby. It says *may* where the choice is genuinely free. It avoids conformance language entirely: there is no test suite, no certification, and nothing here has earned the right to tell an implementer they are wrong.
 
 Four constraints shape everything that follows, and they are stated here because a reader who does not hold them will find later decisions arbitrary.
 
-**The system is statically configured at every tier.** Object counts are fixed when the system is built. This is as true of a multicore application processor as of a microcontroller; the tiers differ in protection hardware, not in how dynamic they are. There is no kernel heap and no runtime growth.
+**The system is statically configured at both tiers.** Object counts are fixed when the system is built. This is as true of a multicore application processor as of a microcontroller; the tiers differ in protection hardware, not in how dynamic they are. There is no kernel heap and no runtime growth.
 
-**One API spans three protection models.** The same application-level interface runs on flat memory with no protection unit, on region-based protection, and on a full memory management unit. The tiers differ in what they *enforce*, never in what they *mean*.
+**One API spans two protection models.** The same application-level interface runs on flat memory with no protection unit and on a full memory management unit. The tiers differ in what they *enforce*, never in what they *mean*.
 
-**A thread blocks on exactly one object at a time.** This is relied on by reply addressing, by the priority inheritance chain, by the fault path, and by cancellation. It is stated as a normative invariant in section 5 and assumed throughout.
+**A thread blocks on exactly one object at a time.** This is relied on by reply addressing, by the priority inheritance chain, by the fault path, and by cancellation. It is stated as an invariant in section 5 and assumed throughout.
 
 **Priority follows work across every boundary.** A request executes at the priority of whoever is waiting on it, through message passing, through page faults, and through locks. Mechanisms that would break this connection are rejected even where they would be faster.
 
@@ -358,6 +365,7 @@ Four constraints shape everything that follows, and they are stated here because
 
 | Area | Decision |
 | ---------------------- | ------------------------------------------------------------------ |
+| Syscall form | One operation descriptor per trap. No syscall numbers. |
 | Batch language | Linear op array. No branches, no bytecode VM, no verifier. |
 | Batch entry points | Program objects plus a direct-invoke shim for single ops. |
 | Op flavors | Blocking ops and issuing ops. Issuing ops return a fence. |
@@ -370,12 +378,12 @@ Four constraints shape everything that follows, and they are stated here because
 | Handles | Uniform allocation, 64-bit, index plus generation, with rights. |
 | Handle rights | Rights mask on every handle. Duplication may only attenuate. |
 | Vocabulary | `sys_proc_id_t` and `sys_thread_id_t`. `task_id_t` is deleted. |
-| Blocking | A thread blocks on exactly one thing at a time. Normative. |
+| Blocking | A thread blocks on exactly one thing at a time. Invariant. |
 | Reply addressing | By client thread id. No rcvid or transaction table. |
 | Multi-wait | One thread per source. Wait-sets remain deferred. |
 | SMP | Partitioned scheduling with explicit migration. |
 | Co-scheduling | Cohort scheduling nodes, not gang admission. |
-| Buffer contract | Move semantics, identical on all three tiers. |
+| Buffer contract | Move semantics, identical on both tiers. |
 | Cohort faults | The cohort is the recovery unit. |
 | Cohort restart | Parent process via a death timeline. Policy is not in the kernel. |
 | Handle transfer | Inline for small counts, count plus pointer for large. Move. |
@@ -388,7 +396,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Mount table | In the C library, not the kernel. |
 | Naming | Handle-relative only. No global namespace, no absolute paths, no ambient root. |
 | Namespace handoff | Named directory handles passed at spawn, consumed by libc like `envp`. |
-| Interrupts | Disabled in kernel on Tier 0 and 1; enabled on Tier 2. |
+| Interrupts | Disabled in kernel on Tier 0; enabled on Tier 2. |
 | Timers | Advance a timeline. No timer pulse. |
 | Timeouts | Absolute deadlines. Relative helpers live in libc. |
 | Exit and join | Exit advances a completion timeline; status read from the handle. |
@@ -404,17 +412,17 @@ Four constraints shape everything that follows, and they are stated here because
 
 ## 5. Vocabulary
 
-The term "task" is not used anywhere in this specification, because every real-time system defines it differently and the ambiguity is not worth inheriting. Where another system's "task" is meant, this document says process or thread and means exactly one of them.
+The term "task" is not used anywhere in this document, because every real-time system defines it differently and the ambiguity is not worth inheriting. Where another system's "task" is meant, this document says process or thread and means exactly one of them.
 
-**Process.** An address space, a handle table, and one or more threads. The unit of protection at Tier 1 and Tier 2, and of resource ownership at every tier. Operated on through a handle; `sys_proc_id_t` is an identity for introspection and reporting, not an operand.
+**Process.** An address space, a handle table, and one or more threads. The unit of protection at Tier 2, and of resource ownership at both tiers. Operated on through a handle; `sys_proc_id_t` is an identity for introspection and reporting, not an operand.
 
 **Thread.** A schedulable context within a process. Named by `sys_thread_id_t`. A process may have many threads. This is not negotiable and the rest of the design accommodates it.
 
-**Normative blocking invariant.** *A thread is blocked on at most one object at any instant.* Every blocking primitive takes exactly one target. The reply mechanism, the priority inheritance chain, the fault path, and the absence of a transaction table all depend on this, so it is stated here rather than left implicit.
+**The blocking invariant.** *A thread is blocked on at most one object at any instant.* Every blocking primitive takes exactly one target. The reply mechanism, the priority inheritance chain, the fault path, and the absence of a transaction table all depend on this, so it is stated here rather than left implicit.
 
 **Handle.** A per-process reference to a kernel object, carrying a rights mask. Named by `sys_handle_t`.
 
-**Optional outputs may be NULL.** Any parameter this specification describes as an output may be passed as `NULL` by a caller that does not want the value, and the kernel omits that write. This is stated once here rather than repeated per call, and it applies to every `out_` parameter in section 29. Inputs are never optional.
+**Optional outputs may be NULL.** Any parameter this document describes as an output may be passed as `NULL` by a caller that does not want the value, and the kernel omits that write. This is stated once here rather than repeated per call, and it applies to every `out_` parameter in section 26. Inputs are never optional.
 
 **Ids are not handles, and the distinction is deliberate.** A thread is named two ways in this API, and they mean different things. A `sys_handle_t` on a thread is *authority*: whoever holds it can set priority, migrate, or cancel. A `sys_thread_id_t` is a *reply token* and confers nothing. `sys_msg_recv()` returns the client's id rather than a handle to it, so a server acquires no power over its clients merely by serving them, which would otherwise be a privilege escalation available to every service in the system. Everywhere else a thread is named, it is named by handle.
 
@@ -422,35 +430,34 @@ The term "task" is not used anywhere in this specification, because every real-t
 
 ---
 
-## 6. Gradient Hardware Protection Model
+## 6. The Two Protection Tiers
 
 | Tier | Hardware | Memory Model | Loading | Enforcement |
 | -------- | ------------------------ | ------------------------ | ------------------ | ------------------------------ |
 | **Tier 0** | Flat memory, no MPU or MMU | Shared global address space, PIC/PIE required | XIP from flash | Cooperative. Handles enforce modularity, not security. |
-| **Tier 1** | MPU or RISC-V PMP | Isolated memory windows | XIP from flash | Hardware region isolation without virtual mapping. |
 | **Tier 2** | Full MMU | Virtual address mapping | Demand-paged text | Strict isolation, remapping for zero-copy. |
 
 ### 6.1 The Uniform Memory Contract
 
-A single API across three protection models is only meaningful if it states what a sender may do with a buffer after sending it. Without that rule portable code cannot be written, because on Tier 0 the receiver observes the sender's later writes and on Tier 2 it may not.
+A single API across two protection models is only meaningful if it states what a sender may do with a buffer after sending it. Without that rule portable code cannot be written, because on Tier 0 the receiver observes the sender's later writes and on Tier 2 it may not.
 
 **The rule is move semantics, and it is identical on every tier.**
 
 > When a memory grant is sent, the sender loses the right to read or write the underlying memory until the corresponding reply is received. When the reply arrives, the right returns to the sender.
 
-The tiers differ only in *enforcement*, never in *semantics*. Tier 2 enforces by unmapping from the sender and mapping into the receiver. Tier 1 enforces by reprogramming MPU or PMP regions. Tier 0 does not enforce at all; the memory remains reachable and a violating program will not fault.
+The tiers differ only in *enforcement*, never in *semantics*. Tier 2 enforces by unmapping from the sender and mapping into the receiver. Tier 0 does not enforce at all; the memory remains reachable and a violating program will not fault.
 
-This generalizes into the design rule for the whole gradient. **Choose the contract that the strongest tier enforces in hardware and the weakest tier merely trusts.** A correct program then behaves identically on all three, and the only thing Tier 0 loses is the ability to catch an incorrect one. A contract chosen the other way around, such as shared access with a convention against touching, is unenforceable everywhere and is therefore not a contract at all.
+This generalizes into the design rule for the whole system. **Choose the contract that the stronger tier enforces in hardware and the weaker tier merely trusts.** A correct program then behaves identically on both, and the only thing Tier 0 loses is the ability to catch an incorrect one. A contract chosen the other way around, such as shared access with a convention against touching, is unenforceable everywhere and is therefore not a contract at all.
 
 ```{=typst}
-#figure(include "fig/tiers.typ", caption: [The same violation under all three protection models. The contract is identical; the tiers differ only in whether the hardware can detect a breach of it.])
+#figure(include "fig/tiers.typ", caption: [The same violation under both protection models. The contract is identical; the tiers differ only in whether the hardware can detect a breach of it.])
 ```
 
 The figure shows a program breaking the rule rather than obeying it, because **a correct program cannot illustrate the difference.** One that respects the contract produces the same result on every tier, which is the entire point. Only a violation distinguishes them, and then only by whether anything notices.
 
-This is what makes Tier 0 a useful development target rather than merely a constrained one. The same source runs on all three, so a contract violation can be found on hardware that enforces and then deployed to hardware that does not.
+This is what makes Tier 0 a useful development target rather than merely a constrained one. The same source runs on both, so a contract violation can be found on hardware that enforces and then deployed to hardware that does not.
 
-A Tier 0 debug build should include software checks for grant access outside the owning window, because that is the class of bug Tier 0 cannot catch and Tier 2 catches for free. No API in this specification exposes a raw pointer that crosses a process boundary.
+A Tier 0 debug build should include software checks for grant access outside the owning window, because that is the class of bug Tier 0 cannot catch and Tier 2 catches for free. No API in this document exposes a raw pointer that crosses a process boundary.
 
 **Reply-path caveat.** The move rule above governs the forward path. The reply path is asymmetric, because a server that mapped its own memory into a client could not tell when the client had finished reading it, and so could never safely reclaim it. Reply payloads larger than the inline area therefore use a grant the *client* supplied in the original send, returning ownership to a party that already knows the lifetime. **A server does not hand back a grant of its own memory.**
 
@@ -472,7 +479,7 @@ Every kernel object is referenced through a per-process handle table. Channels, 
 
 Every identifier is 64 bits: a **20-bit table index** in the low bits and a **44-bit generation** above it, incremented when a slot is reused. The generation costs nothing and buys use-after-close detection, since a stale identifier names a valid index whose generation no longer matches and is rejected with `SYS_ERR_STALE`. This is what makes reply-by-thread-id safe against a client dying and its id being recycled before the server replies.
 
-The 20/44 split rather than an even 32/32 is deliberate, and the reason is not the index range. Two places in this specification must compress an identity into 32 bits: the pulse value field (section 10.5) and the priority-inheriting futex word (section 21.1). With a 20-bit index, those 32 bits carry the index **and generation bits alongside it**, so both become self-validating and neither can mistake a recycled slot for the original. With a 32-bit index neither could, and each would have needed its own answer to the same problem.
+The 20/44 split rather than an even 32/32 is deliberate, and the reason is not the index range. Two places in this document must compress an identity into 32 bits: the pulse value field (section 10.5) and the priority-inheriting futex word (section 21.1). With a 20-bit index, those 32 bits carry the index **and generation bits alongside it**, so both become self-validating and neither can mistake a recycled slot for the original. With a 32-bit index neither could, and each would have needed its own answer to the same problem.
 
 The two truncations differ slightly. `SYS_ID_TAG32` keeps 12 generation bits and is what a pulse carries. `SYS_ID_TAG31` keeps 11, because the futex word must reserve its top bit for the waiters flag and cannot widen to 64 bits, since Tier 0 targets have no 64-bit atomic instruction.
 
@@ -577,7 +584,7 @@ Merge exists to adapt many fences to a wait interface that accepts only one, and
 
 Dropping it gains constant-time single-target donation, since a thread is blocked on exactly one timeline and donates to exactly one holder rather than walking a member list on every priority change. It also gains precise error attribution, since the op that fails is the one that errored and its status field names it.
 
-It costs a transferable compound handle, and it costs fixed batch shape, since a varying dependency count means a varying number of wait ops and a prebuilt pushbuffer must be rebuilt.
+It costs a transferable compound handle, and it costs fixed batch shape, since a varying dependency count means a varying number of wait ops and a prebuilt submission must be rebuilt.
 
 **Reserved for a future revision: `SYS_OP_FENCE_WAIT_MULTI`.** If fixed batch shape proves to matter in practice, the extension is merge as an *op* rather than as an object: one entry carrying a short inline array of handles. That restores fixed-shape batches with no new object type, keeps per-handle error status, and limits donation to a walk of a bounded inline list only while blocked. Such a list must stay small, on the order of four to eight handles. It is a convenience for the common narrow join, not a general multi-wait facility, and sizing it as one would reintroduce the donation cost the absence of merge was chosen to avoid.
 
@@ -605,7 +612,7 @@ A thread is created by `sys_thread_create()` against a process handle, which req
 
 **The creator supplies the stack.** The kernel does not allocate stacks. The caller passes a region it has already mapped in the target address space, along with the entry point and one argument word. This follows from section 8: a kernel with no heap cannot allocate a stack, and a kernel that carved stacks from a static pool would be choosing a stack size on behalf of every program in the system.
 
-The consequence is worth stating plainly, because it is the sharp edge of the decision. **Stack overflow is a fault in the faulting thread, not a kernel error.** The kernel knows the region it was given and nothing about how the thread uses it. A guard region below the stack turns an overflow into a memory fault at the guard rather than a silent write into whatever is mapped below, and a port on Tier 2 should map one by default. On Tier 0 there is no MMU to fault with, and the choice is between a guard band checked by a stack-limit register where the part has one and no detection at all. This is the clearest instance of the gradient in section 6: the same interface, three enforcement strengths, and the weakest cannot catch its own violation.
+The consequence is worth stating plainly, because it is the sharp edge of the decision. **Stack overflow is a fault in the faulting thread, not a kernel error.** The kernel knows the region it was given and nothing about how the thread uses it. A guard region below the stack turns an overflow into a memory fault at the guard rather than a silent write into whatever is mapped below, and a port on Tier 2 should map one by default. On Tier 0 there is no MMU to fault with, and the choice is between a guard band checked by a stack-limit register where the part has one and no detection at all. This is the clearest instance of the rule in section 6: the same interface, two enforcement strengths, and the weaker cannot catch its own violation.
 
 **Thread-local storage is a userspace convention.** The kernel reserves no per-thread word, provides no TLS register, and does not know that thread-local storage exists. A thread gets its entry argument, and a runtime that wants a thread pointer either uses the architecture's dedicated register directly or stores it at a known offset in the stack region it allocated. Putting TLS in the kernel would mean choosing an ABI, and the ABI belongs to the language runtime.
 
@@ -704,7 +711,7 @@ Three regions are non-preemptible, and there are no others.
 
 **The interrupt entry path**, from the vector to the point where the ISR has advanced its timeline and returned, per section 13.2. This region contains no loop over an unbounded structure. It is short by construction because the ISR runs no driver logic.
 
-**A single submission entry**, per section 17.7. An entry is the unit of execution in a batch, and a batch may hold many, so the batch as a whole is preemptible at every entry boundary while an individual entry is not. `SYS_BATCH_MAX_ENTRIES` therefore does not appear in interrupt latency at all; the cost of one entry does. This is why section 28.2 requires that constant to be derived from per-entry cost rather than assumed.
+**A single submission entry**, per section 17.7. An entry is the unit of execution in a batch, and a batch may hold many, so the batch as a whole is preemptible at every entry boundary while an individual entry is not. `SYS_BATCH_MAX_ENTRIES` therefore does not appear in interrupt latency at all; the cost of one entry does.
 
 **The handle table and pool manipulations** that must be atomic with respect to another core, which are bounded by the fixed structure sizes of section 8 and hold no lock a userspace thread can be waiting on.
 
@@ -736,7 +743,7 @@ Two limits are stated plainly, because the approximation is easily overread.
 
 ### 11.6 The Idle Behaviour
 
-When a core has nothing runnable it enters an idle state, and what that state is belongs to the port rather than to this specification. What is specified is that idle is not a thread. There is no idle thread occupying a priority level, no idle process visible to introspection, and no thread id that means "nothing". A core is either running a thread or it is idle, and the two are distinguishable in the introspection attributes of section 22.2.
+When a core has nothing runnable it enters an idle state, and what that state is belongs to the port rather than to this document. What is specified is that idle is not a thread. There is no idle thread occupying a priority level, no idle process visible to introspection, and no thread id that means "nothing". A core is either running a thread or it is idle, and the two are distinguishable in the introspection attributes of section 22.2.
 
 This matters for one reason beyond tidiness. An idle thread at priority zero would be a runnable thread, and the proportional-share tree of section 11.5 would have to account for it: every share calculation would carry a term for a thread that exists only to do nothing. Making idle a state of the core rather than a thread keeps the tree describing real work.
 
@@ -776,7 +783,7 @@ Donation is transitive. If the server blocks sending to a second server, the don
 
 A message carries a small inline payload, an optional memory grant for bulk data, and zero or more handles.
 
-The inline payload exists so that small requests need no grant at all. Grant setup means address-space manipulation on Tier 1 and Tier 2, which is disproportionate for a keystroke, a serial byte, or a short status word. Below `SYS_IPC_INLINE_BYTES` the payload is copied directly and no grant is constructed.
+The inline payload exists so that small requests need no grant at all. Grant setup means address-space manipulation on Tier 2, which is disproportionate for a keystroke, a serial byte, or a short status word. Below `SYS_IPC_INLINE_BYTES` the payload is copied directly and no grant is constructed.
 
 `inline_data` is **a memory copy, not a register transfer.** The distinction matters because a register-based fast path and a copied struct field have different costs and different size limits, and conflating them leads to interfaces that promise register speed for payloads far too large to fit in registers. Whether a port additionally carries the first few words in CPU registers is an implementation choice that does not change the interface or its semantics.
 
@@ -829,16 +836,16 @@ The ISR runs no driver logic, takes no lock a thread can hold, and performs no a
 
 ### 13.3 Interrupt Latency, Stated Per Tier
 
-**Worst-case interrupt latency is defined as the longest interrupts-disabled region plus the time to dispatch an interrupt to a user thread.** This definition is used because both terms are measurable on a given port, so the claim can be checked rather than asserted. Section 24 requires each port to publish them.
+**Worst-case interrupt latency is defined as the longest interrupts-disabled region plus the time to dispatch an interrupt to a user thread.** This definition is used because both terms are measurable on a given port, so the claim can be checked rather than asserted. Nothing here has been measured, and no figure is offered.
 
-There is a genuine tension between analyzability and absolute latency, and this specification resolves it differently per tier rather than pretending one answer serves both.
+There is a genuine tension between analyzability and absolute latency, and this document resolves it differently per tier rather than pretending one answer serves both.
 
 Disabling interrupts inside the kernel and bounding latency purely by preemption point placement gives a sound and completely analyzable result, but it imposes a floor: response cannot be faster than the longest disabled region, which puts latencies on the order of tens of cycles out of reach. Enabling interrupts with fine-grained internal locking removes that floor but makes sound worst-case analysis substantially harder.
 
-* **Tier 0 and Tier 1: interrupts are disabled inside the kernel**, and latency is bounded by preemption point placement. Cores are simple, often uniprocessor, and the kernel is small enough that the longest disabled region can be measured exhaustively. This buys sound analysis and a kernel with no internal locking at all.
+* **Tier 0: interrupts are disabled inside the kernel**, and latency is bounded by preemption point placement. Cores are simple, often uniprocessor, and the kernel is small enough that the longest disabled region can be inspected exhaustively. This buys a kernel with no internal locking at all.
 * **Tier 2: interrupts are enabled, with fine-grained locking.** Multiprocessing forces internal locking regardless, so the marginal cost is small, and removing the floor matters more on hardware fast enough for it to be the binding constraint.
 
-The latency claim is therefore tier-specific and must be a measured number per port, not a general property of the architecture. Section 24 specifies what to measure.
+Latency is therefore tier-specific and is a measured number per port rather than a general property of the architecture. This document states no such number, because none has been obtained.
 
 Preemption points sit at batch entry boundaries, at message copy chunk boundaries, and at page table walk boundaries.
 
@@ -860,7 +867,7 @@ Three things are bought, and they are the reasons the choice is made rather than
 
 **An idle core is genuinely idle.** No interrupt arrives to tell a core that nothing has happened. On a part where the wake cost is significant this is the difference between an idle core costing nothing and an idle core costing a wake per tick, and on a battery-powered Tier 0 part it is the difference that matters most.
 
-The cost is equally specific. **Every scheduling decision that changes the earliest pending event must reprogram the timer**, which on some parts is a slow write to a peripheral. That write is on the dispatch path and must be counted in the figures of section 13.3. A port whose timer is genuinely expensive to reprogram may find a tick cheaper, and that is a real trade, but it is a divergence to be measured and stated rather than assumed: the latency claims in this specification are made without a tick period in them.
+The cost is equally specific. **Every scheduling decision that changes the earliest pending event must reprogram the timer**, which on some parts is a slow write to a peripheral. That write is on the dispatch path and must be counted in the figures of section 13.3. A port whose timer is genuinely expensive to reprogram may find a tick cheaper, and that is a real trade, but it is a divergence to be measured and stated rather than assumed: the latency statements in this document are made without a tick period in them.
 
 **The timer is a scheduling mechanism, not a clock.** Reading the current time does not involve it at all: uptime is read from the system page with no system call, per section 6.2, and the two are related only in that both derive from the same monotonic source. Nothing in section 14.5 can perturb either, which is what makes clock adjustment safe for real-time behaviour.
 
@@ -960,7 +967,7 @@ Three things follow, and each removes rather than adds machinery.
 
 This is the right position for a real-time system independently of the simplification, because paging out a real-time task's working set is unacceptable regardless. The consequence to state plainly is that the total writable working set of the system must fit in RAM. Demand paging is a mechanism for loading code lazily, not for overcommitting memory.
 
-### 15.2 Loading on Tier 0 and Tier 1
+### 15.2 Loading on Tier 0
 
 There is no MMU and therefore no demand paging. **Text and rodata execute in place from flash**, and only writable data is copied to RAM at load. This is standard practice on parts that have far more flash than RAM, and Tier 0 already mandates position-independent code, so the requirement costs nothing extra.
 
@@ -970,7 +977,7 @@ The two paths differ in teardown, which is the part worth specifying. An XIP pro
 
 ### 15.3 Faults Are Messages the Faulting Thread Sends
 
-Tier 2 only. On Tier 0 and Tier 1 the paging calls return `SYS_ERR_NOT_SUPPORTED`.
+Tier 2 only. On Tier 0 the paging calls return `SYS_ERR_NOT_SUPPORTED`.
 
 Every thread has a designated **pager**, held as a channel handle and inherited at spawn unless overridden.
 
@@ -980,7 +987,7 @@ On a page fault the kernel synthesizes a message that appears to have been **sen
 #figure(include "fig/pagefault.typ", caption: [A page fault is a message the faulting thread sends to its pager.])
 ```
 
-Modelling the fault as a message the faulting thread *sends*, rather than as an upcall delivered *into* a pager, is what allows **the rest of this specification to apply unchanged.** Reply-by-thread-id works because the faulting thread is an ordinary blocked sender. The blocking invariant holds because it is blocked on exactly one object. Handle transfer delivers the grant. Cancellation reaches it like any other blocked thread.
+Modelling the fault as a message the faulting thread *sends*, rather than as an upcall delivered *into* a pager, is what allows **the rest of this document to apply unchanged.** Reply-by-thread-id works because the faulting thread is an ordinary blocked sender. The blocking invariant holds because it is blocked on exactly one object. Handle transfer delivers the grant. Cancellation reaches it like any other blocked thread.
 
 Most importantly, **priority inheritance applies without modification.** A high-priority thread's page fault is serviced at high priority, because the faulting thread donates to its pager exactly as any client donates to any server. In a real-time system this property is worth a great deal, and here it is a consequence of the formulation rather than a mechanism that had to be added.
 
@@ -990,7 +997,7 @@ The alternative formulation, delivering page requests asynchronously to a queue 
 
 A pager can itself fault, which makes the pager relation a chain. If that chain has a cycle, or ends at a process that can fault, the system deadlocks: the classic form is a storage driver that faults on its own text and must reach the storage device it is itself responsible for driving in order to resolve the fault.
 
-Three normative rules follow.
+Three rules follow.
 
 1. **The pager chain is finite and terminates in a memory-locked process with no pager.** The root pager, established at boot, is that terminator.
 2. **Every process on the paging path is memory-locked**, including pagers, storage cohorts, and any driver a pager depends on. `sys_mem_lock()` requires a right held only by processes the root task designates.
@@ -1018,7 +1025,7 @@ A fault is a synchronous exception raised by the hardware while a thread is exec
 | `SYS_FAULT_DEBUG` | A breakpoint or watchpoint | No |
 | `SYS_FAULT_EXTERNAL` | A bus error or external abort | No |
 
-"Recoverable" here means recoverable *by the mechanism this specification provides*. `SYS_FAULT_PAGE` has a pager that can supply the missing grant and a defined retry. The others have no such mechanism, which is a statement about the kernel rather than about the fault: a handler may still resolve one, but it must do so by changing the thread's state rather than by asking the kernel to retry.
+"Recoverable" here means recoverable *by the mechanism this document provides*. `SYS_FAULT_PAGE` has a pager that can supply the missing grant and a defined retry. The others have no such mechanism, which is a statement about the kernel rather than about the fault: a handler may still resolve one, but it must do so by changing the thread's state rather than by asking the kernel to retry.
 
 **`SYS_FAULT_EXTERNAL` may be imprecise.** On most parts an external abort can be reported after the instruction that caused it has retired, so the reported program counter is not the one to blame and the thread's registers are not a coherent snapshot of anything. It is enumerated separately for exactly this reason: a handler must treat it as a report that the address space is no longer trustworthy, not as a fault it can analyse. This is the one kind for which resumption is not merely unsupported but meaningless.
 
@@ -1062,15 +1069,13 @@ The handler exists for two identified users and is not a general facility. A **d
 
 ### 16.4 Faults and the Tiers
 
-The gradient of section 6 is nowhere more visible than here, and the difference is one of detection rather than of interface.
+The split of section 6 is nowhere more visible than here, and the difference is one of detection rather than of interface.
 
 **Tier 2** has an MMU. Every kind in section 16.1 is detected, `SYS_FAULT_PAGE` is recoverable, and a guard region makes stack overflow an access fault at a known address.
 
-**Tier 1** has an MPU with a small number of regions. Access faults are detected at region granularity, which is coarser than a page and means a stray reference within a region is not detected at all. There is no `SYS_FAULT_PAGE`, since section 15.3 does not apply below Tier 2.
+**Tier 0** has neither. `SYS_FAULT_INSTRUCTION`, `SYS_FAULT_ALIGN` and `SYS_FAULT_ARITH` are still raised by the core and still reported. Memory faults are largely not detectable, and a stray write corrupts whatever it reaches. The interface does not change and the fault kinds do not change; what changes is that the weaker tier cannot catch its own violations, which section 6 says plainly and which is the price of the same source running across both.
 
-**Tier 0** has neither. `SYS_FAULT_INSTRUCTION`, `SYS_FAULT_ALIGN` and `SYS_FAULT_ARITH` are still raised by the core and still reported. Memory faults are largely not detectable, and a stray write corrupts whatever it reaches. The interface does not change and the fault kinds do not change; what changes is that the weakest tier cannot catch its own violations, which section 6 says plainly and which is the price of the same source running across all three.
-
-**A port must map every exception its hardware raises onto a kind in section 16.1, and must state the mapping.** An exception with no mapping is an exception whose behaviour is undefined, and section 30 requires the table.
+**A port must map every exception its hardware raises onto a kind in section 16.1, and must state the mapping.** An exception with no mapping is an exception whose behaviour is undefined, and section 27 requires the table.
 
 ### 16.5 Faults Inside a Cohort
 
@@ -1085,6 +1090,10 @@ This is not a softening of section 18.2. Cohort members share a protection domai
 ## 17. The Submission Engine
 
 ### 17.1 What It Is For
+
+**This is the least conventional mechanism in the system, and it is deliberately kept separable.** Sections 5 through 16 describe a complete system in which every operation is submitted one at a time, and none of them depends on a submission being longer than one entry. This section is what happens when the count in section 23.1 exceeds one.
+
+The separability is worth preserving for two reasons. The mechanism is novel enough to be worth building and worth being wrong about, so it should be removable without disturbing anything else. And it is the hardest thing here to explain to someone still learning what a system call is, which makes it the wrong place to start and a poor thing to have woven through the rest.
 
 The engine lets one thread submit a dependency-ordered set of operations that the kernel executes in that thread's context, at that thread's priority, with no worker pool anywhere.
 
@@ -1150,9 +1159,11 @@ Batches may be submitted as a prepared program object, validated once and re-exe
 
 The shim matters more than it appears. It means `sys_msg_send()` is a one-entry batch, so **every operation has exactly one implementation** rather than a batch path and a separate syscall path that must be kept in agreement. It also keeps trivial calls cheap, and keeps single operations legible to tracing tools that a prepared program would obscure.
 
-`sys_batch_exec` bounds `count` at `SYS_BATCH_MAX_ENTRIES` and rejects a larger submission with `SYS_ERR_INVALID_ARG` before executing any entry. **Preemption points sit at entry boundaries**, so submitting a batch never extends the kernel's non-preemptible section beyond the cost of one entry. On Tier 0 and Tier 1 this is the primary determinant of interrupt latency.
+`sys_batch_exec` bounds `count` at `SYS_BATCH_MAX_ENTRIES` and rejects a larger submission with `SYS_ERR_INVALID_ARG` before executing any entry. **Preemption points sit at entry boundaries**, so submitting a batch never extends the kernel's non-preemptible section beyond the cost of one entry. On Tier 0 this is the primary determinant of interrupt latency.
 
 ---
+
+
 
 ## 18. Driver Cohorts
 
@@ -1190,7 +1201,7 @@ Note also that every party outside the cohort is released by an explicit event, 
 
 **Restart is a userspace responsibility and the kernel holds no restart policy.**
 
-The mechanism is the one from section 10.4: a cohort's parent waits on its completion timeline and relaunches it. That is all the kernel provides. Whether the supervisor is the root process, a single system-wide service, or a hierarchy of monitors with per-cohort policies and restart backoff, is an implementation choice this specification deliberately does not make.
+The mechanism is the one from section 10.4: a cohort's parent waits on its completion timeline and relaunches it. That is all the kernel provides. Whether the supervisor is the root process, a single system-wide service, or a hierarchy of monitors with per-cohort policies and restart backoff, is an implementation choice this document deliberately does not make.
 
 Keeping policy out of the kernel matters here because restart policy is exactly the kind of thing that varies per deployment. A medical device and a set-top box want different answers, and neither answer belongs in a kernel that is trying to be small enough to analyze.
 
@@ -1198,7 +1209,7 @@ Keeping policy out of the kernel matters here because restart policy is exactly 
 
 Members allocate from a shared physical pool and pass `sys_sg_entry_t` arrays directly, without crossing a protection boundary.
 
-Where a scatter-gather message *does* cross a protection boundary, its elements are made available in the receiver's address space on receive, but the contents are **mapped on demand as the receiver references them**. A server that forwards a message without inspecting its contents, such as a protocol layer prepending a header, never maps the payload at all. For a network stack this removes most of the mapping cost from the forwarding path. **This applies to Tier 2 only**, since it rests on the fault-driven mapping of section 15.3, which requires an MMU. On Tier 0 and Tier 1 the elements are simply available, and there is nothing to defer.
+Where a scatter-gather message *does* cross a protection boundary, its elements are made available in the receiver's address space on receive, but the contents are **mapped on demand as the receiver references them**. A server that forwards a message without inspecting its contents, such as a protocol layer prepending a header, never maps the payload at all. For a network stack this removes most of the mapping cost from the forwarding path. **This applies to Tier 2 only**, since it rests on the fault-driven mapping of section 15.3, which requires an MMU. On Tier 0 the elements are simply available, and there is nothing to defer.
 
 `sys_sg_build()` takes a grant handle rather than a raw virtual address, and takes the caller's array capacity along with an out-parameter for the required entry count. Both are required: without a capacity the kernel cannot bound its writes, and without the out-count the caller cannot discover how large an array it needed. `SYS_ERR_TRUNCATED` with a valid out-count lets the caller retry against a correct allocation.
 
@@ -1206,7 +1217,7 @@ Where a scatter-gather message *does* cross a protection boundary, its elements 
 
 ## 19. Writing a Driver
 
-Everything a driver needs has now been specified, but it has been specified one mechanism at a time. This section assembles them. It introduces no new interface and defines nothing that is not already defined elsewhere; a reader who wants only the normative content can skip it. It exists because the shape of a driver is the clearest evidence for or against the claims in section 2, and because a specification that never shows its mechanisms working together is asking every implementer to guess the same thing separately.
+Everything a driver needs has now been specified, but it has been specified one mechanism at a time. This section assembles them. It introduces no new interface and defines nothing that is not already defined elsewhere; a reader who wants only the mechanisms can skip it. It exists because the shape of a driver is the clearest evidence for or against the claims in section 2, and because a design that never shows its mechanisms working together is asking every reader to guess the same thing separately.
 
 ### 19.1 A Driver Is an Ordinary Process
 
@@ -1236,7 +1247,7 @@ A driver is a request loop and an interrupt wait, and how they are combined is t
 
 The single-threaded form is the one to reach for first. The driver waits on its channel, receives a request, programs the device, waits on the interrupt timeline, and replies. It is correct, it is trivially analysable, and it serves one request at a time.
 
-Where that is not enough, the shape that follows from this specification is **two threads and no shared state**: a request thread blocked in `sys_msg_recv()`, and an interrupt thread blocked on the interrupt timeline. The blocking invariant of section 5 forbids one thread waiting on both, so where a driver must be responsive to a client while a transfer is in flight, it uses two threads. This is the concrete cost of having no wait-set, and it is the case section 28.1 says a wait-set would be added for.
+Where that is not enough, the shape that follows from this document is **two threads and no shared state**: a request thread blocked in `sys_msg_recv()`, and an interrupt thread blocked on the interrupt timeline. The blocking invariant of section 5 forbids one thread waiting on both, so where a driver must be responsive to a client while a transfer is in flight, it uses two threads. This is the concrete cost of having no wait-set, and it is the case `PROPOSALS.md` names wait-sets for.
 
 Three properties of that arrangement come free and are worth naming, because a driver author who does not know they are free will build them.
 
@@ -1248,9 +1259,9 @@ Three properties of that arrangement come free and are worth naming, because a d
 
 ### 19.4 Where the Data Goes
 
-A driver that copies is a driver with a copy in its worst case, so the specification provides for not copying, and which mechanism applies depends on the boundary being crossed.
+A driver that copies is a driver with a copy in its worst case, so the design provides for not copying, and which mechanism applies depends on the boundary being crossed.
 
-**Across a cohort boundary there is no copy.** Members share a protection domain, so a buffer handed from the filesystem to the block driver is handed as an address, per section 18. This is the whole reason cohorts exist and the reason the trade in section 2.5 is worth making.
+**Across a cohort boundary there is no copy.** Members share a protection domain, so a buffer handed from the filesystem to the block driver is handed as an address, per section 18. This is the whole reason cohorts exist and the reason the trade in section 2.6 is worth making.
 
 **Across a process boundary the buffer is granted, not copied.** The client grants the driver access to its buffer for the duration and revokes it afterward. Section 18.4 covers the scatter-gather case, where a request names many discontiguous regions.
 
@@ -1266,7 +1277,7 @@ A driver's failure handling is the supervision of section 18.3 and the faults of
 
 **A driver that wedges is cancelled from outside.** `sys_thread_cancel()` breaks it out of whatever it is blocked on, per section 10.5, and the closed unblock list of section 10.6 is what guarantees that this always works. A supervisor never has to know which of the two waits a wedged driver is sitting in.
 
-**A restarted driver must reprogram its device.** The kernel restores no device state, because it knows of none. This is where the restart policy of section 18.2 stops being free: a driver whose device cannot be safely reinitialised from an unknown state is a driver that cannot be restarted, and that is a property of the hardware which the system design has to accommodate rather than one this specification can remove.
+**A restarted driver must reprogram its device.** The kernel restores no device state, because it knows of none. This is where the restart policy of section 18.2 stops being free: a driver whose device cannot be safely reinitialised from an unknown state is a driver that cannot be restarted, and that is a property of the hardware which the system design has to accommodate rather than one this document can remove.
 
 ---
 
@@ -1288,7 +1299,9 @@ Three syscalls, the epoch mechanism, and a batch opcode. Path resolution becomes
 
 Server death is still handled, by the handle generation counter rather than an epoch: a cached handle to a dead server's channel fails with `SYS_ERR_STALE` on use, and the library re-resolves.
 
-The cost is that a batch cannot resolve a path in kernel context. A pushbuffer resolves in userspace and submits handles. Given that resolution is now free, this is arguably an improvement.
+The cost is that a batch cannot resolve a path in kernel context. A submission resolves in userspace and passes handles. Given that resolution is now free, this is arguably an improvement.
+
+It also helps section 17. Since the batch has no resolve opcode, a program already holding directory handles submits a handle and a short relative path with no resolution step, which makes prebuilt submissions more reusable.
 
 ### 20.3 Naming Is Handle-Relative
 
@@ -1296,13 +1309,11 @@ The cost is that a batch cannot resolve a path in kernel context. A pushbuffer r
 
 This is not a change to what servers see, since a message to a server has always carried a handle plus a relative path. Making it the shape of the interface rather than an internal detail changes three things.
 
-**It makes 16.1 syntactically visible.** "Names are not authority, handles are" is otherwise a property the reader must reason about. When an operation cannot be written without naming the authority it uses, a function's reach is legible from its signature.
+**It makes section 20.1 syntactically visible.** "Names are not authority, handles are" is otherwise a property the reader must reason about. When an operation cannot be written without naming the authority it uses, a function's reach is legible from its signature.
 
 **It removes the ambient root.** A conventional `/` is ambient authority, available to every process without anyone granting it, which is exactly what the handle model eliminates elsewhere. Letting the C library reintroduce one would undo that at the top level. It also strengthens `NS_NEW` from a convention into a fact: a process given no directory handles cannot name anything at all, rather than being given an empty mount table the library must be trusted to honour.
 
 **It removes time-of-check-to-time-of-use on resolution.** A directory handle is a stable referent. A path resolved in several steps can be invalidated between them by a concurrent change to the namespace.
-
-It also helps section 17. Since the batch has no resolve opcode, a program already holding directory handles submits a handle and a short relative path with no resolution step, which makes prebuilt pushbuffers more reusable.
 
 **This buys no additional security, and should not be claimed to.** Confinement comes from the handle table. A process holding a directory handle to the root of a filesystem is exactly as powerful under handle-relative naming as under absolute paths. The gain is clarity, auditability, and the removal of the resolution race.
 
@@ -1382,7 +1393,7 @@ Text is scriptable, self-describing, and needs no versioned binary schema shared
 
 ### 22.2 What Is Exposed
 
-At minimum, enough to build a tracer, a deadlock inspector, and a pool-sizing tool, since section 24.2 needs all three:
+At minimum, enough to build a tracer, a deadlock inspector, and a pool-sizing tool, since all three are needed to size the pools and to see what the system is doing:
 
 * **Threads.** State, current and inherited priority, core affinity, and what the thread is blocked on, named by handle.
 * **Channels.** Receive queue depth, pulse queue depth, and overflow flag.
@@ -1408,27 +1419,31 @@ A **compile-time debug capability**, granting enumeration to a designated agent 
 
 ## 23. The System Call Interface
 
-section 29 gives the C interface. This section gives the binding underneath it: how a call is made, how arguments and results travel, and what the kernel guarantees about registers and faults. Without it two implementations could satisfy every other rule in this part and still be unable to run the same binary.
+section 26 gives the C interface. This section gives the binding underneath it: how a call is made, how arguments and results travel, and what the kernel guarantees about registers and faults. Without it two implementations could agree on everything else in this part and still be unable to run the same binary.
 
-**A port defines the register mapping. This section defines everything else**, and a port that changes anything below is not merely a different port but a different system.
+**A port defines the register mapping. This section defines everything else.**
 
 ### 23.1 There Is One Entry Point
 
-Every operation enters the kernel through a single trap carrying a **batch descriptor**: a pointer to an array of `sys_batch_entry_t` and a count.
+Every operation enters the kernel through a single trap carrying a pointer to one `sys_op_t` **operation descriptor**.
 
-There is no per-operation trap and no syscall number. Section 17.7 explains the reasoning from the other direction, that a single operation is a one-entry batch so that every operation has exactly one implementation; this is the same statement expressed as an ABI. The opcode in the first entry is what a conventional design would put in a syscall-number register.
+There is no per-operation trap and no syscall number. The opcode inside the descriptor is what a conventional design would put in a syscall-number register.
+
+The trap carries a pointer and a count. **A single operation is the count-of-one case**, which is what makes the submission engine of section 17 an extension of this interface rather than a second one: the engine passes an array of the same descriptor, and nothing else about this section changes. The gain is that every operation has exactly one implementation, rather than a fast path per call and a general path underneath it that must be kept in agreement.
+
+A reader meeting the system for the first time can stop here. Section 17 is what happens when the count exceeds one, and nothing in sections 5 through 16 depends on it.
 
 A port names the trap instruction and the two registers carrying the pointer and the count. Nothing else is passed in registers.
 
-**Consequence worth stating: the argument area is memory, not registers.** Arguments live in the entry array and in whatever `arg_ptr` refers to. This costs a memory round trip that a register-passing convention would avoid, and buys three things the design depends on: the argument count is not bounded by the register file, one entry format serves every operation, and a batch of many operations costs exactly one trap.
+**Consequence worth stating: the argument area is memory, not registers.** Arguments live in the descriptor and in whatever `arg_ptr` refers to. This costs a memory round trip that a register-passing convention would avoid, and buys three things the design depends on: the argument count is not bounded by the register file, one descriptor format serves every operation, and a batch of many operations costs exactly one trap.
 
 ### 23.2 Validation Happens Once, Before Execution
 
 On entry the kernel validates, in this order:
 
 1. `count` does not exceed `SYS_BATCH_MAX_ENTRIES`, or the call returns `SYS_ERR_INVALID_ARG` having executed nothing.
-2. The entry array is readable and writable by the caller for `count × sizeof(sys_batch_entry_t)` bytes, or the call returns `SYS_ERR_FAULT` having executed nothing.
-3. Each entry's opcode is defined, or that entry fails with `SYS_ERR_INVALID_ARG` when reached.
+2. The descriptor array is readable and writable by the caller for `count × sizeof(sys_op_t)` bytes, or the call returns `SYS_ERR_FAULT` having executed nothing.
+3. Each descriptor's opcode is defined, or that entry fails with `SYS_ERR_INVALID_ARG` when reached.
 
 The array must be writable because the kernel writes each entry's status field into it, per section 17.6.
 
@@ -1454,7 +1469,7 @@ A port must document its register mapping, and every port obeys the following re
 
 **No kernel state is exposed in any register on return.** This is a security requirement, not a convention: registers not carrying a result are cleared rather than left holding whatever the kernel last put there.
 
-**The stack pointer is unchanged**, and the kernel does not use the caller's stack. A port supplies its own kernel stack per thread; the size of it is one of the figures section 24.2 requires a port to publish.
+**The stack pointer is unchanged**, and the kernel does not use the caller's stack. A port supplies its own kernel stack per thread.
 
 ### 23.5 Faults During a System Call
 
@@ -1462,154 +1477,33 @@ A user address supplied to the kernel may be unmapped. On Tier 2 that is an ordi
 
 **A fault on a user address touched by the kernel is resolved through the faulting thread's pager**, exactly as in section 15.3, because the thread is the one that supplied the address and is the one blocked. The kernel does not acquire its own pager relationship and does not fault on the caller's behalf at a different priority.
 
-**If that fault cannot be resolved, the operation fails with `SYS_ERR_FAULT`** rather than terminating the caller. A bad pointer is an error return, not a signal, because there is nothing in this specification to deliver a signal with.
+**If that fault cannot be resolved, the operation fails with `SYS_ERR_FAULT`** rather than terminating the caller. A bad pointer is an error return, not a signal, because there is nothing in this document to deliver a signal with.
 
-On Tier 0 and Tier 1 there is no fault. An invalid address is either caught by the region check, returning `SYS_ERR_FAULT`, or on Tier 0 not caught at all, per section 6.1.
+On Tier 0 there is no fault, and an invalid address is not caught at all, per section 6.1.
 
 ### 23.6 What a Port May Not Change
 
 For completeness, since the list is short and the temptation to optimise here is real:
 
-* The entry format `sys_batch_entry_t`, including field order and width.
+* The descriptor format `sys_op_t`, including field order and width.
 * The single-entry-point structure, and the absence of syscall numbers.
 * The validation order in section 23.2, since programs depend on nothing having executed when `count` is rejected.
 * The return value rule in section 23.3.
 * The register-clearing guarantee in section 23.4.
 
-A port may choose the trap instruction, the two argument registers, the return register, the kernel stack size, and the alignment it requires of the entry array.
-
-## 24. Conformance
-
-An implementation conforms if it satisfies both halves of this section: the behaviours in section 24.1, which are pass or fail, and the measurements in section 24.2, which are not thresholds but obligations to publish.
-
-### 24.1 Required Behaviours
-
-Each of these is observable from userspace and follows from a rule stated earlier. An implementation that cannot demonstrate all of them does not conform. They are grouped by the property they establish rather than by subsystem, because several of them cut across sections.
-
-**Identity and authority**
-
-1. A handle closed and its slot reused yields `SYS_ERR_STALE` on the old value, never access to the new object.
-2. `sys_handle_dup()` rejects any right the source handle lacks.
-3. A handle transferred over IPC is invalid in the sender and valid in the receiver, and its value differs between them unless by coincidence.
-4. An operation requiring a right that the handle lacks fails with `SYS_ERR_PERM_DENIED` without performing any part of the operation.
-
-**Rendezvous**
-
-5. A send blocks until reply, and the reply reaches the sending thread and no other.
-6. Where several threads are blocked sending on one channel, the highest-priority sender is received first regardless of arrival order.
-7. A server runs at the client's priority for the duration of a request and reverts on reply.
-8. A reply to a thread id whose generation no longer matches fails with `SYS_ERR_STALE` and delivers nothing.
-
-**Timelines**
-
-9. A wait on a value already passed returns immediately and successfully.
-10. A wait on a value not yet promised blocks, and is released when the value is reached.
-11. A timeline that enters the error state releases every waiter, and a wait begun afterwards returns the error immediately.
-12. Closing the last signal-righted handle to a timeline with waiters blocked on an unreached value puts it into the error state.
-
-**Death and cancellation**
-
-13. `sys_thread_cancel()` releases a blocked thread with `SYS_ERR_INTERRUPTED` without waiting for whatever it was blocked on.
-14. A client blocked in `sys_msg_send()` when the channel's owner terminates is released with `SYS_ERR_OWNER_DEAD`.
-15. A server holding an unanswered request whose client died receives `SYS_PULSE_DEAD_OWNER` carrying `SYS_ID_TAG32` of that client.
-16. `sys_proc_kill()` releases every thread of the target, including threads blocked in unrelated operations.
-17. A completion timeline still held after its object is reaped continues to report the exit.
-
-**Time**
-
-18. The Nth activation of a periodic timer occurs at `first + N * period` and does not drift with delivery delay.
-19. A periodic timer whose task stalls advances its counter to the value the current time implies, in one step, without delivering a backlog.
-20. An adjustment to the calendar offset changes no timer expiry and no deadline.
-
-**Submission**
-
-21. Entries execute in submission order, and a blocking entry completes before the next begins.
-22. A failing entry in a `LINK` chain cancels the remainder of that chain with `SYS_ERR_CANCELED` and does not affect an unlinked entry.
-23. An aborted batch leaves every timeline it would have signalled in the error state.
-24. A register read with the wrong tag fails with `SYS_ERR_INVALID_ARG` and does not produce a handle.
-
-**Isolation**
-
-25. On Tier 1 and Tier 2, a sender that touches a granted buffer between send and reply faults. On Tier 0 it does not, and this is the only conformance point whose expected result differs by tier.
-
-### 24.2 Required Measurements
-
-The constants in this specification are defaults, not values. A port must measure and publish the following, and the tier latency claims in section 13.3 are meaningless without them.
-
-Each figure should be obtained twice: as a sound upper bound computed by static analysis including cache effects, and as a best-effort observed worst case measured on hardware. Both should be published, since the gap between them is itself informative about how much margin the analysis is carrying.
-
-| Measurement | Why it is required |
-| -------------------------------------- | ------------------------------------------------ |
-| Longest interrupts-disabled region | First term of the interrupt latency metric. Tier 0 and Tier 1 only. |
-| Interrupt dispatch time to a user thread | Second term of the same metric, all tiers. |
-| Cost of each batch entry type | `SYS_BATCH_MAX_ENTRIES` is derived from this against a latency budget. |
-| IPC round trip, inline payload | The system's fundamental cost, and the one every design decision here trades against. |
-| IPC round trip, grant transfer | Isolates the address-space manipulation cost per tier. |
-| Priority donation latency, same core | Establishes the base cost of the inheritance chain. |
-| Priority donation latency, cross core | The IPI term from section 11.4, required for any multicore analysis. |
-| Timeline signal to waiter runnable | The completion path underlying I/O, interrupts, and timers alike. |
-| Context switch time | Needed to interpret every figure above. |
-| Pool high-water utilization under load | Justifies the configured pool sizes. Read from section 22. |
-
-Two of these figures are not merely reported but feed back into the configuration, since `SYS_BATCH_MAX_ENTRIES` and `SYS_PRIO_CHAIN_MAX` are derived from them rather than chosen. Section 28.2 states that obligation.
+A port may choose the trap instruction, the two argument registers, the return register, the kernel stack size, and the alignment it requires of the descriptor array.
 
 ---
 
-## 25. Resource Containers
+## 24. The Root Process
 
-**This section is not normative.** Nothing in it is part of the system described by sections 6 through 24, no conformant implementation is required to provide any of it, and section 24 does not test it. It is written out in full because section 28.1 gates resource containers on evidence rather than on design work, and a gate is only meaningful if what waits behind it is known. An implementation that adds this before its trigger fires has diverged, in the sense section 28 gives that word.
-
-**The trigger, restated.** A requirement to bound a group of processes' resource use independently of the cohort structure, such as hosting workloads that must not starve one another. Anticipating such a requirement is not the trigger. Measuring one is.
-
-### 25.1 What a Container Is
-
-A container is a **resource accounting boundary** and nothing else. It confers no naming, no authority, no shared memory, and no shared fate. A process in a container can reach exactly what its handles and its namespace array let it reach, which is what section 20 already says about every process.
-
-This is worth stating first because containers elsewhere are bundles: a namespace, a filesystem view, a network stack, a resource limit and an image format, packaged together. Here three quarters of that bundle already exists and is not part of this section. Section 20 gives the naming boundary: a process sees the directories it was launched with and there is no ambient root to escape to. Section 7 gives the authority boundary. Section 10.1 gives construction without inheritance. What is genuinely missing, and all that is missing, is a way to say that a group of processes together may use no more than a stated share of the machine.
-
-### 25.2 The Four Resources
-
-Each of the four resources a container bounds already has a mechanism, and the container adds a boundary rather than a mechanism.
-
-**CPU is a node in the scheduling tree of section 11.5.** A container is another internal node, with cohort nodes beneath it. This is exactly what a hierarchical CPU controller is, and it requires no new scheduling concept. The real-time band is not included: threads at or above `SYS_PRIO_RT_MIN` are scheduled by priority alone per section 11.2, so a container cannot bound a real-time thread's CPU use and must not appear to.
-
-**Kernel objects are a quota against the static pools of section 8**, bounding the threads, channels, timelines and handles a group may hold. Because the pools are statically sized, a quota is a division of something already fixed rather than a new limit on something unbounded.
-
-**Memory is largely already settled.** Section 15.1 has neither swap nor overcommit, so a container's memory is the grants its processes hold. There is nothing to reclaim under pressure because there is no pressure mechanism, and a container that has been given its grants has been given its memory.
-
-**Naming is the array of directory handles the processes were launched with**, per section 20.4, and nothing else.
-
-### 25.3 Containers and Cohorts Nest Strictly
-
-**A cohort belongs to exactly one container.** The two are different kinds of group and conflating them is the most likely way to get this wrong. A cohort is a protection and failure boundary, fixed at build time because membership grants access to peer memory. A container is a resource boundary, and nothing about it implies shared memory or shared fate.
-
-Strict nesting is chosen over independent boundaries for two reasons. It keeps the scheduling tree an actual tree, with cohort nodes beneath container nodes, which is what makes the walk in section 11.2 bounded by depth. And a cohort spanning two resource boundaries has no evident use while making both quota accounting and failure analysis harder to state.
-
-If nesting proves genuinely awkward to implement correctly, the fallback is containers as a pure resource-accounting overlay with no structural relationship to cohorts. That is weaker, because the scheduling tree stops being a tree, but it is simpler and it is the retreat to take rather than inventing a third kind of group.
-
-### 25.4 Quota Enforcement, Which Is the Unresolved Part
-
-section 28.1 names quota enforcement as genuinely unresolved. It remains so, and this section states the three questions rather than answering them, because answering them without the measurements the trigger requires would be the same mistake as adding the feature.
-
-**What happens when a container reaches its object limit?** The candidate answer is that allocation returns `SYS_ERR_NO_RESOURCE`, exactly as pool exhaustion does in section 8, so that a container limit is indistinguishable from a smaller machine. This is attractive because it introduces no new error and no new state, and every program already has to handle the code. It is unattractive because it makes a container's failures depend on the order its processes start, which pool exhaustion also does but at a granularity nobody configures.
-
-**Are quotas reserved or merely capped?** A reserved quota is subtracted from the pools at configuration time and is guaranteed available, which makes admission a static question and means a container can never be starved by a sibling. A capped quota is a limit checked at allocation, which allows overcommitting the pools and is therefore strictly more useful and strictly less analysable. The static configuration principle of section 2.6 argues for reservation. Nothing else does.
-
-**Can a container be resized while running?** Enlarging is easy and shrinking is not, because shrinking below current use has no defined meaning: the objects exist and are held by processes that were entitled to them. The candidate answer is that a shrink sets a new ceiling that takes effect as objects are released, so the container converges rather than being forced. Whether convergence that may never complete is acceptable is exactly the sort of question that needs a real workload to answer.
-
-Until these are answered against a measured requirement, a container is a design that is understood and not a feature that is specified.
-
----
-
-## 26. The Root Process
-
-**This section is not normative.** Like section 19, it assembles mechanisms specified elsewhere into the shape of a program and defines nothing of its own. An implementation may ignore it entirely, or replace the root process described here with a different one, which section 2.7 says a vendor is entitled to do.
+**This section defines nothing new.** Like section 19, it assembles mechanisms described elsewhere into the shape of a program. An implementation may ignore it entirely, or replace the root process described here with a different one, which is exactly what section 2.8 means by replaceable parts.
 
 It is written out because the first process is where the authority model, the supervision model and the boot sequence meet, and a reader who has understood each of them separately can still be left without a picture of how a system starts.
 
-### 26.1 The Boot Contract
+### 24.1 The Boot Contract
 
-**The kernel starts one process and understands one address.** It parses no image format, reads no file, and implements no protocol. Section 8 hands the root process a `sys_bootinfo_t` describing the physical memory map, the pool configuration, and the initial handles; the entry point is supplied by the build or by the port's bring-up stage (section 30).
+**The kernel starts one process and understands one address.** It parses no image format, reads no file, and implements no protocol. Section 8 hands the root process a `sys_bootinfo_t` describing the physical memory map, the pool configuration, and the initial handles; the entry point is supplied by the build or by the port's bring-up stage (section 27).
 
 Two of those handles are worth naming, because the rest of the boot sequence is built on them.
 
@@ -1621,11 +1515,11 @@ Two of those handles are worth naming, because the rest of the boot sequence is 
 
 This is why the alternative shapes are rejected. A kernel that understood the archive format would carry a parser of build-supplied data in the most privileged component in the system. A kernel that answered queries about the platform configuration would be a discovery service, which contradicts the rule that the kernel grants nothing on request, and it would be the first thing in the system handing out information nobody granted.
 
-### 26.2 Policy Is a Table, Compiled In
+### 24.2 Policy Is a Table, Compiled In
 
-**Root's configuration is a `const` array linked into its image.** On Tier 0 and Tier 1 it executes in place from flash and costs no RAM at all. There is no configuration file, no parser, and no interpreter.
+**Root's configuration is a `const` array linked into its image.** On Tier 0 it executes in place from flash and costs no RAM at all. There is no configuration file, no parser, and no interpreter.
 
-The reasoning is bootstrap before it is anything else. A parser in root would be reading a file from a filesystem that root itself started, which is a cycle, and it would put untrusted input handling in the one process that holds every capability in the system. Rebuilding the image to change the set of programs that start is an entirely reasonable price for an embedded system, and it is the same price section 2.6 already charges for pool sizes.
+The reasoning is bootstrap before it is anything else. A parser in root would be reading a file from a filesystem that root itself started, which is a cycle, and it would put untrusted input handling in the one process that holds every capability in the system. Rebuilding the image to change the set of programs that start is an entirely reasonable price for an embedded system, and it is the same price section 2.7 already charges for pool sizes.
 
 **The table is a list of policies, not a list of programs.** The program is one field. What varies between children, and what a Unix `init` has no field for, is everything else:
 
@@ -1635,7 +1529,7 @@ The reasoning is bootstrap before it is anything else. A parser in root would be
 | Spawn attributes | Cohort, namespace array, inherited handles: `sys_spawn_attr_t`. |
 | Restart group | Which siblings restart with it. Empty means it restarts alone. |
 | Restart intensity | N restarts within T before escalating. |
-| Escalation action | Which rung of section 26.3's ladder its failure reaches. |
+| Escalation action | Which rung of section 24.3's ladder its failure reaches. |
 | Essential | Whether the product is still doing its job without it. |
 
 **Essential is the field that separates a health monitor from a respawner**, and it is where the multiuser lineage has nothing to offer. On a timesharing system every daemon is roughly optional, which is why `init` has no such flag. On a device some children are load-bearing, and the correct response to losing one is a controlled reset rather than a patient retry. The precedent is ARINC 653 health monitoring, cited in section 3: a build-time table mapping error level to a fixed recovery action, with no runtime policy engine anywhere.
@@ -1644,9 +1538,9 @@ The reasoning is bootstrap before it is anything else. A parser in root would be
 
 **The table is checkable at build time**, which is the payoff for it being static. An essential child whose restart group contains a non-essential one, or that depends on a non-essential child, is a configuration error. So is a cycle in the restart groups. So is a namespace entry naming an archive member that does not exist. A build that rejects these turns the whole recovery policy of the system into one reviewable artifact, which is also what an auditor will ask for.
 
-### 26.3 Supervision Is a Tree, and the Shape Is Forced
+### 24.3 Supervision Is a Tree, and the Shape Is Forced
 
-**Root supervises a few children, each of which may supervise its own.** This is not a stylistic preference. A thread blocks on one object at a time (section 5) and there is no multi-wait primitive (section 28.1), so watching N completion timelines costs N threads. Flat supervision from root would put N stacks inside the process holding every capability in the system, which on Tier 0 is unaffordable outright and everywhere else is the wrong place to spend them.
+**Root supervises a few children, each of which may supervise its own.** This is not a stylistic preference. A thread blocks on one object at a time (section 5) and there is no multi-wait primitive (see `PROPOSALS.md`), so watching N completion timelines costs N threads. Flat supervision from root would put N stacks inside the process holding every capability in the system, which on Tier 0 is unaffordable outright and everywhere else is the wrong place to spend them.
 
 It also converges with introspection. Section 22 already establishes that inspection follows the supervision tree, so a hierarchy here means the debugging story and the recovery story describe the same structure rather than two.
 
@@ -1664,23 +1558,23 @@ The ladder, from a child's failure upward:
 
 **Root has no supervisor.** Nothing above it can restart it, and the watchdog is the entire recovery story for a bug inside it. That is the argument for keeping its policy declarative: the code is one loop over a table, small enough to read line by line, and the part that changes per product is data that a build-time checker inspects.
 
-### 26.4 The Boot Archive
+### 24.4 The Boot Archive
 
 **A header table of fixed-size records, followed by payloads aligned to the port's page or region granularity, and no compression.**
 
-Alignment is the detail worth getting right the first time, because section 2.8 makes it expensive to move later. Text executes in place on Tier 0 and Tier 1 (section 15.2) and is mapped on Tier 2, and both want the member payload naturally placed. The `cpio` format that the initramfs lineage inherited aligns to two or four bytes, which defeats both. Compression is left out of the base format because it implies a decompressor and a RAM budget that the compact build does not have; a hosted build that wants it decompresses into a RAM filesystem at boot and the format above stays uniform.
+Alignment is the detail worth getting right the first time, because section 2.9 makes it expensive to move later. Text executes in place on Tier 0 (section 15.2) and is mapped on Tier 2, and both want the member payload naturally placed. The `cpio` format that the initramfs lineage inherited aligns to two or four bytes, which defeats both. Compression is left out of the base format because it implies a decompressor and a RAM budget that the compact build does not have; a hosted build that wants it decompresses into a RAM filesystem at boot and the format above stays uniform.
 
 **Root walks the archive, and so does the romfs server.** The walk is a loop over fixed-size records, on the order of forty lines, and it is not a filesystem implementation: it speaks no protocol and resolves no paths. Duplicating it in two programs is the correct trade, because the alternative is a server in the boot path before root is able to spawn anything.
 
 **Spawning from the archive is nearly free below Tier 2.** Text and rodata are already at their final addresses in flash, so root points the new process at the member and copies only writable data. The full loader service of section 15.2 is an ordinary child that root spawns for runtime RAM loading, and the bootstrap does not need it.
 
-### 26.5 Startup Order and Readiness
+### 24.5 Startup Order and Readiness
 
 **Order is computed at build time.** The system is statically configured, so there is nothing to resolve at runtime. This is where the sysvinit lineage is worth learning from rather than copying: numbered runlevel sequences were replaced everywhere they were tried, because sequential numbering encodes dependencies badly. The answer is not a better runtime resolver, it is doing the resolution in the build.
 
 **Most children need no readiness protocol at all.** Root creates the channel and passes both ends, so a client that starts first blocks in `sys_msg_send()` until the server receives. This is the property socket activation was invented to provide in systems that could not arrange it directly, and here it falls out of synchronous IPC: the client waits rather than proceeding on a buffered request, which is the better behaviour for a system that wants to state its timing. Priority donation (section 12.3) covers the case where the waiting client outranks the starting server.
 
-**The exception is romfs, and it is instructive.** Root needs directory handles to place in its children's namespace arrays (section 20.4), and those handles come *from* romfs. Root is waiting for data, not for a signal, so romfs's first act is sending its root directory handle back on the channel root created, and readiness is the handle arriving. Root then performs exactly one client-side operation of section 27, a walk to derive per-child subtree handles, and never opens a file.
+**The exception is romfs, and it is instructive.** Root needs directory handles to place in its children's namespace arrays (section 20.4), and those handles come *from* romfs. Root is waiting for data, not for a signal, so romfs's first act is sending its root directory handle back on the channel root created, and readiness is the handle arriving. Root then performs exactly one client-side operation of section 25, a walk to derive per-child subtree handles, and never opens a file.
 
 The resulting sequence:
 
@@ -1688,9 +1582,9 @@ The resulting sequence:
 kernel  ->  root  ->  [Tier 2: pager]  ->  romfs  ->  everything else
 ```
 
-**The pager edge is the only genuine ordering constraint, and only on Tier 2.** Root holds the root pager channel, and demand-paged child text (section 15.3) cannot fault until something is behind it. Tier 0 and Tier 1 have no such edge because they have no faults to service.
+**The pager edge is the only genuine ordering constraint, and only on Tier 2.** Root holds the root pager channel, and demand-paged child text (section 15.3) cannot fault until something is behind it. Tier 0 has no such edge because it has no faults to service.
 
-### 26.6 What Root Must Not Become
+### 24.6 What Root Must Not Become
 
 Every item here is something that a first process accumulates naturally and that this one should not.
 
@@ -1700,15 +1594,15 @@ Every item here is something that a first process accumulates naturally and that
 
 **Not a pager.** It holds the root pager channel at handoff and hands it on.
 
-**Not configurable from outside.** A hosted build will want a command line, and the platform configuration will contain one. Let it select among modes root already contains, and never let it name a child, a path, or a handle. A bootloader that can name a child is a bootloader that can inject authority, and the reviewability that section 26.2 buys is gone.
+**Not configurable from outside.** A hosted build will want a command line, and the platform configuration will contain one. Let it select among modes root already contains, and never let it name a child, a path, or a handle. A bootloader that can name a child is a bootloader that can inject authority, and the reviewability that section 24.2 buys is gone.
 
 ---
 
-## 27. The Filesystem Protocol
+## 25. The Filesystem Protocol
 
-This section is normative. It specifies the messages a filesystem server understands, and it is normative for the same reason section 2.8 gives: substitutability rests on a fixed interface, and a vendor replacing a filesystem is replacing it against this.
+This section matters more than its length suggests. It gives the messages a filesystem server understands, and it is the one interface the rest of the design leans on hardest, for the reason section 2.9 gives: substitutability rests on a fixed interface, and anything replacing a filesystem is replacing it against this.
 
-### 27.1 It Is a Protocol, Not a Layer
+### 25.1 It Is a Protocol, Not a Layer
 
 **There is no VFS server, and adding one would be a mistake.** Section 20 already places the mount table in the C library, so the naming half of what other systems call a VFS is specified and requires no process. What remains is the wire between a client and a filesystem, which is what this section defines.
 
@@ -1716,21 +1610,21 @@ A VFS process would sit in the path of every operation without being able to enf
 
 **Identifiers in this section are prefixed `fs_` rather than `sys_`.** This is not a kernel interface. It is carried by ordinary messages over ordinary channels, and no part of it is known to the kernel.
 
-### 27.2 A File Handle Is a Connection
+### 25.2 A File Handle Is a Connection
 
 **A directory or file is named by a connection handle, obtained through `sys_chan_connect()` on the server's channel, and the server holds the per-connection state that binds it to a node.**
 
 This follows the channel and connection split of section 12.1 and matches how QNX resource managers work, where a descriptor is a connection. It is the choice that makes handle-relative naming (section 20.3) real rather than conventional: the authority is a kernel object, so a client cannot forge a reference to a node it was never given, and passing a directory to a child is an ordinary handle move.
 
-Three consequences are normative.
+Three consequences follow.
 
 **Rights attenuate on duplication, per section 7.** A read-only directory handle is a duplicate with the write right removed, and the server must check rights on the connection rather than trusting the request.
 
-**Open files draw from the static object pools of section 8.** A build must size the connection pool for the maximum number of simultaneously open files across the whole system, and exhaustion is a configuration error rather than a runtime condition to recover from. This is the ordinary cost of section 2.6 applied to a place where general-purpose systems assume growth, and a design that opens files in response to load must state its bound.
+**Open files draw from the static object pools of section 8.** A build must size the connection pool for the maximum number of simultaneously open files across the whole system, and exhaustion is a configuration error rather than a runtime condition to recover from. This is the ordinary cost of section 2.7 applied to a place where general-purpose systems assume growth, and a design that opens files in response to load must state its bound.
 
-**Server-side state is reclaimed on `FS_OP_CLOSE`.** A client closing its handle without sending it leaves the server holding a record it cannot reclaim, since the kernel provides no notification when a connection object is destroyed. See section 28.1.
+**Server-side state is reclaimed on `FS_OP_CLOSE`.** A client closing its handle without sending it leaves the server holding a record it cannot reclaim, since the kernel provides no notification when a connection object is destroyed. See `PROPOSALS.md`.
 
-### 27.3 Operations
+### 25.3 Operations
 
 | Operation | Effect |
 | ------------------ | ---------------------------------------------------------------- |
@@ -1817,7 +1711,7 @@ typedef struct fs_dirent {
 
 **`rights` in `fs_stat_t` reports the connection, not the node.** A mode field describing what some other principal could do with the node would be reporting authority the caller does not hold, and section 20.1 is the argument that names and modes are not where authority lives. A caller learns what it may do, which is the only question it can act on.
 
-### 27.4 Offsets Travel in the Message
+### 25.4 Offsets Travel in the Message
 
 **A connection carries no file position.** Every read and write states its own offset, and the C library owns whatever position a POSIX-shaped API needs to present.
 
@@ -1825,7 +1719,7 @@ This removes shared mutable state from the connection, so several threads may us
 
 **`FS_WRITE_APPEND` is the single exception and is deliberate.** Logging is a stated use of this protocol, and an append whose offset was computed by the client is a lost record whenever two writers share a file. The flag makes the server compute the offset, which is the only operation in the protocol whose result depends on server state the client cannot see.
 
-### 27.5 Payload
+### 25.5 Payload
 
 **Small payloads travel inline and bulk payloads travel in a grant**, per section 12.4. A client passes a grant for the destination of a read or the source of a write, and by section 6.1 must not touch that memory until the reply arrives.
 
@@ -1833,90 +1727,31 @@ On Tier 2 a server forwarding a payload it does not inspect never maps it, per t
 
 **Requests execute at the client's priority.** This is not a property of the protocol but of the transport, and it is stated here because it is the reason the protocol is synchronous. A filesystem server sizes its receiving thread count for the concurrency it wants; the threads are ordinary and the donation of section 12.3 applies to each independently.
 
-### 27.6 Failure, Staleness, and Removable Media
+### 25.6 Failure, Staleness, and Removable Media
 
 **The protocol defines no error namespace of its own.** Replies carry `sys_err_t`, and a server must not invent codes.
 
 **Device removal is server death, and the existing mechanisms cover it.** A filesystem whose device disappears exits. Clients blocked in a request are released with `SYS_ERR_OWNER_DEAD` (section 12.5), cached connection handles fail with `SYS_ERR_STALE` on next use, and the library re-resolves or reports (section 20.2). No timeout is involved anywhere, and a client learns promptly rather than after a wait it chose in advance.
 
-**A filesystem server that parses media it does not control must not share a cohort with a server for fixed storage.** A cohort fault destroys the cohort (section 18.2), so placing a parser of attacker-supplied media beside the internal storage stack means a malformed volume takes down internal storage. This is a rule about configuration rather than about implementation, and it is one the build-time check of section 26.2 can enforce.
+**A filesystem server that parses media it does not control must not share a cohort with a server for fixed storage.** A cohort fault destroys the cohort (section 18.2), so placing a parser of attacker-supplied media beside the internal storage stack means a malformed volume takes down internal storage. This is a rule about configuration rather than about implementation, and it is one the build-time check of section 24.2 can enforce.
 
-Data with a durability requirement across power loss is not served by putting it on such a volume, and this specification does not attempt to make it so. Calibration and configuration records want a small A/B or append-only store with an explicit commit, which is a different problem from a filesystem and is out of scope here.
+Data with a durability requirement across power loss is not served by putting it on such a volume, and this document does not attempt to make it so. Calibration and configuration records want a small A/B or append-only store with an explicit commit, which is a different problem from a filesystem and is out of scope here.
 
-### 27.7 What Is Not in the Base Protocol
+### 25.7 What Is Not in the Base Protocol
 
 Each of these is absent for a reason, and the reason is the same in every case: it buys a property stated elsewhere.
 
 **Cross-directory rename.** Naming a second directory would require moving a duplicated handle into the request, which consumes it, and the atomic replace pattern that rename exists for is within one directory. `FS_OP_RENAME` is therefore scoped to one connection.
 
-**Locking.** There is no advisory lock operation. Exclusion is the property of a server that owns the resource, and a protocol-level lock would be a way for a client to hold state in a server across requests, which section 27.4 has otherwise removed.
+**Locking.** There is no advisory lock operation. Exclusion is the property of a server that owns the resource, and a protocol-level lock would be a way for a client to hold state in a server across requests, which section 25.4 has otherwise removed.
 
-**Mapping and writeback.** Files are read and written, not mapped. Section 15.1 has no writeback paging and section 28.1 gates its addition.
+**Mapping and writeback.** Files are read and written, not mapped. Section 15.1 has no writeback paging; `PROPOSALS.md` describes what adding it would cost.
 
 **Change notification.** There is no watch operation. A client that needs to know when something changed asks the process that changes it.
 
 ---
 
-## 28. Open Items
-
-Everything here is a **deliberate omission**, not an unfinished part of the specification. Each entry states what is absent, what that absence buys, what observation would justify adding it, what the addition would be, and what property would be given up in exchange.
-
-Read the triggers strictly. An implementation may add any of these, but **adding one without its trigger is a divergence rather than an extension**, because in every case the absence is paying for a property stated elsewhere in this document. Removing that payment silently is how a specification stops describing one system.
-
-### 28.1 Extensions Gated on Evidence
-
-**Writeback paging.**
-
-* *Absent.* Mapping is read-only (section 15.1). This buys the removal of transparent dirty tracking, of swap, and of a plain store instruction that can block on a pager.
-* *Trigger.* A filesystem page cache with writable file-backed mappings is actually required by a deployed workload. Anticipating one is not sufficient.
-* *Extension.* Explicit sync rather than transparent dirty tracking: the process tells its pager which ranges changed, since a filesystem already knows its own dirty ranges.
-* *Cost.* The write fault returns. A store to a mapped page becomes an operation that may block, invisibly, at a point the source does not mark.
-
-**`SYS_OP_FENCE_WAIT_MULTI`.**
-
-* *Absent.* There is no merge, and dependencies are waited on one at a time (section 9.4). This buys constant-time single-target priority donation and precise error attribution.
-* *Trigger.* Measured batch-shape churn: prebuilt submissions being rebuilt in practice because their dependency count varies at runtime.
-* *Extension.* Merge as an op rather than an object, one entry carrying a short inline array of four to eight handles.
-* *Cost.* Donation walks a bounded list while blocked instead of naming one target. Sizing that list generously would reintroduce exactly the cost that dropping merge avoided.
-
-**Wait-set objects.**
-
-* *Absent.* A thread waits on one source, and a server needing several uses several threads. This buys a kernel with no queue object and keeps the blocking invariant trivially true.
-* *Trigger.* A driver that genuinely cannot afford the stacks, which in practice means Tier 0, where stack count multiplied by stack size is a measurable fraction of total RAM. Section 19.3 is the shape being paid for: two threads where one would do, because the blocking invariant forbids waiting on a channel and an interrupt timeline at once.
-* *Extension.* **The queue model, not the array model.** A caller passing a list of objects and blocking until one signals does not scale: every wait costs time proportional to the list, and the list is rebuilt whenever the set changes. A queue that objects are registered against once and the waiter drains has neither property. Evaluate first whether letting a timeline enqueue a coalesced pulse on a channel is sufficient, since that gives one receive point for messages, pulses and completions with no new object type at all.
-* *Cost.* A new kernel object, and a second way for a thread to be waiting.
-
-**Gang scheduling.**
-
-* *Absent.* Cohort scheduling nodes approximate co-scheduling by keeping yielded time within a related group (section 11.5). This buys per-core independence, which is what makes partitioned response-time analysis decompose.
-* *Trigger.* Measurement showing the approximation insufficient: a coupled set losing significant time to partial scheduling, not merely a suspicion that it might.
-* *Extension.* Statically declared gangs with reserved cores, admitted atomically.
-* *Cost.* Dispatch couples cores that were independent, and an inter-processor interrupt to every member enters the analysis. Dynamically formed gangs additionally make admission a global decision and should not be attempted.
-
-**Resource containers.**
-
-* *Absent.* There is no resource-accounting boundary. Namespaces already give the naming and authority half of what a container is; only accounting is missing.
-* *Trigger.* A requirement to bound a group of processes' resource use independently of the cohort structure, such as hosting workloads that must not starve one another. Anticipating one is not sufficient.
-* *Extension.* **Written out in full in section 25**, which is not normative and exists so that this gate names something specific. Little in it is new: CPU is a node in the scheduling tree of section 11.5, kernel objects are a quota against the static pools of section 8, memory is already settled because section 15.1 has neither swap nor overcommit, and naming is the array of directory handles a process was launched with.
-* *Cost.* Quota enforcement semantics, which are genuinely unresolved and are stated as three open questions in section 25.4: what happens when a container reaches its object limit, whether quotas are reserved or merely capped, and whether a container can be resized while running. Section 25 answers none of them, deliberately.
-
-
-**Connection death notification.**
-
-* *Absent.* A server learns that a client is finished with a connection only when the client sends `FS_OP_CLOSE` (section 27.2). Destruction of the connection object tells the server nothing. This buys a kernel in which closing a handle is a purely local operation, and it keeps `SYS_PULSE_DEAD_OWNER` as the only death path a server has to handle.
-* *Trigger.* A server observed accumulating per-connection records it cannot reclaim, which in practice means clients faulting or being cancelled while holding open files. A system whose clients all close correctly does not need this, and a server may bound the damage by sizing its records at build time and letting its supervisor reclaim them.
-* *Extension.* A reserved system pulse on the channel carrying `SYS_ID_TAG32` of the connection, delivered when the connection object is destroyed. The mechanism is the one section 10.5 already uses for a dead client's request, and the reserved pulse slots of section 13 exist for additions of exactly this shape.
-* *Cost.* Closing a handle stops being local: it can enqueue work on another process's channel, so a full pulse queue makes handle closure a case with an error to consider. That is a new failure mode on an operation that currently has none.
-
-### 28.2 Obligations
-
-Unlike the entries above, this one is not optional and is not gated on evidence.
-
-**Per-port constants.** `SYS_PRIO_CHAIN_MAX`, `SYS_BATCH_MAX_ENTRIES`, `SYS_BATCH_REGS`, the priority count, and every pool size are stated in this document as defaults. **A port that has not performed the measurements in section 24 has not justified them, and the tier latency claims in section 13.3 do not hold for it.** section 34 gives the methodology. Two of those constants must be derived rather than assumed: `SYS_BATCH_MAX_ENTRIES` follows from per-entry cost against the port's interrupt latency budget, since a batch entry is the non-preemptible unit, and `SYS_PRIO_CHAIN_MAX` follows from donation latency against the deepest legitimate server chain in the deployed system.
-
----
-
-## 29. C Header Specification
+## 26. C Header Specification
 
 ```c
 /**
@@ -1961,7 +1796,7 @@ typedef uint64_t  sys_deadline_t;
  * operating on a recycled slot.
  *
  * The 20/44 split exists so the low 32 bits carry the index plus 12 bits of
- * generation. Two places in this specification must fit an identity into 32
+ * generation. Two places in this document must fit an identity into 32
  * bits: the pulse value field and the PI futex word. Both carry generation
  * bits alongside the index, so neither is vulnerable to a slot being
  * recycled between when a value is written and when it is read.
@@ -2176,7 +2011,7 @@ typedef struct sys_bootinfo {
     uint32_t           region_count;
     sys_mem_region_t  *regions;
     sys_handle_t       root_pager;      /* SYS_HANDLE_INVALID below Tier 2 */
-    sys_handle_t       boot_archive;    /* read-only region; see section 26.1 */
+    sys_handle_t       boot_archive;    /* read-only region; see section 24.1 */
     sys_handle_t       platform_config; /* read-only region, or INVALID */
     sys_handle_t      *initial_handles;
     uint32_t           initial_count;
@@ -2535,7 +2370,8 @@ sys_err_t sys_stat_read(sys_handle_t obj, const char *key,
                         char *buf, size_t buflen, size_t *out_len);
 
 /* ========================================================================== */
-/* Submission Engine                                                          */
+/* ========================================================================== */
+/* Operations and the Submission Engine                                       */
 /* ========================================================================== */
 
 #define SYS_BATCH_REGS           16
@@ -2561,7 +2397,7 @@ sys_err_t sys_stat_read(sys_handle_t obj, const char *key,
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-/* Entry flags. */
+/* Entry flags. Ignored for a single-operation call. */
 #define SYS_BATCH_LINK      (1u << 0)  /* next entry depends on this one */
 #define SYS_BATCH_REG_IN    (1u << 1)  /* take the target from reg_in */
 #define SYS_BATCH_REG_OUT   (1u << 2)  /* write the result to reg_out */
@@ -2572,11 +2408,14 @@ sys_err_t sys_stat_read(sys_handle_t obj, const char *key,
 #define SYS_REG_HANDLE      1
 #define SYS_REG_SCALAR      2
 
-typedef struct sys_batch_entry {
+/* One descriptor serves both the single-operation call and the submission
+ * engine; a single operation is the count-of-one case. The reg_in, reg_out and
+ * LINK fields are meaningful only when count exceeds one. See section 23.1. */
+typedef struct sys_op {
     uint16_t      opcode;
     uint16_t      flags;
-    uint16_t      reg_in;
-    uint16_t      reg_out;
+    uint16_t      reg_in;       /* ignored unless SYS_BATCH_REG_IN is set */
+    uint16_t      reg_out;      /* ignored unless SYS_BATCH_REG_OUT is set */
 
     sys_handle_t  target;       /* ignored when SYS_BATCH_REG_IN is set */
     uintptr_t     arg_ptr;      /* op-specific argument structure */
@@ -2584,22 +2423,26 @@ typedef struct sys_batch_entry {
     uint32_t      _reserved;
     uint64_t      user_data;    /* opaque caller tag, never interpreted */
 
-    /* Written by the kernel. Keeping status in the entry removes the
-     * per-entry user pointer validation of revision 1. See section 17.6. */
+    /* Written by the kernel. Keeping status in the entry avoids validating a
+     * separate user status pointer per entry. See section 17.6. */
     sys_err_t     status;
     uint32_t      _pad;
-} sys_batch_entry_t;
+} sys_op_t;
+
+/* Executes one operation. Equivalent to sys_batch_exec with a count of one,
+ * and provided separately because it is the overwhelmingly common case. */
+sys_err_t sys_op_exec(sys_op_t *op, sys_deadline_t deadline);
 
 /* Executes entries in order, in the calling thread's context and at its
  * priority. Preemption points are at entry boundaries. Kernel execution time
  * is bounded by the sum of entry costs; wall-clock time is not, because
  * blocking ops may wait. On abort, every timeline the batch was going to
  * signal is force-signalled in error state. */
-sys_err_t sys_batch_exec(sys_batch_entry_t *entries, size_t count,
+sys_err_t sys_batch_exec(sys_op_t *entries, size_t count,
                          sys_deadline_t deadline);
 
 /* Prepared programs: validated once, executed many times. */
-sys_err_t sys_prog_load(const sys_batch_entry_t *entries, size_t count,
+sys_err_t sys_prog_load(const sys_op_t *entries, size_t count,
                         sys_handle_t *out_prog);
 sys_err_t sys_prog_exec(sys_handle_t prog, sys_handle_t *args,
                         size_t arg_count, sys_deadline_t deadline);
@@ -2613,23 +2456,23 @@ sys_err_t sys_prog_exec(sys_handle_t prog, sys_handle_t *args,
 
 ---
 
-# Part III — Implementation Guide
+# Part III — Implementation Notes
 
-This part is **advisory**. Nothing in it binds an implementation, and an implementation that ignores all of it may still conform. It exists because Part II says what must be true and not what to build first, and a team starting from Part II alone would have to rediscover an order that is already known.
+This part is advisory. It names the surface a port has to supply underneath Part II, and suggests the data structures that are the obvious choices, so that neither has to be rediscovered.
 
-Where this part suggests a data structure or an order of work, that is experience and preference, not requirement.
+`ROADMAP.md` gives the order to build things in.
 
 ---
 
-## 30. What a Port Must Provide
+## 27. What a Port Provides
 
 Part II is deliberately silent about hardware. This is the surface a port supplies underneath it. The list is short, which is the point: everything else in the system is written once and shared.
 
-**Boot-time construction of `sys_bootinfo_t`.** The kernel is entered with that structure already built, so a port supplies whatever stage builds it. **The simplest such stage takes no handover at all**: where the memory size and the archive address are fixed by the build, the port supplies both as constants, leaves `platform_config` invalid, and reads nothing. A pinned emulator target or a single-board product should prefer this, since discovering a constant is not an improvement on stating one. On a target whose bootloader hands over a flattened device tree, in `x0` on aarch64 and `a1` on riscv64, that stage reads the memory map from `/memory` and the boot archive bounds from `/chosen`, then passes the blob itself through to the root process as the platform configuration region of section 26.1. It is a targeted property lookup and not a general device tree library, because a statically configured kernel needs nothing else from one.
+**Boot-time construction of `sys_bootinfo_t`.** The kernel is entered with that structure already built, so a port supplies whatever stage builds it. **The simplest such stage takes no handover at all**: where the memory size and the archive address are fixed by the build, the port supplies both as constants, leaves `platform_config` invalid, and reads nothing. A pinned emulator target or a single-board product should prefer this, since discovering a constant is not an improvement on stating one. On a target whose bootloader hands over a flattened device tree, in `x0` on aarch64 and `a1` on riscv64, that stage reads the memory map from `/memory` and the boot archive bounds from `/chosen`, then passes the blob itself through to the root process as the platform configuration region of section 24.1. It is a targeted property lookup and not a general device tree library, because a statically configured kernel needs nothing else from one.
 
-This stage runs at the kernel's own privilege level, so it is not an isolation claim. What it buys is that the kernel's entry contract is byte-identical on every port, that the parser is not part of what section 24 conformance-tests, and that a target placing its archive at a build-known address carries no parser at all. A port booting through UEFI, where the archive arrives by `EFI_LOAD_FILE2` rather than through `/chosen`, or an ACPI machine with no device tree at all, differs only inside this stage.
+This stage runs at the kernel's own privilege level, so it is not an isolation claim. What it buys is that the kernel's entry contract is byte-identical on every port, that the parser is a small and separable thing to get wrong, and that a target placing its archive at a build-known address carries no parser at all. A port booting through UEFI, where the archive arrives by `EFI_LOAD_FILE2` rather than through `/chosen`, or an ACPI machine with no device tree at all, differs only inside this stage.
 
-**Integrity of the handover data**, where the platform verifies the boot image at all. The memory map and the archive bounds must be covered by the same verification as the image. A device tree an attacker can edit is one whose `/chosen` names an archive of their choosing, and the whole system is then loaded from it. A port that cannot verify its handover data must say so, because section 26.2's argument about reviewable configuration does not hold for it.
+**Integrity of the handover data**, where the platform verifies the boot image at all. The memory map and the archive bounds must be covered by the same verification as the image. A device tree an attacker can edit is one whose `/chosen` names an archive of their choosing, and the whole system is then loaded from it. A port that cannot verify its handover data should say so, because section 24.2's argument about reviewable configuration does not hold for it.
 
 **Context switch.** Save and restore of a thread's register state, including whatever floating-point or vector state the target has and the system chooses to preserve. This is the only place in the kernel that knows the register file.
 
@@ -2639,84 +2482,23 @@ This stage runs at the kernel's own privilege level, so it is not an isolation c
 
 **A programmable timer interrupt** capable of expiring at an absolute time, since section 14.4 defines deadlines absolutely. A port with only an interval timer must convert, and the conversion error becomes part of the timer accuracy it publishes.
 
-It must be programmable **one-shot**, because section 14.1 has no tick and reprograms the timer at every scheduling decision that changes the earliest pending event. The cost of that reprogramming is a port characteristic and belongs in the published figures: on a part where the timer sits behind a slow peripheral bus, it is on the dispatch path and is not small.
+It must be programmable **one-shot**, because section 14.1 has no tick and reprograms the timer at every scheduling decision that changes the earliest pending event. The cost of that reprogramming is a port characteristic worth knowing: on a part where the timer sits behind a slow peripheral bus, it is on the dispatch path and is not small.
 
 **A mapping from every hardware exception to a fault kind.** Section 16.1 enumerates the kinds, and a port must state which of its exceptions produces which. An exception with no mapping has undefined behaviour, and the ones most often left out are the imprecise external aborts that section 16.1 separates for exactly that reason. Where the hardware cannot raise a kind at all, which is most of them on Tier 0, the mapping says so rather than omitting the row.
 
 **Interrupt controller programming**: mask, unmask, acknowledge, and priority if the hardware has it.
 
-**Memory protection programming**, per tier. Tier 0 supplies nothing. Tier 1 programs regions. Tier 2 programs page tables and provides TLB maintenance.
+**Memory protection programming**, per tier. Tier 0 supplies nothing. Tier 2 programs page tables and provides TLB maintenance.
 
 **Cache maintenance for DMA**, on targets where the DMA engines are not coherent with the CPU. This is invisible in Part II because it is invisible to the API, and getting it wrong produces data corruption that looks like a driver bug.
 
 **An inter-processor interrupt**, on multicore targets only. Section 11.4 requires it for cross-core priority donation.
 
-**The idle behaviour.** What a core does with nothing runnable is a port decision, and it interacts with the latency figures directly: a deep sleep state that takes microseconds to exit adds that time to the interrupt latency of section 13.3 and must be included in the published figure or disabled.
+**The idle behaviour.** What a core does with nothing runnable is a port decision, and it interacts with interrupt latency directly: a deep sleep state that takes microseconds to exit adds that time to the latency of section 13.3, so it is either accounted for or disabled.
 
 ---
 
-## 31. Bring-Up Order
-
-Each stage produces something testable. The ordering is by dependency, and the stages are chosen so that a stage which fails, fails visibly.
-
-**Stage 1 — Boot to a known state.** Take the machine, set up a stack, initialise the object pools, and spin. Nothing to test but that the image runs, which is worth confirming before anything depends on it.
-
-**Stage 2 — One thread, no scheduler.** Build the thread object and context switch. Switch between two threads that yield to each other explicitly. This is where the register save and restore gets debugged, in the simplest setting it will ever be in.
-
-**Stage 3 — The scheduler.** Ready queue, priorities, preemption on a timer tick. Test with several compute-bound threads at different priorities and confirm the highest runnable one runs.
-
-**Stage 4 — Handles and the trap.** The handle table, the section 23 entry point, and enough of the batch engine to execute one entry. `SYS_OP_NOP` is the first syscall worth having: it exercises the entire entry, validation, status-write and return path with no other machinery involved.
-
-**Stage 5 — Timelines.** Create, signal, wait, and the error state. Test with threads blocking and being released. Timelines come before IPC because interrupts and timers both land on them, and because they are simpler to get right in isolation.
-
-**Stage 6 — Interrupts.** Attach an interrupt to a timeline and drive it from a real device, the timer being the obvious first one. At this point the system can respond to hardware.
-
-**Stage 7 — Timers.** Periodic and one-shot on top of stage 6. Now periodic tasks work and the first latency measurements are possible.
-
-**Stage 8 — IPC.** Channels, send, receive, reply. Then priority inheritance, which is easier to add once the plain path is known good. Conformance points 5 through 8 apply here.
-
-**Stage 9 — Spawn.** Process creation, handle inheritance, the startup record. The system can now run more than one program.
-
-**Stage 10 — Death.** Cancellation, `sys_proc_kill()`, completion timelines, `DEAD_OWNER`. Deliberately late, because it is much easier to reason about tearing down a system that already works than to build teardown alongside construction.
-
-Everything after this is optional for a proof of concept. See section 32.
-
-**Two notes on order.** Timelines before IPC is the one choice most likely to feel wrong, since IPC seems more fundamental. It is not: interrupts and timers depend on timelines and not on IPC, so timelines first gets the system responding to hardware several stages earlier. And death last is deliberate: teardown paths are where the subtle bugs live, and debugging them in a system that otherwise works is far easier than the alternative.
-
----
-
-## 32. Proof-of-Concept Scope
-
-A first implementation should be **Tier 0 only, single core**, and should stub or omit everything below. The point of the exercise is to find out whether the design's central claims hold, and those claims can be tested on the smallest tier.
-
-**Build**
-
-* Threads, scheduler, priorities, preemption.
-* Handles with rights, one process or several without protection.
-* Timelines with the full error semantics.
-* Interrupts, timers with absolute phase.
-* IPC with priority inheritance.
-* The trap entry point and enough batch engine for single entries and short chains.
-* Spawn, cancellation, completion timelines.
-
-**Stub or omit**
-
-* **Tier 1 and Tier 2 entirely.** No MPU, no MMU, no paging, no pagers, no memory locking. Section 6.1 says Tier 0 does not enforce the memory contract, so a Tier 0 implementation is complete without any of it.
-* **SMP.** Partitioned scheduling with one partition is just scheduling. Cross-core donation and the IPI go away with it.
-* **Driver cohorts.** Without protection domains a cohort is a naming convention. Implement the scheduling node later, if at all.
-* **The scheduling tree.** Strict priority only. The proportional-share tree of section 11.5 governs non-real-time work, and a proof of concept has none.
-* **Prepared batch programs.** Direct invocation only. `sys_prog_load()` is an optimisation of a path that must exist anyway.
-* **Issuing ops.** They need a DMA-capable device to be meaningful. Blocking ops alone exercise the engine.
-* **Namespaces.** They are a library concern and need no kernel work at all.
-* **Introspection.** Useful, not load-bearing.
-
-**What this leaves you able to test**, which is the reason for the selection: priority inheritance actually working through a chain, the timeline error semantics releasing every waiter, absolute timer phase surviving a stalled task, and cancellation reaching a thread blocked anywhere. Those are the four claims most likely to be wrong, and none of them needs an MMU.
-
-**What it deliberately does not test**, and what a second phase must: the memory contract, since Tier 0 does not enforce it; the fault path, since there are no faults; and everything about cohorts and recovery.
-
----
-
-## 33. Suggested Structures
+## 28. Suggested Structures
 
 Offered because they are the obvious choices and a team should not have to re-derive them. None is required.
 
@@ -2733,23 +2515,6 @@ Offered because they are the obvious choices and a team should not have to re-de
 **The blocked-on pointer.** Give every thread one field naming what it is blocked on. Section 21's chain walk, the cancellation path, and the introspection attribute of section 22.2 are all reads of that single field, and it is the direct representation of the invariant in section 5.
 
 ---
-
-## 34. Measurement Methodology
-
-Section 24.2 requires the figures. This is how to obtain them without fooling yourself.
-
-**Measure with interrupts in their normal state.** A figure taken with interrupts disabled measures something the system never does.
-
-**Take the worst case, not the mean.** These are real-time figures. Report the maximum observed and the sample count, since a maximum over a hundred samples and one over ten million are different claims.
-
-**Drive the worst case deliberately.** A cold cache, a full receive queue, a donation chain at `SYS_PRIO_CHAIN_MAX`, and a batch at `SYS_BATCH_MAX_ENTRIES` do not occur by chance in a test loop, and each is where the maximum lives.
-
-**Measure the interrupts-disabled region statically.** It cannot be sampled: the longest region may not execute during any test. Find it by inspecting the code paths that disable interrupts and summing their worst-case instruction counts, then confirm with sampling that nothing longer exists.
-
-**Report the pair.** A computed upper bound and an observed maximum together say more than either alone, because the gap between them is the margin the analysis carries.
-
-**Publish the configuration.** A latency figure without the pool sizes, priority count, and compiler settings that produced it cannot be reproduced or compared.
-
 
 # Index
 

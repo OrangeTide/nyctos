@@ -1,4 +1,4 @@
-// Section 18: cohort zero-copy data path.
+// Section 17: cohort zero-copy data path.
 #import "lib/fit.typ": fit
 #import "lib/block.typ": *
 

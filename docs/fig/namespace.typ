@@ -1,4 +1,4 @@
-// Section 20.4: the namespace is handed over at launch.
+// Section 19.4: the namespace is handed over at launch.
 #import "lib/fit.typ": fit
 #import "lib/block.typ": *
 

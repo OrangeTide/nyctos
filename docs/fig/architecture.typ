@@ -1,4 +1,4 @@
-// Section 2.7: system architecture.
+// Section 2.8: system architecture.
 #import "lib/fit.typ": fit
 #import "lib/block.typ": *
 

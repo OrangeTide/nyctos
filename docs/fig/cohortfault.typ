@@ -1,4 +1,4 @@
-// Section 18.2: a cohort fault takes down the whole cohort, and the
+// Section 17.2: a cohort fault takes down the whole cohort, and the
 // supervisor restarts it.
 //
 // The point of the chart is that member B, which did nothing wrong, is torn

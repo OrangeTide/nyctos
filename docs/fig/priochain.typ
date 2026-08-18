@@ -1,4 +1,4 @@
-// Section 21: the blocking relation is a chain, so donation walks one way.
+// Section 20: the blocking relation is a chain, so donation walks one way.
 #import "lib/fit.typ": fit
 #import "lib/block.typ": *
 

@@ -1,6 +1,6 @@
-// Section 6.1: the uniform memory contract across the three tiers.
+// Section 6.1: the uniform memory contract across both tiers.
 //
-// A correct program behaves identically on all three, so a correct program
+// A correct program behaves identically on both, so a correct program
 // cannot illustrate the difference. What separates the tiers is what happens
 // to a program that violates the contract, and whether anything notices.
 
@@ -14,12 +14,6 @@
     revoked: false,
     outcome: "the write succeeds and nothing detects it",
     how: "no hardware to revoke with",
-  ),
-  (
-    title: "Tier 1 · MPU or PMP",
-    revoked: true,
-    outcome: "the write faults",
-    how: "the sender’s region is reprogrammed",
   ),
   (
     title: "Tier 2 · full MMU",
