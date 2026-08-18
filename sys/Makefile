@@ -17,6 +17,7 @@ SRCS := arch/$(ARCH)/boot.S \
         arch/$(ARCH)/uart.c \
         kern/init_main.c \
         kern/kern_object.c \
+        kern/kern_sched.c \
         kern/kern_syscall.c \
         kern/kern_thread.c \
         kern/subr_mem.c \

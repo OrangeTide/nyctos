@@ -43,4 +43,26 @@
  */
 #define SYS_KSTACK_SIZE         4096
 
+/*
+ * Priority levels. Section 11.1 suggests 32 on Tier 0, where the ready
+ * bitmap is one word and finding the highest runnable thread is a single
+ * count-leading-zeros instruction.
+ */
+#define SYS_PRIO_COUNT          32
+#define SYS_PRIO_MAX            (SYS_PRIO_COUNT - 1)
+
+/*
+ * The floor of the real-time band. Section 11.2 schedules everything at or
+ * above this by strict priority, and everything below it from the
+ * proportional tree of section 11.5.
+ *
+ * That tree does not exist, and a thread scheduled from a band with no
+ * scheduler behind it would simply never run. So the floor is zero and the
+ * whole range is the real-time band. Section 11.2 already names this as the
+ * degenerate case: a system with everything above the floor has no
+ * scheduler left, only a priority list. That is exactly what this is, and
+ * it stays that way until the tree exists.
+ */
+#define SYS_PRIO_RT_MIN         0
+
 #endif /* _SYS_CONFIG_H_ */

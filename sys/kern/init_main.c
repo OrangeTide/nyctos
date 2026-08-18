@@ -3,66 +3,68 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
+#include <sys/config.h>
 #include <sys/object.h>
+#include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
 
-#define ROUNDS  4
-
 /*
- * Two threads that hand control back and forth by naming each other. There
- * is no scheduler to consult and no timer to preempt them, which is the
- * point of stage 2: the only thing under test is whether a context survives
- * being saved and restored.
+ * Three properties of the dispatch decision, none of which needs a timer.
  *
- * Each thread holds a value in a local across the switch and checks it
- * afterwards. Whether the compiler keeps that value in a callee-saved
- * register or spills it to the stack, it is testing one of the two things
- * md_switch has to get right, and it costs nothing to check both threads.
+ * That the highest runnable thread runs, whatever order threads were made
+ * runnable in. That within one level the policy is FIFO, so equal priority
+ * does not round-robin: section 11.1 makes that an opt-in with an explicit
+ * quantum, and there is no quantum here. And that a thread becoming
+ * runnable at a higher priority takes the core at once rather than waiting
+ * for the running thread to finish, which is what section 11.3 means by
+ * preemption and is separate from any quantum.
+ *
+ * All three come out of one arrangement. The boot context runs at the top
+ * of the range so that readying a worker does not preempt it mid-setup,
+ * every worker is made runnable before any of them runs, and then boot
+ * blocks and the queue drains in priority order.
  */
 
-#define PING_MAGIC  ((unsigned long)0x1111222233334444UL)
-#define PONG_MAGIC  ((unsigned long)0x5555666677778888UL)
-
-static struct thread *t_boot;
-static struct thread *t_ping;
-static struct thread *t_pong;
+static struct thread *t_waker;
 
 static void
-ping(void *arg)
+worker(void *arg)
 {
-    unsigned long magic = PING_MAGIC;
+    const struct thread *self = thread_current();
     int i;
 
     (void)arg;
 
-    for (i = 0; i < ROUNDS; i++) {
-        cnprintf("  ping %d (on %s)\n", i, thread_current()->t_name);
-        thread_switch_to(t_pong);
-        if (magic != PING_MAGIC) {
-            panic("ping: context not preserved across the switch");
-        }
+    for (i = 0; i < 2; i++) {
+        cnprintf("    %s (prio %u)\n", self->t_name, self->t_prio);
     }
 
-    cnputs("  ping: done, handing back to boot\n");
-    thread_switch_to(t_boot);
-    panic("ping: ran again after handing back");
+    thread_exit();
+}
+
+/*
+ * Above everything else runnable. Nothing readies it until a lower-priority
+ * thread does, at which point that thread must lose the core at once.
+ */
+static void
+waker(void *arg)
+{
+    (void)arg;
+
+    cnputs("    waker (prio 25): preempted the thread that readied me\n");
+    thread_exit();
 }
 
 static void
-pong(void *arg)
+provoker(void *arg)
 {
-    unsigned long magic = PONG_MAGIC;
-
     (void)arg;
 
-    for (;;) {
-        cnprintf("  pong    (on %s)\n", thread_current()->t_name);
-        thread_switch_to(t_ping);
-        if (magic != PONG_MAGIC) {
-            panic("pong: context not preserved across the switch");
-        }
-    }
+    cnputs("    provoker (prio 7): readying a higher-priority thread\n");
+    sched_ready(t_waker);
+    cnputs("    provoker (prio 7): running again, so waker has finished\n");
+    thread_exit();
 }
 
 void
@@ -74,20 +76,28 @@ kernel_main(void)
     object_check();
     object_report();
 
-    thread_bootstrap("boot");
-    t_boot = thread_current();
-    t_ping = thread_create("ping", ping, NULL);
-    t_pong = thread_create("pong", pong, NULL);
-
-    cnputs("threads: switching\n");
-    thread_switch_to(t_ping);
+    sched_init();
+    thread_bootstrap("boot", SYS_PRIO_MAX);
 
     /*
-     * Reached only when ping hands back, which means a context was saved
-     * here, two others ran on their own stacks, and this one was restored.
+     * Made runnable low to high, so an implementation that ran them in the
+     * order they arrived would produce the opposite of the expected output
+     * rather than accidentally the same one.
      */
-    cnprintf("threads: back on %s\n", thread_current()->t_name);
+    sched_ready(thread_create("low", 5, worker, NULL));
+    sched_ready(thread_create("mid", 12, worker, NULL));
+    sched_ready(thread_create("high", 20, worker, NULL));
 
-    cnputs("stage 2 complete\n");
-    machine_halt(0);
+    /* Equal priority, so the earlier one should finish before the later. */
+    sched_ready(thread_create("first", 9, worker, NULL));
+    sched_ready(thread_create("second", 9, worker, NULL));
+
+    t_waker = thread_create("waker", 25, waker, NULL);
+    sched_ready(thread_create("provoker", 7, provoker, NULL));
+
+    cnputs("sched: six runnable, boot blocking\n");
+    cnputs("sched: expect 20, 12, 9, 9, then 7 preempted by 25, then 5\n");
+    sched_block();
+
+    panic("boot: scheduled again after blocking");
 }

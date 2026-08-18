@@ -27,8 +27,11 @@ initialises its object pools, reports them, and powers the machine off.
 - Boot to a known state on both architectures.
 - Static object pools with generation-checked identifiers. Stage 1.
 - Kernel threads and the context switch, with a guard word below each
-  kernel stack. No scheduler: a thread runs until it names its successor.
-  Stage 2.
+  kernel stack. Stage 2.
+- A strict-priority scheduler: a bitmap of non-empty levels and a FIFO per
+  level, so the dispatch decision is a count-leading-zeros and a head-of-
+  list read. Preemption when a higher-priority thread becomes runnable.
+  Stage 3.
 - Console output with a small formatter, `panic`, and a halt path that ends
   the machine rather than spinning.
 - A project-owned libc and C runtime startup object.
@@ -42,8 +45,10 @@ program can do. It does say the defaults are guesses, and that sixty-four
 threads at four kilobytes is not a Tier 0 configuration.
 
 This shares its build system and its architecture support with the design,
-and little else. There is no scheduler, no IPC, no handle table, and no
-MMU. The object pools exist but the objects themselves are still empty
+and little else. There is no IPC, no handle table, and no MMU. Only the
+real-time band of section 11.2 exists: the proportional tree below the
+floor is unbuilt, so the floor sits at zero and the whole priority range is
+real-time. Section 11.2 names that as the degenerate case, and it is. The object pools exist but the objects themselves are still empty
 structures, filled in by the stage that gives each type its behaviour.
 
 **The banner demo is gone.** `/bin/motd`, the host tool that built its RAM

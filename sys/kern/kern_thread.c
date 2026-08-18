@@ -4,29 +4,30 @@
  */
 
 /*
- * Threads, without a scheduler.
+ * Threads: creation, exit, and the context switch itself.
  *
- * Stage 2 of milestone 1 builds the context switch and nothing above it. A
- * thread runs until it names its successor, which is enough to get register
- * save and restore debugged in the simplest setting it will ever be in.
- * Stage 3 puts a ready queue and a dispatch decision in front of this and
- * thread_switch_to stops being something callers name a target for.
+ * Which thread runs next is not decided here. That is the dispatch decision
+ * of section 11.2 and it lives in kern_sched.c, which also owns thread
+ * states: it is the only code that knows whether an outgoing thread is
+ * going back on a run queue, blocking, or dead.
  */
 
+#include <sys/config.h>
 #include <sys/object.h>
+#include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
 
 static struct thread *current;
+
+/* Written by the linker script, at the low end of the boot stack. */
+extern char _stack_bottom[];
 
 struct thread *
 thread_current(void)
 {
     return current;
 }
-
-/* Written by the linker script, at the low end of the boot stack. */
-extern char _stack_bottom[];
 
 static void
 check_guard(const struct thread *t)
@@ -37,18 +38,33 @@ check_guard(const struct thread *t)
 }
 
 /*
- * The entry function returning has no meaning yet. Exit, and the completion
- * timeline that reports it, arrive in stage 9; until then a thread that
- * falls off the end is a bug in the thread.
+ * Where a thread whose entry function returned lands, reached from the
+ * trampoline in swtch.S. Falling off the end of an entry function and
+ * exiting deliberately are the same thing.
  */
 void
 thread_exited(void)
 {
-    panic("thread %s: returned from its entry function", current->t_name);
+    thread_exit();
+}
+
+/*
+ * Section 10.4 has exit advance a completion timeline that a joiner reads.
+ * There are no timelines yet, so all that happens here is that the thread
+ * stops being scheduled. The pool slot is not returned either, because
+ * reaping belongs with that same later work.
+ */
+void
+thread_exit(void)
+{
+    current->t_state = THREAD_DEAD;
+    sched_block();
+
+    panic("thread %s: scheduled again after exiting", current->t_name);
 }
 
 void
-thread_bootstrap(const char *name)
+thread_bootstrap(const char *name, uint8_t prio)
 {
     struct thread *t;
 
@@ -59,6 +75,7 @@ thread_bootstrap(const char *name)
 
     t->t_id = pool_id_of(thread_pool(), t);
     t->t_name = name;
+    t->t_prio = prio;
     t->t_state = THREAD_RUNNING;
 
     /*
@@ -77,9 +94,14 @@ thread_bootstrap(const char *name)
 }
 
 struct thread *
-thread_create(const char *name, void (*entry)(void *), void *arg)
+thread_create(const char *name, uint8_t prio, void (*entry)(void *),
+  void *arg)
 {
     struct thread *t;
+
+    if (prio > SYS_PRIO_MAX) {
+        panic("thread %s: priority %u above SYS_PRIO_MAX", name, prio);
+    }
 
     t = pool_alloc(thread_pool(), NULL);
     if (t == NULL) {
@@ -88,6 +110,7 @@ thread_create(const char *name, void (*entry)(void *), void *arg)
 
     t->t_id = pool_id_of(thread_pool(), t);
     t->t_name = name;
+    t->t_prio = prio;
     t->t_state = THREAD_READY;
     t->t_guard = (uint64_t *)(void *)t->t_stack;
     *t->t_guard = THREAD_GUARD;
@@ -112,8 +135,6 @@ thread_switch_to(struct thread *next)
     check_guard(prev);
     check_guard(next);
 
-    prev->t_state = THREAD_READY;
-    next->t_state = THREAD_RUNNING;
     current = next;
 
     md_switch(&prev->t_sp, next->t_sp);

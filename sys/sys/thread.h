@@ -45,6 +45,7 @@ enum thread_state {
     THREAD_UNUSED = 0,
     THREAD_READY,
     THREAD_RUNNING,
+    THREAD_DEAD,
 };
 
 struct thread {
@@ -57,6 +58,16 @@ struct thread {
     sys_id_t            t_id;
     enum thread_state   t_state;
     const char         *t_name;
+
+    /*
+     * The effective priority, which is the donated one once donation
+     * exists: section 11.2 has the scheduler see that value and nothing
+     * else, so there is no second base-priority field to keep in step.
+     */
+    uint8_t             t_prio;
+
+    /* Link for the FIFO at this level. Owned by the scheduler. */
+    struct thread      *t_qnext;
 
     /*
      * What this thread is blocked on, per the invariant in section 5. It
@@ -97,12 +108,24 @@ _Static_assert(sizeof(struct thread) % 16 == 0,
  * on, so the stack inside its object is never used; the pool slots are a
  * uniform size, so nothing is saved by making that a special case.
  */
-void thread_bootstrap(const char *name);
+void thread_bootstrap(const char *name, uint8_t prio);
 
-struct thread *thread_create(const char *name, void (*entry)(void *),
-  void *arg);
+struct thread *thread_create(const char *name, uint8_t prio,
+  void (*entry)(void *), void *arg);
 
-/* Switch to next, explicitly. There is no scheduler to consult. */
+/*
+ * Leave the run set for good. Section 10.4 has exit advance a completion
+ * timeline that a joiner reads; there are no timelines yet, so for now this
+ * only stops the thread being scheduled. The slot is not returned to the
+ * pool, because reaping is part of the same later work.
+ */
+void thread_exit(void) __attribute__((noreturn));
+
+/*
+ * The context switch itself. Called by the scheduler and by nothing else:
+ * choosing the next thread is the dispatch decision of section 11.2, and a
+ * caller naming its own successor would be going around it.
+ */
 void thread_switch_to(struct thread *next);
 
 struct thread *thread_current(void);
