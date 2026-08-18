@@ -52,8 +52,14 @@ ifeq ($(ARCH),aarch64)
 TARGET_TRIPLE   := aarch64-none-elf
 MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mgeneral-regs-only \
                    -DARCH_NAME=\"aarch64\"
-KERN_CFLAGS     := $(MACHINE_CFLAGS)
-USER_CFLAGS     := $(MACHINE_CFLAGS)
+# -mstrict-align: with the MMU off, aarch64 treats all of memory as
+# Device-nGnRnE, where an unaligned access faults rather than being fixed
+# up in hardware. Without it the compiler may merge two adjacent 32-bit
+# struct fields into one 64-bit store that is only 4-byte aligned, which
+# faults at boot. Userland runs with no memory protection behind it and
+# has the same constraint. RISC-V gets the flag for the same reason.
+KERN_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align
+USER_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align
 # Must match share/ld/user-aarch64.ld.
 USER_LOAD_ADDR  := 0x40200000
 # Well clear of the kernel image (linked at 0x40080000) and below
@@ -68,8 +74,8 @@ ifeq ($(ARCH),riscv64)
 TARGET_TRIPLE   := riscv64-none-elf
 MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mcmodel=medany \
                    -DARCH_NAME=\"riscv64\"
-KERN_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64gc -mabi=lp64d
-USER_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64imac -mabi=lp64
+KERN_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64gc -mabi=lp64d -mstrict-align
+USER_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64imac -mabi=lp64 -mstrict-align
 # Must match share/ld/user-riscv64.ld.
 USER_LOAD_ADDR  := 0x80200000
 # Well clear of the kernel image (linked at 0x80000000) and below

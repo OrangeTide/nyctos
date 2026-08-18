@@ -30,10 +30,14 @@ reads a file.
 - A project-owned libc and C runtime startup object.
 - A read-only RAM disk built at compile time by a host tool.
 - A kernel-internal VFS with one filesystem behind it.
+- Static object pools with generation-checked identifiers, and the console
+  formatting and panic path needed to report on them. Stage 1 of milestone 1.
 
 This shares its build system and its architecture support with the design, and
-almost nothing else. There is no scheduler, no IPC, no handle table, no
-timelines, and no MMU. Userland is one process, and it is the only process.
+almost nothing else. There is no scheduler, no IPC, no handle table, and no
+MMU. The object pools exist but the objects themselves are still empty
+structures, filled in by the stage that gives each type its behaviour.
+Userland is one process, and it is the only process.
 
 **Three files contradict the design and are known to be temporary.**
 `sys/kern/vfs.c`, `sys/kern/ramfs.c` and `sys/kern/kern_file.c` put the
