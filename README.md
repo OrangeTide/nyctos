@@ -59,7 +59,7 @@ work first.
 | File | What it holds |
 | --- | --- |
 | `docs/design.md` | The intended system, in detail. Builds to `nyctos.pdf`. |
-| `docs/ROADMAP.md` | What exists, what is next, and in what order. |
+| `docs/ROADMAP.md` | Milestones, the plan, and what would change it. |
 | `docs/PROPOSALS.md` | Deliberately not built, with the reasoning kept. |
 | `docs/CODING_STYLE.md` | C style: KNF variant, 4-space indent, no tabs. |
 | `docs/TODO.md` | Notes on the document build toolchain. |
