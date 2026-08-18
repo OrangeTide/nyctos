@@ -1,0 +1,168 @@
+# Index terms for the Nyctos document.
+#
+# One entry per line:
+#
+#     Display Name = pattern|pattern|pattern
+#
+# The right-hand side is a lowercase Lua pattern matched against each block
+# with a word boundary either side. Omit it and the display name is used,
+# lowercased. Comments and blank lines are ignored.
+#
+# Lua patterns are not regular expressions: there is no alternation inside a
+# pattern, which is what the "|" separated list is for, and "-" is a modifier
+# rather than a literal, so a hyphen must be written inside a set as [-].
+#
+# A term earns a section if it appears there more than once, or appears in one
+# of its headings, or occurs in that section and nowhere else. No entry keeps
+# more than five references, and the heaviest section is set bold. Code blocks
+# are not counted, so section 23 does not swamp the prose.
+#
+# The list is deliberately in two halves. Terminology particular to Nyctos is
+# what a reader cannot look up anywhere else and has to be able to find here.
+# Standard operating system terminology is indexed only where this document
+# says something specific about it, which is why "scheduler" is absent and
+# "cohort scheduling node" is present.
+
+# ===========================================================================
+# Terminology particular to Nyctos
+# ===========================================================================
+
+# --- the protection model
+Gradient protection model @6 = gradient|protection model|protection models
+Tier 0 = tier 0
+Tier 1 = tier 1
+Tier 2 = tier 2
+Uniform memory contract @6 = uniform memory contract|uniform memory
+System page @6 = system page|syspage
+
+# --- objects and authority
+Handle @7 = handle|handles
+Handle table @7 = handle table|handle tables
+Rights mask @7 = rights mask|rights masks
+Attenuation @7 = attenuate|attenuates|attenuated|attenuation
+Handle transfer by move @7 = transfer by move|move invalidates|moved rather than copied
+Static object pool @8 = object pool|object pools|static pool|static pools
+Ambient authority @20 = ambient authority|ambient root|ambient permission|ambient filesystem
+
+# --- timelines
+Timeline @9 = timeline|timelines
+Fence @9 = fence|fences
+Completion timeline @10 = completion timeline|completion timelines
+Error propagation @9 = error propagation|propagates the error|abandon|abandoned|abandonment
+Merge, absence of @9 = no merge|merge operation|fence_wait_multi
+
+# --- messages and events
+Pulse @13 = pulse|pulses
+Channel @12 = channel|channels
+Rendezvous @12
+Reply addressing @12 = reply address|reply addressing|reply token|reply path
+Blocking invariant @5 = blocking invariant|blocked on at most one|blocks on exactly one
+Cancellation @10 = cancel|cancels|cancelled|cancellation
+
+# --- scheduling
+Dispatch decision @11 = dispatch decision|dispatch|dispatched
+Real-time band @11 = real-time band|sys_prio_rt_min
+Idle @11 = idle
+Priority donation @9 = donation|donate|donates|donated|donating
+Cohort scheduling node @11 = scheduling node|scheduling nodes|scheduling tree
+Reentrancy mode @10 = reentrancy|reentrant
+Partitioned scheduling @11 = partitioned|partition|partitions
+
+# --- the submission engine
+Submission engine @17 = submission engine|submission engines|submission
+Batch @17 = batch|batches
+Op flavors @17 = op flavor|op flavors|issuing op|issuing ops|blocking op|blocking ops
+Chaining @17 = chaining|chained|chain of ops
+
+# --- cohorts and namespaces
+Cohort @18 = cohort|cohorts
+Cohort fault recovery @18 = fault recovery|restart policy|recovery unit
+Supervision @18 = supervisor|supervisors|supervision|supervise|supervises
+Namespace @20 = namespace|namespaces
+Handle-relative naming @20 = handle-relative|relative to a directory handle|no absolute path
+
+# ===========================================================================
+# Standard operating system terminology
+# ===========================================================================
+
+# --- structure
+Process @10 = process|processes
+Thread @10 = thread|threads
+Address space @6 = address space|address spaces
+Capability = capability|capabilities
+Protection domain @18 = protection domain|protection domains
+Kernel heap, absence of @8 = kernel heap
+
+# --- the kernel boundary
+System call @23 = system call|system calls|syscall|syscalls
+Trap @23 = trap|traps
+Introspection @22 = introspection|introspect|introspects
+Conformance @24
+
+# --- lifecycle
+Thread creation @10 = thread creation|sys_thread_create|creator supplies the stack
+Stack @10 = stack|stacks
+Fork, absence of @10 = fork
+Thread-local storage @10 = thread-local storage|thread-local
+Spawn @10 = spawn|spawns|spawned|spawning
+Exit and join @10 = exit|exits|exited|join|joins|joined
+Program loading @15 = program load|program loading|elf
+Boot @8 = boot|boots|booted
+
+# --- IPC
+IPC @12
+Receive queue @12 = receive queue|receive queues
+Ready queue @11 = ready queue|ready queues
+Futex @21 = futex|futexes
+
+# --- real time
+Tick, absence of @14 = tick|ticks|tickless|periodic timer interrupt
+Priority inheritance @12
+Priority inversion @12
+Deadline @14 = deadline|deadlines
+Preemption = preempt|preempts|preempted|preemption|preemptible|preemptibility
+Context switch @24 = context switch|context switches
+Interrupt @13 = interrupt|interrupts|interrupted
+Interrupt service routine @13 = isr|interrupt service routine
+Interrupt latency @13 = interrupt latency|latency, stated per tier
+Inter-processor interrupt @11 = ipi|inter-processor interrupt
+Timer @14 = timer|timers
+Monotonic time @14 = monotonic
+Calendar time @14 = calendar time|utc
+Worst-case execution time = wcet|worst-case execution
+
+# --- memory
+MMU
+MPU
+Grant @15 = grant|grants|granted|granting
+Mapping @15 = mapping|mapped|maps
+Demand paging @15 = demand paging|demand-paged
+Pager @15 = pager|pagers
+Pager chain @15 = pager chain|pager chains
+Page fault @15 = page fault|page faults
+Fault message @15 = fault message|faults are messages|fault as ipc
+
+# --- devices
+DMA
+Scatter-gather @18 = scatter-gather
+Zero-copy @18 = zero-copy
+Deadlock = deadlock|deadlocks
+
+# --- faults
+Fault kinds @16 = fault kind|fault kinds|sys_fault_
+Fault handler @16 = fault handler|fault handlers
+Stack overflow @16 = stack overflow
+Access fault @16 = access fault|sys_fault_access
+Illegal instruction @16 = illegal instruction|undefined instruction|sys_fault_instruction
+Alignment fault @16 = alignment fault|sys_fault_align
+External abort @16 = external abort|bus error|sys_fault_external
+Debug fault @16 = breakpoint|watchpoint|sys_fault_debug
+
+# --- writing a driver
+Driver @19 = driver|drivers
+Device registers @19 = device register|device registers|memory-mapped
+Restart policy @19 = reprogram its device|restart policy
+
+# --- resource containers (section 25 is not normative)
+Resource container @25 = resource container|resource containers|container|containers
+Quota @25 = quota|quotas

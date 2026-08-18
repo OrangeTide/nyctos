@@ -1,0 +1,4 @@
+_out/
+.vscode/
+*.o
+*.elf

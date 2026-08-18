@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: 0BSD OR Apache-2.0
+#
+# Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+#
+# Builds one architecture per invocation, selected via ARCH (default in
+# share/mk/nyc.own.mk). To build a different architecture, re-invoke make:
+#   make ARCH=riscv64
+#   make ARCH=riscv64 run
+#   make ARCH=riscv64 clean
+
+TOPDIR := $(CURDIR)
+export TOPDIR
+
+include $(TOPDIR)/share/mk/nyc.own.mk
+
+# Order matters: libc and crt1 must exist before /bin/motd links against
+# them; /bin/motd and mkfsimg must both exist before sys builds the
+# initramfs image QEMU loads alongside the kernel.
+SUBDIR := lib bin tools sys
+
+.PHONY: all clean cleandir run gh-pages
+
+all clean:
+	@for d in $(SUBDIR); do $(MAKE) -C $$d $@ || exit $$?; done
+
+run: all
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) \
+		-device loader,file=$(INITRAMFS_IMG),addr=$(INITRAMFS_ADDR)
+
+# Removes every architecture's build products, not just this one's.
+cleandir:
+	rm -rf $(TOPDIR)/_out
+
+# Builds docs/site (see docs/Makefile) and publishes it to the gh-pages
+# branch; see scripts/deploy-gh-pages.sh for what "publishes" means.
+gh-pages:
+	$(TOPDIR)/scripts/deploy-gh-pages.sh

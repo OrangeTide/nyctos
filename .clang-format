@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: 0BSD OR Apache-2.0
+#
+# Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+#
+# Encodes the conventions from docs/CODING_STYLE.md. See that document,
+# in particular "Function declarations: return type placement" and
+# "Tooling", for the rationale behind these settings.
+
+BasedOnStyle: LLVM
+IndentWidth: 4
+ContinuationIndentWidth: 2
+UseTab: Never
+ColumnLimit: 80
+AlwaysBreakAfterReturnType: TopLevelDefinitions
+AllowShortFunctionsOnASingleLine: Inline
+BreakBeforeBraces: Stroustrup
