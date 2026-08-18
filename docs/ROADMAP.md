@@ -25,16 +25,25 @@ A cross-compiled kernel that boots under QEMU on aarch64 and riscv64,
 initialises its object pools, reports them, and powers the machine off.
 
 - Boot to a known state on both architectures.
-- Static object pools with generation-checked identifiers. Stage 1 of
-  milestone 1.
+- Static object pools with generation-checked identifiers. Stage 1.
+- Kernel threads and the context switch, with a guard word below each
+  kernel stack. No scheduler: a thread runs until it names its successor.
+  Stage 2.
 - Console output with a small formatter, `panic`, and a halt path that ends
   the machine rather than spinning.
 - A project-owned libc and C runtime startup object.
 - A trap path and an unprivileged-mode entry, neither of them reached.
 
+Kernel object memory went from 6720 bytes to 271424 the moment threads
+carried their own stacks, and 266240 of that is stack. That is the property
+in section 8 doing its job rather than a problem: the number is a
+consequence of `SYS_MAX_THREADS` and `SYS_KSTACK_SIZE` and of nothing a
+program can do. It does say the defaults are guesses, and that sixty-four
+threads at four kilobytes is not a Tier 0 configuration.
+
 This shares its build system and its architecture support with the design,
-and almost nothing else. There is no scheduler, no IPC, no handle table, and
-no MMU. The object pools exist but the objects themselves are still empty
+and little else. There is no scheduler, no IPC, no handle table, and no
+MMU. The object pools exist but the objects themselves are still empty
 structures, filled in by the stage that gives each type its behaviour.
 
 **The banner demo is gone.** `/bin/motd`, the host tool that built its RAM

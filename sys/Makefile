@@ -12,10 +12,13 @@ SRCS := arch/$(ARCH)/boot.S \
         arch/$(ARCH)/exception.S \
         arch/$(ARCH)/halt.c \
         arch/$(ARCH)/machdep.S \
+        arch/$(ARCH)/swtch.S \
+        arch/$(ARCH)/thread_md.c \
         arch/$(ARCH)/uart.c \
         kern/init_main.c \
         kern/kern_object.c \
         kern/kern_syscall.c \
+        kern/kern_thread.c \
         kern/subr_mem.c \
         kern/subr_pool.c \
         kern/subr_prf.c

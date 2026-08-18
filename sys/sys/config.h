@@ -35,4 +35,12 @@
  * limits the system page publishes. The handle table arrives in stage 4. */
 #define SYS_MAX_HANDLES_PER_PROC  64
 
+/*
+ * Kernel stack per thread, carried inside the thread object per section 28.
+ * This dominates kernel memory: at the thread count above it is two orders
+ * of magnitude larger than every other pool combined. It is a guess, and
+ * the first thing to revisit once anything real runs on one.
+ */
+#define SYS_KSTACK_SIZE         4096
+
 #endif /* _SYS_CONFIG_H_ */

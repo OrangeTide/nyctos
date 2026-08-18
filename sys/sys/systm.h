@@ -23,6 +23,9 @@ void cnvprintf(const char *fmt, __builtin_va_list ap);
 void panic(const char *fmt, ...) __attribute__((noreturn))
   __attribute__((format(printf, 1, 2)));
 
+/* sys/kern/kern_thread.c */
+void thread_exited(void) __attribute__((noreturn));
+
 /* sys/kern/subr_mem.c */
 void *memset(void *dst, int c, size_t len);
 void *memcpy(void *dst, const void *src, size_t len);

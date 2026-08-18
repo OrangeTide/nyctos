@@ -22,15 +22,11 @@
 #define _SYS_OBJECT_H_
 
 #include <sys/pool.h>
+#include <sys/thread.h>
 
 /* Stage 9: address space, handle table, threads. */
 struct proc {
     sys_id_t p_id;
-};
-
-/* Stage 2: register context, kernel stack, scheduler links. */
-struct thread {
-    sys_id_t t_id;
 };
 
 /* Stage 8: receive queue, owner, pulse queue. */
