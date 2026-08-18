@@ -1,61 +1,114 @@
 # Nyctos
 
-A minimal, cross-compiled operating system targeting both **AArch64** and
-**RISC-V64**, built on macOS and run under QEMU. It builds a kernel, its
-own C library, and the userland programs that run on top of them, all from
-one source tree laid out in the BSD tradition (`sys`, `lib`, `bin`,
-`include`, `share`).
+A microkernel operating system, built to be read.
 
-The first userland program, `/bin/motd`, prints the project banner and
-exits — but it does so as an unprivileged program, calling into libc,
-which traps into the kernel, which drives the UART.
+Nyctos is designed so that the same application-level interface runs whether
+or not the hardware has a memory management unit. Flat memory and a full MMU
+are two levels of *enforcement* of one set of rules, not two systems. A
+correct program behaves identically on both, and what changes is whether the
+hardware can catch an incorrect one.
 
-## Goals
+Above that sit synchronous message passing with priority inheritance,
+per-process namespaces assembled in the C library rather than in the kernel,
+and a filesystem that is a protocol rather than a layer. File systems, device
+drivers, pagers, loaders and supervisors are all ordinary processes.
 
-- Build a freestanding ELF kernel image for two different target
-  architectures from the same macOS host, using Homebrew-provided tools
-  only.
-- Build a project-owned C library and C runtime startup object, and link
-  userland programs against them.
-- Boot each image directly in QEMU's `virt` machine, drop to unprivileged
-  mode, and let a userland program print the banner over the serial
-  console, proving that:
-  - the cross compiler/assembler produces correct machine code for the
-    target,
-  - the linker scripts place kernel and userland at the addresses each is
-    actually loaded and executed at,
-  - the privilege transition and system call path work in both
-    directions,
-  - the emulator's memory map and UART model match what the kernel code
-    assumes.
-- Keep the build entirely driven by a GNU Make-based build system with
-  shared `share/mk` fragments, selecting the target architecture via a
-  single `ARCH` variable, with binaries and intermediaries for each
-  architecture kept in their own output directory.
+The most speculative part is the submission engine: a thread can hand the
+kernel an ordered array of operations whose dependencies are expressed as
+fences rather than as control flow, executed in the submitting thread's own
+context at its own priority, with no worker pool anywhere. It is kept
+deliberately separable, because it is novel enough to be worth being wrong
+about.
 
-## Non-goals
+**The design is not built yet.** `docs/design.md` describes the intended
+system in detail and nothing in it has been implemented or measured. What
+currently runs is much smaller than what is described there, and the gap is
+deliberate rather than hidden.
 
-This is intentionally *not* a general-purpose operating system yet. There
-is no MMU/paging setup, no interrupt handling, no scheduler, no multi-core
-support (secondary cores are parked), and no dynamic memory. Privilege
-separation exists (userland runs at EL0 / U-mode) but is not backed by
-memory protection, since the MMU is off and RISC-V PMP is configured
-permissively. There is a file system, but it is read-only, has no
-subdirectories, and is built once at compile time rather than written to
-at runtime. It's a starting point to build further OS experiments on top
-of.
+## Status
+
+What works today: a cross-compiled kernel that boots under QEMU on AArch64 and
+RISC-V64, drops to unprivileged mode, and runs a single userland program that
+prints a banner and reads a file through the system call path.
+
+What does not exist yet: the scheduler, IPC, handles, timelines, the MMU, and
+every process beyond the first. There is a VFS, but it is inside the kernel,
+which is the opposite of the design and is known to be temporary.
+
+`docs/ROADMAP.md` names the first milestone and the order of work. It is one
+vertical slice, deliberately small: one thread, one channel, one driver, one
+file read. That is the thinnest path that exercises handles, message passing
+and the filesystem protocol together, and the smallest thing that could show
+the design to be wrong.
+
+## Why it is shaped this way
+
+The long-term intent is a system that can be read end to end and explained,
+in the tradition of the Lions commentary and xv6, covering the userland
+utilities as well as the kernel. That intent is not a deliverable and there
+is no book being written. It is a constraint on the code: small functions,
+a complete system rather than a kernel alone, and a standing refusal of scope
+creep. Ideas that do not fit are recorded in `docs/PROPOSALS.md` rather than
+built.
+
+Nothing here has earned the right to teach anyone anything yet. It has to
+work first.
+
+## Documentation
+
+| File | What it holds |
+| --- | --- |
+| `docs/design.md` | The intended system, in detail. Builds to `nyctos.pdf`. |
+| `docs/ROADMAP.md` | What exists, what is next, and in what order. |
+| `docs/PROPOSALS.md` | Deliberately not built, with the reasoning kept. |
+| `docs/CODING_STYLE.md` | C style: KNF variant, 4-space indent, no tabs. |
+| `docs/TODO.md` | Notes on the document build toolchain. |
 
 ## Requirements
 
-- macOS (Apple Silicon or Intel) with [Homebrew](https://brew.sh) installed.
-- Homebrew LLVM (`clang`), which can cross-compile and assemble for
-  arbitrary targets — including `aarch64-none-elf` and `riscv64-none-elf` —
-  without needing a separate GCC cross-toolchain per architecture.
-- Homebrew LLD (`ld.lld`), the linker used for both targets. As of recent
-  Homebrew versions this ships as its own formula, separate from `llvm`.
-- QEMU (`qemu-system-aarch64`, `qemu-system-riscv64`), for emulating both
-  target machines.
-- GNU Make, to drive the build (ships with the Xcode Command Line Tools).
+The build runs on **Linux** or on **macOS with [Homebrew](https://brew.sh)**.
+Windows with Chocolatey is a plausible third host and is not supported yet.
+
+Whatever the host, four things are needed:
+
+- **Clang/LLVM**, which cross-compiles and assembles for arbitrary targets,
+  including `aarch64-none-elf` and `riscv64-none-elf`, without a separate GCC
+  cross-toolchain per architecture.
+- **LLD** (`ld.lld`), the linker used for both targets.
+- **QEMU** (`qemu-system-aarch64`, `qemu-system-riscv64`).
+- **GNU Make**.
+
+[share/mk/nyc.own.mk](share/mk/nyc.own.mk) locates the toolchain itself. If
+`brew` is present it asks Homebrew where its keg-only LLVM and LLD live;
+otherwise it takes `clang`, `llvm-ar`, `llvm-objcopy` and `ld.lld` from
+`PATH`. No manual `PATH` or shell profile changes are required on either host.
+
+## Linux setup
+
+Install the toolchain with the system package manager:
+
+```sh
+# Debian / Ubuntu
+sudo apt install clang lld make qemu-system-arm qemu-system-misc
+
+# Fedora
+sudo dnf install clang lld make qemu-system-aarch64 qemu-system-riscv
+
+# Arch
+sudo pacman -S clang lld make qemu-system-aarch64 qemu-system-riscv
+```
+
+Verify:
+
+```sh
+clang --version && ld.lld --version
+qemu-system-aarch64 --version
+qemu-system-riscv64 --version
+```
+
+For debugging, `gdb-multiarch` (Debian/Ubuntu) or the distribution's plain
+`gdb` built with multiarch support understands both targets and can attach to
+QEMU's gdbstub.
 
 ## macOS setup
 
@@ -99,10 +152,8 @@ of.
    through kernel boot code instruction by instruction.
 
 Homebrew keeps LLVM and LLD "keg-only" (not linked onto `PATH`) because they
-would shadow Apple's own clang, so
-[share/mk/nyc.own.mk](share/mk/nyc.own.mk) locates them itself via
-`brew --prefix llvm` / `brew --prefix lld` — no manual `PATH` or shell
-profile changes are required.
+would shadow Apple's own clang, which is why the build asks `brew` where they
+are rather than trusting `PATH`.
 
 ## Project layout
 
@@ -115,9 +166,9 @@ build utilities, `etc` holds data files staged onto the initramfs, and
 ```
 .
 ├── Makefile                 # top level: recurses into lib, bin, tools, sys in that order
-├── LICENSE                  # Apache-2.0 license text
+├── LICENSES/                # Apache-2.0 and 0BSD license texts
 ├── _out/                    # generated: <target-triplet>/ mirroring the source tree
-├── docs/                    # design notes, coding style, AI prompt log
+├── docs/                    # design, roadmap, proposals, coding style
 ├── etc/
 │   └── motd                 # a data file staged onto the initramfs, read by /bin/motd
 ├── share/
@@ -312,9 +363,7 @@ landed without needing a devicetree lookup.
 All C and assembly source in this project follows the style guide in
 [docs/CODING_STYLE.md](docs/CODING_STYLE.md), a variant of the FreeBSD
 kernel style(9) guide with 4-space indentation, 2-space continuation
-lines, no hard tabs, and an Apache-2.0 default license.
-
-## License
+lines, and no hard tabs.
 
 ## Licensing
 
@@ -344,13 +393,11 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-Ideas for extending this now that the kernel, libc, userland, and a
-minimal filesystem are proven out:
-- MMU/paging setup and a proper virtual memory layout, so the privilege
-  separation is backed by real memory protection.
-- An interrupt controller driver (GICv3 / PLIC) and a timer.
-- A serial console input path (read side of the UART) and a shell in
-  `bin/`.
-- More of libc: `printf`, `malloc`, and the rest of `string.h`.
-- Subdirectories, a real writable filesystem, and more system calls
-  (`write` to a file, `stat`, `lseek`, `unlink`).
+See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is the vertical
+slice: one thread, one channel, one driver, one file read, with the driver
+as a separate process rather than kernel code.
+
+The bring-up order that gets there is in the same file. It puts timelines
+before IPC, which looks wrong and is not: interrupts and timers depend on
+timelines and not on message passing, so building them first gets the
+system responding to hardware several stages earlier.
