@@ -27,13 +27,27 @@ deliberate rather than hidden.
 
 ## Status
 
-What works today: a cross-compiled kernel that boots under QEMU on AArch64 and
-RISC-V64, drops to unprivileged mode, and runs a single userland program that
-prints a banner and reads a file through the system call path.
+What works today: a cross-compiled kernel that boots under QEMU on AArch64
+and RISC-V64, initialises its static object pools, reports what they cost,
+and powers the machine off.
 
-What does not exist yet: the scheduler, IPC, handles, timelines, the MMU, and
-every process beyond the first. There is a VFS, but it is inside the kernel,
-which is the opposite of the design and is known to be temporary.
+```
+Nyctos/aarch64 kernel booting
+pools: invariants ok
+pools:
+  proc: 16 slots, 8 bytes each, 384 bytes total
+  ...
+  kernel object memory: 6720 bytes
+stage 1 complete
+```
+
+What does not exist yet: the scheduler, IPC, handles, timelines, the MMU,
+and every process beyond the first. The object pools are real but the
+objects in them are still empty structures.
+
+The banner demo that used to run at boot is no longer reached. It proved a
+system call worked before there was anything else; the vertical slice
+replaces that path rather than extending it.
 
 `docs/ROADMAP.md` names the first milestone and the order of work. It is one
 vertical slice, deliberately small: one thread, one channel, one driver, one
@@ -43,16 +57,27 @@ the design to be wrong.
 
 ## Why it is shaped this way
 
-The long-term intent is a system that can be read end to end and explained,
-in the tradition of the Lions commentary and xv6, covering the userland
-utilities as well as the kernel. That intent is not a deliverable and there
-is no book being written. It is a constraint on the code: small functions,
-a complete system rather than a kernel alone, and a standing refusal of scope
-creep. Ideas that do not fit are recorded in `docs/PROPOSALS.md` rather than
-built.
+Two long-term aims constrain the code without being deliverables. Section
+1.4 of `docs/design.md` states both, and the second more carefully.
 
-Nothing here has earned the right to teach anyone anything yet. It has to
-work first.
+The first is a system that can be read end to end, kernel and userland
+alike, in the tradition of the Lions commentary and xv6. That is why
+functions are small, why the whole system matters rather than the kernel
+alone, and why ideas that do not fit are recorded in `docs/PROPOSALS.md`
+rather than built.
+
+The second is per-process environment isolation, in the spirit of Qubes OS
+but at a fraction of the weight. **It adds nothing.** No ambient authority,
+no global filesystem root, a memory contract that transfers rather than
+shares, explicit protection domains, and a build-time-fixed set of processes
+are all already in the design for other reasons, and together they are most
+of what that property means. There is no hypervisor here and no promise of
+one: Nyctos isolates processes, not machines. If the aim ever seems to need
+a mechanism that is not already designed, the aim gets re-examined rather
+than the design extended.
+
+Neither is being written up, and neither is scheduled. Nothing here has
+earned the right to teach anyone anything yet. It has to work first.
 
 ## Documentation
 

@@ -79,31 +79,14 @@ syscall_handler(long num, long a0, long a1, long a2)
     }
 }
 
-static void
-print_hex(unsigned long v)
-{
-    static const char digits[] = "0123456789abcdef";
-    char buf[19];
-    int i;
-
-    buf[0] = '0';
-    buf[1] = 'x';
-    for (i = 0; i < 16; i++) {
-        buf[2 + i] = digits[(v >> ((15 - i) * 4)) & 0xf];
-    }
-    buf[18] = '\0';
-    cnputs(buf);
-}
-
 void
 trap_fatal(unsigned long cause, unsigned long pc)
 {
-    cnputs("\nfatal trap: cause=");
-    print_hex(cause);
-    cnputs(" pc=");
-    print_hex(pc);
-    cnputs("\nsystem halted\n");
-    for (;;) {
-        /* Nothing left to do. */
-    }
+    /*
+     * Once processes exist, an unhandled trap terminates the faulting
+     * process and the system carries on; that is what section 16 of
+     * design.md means by fatal by default. There is nothing but the kernel
+     * to fault right now, so every trap is a kernel bug.
+     */
+    panic("unhandled trap: cause=0x%lx pc=0x%lx", cause, pc);
 }

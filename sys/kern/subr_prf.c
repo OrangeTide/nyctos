@@ -154,9 +154,16 @@ cnprintf(const char *fmt, ...)
 }
 
 /*
- * Stop. There is no scheduler to hand control to and nothing to unwind, so
- * a panic prints and spins. Halting rather than resetting is deliberate
- * while bringing the system up: the message stays on the console.
+ * The kernel has decided it cannot continue: print, then stop the machine.
+ *
+ * A panic is for a broken kernel invariant, and for the death of a process
+ * the system cannot run without. An ordinary process failing is not a
+ * panic; it terminates that process and the system carries on. Section 16
+ * of design.md draws the same line for faults.
+ *
+ * Stopping means powering the machine off rather than spinning. A hang has
+ * to be noticed by a human watching a console, whereas an exit is
+ * observable by whatever started the machine.
  */
 void
 panic(const char *fmt, ...)
@@ -169,7 +176,5 @@ panic(const char *fmt, ...)
     va_end(ap);
     cnputs("\n");
 
-    for (;;) {
-        /* nothing */
-    }
+    machine_halt(1);
 }

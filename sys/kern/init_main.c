@@ -15,5 +15,12 @@ kernel_main(void)
     object_check();
     object_report();
 
-    exec_user();
+    /*
+     * Stage 1 ends here. Later stages put a scheduler, then message
+     * passing, then a driver process behind this point. Until one of them
+     * exists there is nothing to hand control to, so the machine stops
+     * rather than spinning.
+     */
+    cnputs("stage 1 complete\n");
+    machine_halt(0);
 }

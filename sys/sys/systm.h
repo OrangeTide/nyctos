@@ -37,4 +37,8 @@ void trap_fatal(unsigned long cause, unsigned long pc) __attribute__((noreturn))
 /* sys/arch/<arch>/machdep.S */
 void enter_user(unsigned long entry) __attribute__((noreturn));
 
+/* sys/arch/<arch>/halt.c */
+void machine_halt(int status) __attribute__((noreturn));
+void machine_reset(void) __attribute__((noreturn));
+
 #endif /* _SYS_SYSTM_H_ */

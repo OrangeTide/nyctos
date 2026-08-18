@@ -21,33 +21,36 @@ nothing else.
 
 ## 1. What Exists Today
 
-A cross-compiled kernel that boots under QEMU on aarch64 and riscv64, drops to
-unprivileged mode, and runs a single userland program that prints a banner and
-reads a file.
+A cross-compiled kernel that boots under QEMU on aarch64 and riscv64,
+initialises its object pools, reports them, and powers the machine off.
 
-- Boot to unprivileged mode on both architectures.
-- A system call trap path in both directions.
+- Boot to a known state on both architectures.
+- Static object pools with generation-checked identifiers. Stage 1 of
+  milestone 1.
+- Console output with a small formatter, `panic`, and a halt path that ends
+  the machine rather than spinning.
 - A project-owned libc and C runtime startup object.
-- A read-only RAM disk built at compile time by a host tool.
-- A kernel-internal VFS with one filesystem behind it.
-- Static object pools with generation-checked identifiers, and the console
-  formatting and panic path needed to report on them. Stage 1 of milestone 1.
+- A system call trap path, an unprivileged-mode entry, a read-only RAM disk
+  and a kernel-internal VFS, all left over from the banner demo that
+  preceded this work.
 
-This shares its build system and its architecture support with the design, and
-almost nothing else. There is no scheduler, no IPC, no handle table, and no
-MMU. The object pools exist but the objects themselves are still empty
+This shares its build system and its architecture support with the design,
+and almost nothing else. There is no scheduler, no IPC, no handle table, and
+no MMU. The object pools exist but the objects themselves are still empty
 structures, filled in by the stage that gives each type its behaviour.
-Userland is one process, and it is the only process.
 
-**Three files contradict the design and are known to be temporary.**
-`sys/kern/vfs.c`, `sys/kern/ramfs.c` and `sys/kern/kern_file.c` put the
-filesystem inside the kernel. The design makes the filesystem a protocol served
-by an ordinary process. They stay until milestone 1 replaces them, because
-something has to serve files before any driver process exists, and they should
-not be mistaken for the intended shape.
+**The banner demo is no longer on the boot path.** `/bin/motd`, the loader
+that ran it, and the in-kernel filesystem behind it are still in the tree and
+still compile, but nothing reaches them. They were how the tree proved a
+system call worked before there was anything else; the vertical slice
+replaces that path rather than extending it, so they are dead weight to be
+removed rather than a demo to keep working.
 
----
-
+**Four files contradict the design and are known to be temporary.**
+`sys/kern/vfs.c`, `sys/kern/ramfs.c`, `sys/kern/kern_file.c` and
+`sys/kern/kern_exec.c` put the filesystem and the program loader inside the
+kernel. The design makes both ordinary processes. They should not be
+mistaken for the intended shape.
 ## 2. How This Plan Is Organised
 
 Four rules shape the ordering, and they are worth stating because they explain
@@ -406,8 +409,9 @@ Named here so that they stay named rather than drifting in.
   interrupt controller variation, clock and PHY bring-up, and cache maintenance
   for non-coherent DMA. None of it is interesting until the system works on the
   emulator.
-- Writing any of this up as teaching material. That is the long-term reason the
-  system is built the way it is, and it constrains the code today: small
-  functions, a complete system rather than a kernel alone, and a refusal of
-  scope creep. It is not a deliverable and will not become one until the system
-  works.
+- Writing any of this up as teaching material, and the per-process isolation
+  aim that section 1.4 of `design.md` describes. Both are long-term reasons
+  the system is built the way it is, and both constrain the code today. The
+  isolation aim in particular adds no work, because it is to be reached with
+  mechanisms already designed; if it ever appears to need a new one, the aim
+  is re-examined rather than the design extended. Neither is a deliverable.

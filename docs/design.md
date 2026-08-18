@@ -50,6 +50,49 @@ The roadmap names the milestone at which these questions get answered, and it is
 
 ---
 
+### 1.4 Where This Is Going
+
+Two long-term aims shape the design without appearing in it as features.
+Neither is scheduled, and neither adds a mechanism.
+
+**A system that can be read end to end**, kernel and userland utilities
+alike, in the tradition of the Lions commentary and xv6. This is why
+functions are small, why the whole system matters rather than the kernel
+alone, and why scope creep is refused rather than accommodated.
+
+**Per-process environment isolation**, in the spirit of Qubes OS but at a
+fraction of the weight. This one is worth spelling out, because it reads
+like a feature request and is not one. Qubes separates work into domains and
+makes every crossing between them explicit and reviewable. The mechanisms
+that produce that property are already here, and are here for other reasons:
+
+- No ambient authority. A process reaches exactly what its parent placed in
+  its handle table, and the kernel grants nothing on request (section 7).
+- No global filesystem root and no absolute paths, so a process's view of
+  the world is composed for it at launch rather than discovered by it
+  (sections 20, 20.4).
+- The memory move contract, so a buffer handed across a boundary is not
+  shared but transferred, enforced by hardware at Tier 2 (section 6.1).
+- Cohorts, which make a protection and failure domain an explicit build-time
+  decision rather than an accident of linkage (section 18).
+- Static configuration, so which processes exist and what each may reach is
+  fixed when the system is built and can be reviewed as data (section 24.2).
+- Introspection that cannot discover, so a process is observable only by
+  something already holding a handle to it (section 2.9).
+
+**What this aim does not promise.** There is no hypervisor here, no virtual
+machines, no GUI or device isolation behind an IOMMU, and no disposable
+domains. Nyctos isolates processes, not machines, and a domain is a process
+or a cohort rather than a guest operating system. Anything wanting the
+stronger property should use a system built for it.
+
+The constraint on this aim is the useful part: **it is to be reached with
+what is already designed.** If it ever seems to require a mechanism that is
+not here, that is a reason to re-examine the aim, not a licence to extend
+the design.
+
+---
+
 ## 2. The Design
 
 Six ideas, and the cost of holding them.
@@ -1555,6 +1598,19 @@ The ladder, from a child's failure upward:
 5. Reset the board.
 
 **Escalation terminates, and that is the embedded difference.** A multiuser system has no rung 5 and so has no reason to build the ladder. Here root is the last supervisor, and the natural implementation of rung 5 is that root stops petting the hardware watchdog. Root pets it only while the essential set is healthy, so the failure of the escalation path and the failure of root itself produce the same recovery.
+
+
+**Below the ladder there is a kernel rule, and it is not policy.** Root, and
+any process the configuration marks essential, must not terminate. If one
+does, the kernel panics and stops the machine rather than continuing with a
+system that can no longer recover anything. This is not the supervisor
+escalating, because there is no supervisor left to escalate to; it is the
+kernel refusing to run a system whose recovery path has already failed.
+
+It exists because rung 5 assumes a watchdog, and a board without one would
+otherwise sit there with a dead root and no way to notice. Stopping is also
+the more useful failure for a system under development, where a machine that
+exits is observable and a machine that hangs has to be watched.
 
 **Root has no supervisor.** Nothing above it can restart it, and the watchdog is the entire recovery story for a bug inside it. That is the argument for keeping its policy declarative: the code is one loop over a table, small enough to read line by line, and the part that changes per product is data that a build-time checker inspects.
 

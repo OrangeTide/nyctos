@@ -13,6 +13,7 @@ include $(TOPDIR)/share/mk/nyc.own.mk
 
 SRCS := arch/$(ARCH)/boot.S \
         arch/$(ARCH)/exception.S \
+        arch/$(ARCH)/halt.c \
         arch/$(ARCH)/machdep.S \
         arch/$(ARCH)/uart.c \
         kern/init_main.c \
