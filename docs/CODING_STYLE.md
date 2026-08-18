@@ -209,26 +209,66 @@ written when C++ sources are actually added.
   licensing — applies equally to C++ unless a future addendum says
   otherwise.
 
-## Static analysis & standards compliance (MISRA C / AUTOSAR)
+## Function size and factoring
 
-This project does not currently mandate full MISRA C:2012 or AUTOSAR
-C++14 compliance. It is, however, written to stay friendly to the common
-static-analysis tools used to check those standards (for example,
-clang-tidy's `misra-*`/`cert-*` checks, Cppcheck `--addon=misra`, PC-lint
-Plus, or Polyspace Bug Finder). Several rules already in this guide are
-practices those tools commonly flag:
+**Aim for functions under about 25 lines.** This is a soft target, not a
+rule the build enforces. It exists because a function that outgrows it is
+almost always doing two things, and splitting it is almost always an
+improvement.
 
-- Fixed-width `intXX_t`/`uintXX_t` types instead of plain `int`/`long`
-  (see [Declarations](#declarations)).
-- Explicit comparisons against `NULL` and `0` instead of relying on
-  implicit truthiness (see [Declarations](#declarations)).
-- No K&R-style function definitions.
-- One license/copyright convention per file, so provenance-checking tools
-  have a single, predictable header to parse (see [Licensing](#licensing)).
+Build complex operations by composing small, named primitives rather than
+by growing one routine. A primitive that does one thing has an obvious
+name, an obvious test, and an obvious place in a call stack, and the
+composed function that calls four of them reads as a description of the
+algorithm rather than as an implementation of it.
 
-If this project adopts a specific MISRA C or AUTOSAR ruleset formally,
-that will be documented as an addendum here rather than by silently
-changing the rules above.
+Two patterns keep functions short without hiding anything.
+
+**Prefer guard clauses to nested conditionals.** Deep nesting consumes
+vertical space through indentation and braces, and it separates a
+condition from its consequence. An early return puts the rejection next
+to the test that found it and leaves the body flat.
+
+```c
+/* Nesting: the real work is buried, and the error paths sit far from
+   the tests that produce them. */
+int
+process_buf(struct buf *b)
+{
+    if (b != NULL) {
+        if (b->valid) {
+            /* actual work */
+        } else {
+            return (-1);
+        }
+    } else {
+        return (-1);
+    }
+}
+
+/* Guard clauses: flat, and each rejection sits at its test. */
+int
+process_buf(struct buf *b)
+{
+    if (b == NULL || !b->valid)
+        return (-1);
+
+    /* actual work */
+    return (0);
+}
+```
+
+**Bundle transient state into a context struct** rather than threading
+five or six arguments through a call chain. A signature that wraps across
+lines is hard to read and harder to change, and the wrapping tends to
+outlive the reason for it.
+
+Short variable names are fine for short-lived, register-like values in
+small blocks: `p` and `q` for pointers within a few lines, `n` and `len`
+for counts, `i` and `j` for loop indices. They are not fine for anything
+that persists, such as subsystem state, reference counts, or a field
+another reader has to interpret. The rule is scope, not preference: a
+name has to carry meaning exactly as far as the value does.
 
 ## Tooling
 
