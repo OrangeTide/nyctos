@@ -36,6 +36,7 @@ SECTIONS
     }
 
     . = ALIGN(16);
+    _stack_bottom = .;
     . = . + 0x4000; /* 16 KiB boot stack */
     _stack_top = .;
 

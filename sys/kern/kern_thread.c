@@ -25,10 +25,13 @@ thread_current(void)
     return current;
 }
 
+/* Written by the linker script, at the low end of the boot stack. */
+extern char _stack_bottom[];
+
 static void
 check_guard(const struct thread *t)
 {
-    if (t->t_guard != THREAD_GUARD) {
+    if (*t->t_guard != THREAD_GUARD) {
         panic("thread %s: kernel stack overflowed", t->t_name);
     }
 }
@@ -57,7 +60,13 @@ thread_bootstrap(const char *name)
     t->t_id = pool_id_of(thread_pool(), t);
     t->t_name = name;
     t->t_state = THREAD_RUNNING;
-    t->t_guard = THREAD_GUARD;
+
+    /*
+     * The guard goes at the bottom of the boot stack, not into the object,
+     * because that is the stack this context actually runs on.
+     */
+    t->t_guard = (uint64_t *)(void *)_stack_bottom;
+    *t->t_guard = THREAD_GUARD;
 
     /*
      * No stack is prepared. This context is already running on the stack
@@ -80,7 +89,8 @@ thread_create(const char *name, void (*entry)(void *), void *arg)
     t->t_id = pool_id_of(thread_pool(), t);
     t->t_name = name;
     t->t_state = THREAD_READY;
-    t->t_guard = THREAD_GUARD;
+    t->t_guard = (uint64_t *)(void *)t->t_stack;
+    *t->t_guard = THREAD_GUARD;
 
     md_thread_init(t, entry, arg);
 

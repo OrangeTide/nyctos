@@ -14,12 +14,18 @@
  * it in the same allocation as the object. That is what happens here: the
  * stack is the tail of the structure.
  *
- * The guard word sits immediately below the stack, so that an overflow runs
- * into it before it reaches any field. On Tier 0 there is no hardware to
- * catch the write, which is exactly what section 10.2 says about the weaker
- * tier being unable to catch its own violations. A word that can be checked
- * on every switch is the most that can be done here, and it turns silent
- * corruption into a message.
+ * A guard word sits immediately below every thread stack, so that an
+ * overflow runs into it before it reaches anything else. On Tier 0 there is
+ * no hardware to catch the write, which is exactly what section 10.2 says
+ * about the weaker tier being unable to catch its own violations. A word
+ * checked on every switch is the most that can be done here, and it turns
+ * silent corruption into a message.
+ *
+ * The guard is reached through a pointer rather than read out of the object
+ * directly, because the boot context runs on the stack the linker script
+ * laid out rather than on one of these. Without the indirection its guard
+ * would sit in an object that nothing writes past, and would never fire
+ * however badly the boot stack overflowed.
  *
  * There is no scheduler yet. A thread runs until it names its successor.
  */
@@ -30,6 +36,7 @@
 #include <sys/config.h>
 #include <sys/pool.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define THREAD_GUARD    ((uint64_t)0x9e3779b97f4a7c15ULL)
@@ -59,14 +66,36 @@ struct thread {
      */
     void               *t_blocked_on;
 
-    uint64_t            t_guard;
+    /*
+     * The lowest word of this thread stack region, which is the guard. For
+     * a thread created here that is the base of t_stack; for the boot
+     * context it is the bottom of the boot stack, which the linker script
+     * names. Usable stack is therefore SYS_KSTACK_SIZE minus this word.
+     */
+    uint64_t           *t_guard;
+
     uint8_t             t_stack[SYS_KSTACK_SIZE] __attribute__((aligned(16)));
 };
 
 /*
+ * The guard is the lowest word of the stack itself, so nothing can come
+ * between them and no field order can separate them. What still has to
+ * hold is the alignment the frame arithmetic in md_thread_init depends on,
+ * and that is exactly the kind of property a later edit breaks silently:
+ * an earlier version of this structure put the guard in its own field and
+ * grew eight bytes of padding between it and the stack the moment another
+ * pointer was added.
+ */
+_Static_assert(SYS_KSTACK_SIZE % 16 == 0,
+  "kernel stack size must keep the stack pointer 16-byte aligned");
+_Static_assert(sizeof(struct thread) % 16 == 0,
+  "thread object size must keep pool slots 16-byte aligned");
+
+/*
  * Adopt the context already running as a thread, so that the first switch
- * has somewhere to save to. Its stack field is unused: it is already
- * running on the boot stack and keeps it.
+ * has somewhere to save to. It keeps the boot stack it is already running
+ * on, so the stack inside its object is never used; the pool slots are a
+ * uniform size, so nothing is saved by making that a special case.
  */
 void thread_bootstrap(const char *name);
 
