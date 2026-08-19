@@ -20,40 +20,30 @@ context at its own priority, with no worker pool anywhere. It is kept
 deliberately separable, because it is novel enough to be worth being wrong
 about.
 
-**The design is not built yet.** `docs/design.md` describes the intended
-system in detail and nothing in it has been implemented or measured. What
-currently runs is much smaller than what is described there, and the gap is
-deliberate rather than hidden.
+**Roughly half the kernel exists.** `docs/design.md` describes the intended
+system and says which half that is. Nothing in it has been measured. The
+gap between what is described and what runs is deliberate rather than
+hidden, and it narrows one stage at a time.
 
 ## Status
 
-What works today: a cross-compiled kernel that boots under QEMU on AArch64
-and RISC-V64, initialises its static object pools, reports what they cost,
-and powers the machine off.
+Static object pools, threads and the context switch, a strict-priority
+scheduler, per-process handle tables with rights, the operation entry
+point, timelines, interrupts, and timers with absolute deadlines. All of it
+runs on AArch64 and RISC-V64 under QEMU, from the same source, with
+identical output.
 
-```
-Nyctos/aarch64 kernel booting
-pools: invariants ok
-pools:
-  proc: 16 slots, 8 bytes each, 384 bytes total
-  ...
-  kernel object memory: 6720 bytes
-stage 1 complete
-```
+What does not exist yet: message passing, any process beyond the first, the
+MMU and everything that depends on it, driver cohorts, and multicore.
 
-What does not exist yet: the scheduler, IPC, handles, timelines, the MMU,
-and every process beyond the first. The object pools are real but the
-objects in them are still empty structures.
+Nothing has been measured. The one figure obtained so far is a footprint
+rather than a speed: kernel object memory is 271424 bytes, of which 266240
+is thread stacks, and it is a consequence of two constants in
+`sys/sys/config.h` and of nothing an application can do.
 
-The banner demo that used to run at boot is no longer reached. It proved a
-system call worked before there was anything else; the vertical slice
-replaces that path rather than extending it.
-
-`docs/ROADMAP.md` names the first milestone and the order of work. It is one
-vertical slice, deliberately small: one thread, one channel, one driver, one
-file read. That is the thinnest path that exercises handles, message passing
-and the filesystem protocol together, and the smallest thing that could show
-the design to be wrong.
+`docs/ROADMAP.md` names the milestone and the order of work. One stage of
+it remains: message passing, spawn, and a driver process serving a file
+from outside the kernel.
 
 ## Why it is shaped this way
 

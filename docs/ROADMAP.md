@@ -48,6 +48,10 @@ initialises its object pools, reports them, and powers the machine off.
   with absolute phase, catch-up as a single counter update, and absolute
   deadlines on waits. No tick: the hardware is armed for the earliest
   pending event and for nothing else. Stage 7.
+
+Stages 1 through 7 of milestone 1 are done. What remains of it is stage 8,
+which is message passing, spawn, and the driver process that closes the
+slice.
 - An unprivileged-mode entry, not reached.
 
 Kernel object memory went from 6720 bytes to 271424 the moment threads
@@ -84,6 +88,17 @@ choices that otherwise look arbitrary.
 **Every milestone ends with something that runs.** Not a subsystem that
 compiles, and not a layer waiting for the layer above it. A milestone that
 cannot be demonstrated cannot be shown to be wrong.
+
+**A test has to be able to fail.** This was learned the hard way and is
+listed with the rules because it now costs more than the others put
+together. Four stages in a row shipped a check that passed while testing
+less than it claimed: a format string that silently read the wrong
+argument, waiters that never ran because they sat below the thread meant to
+wake them, an idle path nothing could reach, and a phase check that would
+have passed while the timer drifted had it been written against the
+previous activation instead of the origin. In three of the four, repairing
+the test immediately found a real fault in the code it was supposed to
+cover. Before trusting that a check passed, make it fail.
 
 **Each milestone names what it would falsify.** The design is a set of guesses
 and some of them are bad. The point of building in this order is to reach the
@@ -144,16 +159,27 @@ handle-relative naming with no ambient root is workable rather than merely
 defensible. Whether a protocol carrying the offset in the message survives a
 real client.
 
-*On timelines, so far.* Built in stage 5 and behaving as section 9.1
-describes, but the verdict is not in and cannot be yet. The object is small
-and the wait and signal paths are short. What has not happened is anything
-else depending on it: interrupts land on one in stage 6 and driver
-completion in stage 8, and only then is there evidence about whether one
-wait object for everything pays for itself. Two things already cost more
-than expected. The error state needs a count of signal-righted handles,
-which means the handle table has to tell an object when one appears or
-goes. And releasing several waiters has to be atomic against preemption,
-which is why the scheduler grew sched_defer.
+*On timelines, after stage 7.* The evidence is now positive and not yet
+conclusive. Three unrelated things have landed on the one object without
+needing a mechanism of their own: an interrupt advancing a counter, a
+periodic timer whose counter is its activation number, and a one-shot
+completion. Timer overrun detection fell out of the counter for free rather
+than being designed, which is the strongest single piece of evidence so
+far. A deadline is not a second thing a thread waits on but a limit on the
+one thing it does, so the invariant held under the first real pressure on
+it.
+
+What it has cost is also clearer. The error state needs a count of
+signal-righted handles, so the handle table has to tell an object when a
+handle naming it appears or goes. Releasing several waiters has to be
+atomic against preemption, which is why the scheduler grew sched_defer. And
+waking a thread has to take it off whatever it was blocked on, not merely
+make it runnable, because there is now more than one way a wait can end.
+None of those is in section 9, and all three would be needed by any
+equivalent object.
+
+IPC in stage 8 is still the real test, because a channel is the first thing
+a thread might block on that is not a timeline.
 
 *Size.* Large. It is most of a kernel.
 

@@ -36,17 +36,46 @@ Everything else follows from holding that commitment while keeping the kernel sm
 
 ### 1.3 What Is Claimed, and What Is Not
 
-This document describes a system that has not been built. That fact governs how the rest of it should be read, so it is stated here rather than buried.
+Part of this design has been built and part has not, and which is which
+governs how the rest should be read.
 
-**Nothing here has been implemented or measured.** No code corresponding to this design exists. Every statement about cost, size or latency is an intention, and none of them is a result. Where this document sounds confident, that confidence is about the reasoning and not about the outcome.
+**Roughly half the kernel exists.** Static object pools, threads and the
+context switch, a strict-priority scheduler, per-process handle tables, the
+operation entry point, timelines, interrupts, and timers with absolute
+deadlines all run on two architectures. What does not exist is message
+passing, processes beyond the first, the memory management unit and
+everything that depends on it, driver cohorts, multicore, and the
+submission engine. `ROADMAP.md` says where the line is at any moment.
 
-**One property is structural rather than empirical.** Kernel memory is statically bounded: there is no kernel heap at either tier, every object comes from a build-time pool, and kernel memory consumption is therefore a property of the configuration rather than of application behaviour. This follows from the design rather than from measurement, so it is the one claim that does not wait on an implementation. What it costs is that exhausting a pool means a rebuild.
+**Nothing has been measured.** Every statement about cost, size or latency
+is still an intention. The one number obtained so far is a footprint rather
+than a speed, and it is reported in the roadmap because it is a fact about
+a configuration and not about the design.
 
-**A second is bounded by construction rather than by measurement.** A submitted batch of operations has a statically bounded execution time inside the kernel, because the operation array is linear and finite and carries no branches. Its wall-clock completion is not bounded, because some operations block, and the operations that may block are enumerated in one place and nowhere else. This is a claim about structure and not about speed, and it says nothing about how long any of it takes.
+**Two properties are structural rather than empirical.** Kernel memory is
+statically bounded: there is no kernel heap at either tier, every object
+comes from a build-time pool, and consumption is therefore a property of
+the configuration rather than of application behaviour. And a submitted
+batch has a statically bounded execution time inside the kernel, because
+the operation array is linear, finite, and carries no branches; its
+wall-clock completion is not bounded, because some operations block, and
+the operations that may block are enumerated in one place and nowhere else.
+Neither claim waits on an implementation, and neither says anything about
+how long anything takes.
 
-**Three mechanisms are explicitly provisional**, and are marked as such where they are described. Timelines as the single object a thread waits on (section 9) are elegant on paper and have not been shown to earn a separate object. Per-process namespaces assembled in the C library (section 20) are a large break from Unix expectations, and whether they are workable or merely defensible is not yet known. The submission engine (section 17) is the most novel thing here and therefore the most likely to be a mistake; it is deliberately built so that removing it costs nothing else. Any of the three could be removed by what an implementation teaches.
+**Three mechanisms are explicitly provisional.** Timelines as the single
+object a thread waits on (section 9), per-process namespaces assembled in
+the C library (section 20), and the submission engine (section 17). Of the
+three, only timelines have met real code, and section 9 records what that
+has shown so far. The other two are still as unproven as when they were
+written.
 
-The roadmap names the milestone at which these questions get answered, and it is deliberately small.
+**What building it has already corrected is marked where it happened.**
+Sections 9.2, 9.3, 11.6, 13.2 and 14.1 carry notes of that kind: an
+ambiguity that only became visible when something had to resolve it, a
+requirement that was implied rather than stated, or a sentence that was
+wrong. Those notes are the most useful part of this document, because they
+are the only parts of it that have been tested.
 
 ---
 
@@ -370,7 +399,9 @@ Systems consulted for comparison that did not directly contribute a mechanism, b
 
 ### 3.7 Status of This Document
 
-This is a design document, not an implementation report. No code corresponding to it has been written or measured, so every statement about performance, size or latency is an intention or a citation of someone else's measurement, never a result of this work. `ROADMAP.md` says what is being built first and what that would settle.
+This is a design document rather than an implementation report, but it is no longer a description of something unbuilt. Section 1.3 says which half exists. Nothing in it has been measured, so every statement about performance, size or latency remains an intention or a citation of someone else’s measurement, never a result of this work.
+
+Where building a mechanism showed the description of it to be ambiguous, incomplete or wrong, the section carrying it says so rather than being quietly corrected. Those notes are worth more than the surrounding prose: everything else here is reasoning, and they are the only parts that have met a machine.
 
 Errors of attribution in this section are mine, not the cited authors'. Corrections are welcome.
 
@@ -606,6 +637,16 @@ A thread blocked on a timeline donates its priority to the holder of a signal-ri
 
 **Kernel-signalled timelines have no donation target.** Timers and interrupt attachments are advanced by the kernel itself, so donation is a no-op for them. This is stated rather than left to inference, because a reader who has internalized the donation rule will otherwise wonder what a timer inherits.
 
+**Which holder is not stated, and needs to be.** A timeline may have any
+number of signal-righted handles, held by any number of processes, and
+nothing here says which of them a waiter donates to. Section 9.4 assumes
+the answer is exactly one when it argues that dropping merge buys
+constant-time single-target donation, but nothing constrains a timeline to
+one signaler. Donation is unimplemented, so this has cost nothing yet; it
+has to be answered before it is built, and the likely answer is that
+donation belongs to whatever a timeline is bound to rather than to whoever
+holds a handle on it.
+
 ### 9.3 Error Propagation and Abandonment
 
 A timeline can enter an error state, satisfying every outstanding and future wait immediately with an error rather than success. Four events force it:
@@ -618,6 +659,16 @@ A timeline can enter an error state, satisfying every outstanding and future wai
 Without these, a consumer blocks forever on a timeline whose producer died, converting a producer bug into a system hang. The general principle is that **the disappearance of the only party who could satisfy a wait is itself an event**, and must be delivered as one rather than left to a timeout.
 
 Wait deadlines still exist, but as a backstop against hardware that never completes, not as the primary failure mechanism.
+
+**A value already reached is not affected by the error state.** The rule
+above says every outstanding and future wait is satisfied with an error,
+and taken literally that would include a wait on a value the timeline had
+already passed. It does not. Monotonicity is what makes a late waiter safe,
+and that property is more load-bearing than this one: a value that was
+reached stays reached, whatever later became of the timeline. An
+implementation therefore checks the value before the error state, and the
+two orderings are distinguishable, so this is a rule rather than a detail.
+
 
 ### 9.4 There Is No Merge Operation
 
@@ -790,6 +841,15 @@ When a core has nothing runnable it enters an idle state, and what that state is
 
 This matters for one reason beyond tidiness. An idle thread at priority zero would be a runnable thread, and the proportional-share tree of section 11.5 would have to account for it: every share calculation would carry a term for a thread that exists only to do nothing. Making idle a state of the core rather than a thread keeps the tree describing real work.
 
+**It matters for a second reason, found by building it.** While a core is
+idle there must be no current thread either, not merely no idle thread. The
+interrupt that ends the idle may make the very thread whose blocking caused
+it runnable again, and if that thread is still recorded as the one running,
+it is being made runnable while running. Narrowing the check that catches
+that is not a fix: it leaves the scheduler comparing priorities against a
+thread that is not running and queueing it. A core that is idle is running
+nothing, and the implementation has to mean it.
+
 **Waking from idle is on the interrupt path, not the scheduling path.** A core with nothing to run has programmed its timer to the next deadline it knows about, per section 14.1, and is woken either by that timer or by a device interrupt or an IPI. The wake cost is therefore an interrupt entry cost, and it belongs in the figures of section 13.3 rather than in a separate accounting.
 
 ---
@@ -875,6 +935,22 @@ An interrupt service routine advances a timeline and returns. That is the whole 
 
 `sys_irq_attach()` binds an interrupt to a timeline handle carrying `SYS_RIGHT_SIGNAL`. Because interrupt delivery, DMA completion, timer expiry and pipeline stages are all timeline advances, a driver waits on one kind of object regardless of what it waits for.
 
+**There is no opcode for it, which is an omission rather than a decision.**
+Section 23.1 has every operation enter through one descriptor carrying an
+opcode, and the list in section 26 does not include this one. Either the
+list is incomplete or attaching an interrupt is not an operation, and the
+first is far likelier. Until that is settled the binding is kernel
+internal, which is tolerable only because nothing outside the kernel can
+attach an interrupt yet.
+
+**The handler must finish with the device before it advances anything.**
+Advancing a timeline can make a waiter runnable and switch to it from
+inside the handler, so a device left asserting is re-entered the moment
+that thread enables interrupts, and the nested handler overwrites the
+return state of the one still in progress. This is not a property of any
+particular controller: it follows from the handler being allowed to
+reschedule, and both ports had to learn it.
+
 The ISR runs no driver logic, takes no lock a thread can hold, and performs no allocation.
 
 ### 13.3 Interrupt Latency, Stated Per Tier
@@ -909,6 +985,14 @@ Three things are bought, and they are the reasons the choice is made rather than
 **Scheduling latency does not include a tick period.** A thread made runnable by an interrupt preempts at the next preemption point of section 11.3, which is a bounded distance measured in instructions. It does not wait for a tick. This is the distinction section 11.3 insists on, and a tick would erase it.
 
 **An idle core is genuinely idle.** No interrupt arrives to tell a core that nothing has happened. On a part where the wake cost is significant this is the difference between an idle core costing nothing and an idle core costing a wake per tick, and on a battery-powered Tier 0 part it is the difference that matters most.
+
+**One consequence is an implementation obligation rather than a property.**
+If the hardware is armed for the earliest pending event, then every path
+that adds, removes or advances a pending event has to recompute it, and
+missing one leaves the timer armed for something that has passed or not
+armed at all. That is easy to say and easy to get wrong in pieces, so it is
+worth one place that decides what to arm and no other caller touching the
+hardware.
 
 The cost is equally specific. **Every scheduling decision that changes the earliest pending event must reprogram the timer**, which on some parts is a slow write to a peripheral. That write is on the dispatch path and must be counted in the figures of section 13.3. A port whose timer is genuinely expensive to reprogram may find a tick cheaper, and that is a real trade, but it is a divergence to be measured and stated rather than assumed: the latency statements in this document are made without a tick period in them.
 
