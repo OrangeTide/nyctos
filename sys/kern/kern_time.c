@@ -1,0 +1,274 @@
+/*
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ */
+
+/*
+ * Timers and deadlines. See sys/sys/time.h for the shape and section 14
+ * for the reasoning.
+ */
+
+#include <sys/intr.h>
+#include <sys/object.h>
+#include <sys/sched.h>
+#include <sys/systm.h>
+#include <sys/thread.h>
+#include <sys/time.h>
+#include <sys/timeline.h>
+
+/* Pending timers and sleeping threads, each ordered earliest first. */
+static struct timer *timers;
+static struct thread *sleepers;
+
+sys_time_t
+time_now(void)
+{
+    return md_time_now();
+}
+
+uint64_t
+time_hz(void)
+{
+    return md_time_hz();
+}
+
+sys_time_t
+time_from_ms(uint64_t ms)
+{
+    return (md_time_hz() * ms) / 1000ULL;
+}
+
+/* When a timer next wants to fire, which for a spent one-shot is never. */
+static sys_time_t
+timer_deadline(const struct timer *tm)
+{
+    if (!tm->tm_active) {
+        return SYS_DEADLINE_NEVER;
+    }
+
+    return tm->tm_first + ((tm->tm_count + 1) * tm->tm_period);
+}
+
+static sys_time_t
+next_event(void)
+{
+    sys_time_t when = SYS_DEADLINE_NEVER;
+
+    if (timers != NULL) {
+        when = timer_deadline(timers);
+    }
+    if (sleepers != NULL && sleepers->t_deadline < when) {
+        when = sleepers->t_deadline;
+    }
+
+    return when;
+}
+
+/*
+ * Arm the hardware for the earliest pending event, or for nothing. This is
+ * the whole of section 14.1: every change to what is pending comes back
+ * here, and a core with nothing pending leaves the timer disarmed.
+ */
+static void
+reprogram(void)
+{
+    sys_time_t when = next_event();
+
+    if (when == SYS_DEADLINE_NEVER) {
+        md_timer_disarm();
+    } else {
+        md_timer_at(when);
+    }
+}
+
+static void
+timer_link(struct timer *tm)
+{
+    struct timer **link = &timers;
+
+    while (*link != NULL && timer_deadline(*link) <= timer_deadline(tm)) {
+        link = &(*link)->tm_next;
+    }
+
+    tm->tm_next = *link;
+    *link = tm;
+}
+
+static void
+timer_unlink(struct timer *tm)
+{
+    struct timer **link = &timers;
+
+    while (*link != NULL && *link != tm) {
+        link = &(*link)->tm_next;
+    }
+    if (*link == tm) {
+        *link = tm->tm_next;
+    }
+    tm->tm_next = NULL;
+}
+
+void
+time_init(void)
+{
+    timers = NULL;
+    sleepers = NULL;
+}
+
+struct timer *
+timer_create(const char *name, struct timeline *tl, sys_time_t first,
+  sys_time_t period)
+{
+    struct timer *tm;
+    intr_state_t s;
+
+    tm = pool_alloc(timer_pool(), NULL);
+    if (tm == NULL) {
+        return NULL;
+    }
+
+    tm->tm_id = pool_id_of(timer_pool(), tm);
+    tm->tm_name = name;
+    tm->tm_timeline = tl;
+    tm->tm_first = first;
+    tm->tm_period = period;
+    tm->tm_count = 0;
+    tm->tm_active = true;
+    tm->tm_next = NULL;
+
+    /*
+     * The timer holds a signal right for as long as it exists, which is
+     * what section 14.2 relies on: destroying it drops the last one and
+     * the timeline enters the error state under section 9.3 rule 2,
+     * releasing anyone waiting for an activation that will never come.
+     */
+    timeline_add_signaler(tl);
+
+    s = md_intr_disable();
+    timer_link(tm);
+    reprogram();
+    md_intr_restore(s);
+
+    return tm;
+}
+
+/*
+ * Section 14.2: destroying a timer closes the kernel's signal right, which
+ * force-signals the timeline in error state under section 9.3 rule 2. No
+ * new rule is needed, which is the point of having only one.
+ */
+void
+timer_destroy(struct timer *tm)
+{
+    intr_state_t s = md_intr_disable();
+
+    if (tm->tm_active) {
+        tm->tm_active = false;
+        timer_unlink(tm);
+        reprogram();
+    }
+    md_intr_restore(s);
+
+    timeline_drop_signaler(tm->tm_timeline);
+    (void)pool_free(timer_pool(), tm->tm_id);
+}
+
+void
+time_sleep_until(struct thread *t, sys_time_t deadline)
+{
+    struct thread **link = &sleepers;
+
+    t->t_deadline = deadline;
+
+    while (*link != NULL && (*link)->t_deadline <= deadline) {
+        link = &(*link)->t_dnext;
+    }
+    t->t_dnext = *link;
+    *link = t;
+
+    reprogram();
+}
+
+void
+time_sleep_cancel(struct thread *t)
+{
+    struct thread **link = &sleepers;
+
+    while (*link != NULL && *link != t) {
+        link = &(*link)->t_dnext;
+    }
+    if (*link == t) {
+        *link = t->t_dnext;
+        t->t_dnext = NULL;
+        reprogram();
+    }
+}
+
+/*
+ * Advance one timer to where the clock says it should be.
+ *
+ * The counter is set to the activation number the current time implies,
+ * in one update. After a stall there is no backlog to deliver and no queue
+ * to drain: a task that wanted activation N+1 and finds N+3 has missed two
+ * and knows it, which is the overrun detection section 14.2 gets for free.
+ */
+static void
+timer_fire(struct timer *tm, sys_time_t now)
+{
+    uint64_t due;
+
+    if (tm->tm_period == 0) {
+        tm->tm_count = 1;
+        tm->tm_active = false;
+        timer_unlink(tm);
+    } else {
+        /*
+         * Activation N happens at first + N * period, so the number due
+         * by now is the number of whole periods since the origin. The
+         * obvious off-by-one here reports the first firing as activation
+         * two, which pushes the counter permanently ahead of the clock
+         * and makes every later wait return before its phase.
+         */
+        due = (uint64_t)((now - tm->tm_first) / tm->tm_period);
+        if (due <= tm->tm_count) {
+            return;
+        }
+        tm->tm_count = due;
+
+        timer_unlink(tm);
+        timer_link(tm);
+    }
+
+    (void)timeline_signal(tm->tm_timeline, tm->tm_count);
+}
+
+void
+time_interrupt(void)
+{
+    struct thread *t;
+    sys_time_t now;
+
+    /*
+     * Deferred across the whole pass so that a timer whose waiter outranks
+     * the interrupted thread does not switch away before the remaining
+     * timers have been serviced and the hardware re-armed.
+     */
+    sched_defer();
+
+    now = md_time_now();
+
+    while (timers != NULL && timer_deadline(timers) <= now) {
+        timer_fire(timers, now);
+    }
+
+    while (sleepers != NULL && sleepers->t_deadline <= now) {
+        t = sleepers;
+        sleepers = t->t_dnext;
+        t->t_dnext = NULL;
+        thread_wake_timeout(t);
+    }
+
+    reprogram();
+
+    sched_undefer();
+}

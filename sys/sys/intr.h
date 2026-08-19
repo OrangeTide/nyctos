@@ -56,14 +56,20 @@ unsigned int md_irq_claim(void);
 void md_irq_eoi(unsigned int irq);
 
 /*
- * The timer, which is the only device this stage drives. Section 14 has a
- * one-shot programmed to the earliest pending event and no tick; that
- * needs a clock and a deadline, which is stage 7. This is the crude form:
- * fire once, this many nanoseconds from now.
+ * The timer. Section 14.1 has no tick: the hardware is programmed one-shot
+ * to the earliest event the core knows about, and a core with nothing
+ * pending programs no timer at all.
  */
 void md_timer_init(void);
-void md_timer_arm(uint64_t nanoseconds);
 unsigned int md_timer_irq(void);
+
+/* The monotonic counter everything is defined against. Section 14.5. */
+uint64_t md_time_now(void);
+uint64_t md_time_hz(void);
+
+/* Arm the one-shot for an absolute instant, or arm nothing at all. */
+void md_timer_at(uint64_t when);
+void md_timer_disarm(void);
 
 /*
  * Bind an interrupt to a timeline. Section 13.2 has this take a handle
@@ -71,6 +77,14 @@ unsigned int md_timer_irq(void);
  * no opcode for it, which is a gap in the design rather than a decision.
  */
 sys_err_t irq_attach(unsigned int irq, struct timeline *tl);
+
+/*
+ * Bind an interrupt to a kernel function instead of a timeline. The timer
+ * is the kernel scheduling mechanism of section 14.1 rather than a device
+ * a driver waits on, so it is the one interrupt that does not land on a
+ * timeline of its own.
+ */
+sys_err_t irq_attach_handler(unsigned int irq, void (*fn)(void));
 
 /* Called from the trap path with interrupts already disabled by hardware. */
 void irq_dispatch(void);

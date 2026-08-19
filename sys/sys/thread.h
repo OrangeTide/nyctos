@@ -94,6 +94,15 @@ struct thread {
     sys_err_t           t_waitres;
 
     /*
+     * Deadline, and the link for the list ordered by it. A thread can be
+     * on a waiter list and on that list at once, which is not a second
+     * thing it is blocked on: the deadline is when to give up on the one
+     * thing it is blocked on, per section 14.4.
+     */
+    struct thread      *t_dnext;
+    uint64_t            t_deadline;
+
+    /*
      * What this thread is blocked on, per the invariant in section 5. It
      * stays NULL until there is something to block on; the field is here
      * now because section 28 asks for exactly one of them and adding it
@@ -147,6 +156,9 @@ struct proc;
  * pool, because reaping is part of the same later work.
  */
 void thread_exit(void) __attribute__((noreturn));
+
+/* Release a thread whose deadline passed while it was still blocked. */
+void thread_wake_timeout(struct thread *t);
 
 /*
  * The context switch itself. Called by the scheduler and by nothing else:

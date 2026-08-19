@@ -119,11 +119,19 @@ typedef struct sys_op {
 
 /*
  * Argument structure for SYS_OP_FENCE_WAIT and SYS_OP_FENCE_SIGNAL. target
- * names the timeline. There is no deadline yet: section 14 has waits take
- * an absolute one, and absolute deadlines need a clock.
+ * names the timeline. The deadline is ignored when signalling, which never
+ * blocks.
  */
 typedef struct sys_op_fence_args {
     uint64_t        value;
+
+    /*
+     * Absolute, on the monotonic timebase. Section 14.3: a relative
+     * timeout restarted after interruption extends its own deadline by
+     * however long it had already waited, which is the error real-time
+     * code exists to avoid.
+     */
+    uint64_t        deadline;
 } sys_op_fence_args_t;
 
 /* Argument structure for SYS_OP_HANDLE_DUP. target names the source. */

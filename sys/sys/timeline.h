@@ -64,7 +64,11 @@ struct timeline *timeline_create(const char *name);
  * has, whatever else has happened to the timeline, because a value that was
  * reached stays reached.
  */
-sys_err_t timeline_wait(struct timeline *tl, uint64_t value);
+sys_err_t timeline_wait(struct timeline *tl, uint64_t value,
+  uint64_t deadline);
+
+/* Take a waiter off the list, for a wake that did not come from a signal. */
+bool timeline_unwait(struct timeline *tl, struct thread *t);
 
 /* Advance to value, releasing every waiter that value satisfies. */
 sys_err_t timeline_signal(struct timeline *tl, uint64_t value);

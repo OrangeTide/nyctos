@@ -113,7 +113,7 @@ void
 md_irq_eoi(unsigned int irq)
 {
     if (irq == TIMER_PPI) {
-        __asm__ volatile ("msr cntp_ctl_el0, %0" :: "r" (0UL));
+        md_timer_disarm();
     }
 
     mmio_write(GICC_BASE, GICC_EOIR, (uint32_t)irq);
@@ -134,27 +134,50 @@ md_timer_irq(void)
     return TIMER_PPI;
 }
 
-/*
- * Arm once. Writing the down-counter rather than a compare value is the
- * simpler of the two interfaces and is all a fire-once needs; section 14
- * wants an absolute deadline, and that arrives with a clock to state one
- * against.
- */
-void
-md_timer_arm(uint64_t nanoseconds)
-{
-    uint64_t ticks = (timer_hz * nanoseconds) / 1000000000ULL;
 
-    if (ticks == 0) {
-        ticks = 1;
-    }
-
-    __asm__ volatile ("msr cntp_tval_el0, %0" :: "r" (ticks));
-    __asm__ volatile ("msr cntp_ctl_el0, %0" :: "r" (1UL));
-}
 
 void
 md_idle_wait(void)
 {
     __asm__ volatile ("wfi");
+}
+
+/*
+ * The monotonic counter the whole system is defined against. Section 14.5
+ * makes everything here uptime, never calendar time, which is what makes a
+ * clock correction structurally unable to disturb a deadline.
+ */
+uint64_t
+md_time_now(void)
+{
+    uint64_t v;
+
+    __asm__ volatile ("isb");
+    __asm__ volatile ("mrs %0, cntpct_el0" : "=r" (v));
+
+    return v;
+}
+
+uint64_t
+md_time_hz(void)
+{
+    return timer_hz;
+}
+
+/*
+ * Program the one-shot for an absolute instant. Section 14.1 has no tick:
+ * the hardware is armed for the earliest thing the core knows about and
+ * for nothing else, so an idle core with nothing pending arms nothing.
+ */
+void
+md_timer_at(uint64_t when)
+{
+    __asm__ volatile ("msr cntp_cval_el0, %0" :: "r" (when));
+    __asm__ volatile ("msr cntp_ctl_el0, %0" :: "r" (1UL));
+}
+
+void
+md_timer_disarm(void)
+{
+    __asm__ volatile ("msr cntp_ctl_el0, %0" :: "r" (0UL));
 }

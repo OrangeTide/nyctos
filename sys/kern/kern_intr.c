@@ -18,6 +18,7 @@
 
 struct irq_binding {
     struct timeline *ib_timeline;
+    void           (*ib_handler)(void);
     uint64_t         ib_count;
 };
 
@@ -30,6 +31,7 @@ irq_init(void)
 
     for (i = 0; i < SYS_MAX_IRQS; i++) {
         irq_table[i].ib_timeline = NULL;
+        irq_table[i].ib_handler = NULL;
         irq_table[i].ib_count = 0;
     }
 }
@@ -44,11 +46,33 @@ irq_attach(unsigned int irq, struct timeline *tl)
     }
 
     s = md_intr_disable();
-    if (irq_table[irq].ib_timeline != NULL) {
+    if (irq_table[irq].ib_timeline != NULL || irq_table[irq].ib_handler != NULL) {
         md_intr_restore(s);
         return SYS_ERR_INVALID_ARG;
     }
     irq_table[irq].ib_timeline = tl;
+    md_intr_restore(s);
+
+    md_irq_unmask(irq);
+
+    return SYS_OK;
+}
+
+sys_err_t
+irq_attach_handler(unsigned int irq, void (*fn)(void))
+{
+    intr_state_t s;
+
+    if (irq >= SYS_MAX_IRQS || fn == NULL) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    s = md_intr_disable();
+    if (irq_table[irq].ib_timeline != NULL || irq_table[irq].ib_handler != NULL) {
+        md_intr_restore(s);
+        return SYS_ERR_INVALID_ARG;
+    }
+    irq_table[irq].ib_handler = fn;
     md_intr_restore(s);
 
     md_irq_unmask(irq);
@@ -86,8 +110,14 @@ irq_dispatch(void)
      */
     md_irq_eoi(irq);
 
-    if (irq < SYS_MAX_IRQS && irq_table[irq].ib_timeline != NULL) {
-        b = &irq_table[irq];
+    if (irq >= SYS_MAX_IRQS) {
+        return;
+    }
+
+    b = &irq_table[irq];
+    if (b->ib_handler != NULL) {
+        b->ib_handler();
+    } else if (b->ib_timeline != NULL) {
         b->ib_count++;
         (void)timeline_signal(b->ib_timeline, b->ib_count);
     }

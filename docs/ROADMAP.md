@@ -41,9 +41,13 @@ initialises its object pools, reports them, and powers the machine off.
 - Timelines: monotonic counters, waiting on a value reached or not yet
   reached, and the error state a timeline enters when its last signal right
   goes. Stage 5.
-- Interrupts. A timer bound to a timeline on both boards, a handler that
+- Interrupts. A device bound to a timeline on both boards, a handler that
   advances it and returns, and a real idle state the core leaves on an
   interrupt. Stage 6.
+- Timers and deadlines. A monotonic clock, one-shot and periodic timers
+  with absolute phase, catch-up as a single counter update, and absolute
+  deadlines on waits. No tick: the hardware is armed for the earliest
+  pending event and for nothing else. Stage 7.
 - An unprivileged-mode entry, not reached.
 
 Kernel object memory went from 6720 bytes to 271424 the moment threads

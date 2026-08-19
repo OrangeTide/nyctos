@@ -97,7 +97,7 @@ void
 md_irq_eoi(unsigned int irq)
 {
     if (irq == TIMER_IRQ) {
-        *mtimecmp = ~(uint64_t)0;
+        md_timer_disarm();
     }
 }
 
@@ -113,20 +113,34 @@ md_timer_irq(void)
     return TIMER_IRQ;
 }
 
-void
-md_timer_arm(uint64_t nanoseconds)
-{
-    uint64_t ticks = (TIMER_HZ * nanoseconds) / 1000000000ULL;
 
-    if (ticks == 0) {
-        ticks = 1;
-    }
-
-    *mtimecmp = *mtime + ticks;
-}
 
 void
 md_idle_wait(void)
 {
     __asm__ volatile ("wfi");
+}
+
+uint64_t
+md_time_now(void)
+{
+    return *mtime;
+}
+
+uint64_t
+md_time_hz(void)
+{
+    return TIMER_HZ;
+}
+
+void
+md_timer_at(uint64_t when)
+{
+    *mtimecmp = when;
+}
+
+void
+md_timer_disarm(void)
+{
+    *mtimecmp = ~(uint64_t)0;
 }

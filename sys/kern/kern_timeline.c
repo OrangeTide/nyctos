@@ -18,6 +18,7 @@
 #include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
+#include <sys/time.h>
 #include <sys/timeline.h>
 
 struct timeline *
@@ -68,6 +69,29 @@ wait_release(struct thread *t, sys_err_t res)
     sched_ready(t);
 }
 
+/*
+ * Take a thread off the waiter list without releasing it, for a wake that
+ * came from somewhere other than a signal. Returns whether it was there.
+ */
+bool
+timeline_unwait(struct timeline *tl, struct thread *t)
+{
+    struct thread **link = &tl->tl_waiters;
+
+    while (*link != NULL && *link != t) {
+        link = &(*link)->t_wnext;
+    }
+    if (*link != t) {
+        return false;
+    }
+
+    *link = t->t_wnext;
+    t->t_wnext = NULL;
+    t->t_blocked_on = NULL;
+
+    return true;
+}
+
 static void
 release_all(struct timeline *tl, sys_err_t res)
 {
@@ -81,7 +105,7 @@ release_all(struct timeline *tl, sys_err_t res)
 }
 
 sys_err_t
-timeline_wait(struct timeline *tl, uint64_t value)
+timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
 {
     struct thread *self = thread_current();
     intr_state_t s = md_intr_disable();
@@ -102,10 +126,22 @@ timeline_wait(struct timeline *tl, uint64_t value)
         return SYS_ERR_OWNER_DEAD;
     }
 
+    /*
+     * Section 14.3: deadlines are absolute. A poll is a deadline that has
+     * already passed, so it needs no separate path.
+     */
+    if (deadline <= time_now()) {
+        md_intr_restore(s);
+        return SYS_ERR_TIMEOUT;
+    }
+
     self->t_waitval = value;
     self->t_waitres = SYS_ERR_INTERRUPTED;   /* so a missing wake is loud */
     self->t_blocked_on = tl;
     wait_insert(tl, self);
+    if (deadline != SYS_DEADLINE_NEVER) {
+        time_sleep_until(self, deadline);
+    }
 
     /* Section 9.2 donation would happen here. */
 
@@ -116,6 +152,16 @@ timeline_wait(struct timeline *tl, uint64_t value)
      * of its own.
      */
     sched_block();
+
+    /*
+     * Whichever of the two happened first, the other is now stale: a
+     * signal leaves a deadline registered, and a timeout leaves the thread
+     * on the waiter list. Both are withdrawn here rather than by whoever
+     * did the waking, so neither has to know about the other.
+     */
+    time_sleep_cancel(self);
+    (void)timeline_unwait(tl, self);
+
     md_intr_restore(s);
 
     if (self->t_blocked_on != NULL) {

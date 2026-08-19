@@ -75,6 +75,18 @@ thread_exited(void)
  * stops being scheduled. The pool slot is not returned either, because
  * reaping belongs with that same later work.
  */
+/*
+ * A deadline passed while this thread was still blocked. The waiter list it
+ * is on is left alone: timeline_wait removes itself from whichever
+ * mechanism did not wake it.
+ */
+void
+thread_wake_timeout(struct thread *t)
+{
+    t->t_waitres = SYS_ERR_TIMEOUT;
+    sched_ready(t);
+}
+
 void
 thread_exit(void)
 {

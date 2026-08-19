@@ -24,6 +24,7 @@
 #include <sys/op.h>
 #include <sys/proc.h>
 #include <sys/systm.h>
+#include <sys/time.h>
 #include <sys/timeline.h>
 
 #include <stdbool.h>
@@ -49,7 +50,7 @@ op_fence(struct proc *p, struct sys_op *op, bool signalling)
     tl = obj;
 
     return signalling ? timeline_signal(tl, args->value)
-      : timeline_wait(tl, args->value);
+      : timeline_wait(tl, args->value, args->deadline);
 }
 
 static sys_err_t

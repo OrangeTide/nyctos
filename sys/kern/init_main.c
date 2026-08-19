@@ -12,6 +12,7 @@
 #include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
+#include <sys/time.h>
 #include <sys/timeline.h>
 
 #include <stdbool.h>
@@ -29,6 +30,7 @@ errname(sys_err_t e)
     case SYS_ERR_NOT_SUPPORTED: return "NOT_SUPPORTED";
     case SYS_ERR_OWNER_DEAD:    return "OWNER_DEAD";
     case SYS_ERR_INTERRUPTED:   return "INTERRUPTED";
+    case SYS_ERR_TIMEOUT:       return "TIMEOUT";
     default:                    return "?";
     }
 }
@@ -88,6 +90,7 @@ fence(struct timeline *tl, uint64_t value, bool signalling)
     }
 
     args.value = value;
+    args.deadline = SYS_DEADLINE_NEVER;
     err = run(signalling ? SYS_OP_FENCE_SIGNAL : SYS_OP_FENCE_WAIT, h,
       &args, sizeof(args));
 
@@ -307,7 +310,7 @@ irq_waiter(void *arg)
     uint64_t n = (uint64_t)(uintptr_t)arg;
 
     cnprintf("    waiting for interrupt %lu\n", (unsigned long)n);
-    expect("released by the interrupt", timeline_wait(tl_irq, n), SYS_OK);
+    expect("released by the interrupt", timeline_wait(tl_irq, n, SYS_DEADLINE_NEVER), SYS_OK);
     thread_exit();
 }
 
@@ -317,22 +320,24 @@ interrupt_checks(void)
     struct thread *w;
     unsigned int irq;
 
-    tl_irq = timeline_create("timer");
+    tl_irq = timeline_create("device");
     if (tl_irq == NULL) {
         panic("interrupts: no timeline");
     }
 
     irq = md_timer_irq();
-    expect("attach the timer to a timeline", irq_attach(irq, tl_irq), SYS_OK);
-    expect("attaching it twice", irq_attach(irq, tl_irq),
-      SYS_ERR_INVALID_ARG);
+    expect("the timer is already claimed by the kernel",
+      irq_attach(irq, tl_irq), SYS_ERR_INVALID_ARG);
 
     /* Runs above this thread, so it is already blocked when we return. */
     w = thread_create("waiter", PRIO_WAITER, irq_waiter, (void *)(uintptr_t)1);
     sched_ready(w);
 
-    cnputs("    arming the timer for 10ms\n");
-    md_timer_arm(10000000ULL);
+    cnputs("    arming a one-shot for 10ms\n");
+    if (timer_create("wake", tl_irq, time_now() + time_from_ms(10), 0)
+      == NULL) {
+        panic("interrupts: no timer");
+    }
 
     /*
      * Blocking here leaves nothing runnable at all, so the core has to sit
@@ -343,7 +348,7 @@ interrupt_checks(void)
      * Getting past this means the whole chain worked: hardware, vector,
      * handler, timeline, wake, and an idle core that an interrupt left.
      */
-    expect("released after the core idled", timeline_wait(tl_irq, 1),
+    expect("released after the core idled", timeline_wait(tl_irq, 1, SYS_DEADLINE_NEVER),
       SYS_OK);
 
     cnprintf("    the timeline reached %lu\n",
@@ -351,7 +356,110 @@ interrupt_checks(void)
 
     /* A value already passed satisfies a wait with no interrupt needed. */
     expect("waiting for an interrupt already seen",
-      timeline_wait(tl_irq, 1), SYS_OK);
+      timeline_wait(tl_irq, 1, SYS_DEADLINE_NEVER), SYS_OK);
+}
+
+/*
+ * Timers, and the three properties section 14.2 states precisely enough to
+ * check: that activation N happens at first + N * period whatever the
+ * delivery delay, that the counter always holds the number of activations
+ * the clock implies, and that catching up after a stall is one update
+ * rather than a backlog.
+ */
+static struct timeline *tl_shot;
+static struct timeline *tl_tick;
+
+static void
+timer_checks(void)
+{
+    struct proc *p = proc_current();
+    struct timer *shot, *tick;
+    sys_time_t period, first, now;
+    uint64_t n, before, after;
+    sys_handle_t h;
+    sys_err_t err;
+
+    tl_shot = timeline_create("oneshot");
+    tl_tick = timeline_create("periodic");
+    if (tl_shot == NULL || tl_tick == NULL) {
+        panic("timers: no timeline");
+    }
+
+    /* A one-shot advances its timeline once, and then it is spent. */
+    shot = timer_create("shot", tl_shot, time_now() + time_from_ms(10), 0);
+    if (shot == NULL) {
+        panic("timers: pool exhausted");
+    }
+    expect("one-shot fires", timeline_wait(tl_shot, 1, SYS_DEADLINE_NEVER),
+      SYS_OK);
+    cnprintf("    one-shot left the counter at %lu\n",
+      (unsigned long)tl_shot->tl_value);
+
+    /*
+     * A periodic timer, waited on activation by activation. Each one is
+     * checked against the time it should have happened rather than against
+     * the previous delivery, which is the difference the section insists
+     * on: measuring from the last delivery would let jitter accumulate and
+     * the check would pass anyway.
+     */
+    period = time_from_ms(5);
+    first = time_now() + period;
+    tick = timer_create("tick", tl_tick, first, period);
+    if (tick == NULL) {
+        panic("timers: pool exhausted");
+    }
+
+    for (n = 1; n <= 3; n++) {
+        expect("activation arrives",
+          timeline_wait(tl_tick, n, SYS_DEADLINE_NEVER), SYS_OK);
+        now = time_now();
+        if (now < first + (n * period)) {
+            panic("timer: activation %lu arrived before its phase",
+              (unsigned long)n);
+        }
+    }
+    cnputs("    three activations, none of them early\n");
+
+    /*
+     * Stall for several periods without waiting. The counter should be
+     * where the clock says, reached in one update, with nothing queued to
+     * deliver afterwards.
+     */
+    before = tl_tick->tl_value;
+    now = time_now();
+    while (time_now() < now + time_from_ms(26)) {
+        /* deliberately not waiting */
+    }
+    after = tl_tick->tl_value;
+
+    cnprintf("    stalled 26ms across a 5ms period: counter %lu to %lu\n",
+      (unsigned long)before, (unsigned long)after);
+    if (after < before + 4) {
+        panic("timer: counter did not catch up with the clock");
+    }
+    expect("the next activation after a stall",
+      timeline_wait(tl_tick, after + 1, SYS_DEADLINE_NEVER), SYS_OK);
+
+    /* Destroying a timer abandons its timeline, per section 14.2. */
+    timer_destroy(tick);
+    expect("waiting on a destroyed timer",
+      timeline_wait(tl_tick, after + 100, SYS_DEADLINE_NEVER),
+      SYS_ERR_OWNER_DEAD);
+
+    /*
+     * Deadlines are for failure detection, not activation, so a wait that
+     * nothing will satisfy ends by giving up rather than by being woken.
+     */
+    err = handle_insert(&p->p_handles, tl_shot, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_WAIT, &h);
+    expect("a wait-only handle", err, SYS_OK);
+    expect("a deadline that has already passed",
+      timeline_wait(tl_shot, 99, SYS_DEADLINE_NOW), SYS_ERR_TIMEOUT);
+    expect("a deadline 10ms out on a value nobody will signal",
+      timeline_wait(tl_shot, 99, time_now() + time_from_ms(10)),
+      SYS_ERR_TIMEOUT);
+    expect("close the wait-only handle",
+      run(SYS_OP_HANDLE_CLOSE, h, NULL, 0), SYS_OK);
 }
 void
 kernel_main(void)
@@ -367,6 +475,11 @@ kernel_main(void)
     irq_init();
     md_intr_init();
     md_timer_init();
+    time_init();
+
+    if (irq_attach_handler(md_timer_irq(), time_interrupt) != SYS_OK) {
+        panic("time: could not claim the timer interrupt");
+    }
 
     sched_init();
     kproc = proc_bootstrap("kernel");
@@ -389,6 +502,9 @@ kernel_main(void)
     md_intr_enable();
     interrupt_checks();
 
-    cnputs("stage 6 complete\n");
+    cnputs("timers: activation, phase and deadlines\n");
+    timer_checks();
+
+    cnputs("stage 7 complete\n");
     machine_halt(0);
 }
