@@ -145,15 +145,31 @@ dequeue_highest(void)
 static void
 sched_idle(void)
 {
+    struct thread *parked = thread_current();
+
+    /*
+     * There is no current thread while the core idles. That is section
+     * 11.6 taken literally, and it is load-bearing rather than tidy: the
+     * interrupt that ends the idle may ready the very thread whose
+     * blocking caused it, and a thread cannot be made runnable while it is
+     * still marked as the one running.
+     *
+     * The idling happens on that thread stack all the same, so it is put
+     * back before anything switches away from it.
+     */
+    thread_set_current(NULL);
+
     for (;;) {
         md_intr_enable();
         md_idle_wait();
         (void)md_intr_disable();
 
         if (ready_bits != 0) {
-            return;
+            break;
         }
     }
+
+    thread_set_current(parked);
 }
 
 static void
@@ -275,7 +291,7 @@ void
 sched_block(void)
 {
     struct thread *cur = thread_current();
-    intr_state_t s;
+    intr_state_t s = md_intr_disable();
 
     /*
      * The deferral is one counter for the system, not one per thread,
@@ -296,7 +312,7 @@ sched_block(void)
         cur->t_state = THREAD_BLOCKED;
     }
 
-    s = md_intr_disable();
     dispatch();
+
     md_intr_restore(s);
 }

@@ -335,13 +335,16 @@ interrupt_checks(void)
     md_timer_arm(10000000ULL);
 
     /*
-     * Nothing else is runnable while the waiter is blocked, so this yields
-     * into an idle core until the timer fires. Getting past it means the
-     * whole path worked: hardware, vector, handler, timeline, wake.
+     * Blocking here leaves nothing runnable at all, so the core has to sit
+     * in the idle state of section 11.6 until the timer ends it. A busy
+     * wait would keep this thread runnable and never reach that path,
+     * which is exactly the mistake the first version of this test made.
+     *
+     * Getting past this means the whole chain worked: hardware, vector,
+     * handler, timeline, wake, and an idle core that an interrupt left.
      */
-    while (tl_irq->tl_value == 0) {
-        sched_yield();
-    }
+    expect("released after the core idled", timeline_wait(tl_irq, 1),
+      SYS_OK);
 
     cnprintf("    the timeline reached %lu\n",
       (unsigned long)tl_irq->tl_value);

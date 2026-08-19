@@ -30,6 +30,12 @@ thread_current(void)
     return current;
 }
 
+void
+thread_set_current(struct thread *t)
+{
+    current = t;
+}
+
 /*
  * A priority outside the range would shift the ready bit off the end of the
  * bitmap, which is undefined rather than merely wrong. Checked on both the

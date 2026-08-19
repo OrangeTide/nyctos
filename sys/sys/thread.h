@@ -157,6 +157,14 @@ void thread_switch_to(struct thread *next);
 
 struct thread *thread_current(void);
 
+/*
+ * Used only by the idle path. Section 11.6 has a core either running a
+ * thread or idle, so while it idles there is no current thread, and an
+ * interrupt handler that readies the thread which just blocked must not
+ * find it still marked as running.
+ */
+void thread_set_current(struct thread *t);
+
 /* Machine-dependent, in sys/arch/<arch>. */
 void md_thread_init(struct thread *t, void (*entry)(void *), void *arg);
 void md_switch(void **old_sp, void *new_sp);
