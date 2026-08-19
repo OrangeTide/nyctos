@@ -156,6 +156,12 @@ sched_idle(void)
      *
      * The idling happens on that thread stack all the same, so it is put
      * back before anything switches away from it.
+     *
+     * Narrowing the check in sched_ready to fire only on a RUNNING thread
+     * looks like the smaller fix and is not one. It leaves the pointer
+     * naming a thread that is not running, so the preemption arm there
+     * still compares against its priority and enqueues it, putting a
+     * blocked thread on a run queue. Tried; it fails one panic later.
      */
     thread_set_current(NULL);
 
