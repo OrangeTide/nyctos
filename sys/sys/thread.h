@@ -70,6 +70,9 @@ struct thread {
     enum thread_state   t_state;
     const char         *t_name;
 
+    /* Authority is per-process; see sys/sys/proc.h. */
+    struct proc        *t_proc;
+
     /*
      * The effective priority, which is the donated one once donation
      * exists: section 11.2 has the scheduler see that value and nothing
@@ -119,10 +122,13 @@ _Static_assert(sizeof(struct thread) % 16 == 0,
  * on, so the stack inside its object is never used; the pool slots are a
  * uniform size, so nothing is saved by making that a special case.
  */
-void thread_bootstrap(const char *name, uint8_t prio);
+void thread_bootstrap(const char *name, uint8_t prio, struct proc *p);
 
 struct thread *thread_create(const char *name, uint8_t prio,
   void (*entry)(void *), void *arg);
+
+/* Forward reference; a thread belongs to the process that created it. */
+struct proc;
 
 /*
  * Leave the run set for good. Section 10.4 has exit advance a completion

@@ -14,6 +14,7 @@
 
 #include <sys/config.h>
 #include <sys/object.h>
+#include <sys/proc.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
@@ -78,7 +79,7 @@ thread_exit(void)
 }
 
 void
-thread_bootstrap(const char *name, uint8_t prio)
+thread_bootstrap(const char *name, uint8_t prio, struct proc *p)
 {
     struct thread *t;
 
@@ -92,6 +93,7 @@ thread_bootstrap(const char *name, uint8_t prio)
     t->t_id = pool_id_of(thread_pool(), t);
     t->t_name = name;
     t->t_prio = prio;
+    t->t_proc = p;
     t->t_state = THREAD_RUNNING;
 
     /*
@@ -125,6 +127,7 @@ thread_create(const char *name, uint8_t prio, void (*entry)(void *),
     t->t_id = pool_id_of(thread_pool(), t);
     t->t_name = name;
     t->t_prio = prio;
+    t->t_proc = thread_current() != NULL ? thread_current()->t_proc : NULL;
     t->t_state = THREAD_NEW;
     t->t_guard = (uint64_t *)(void *)t->t_stack;
     *t->t_guard = THREAD_GUARD;

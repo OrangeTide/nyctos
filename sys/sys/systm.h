@@ -10,6 +10,8 @@
 #ifndef _SYS_SYSTM_H_
 #define _SYS_SYSTM_H_
 
+#include <sys/op.h>
+
 #include <stddef.h>
 
 /* Console: implemented per-architecture in sys/arch/<arch>/uart.c. */
@@ -22,6 +24,9 @@ void cnprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void cnvprintf(const char *fmt, __builtin_va_list ap);
 void panic(const char *fmt, ...) __attribute__((noreturn))
   __attribute__((format(printf, 1, 2)));
+
+/* sys/kern/kern_op.c */
+sys_err_t sys_op_exec(struct sys_op *op);
 
 /* sys/kern/kern_thread.c */
 void thread_exited(void) __attribute__((noreturn));

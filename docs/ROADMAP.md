@@ -35,6 +35,9 @@ initialises its object pools, reports them, and powers the machine off.
 - Console output with a small formatter, `panic`, and a halt path that ends
   the machine rather than spinning.
 - A project-owned libc and C runtime startup object.
+- Per-process handle tables with rights, attenuating duplication and
+  generation-checked staleness, and the section 23 operation entry point
+  with SYS_OP_NOP behind it. Stage 4.
 - A trap path and an unprivileged-mode entry, neither of them reached.
 
 Kernel object memory went from 6720 bytes to 271424 the moment threads
@@ -45,7 +48,7 @@ program can do. It does say the defaults are guesses, and that sixty-four
 threads at four kilobytes is not a Tier 0 configuration.
 
 This shares its build system and its architecture support with the design,
-and little else. There is no IPC, no handle table, and no MMU. Only the
+and little else. There is no IPC and no MMU. Only the
 real-time band of section 11.2 exists: the proportional tree below the
 floor is unbuilt, so the floor sits at zero and the whole priority range is
 real-time. Section 11.2 names that as the degenerate case, and it is. The object pools exist but the objects themselves are still empty
@@ -116,8 +119,13 @@ operations the read path uses, and no others.
 *Not needed.* The MMU, cohorts, SMP, paging, namespaces, introspection, and the
 submission engine. The slice uses one operation per trap and nothing more.
 
-*Done when* the client prints the file's contents, served from outside the
+*Done when* the client prints the file’s contents, served from outside the
 kernel.
+
+*Unexercised so far.* Every caller of the operation entry point is kernel
+code calling it directly. That is the same entry point and the same
+implementation, which is the whole point of section 23.1, but the trap edge
+itself waits on there being user code to trap from.
 
 *Would falsify.* Whether send, receive and reply with donation is as small as
 assumed. **Whether timelines earn a separate object at all**, or whether

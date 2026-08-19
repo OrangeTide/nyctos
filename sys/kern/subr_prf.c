@@ -9,8 +9,8 @@
  * that the console wants CR LF.
  *
  * The formatter is deliberately small: enough to report numbers during
- * boot and to say something useful in a panic, and no more. It has no
- * field widths, no padding, and no floating point.
+ * boot and to say something useful in a panic, and no more. It has a
+ * minimum field width and no floating point.
  */
 
 #include <sys/systm.h>
@@ -41,36 +41,89 @@ cnputs(const char *s)
     }
 }
 
-static void
-printnum(unsigned long long v, unsigned int base)
+static size_t
+fmtnum(char *buf, size_t buflen, unsigned long long v, unsigned int base)
 {
     static const char digits[] = "0123456789abcdef";
-    char buf[24];
-    int i = 0;
+    char tmp[24];
+    size_t n = 0;
+    size_t i = 0;
 
     do {
-        buf[i++] = digits[v % base];
+        tmp[i++] = digits[v % base];
         v /= base;
-    } while (v != 0);
+    } while (v != 0 && i < sizeof(tmp));
 
-    while (i > 0)
-        cnwrite(&buf[--i], 1);
+    while (i > 0 && n < buflen) {
+        buf[n++] = tmp[--i];
+    }
+
+    return n;
+}
+
+static size_t
+slen(const char *s)
+{
+    size_t n = 0;
+
+    while (s[n] != '\0') {
+        n++;
+    }
+
+    return n;
+}
+
+/*
+ * Emit with padding to a minimum width. Width exists because the compiler
+ * validates a format string against real printf, so a conversion this
+ * formatter does not implement is accepted at compile time and goes wrong
+ * only at run time, and does so by consuming the wrong argument. Supporting
+ * the common case is cheaper than a trap that silently misreads varargs.
+ */
+static void
+emit(const char *s, size_t len, int width, bool left)
+{
+    size_t pad = 0;
+
+    if (width > 0 && (size_t)width > len) {
+        pad = (size_t)width - len;
+    }
+
+    if (!left) {
+        while (pad-- > 0) {
+            cnwrite(" ", 1);
+        }
+    }
+
+    cnwrite(s, len);
+
+    if (left) {
+        while (pad-- > 0) {
+            cnwrite(" ", 1);
+        }
+    }
 }
 
 /*
  * Recognised conversions: %s %c %% and the integer forms %d %u %x, each
- * accepting the l, ll and z length modifiers. %p prints a 0x-prefixed
- * hexadecimal pointer. An unrecognised conversion is emitted verbatim so
- * that a bad format string is visible rather than silently swallowed.
+ * accepting the l, ll and z length modifiers, and %p for a 0x-prefixed
+ * pointer. Each accepts an optional '-' and a decimal minimum width.
+ * An unrecognised conversion is emitted verbatim so that a bad format
+ * string is visible rather than silently swallowed.
  */
 void
 cnvprintf(const char *fmt, va_list ap)
 {
+    char numbuf[24];
     unsigned long long uv;
     long long sv;
     const char *s;
+    size_t len;
     char c;
     int longs;
+    int width;
+    bool left;
+    bool neg;
 
     while (*fmt != '\0') {
         if (*fmt != '%') {
@@ -80,6 +133,19 @@ cnvprintf(const char *fmt, va_list ap)
         }
 
         fmt++;
+        left = false;
+        width = 0;
+        neg = false;
+
+        while (*fmt == '-') {
+            left = true;
+            fmt++;
+        }
+        while (*fmt >= '0' && *fmt <= '9') {
+            width = (width * 10) + (*fmt - '0');
+            fmt++;
+        }
+
         longs = 0;
         while (*fmt == 'l') {
             longs++;
@@ -93,53 +159,71 @@ cnvprintf(const char *fmt, va_list ap)
         switch (*fmt) {
         case 's':
             s = va_arg(ap, const char *);
-            cnputs(s != NULL ? s : "(null)");
+            if (s == NULL) {
+                s = "(null)";
+            }
+            emit(s, slen(s), width, left);
             break;
         case 'c':
             c = (char)va_arg(ap, int);
-            cnwrite(&c, 1);
+            emit(&c, 1, width, left);
             break;
         case 'd':
-            if (longs >= 2)
+            if (longs >= 2) {
                 sv = va_arg(ap, long long);
-            else if (longs == 1)
+            } else if (longs == 1) {
                 sv = va_arg(ap, long);
-            else
+            } else {
                 sv = va_arg(ap, int);
+            }
             if (sv < 0) {
-                cnputs("-");
+                neg = true;
                 uv = (unsigned long long)(-sv);
             } else {
                 uv = (unsigned long long)sv;
             }
-            printnum(uv, 10);
+            if (neg) {
+                cnwrite("-", 1);
+                if (width > 0) {
+                    width--;
+                }
+            }
+            len = fmtnum(numbuf, sizeof(numbuf), uv, 10);
+            emit(numbuf, len, width, left);
             break;
         case 'u':
         case 'x':
-            if (longs >= 2)
+            if (longs >= 2) {
                 uv = va_arg(ap, unsigned long long);
-            else if (longs == 1)
+            } else if (longs == 1) {
                 uv = va_arg(ap, unsigned long);
-            else
+            } else {
                 uv = va_arg(ap, unsigned int);
-            printnum(uv, *fmt == 'x' ? 16 : 10);
+            }
+            len = fmtnum(numbuf, sizeof(numbuf), uv,
+              *fmt == 'x' ? 16u : 10u);
+            emit(numbuf, len, width, left);
             break;
         case 'p':
             cnputs("0x");
-            printnum((unsigned long long)(uintptr_t)va_arg(ap, void *), 16);
+            len = fmtnum(numbuf, sizeof(numbuf),
+              (unsigned long long)(uintptr_t)va_arg(ap, void *), 16u);
+            emit(numbuf, len, width, left);
             break;
         case '%':
-            cnputs("%");
+            cnwrite("%", 1);
             break;
         default:
-            cnputs("%");
-            if (*fmt != '\0')
+            cnwrite("%", 1);
+            if (*fmt != '\0') {
                 cnwrite(fmt, 1);
+            }
             break;
         }
 
-        if (*fmt != '\0')
+        if (*fmt != '\0') {
             fmt++;
+        }
     }
 }
 

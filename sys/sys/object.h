@@ -22,12 +22,8 @@
 #define _SYS_OBJECT_H_
 
 #include <sys/pool.h>
+#include <sys/proc.h>
 #include <sys/thread.h>
-
-/* Stage 9: address space, handle table, threads. */
-struct proc {
-    sys_id_t p_id;
-};
 
 /* Stage 8: receive queue, owner, pulse queue. */
 struct channel {

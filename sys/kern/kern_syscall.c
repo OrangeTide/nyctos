@@ -6,28 +6,35 @@
 /*
  * The trap path.
  *
- * The machine-dependent stubs decode the hardware's idea of a system call
- * and land here. There is nothing to dispatch to yet: the numbered calls
- * that used to live here belonged to the banner demo and went with it, and
- * the interface that replaces them is the operation descriptor of section
- * 23, which arrives in stage 4 along with the handle table it operates on.
+ * Section 23.1: one entry point carrying a pointer to an operation
+ * descriptor and a count, and no system call numbers. The count is one
+ * until the submission engine of section 17 exists.
  *
- * Until then no user code runs, so nothing can reach this.
+ * The machine-dependent stubs land here with the arguments already in the C
+ * calling convention. Nothing reaches this yet, because no user code runs:
+ * the first process arrives in stage 9, and until then every caller of
+ * sys_op_exec is kernel code calling it directly. That is the same entry
+ * point and the same implementation, which is the point of section 23.1,
+ * but it does mean the trap edge itself is unexercised.
  */
 
+#include <sys/op.h>
 #include <sys/systm.h>
-
-#define ENOSYS 78
 
 long
 syscall_handler(long num, long a0, long a1, long a2)
 {
-    (void)num;
-    (void)a0;
+    struct sys_op *op = (struct sys_op *)(uintptr_t)num;
+    long count = a0;
+
     (void)a1;
     (void)a2;
 
-    return -ENOSYS;
+    if (count != 1) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    return sys_op_exec(op);
 }
 
 void
