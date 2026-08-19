@@ -95,31 +95,36 @@ channel_unwait_thread(void *obj, struct thread *t)
 }
 
 /*
- * Raise a thread to at least prio, and follow it to whatever it is itself
- * blocked sending to. Section 12.3 makes donation transitive so that a
- * chain of servers all run at the priority of whoever is ultimately
- * waiting; the bound is what keeps this walk finite with interrupts off.
+ * Raise a thread to at least prio.
+ *
+ * This is one step, and section 12.3 asks for a transitive chain. It gets
+ * one anyway, by a different route: a server sends onward at its own
+ * effective priority, which is already the donated value, so each hop
+ * carries the donation forward without anything walking a chain. A client
+ * at 25 reaching a server at 10 that calls a server at 5 leaves all three
+ * running at 25.
+ *
+ * What that does not give is the bound. SYS_PRIO_CHAIN_MAX and the
+ * SYS_ERR_DEADLOCK the section attaches to it presuppose a walk, and a
+ * walk is only needed to raise a thread that is already blocked onward.
+ * Nothing here can be: donation happens at the rendezvous, when the target
+ * has just stopped being blocked. So the bound is unenforced rather than
+ * enforced trivially, and a cycle of servers would deadlock undetected.
+ * That is a real gap between section 12.3 and this, and it wants either a
+ * link from a blocked sender to whoever is serving it, or the section
+ * conceding that per-send donation is the whole mechanism.
+ *
+ * The earlier version of this walked from the target back to the thread
+ * that had just donated to it, which by construction already outranked the
+ * value being donated, so the loop always stopped on its first test. It
+ * looked like a bounded chain walk and was a no-op.
  */
-static sys_err_t
+static void
 donate(struct thread *to, uint8_t prio)
 {
-    unsigned int depth;
-
-    for (depth = 0; to != NULL; depth++) {
-        if (depth >= SYS_PRIO_CHAIN_MAX) {
-            return SYS_ERR_DEADLOCK;
-        }
-        if (to->t_prio >= prio) {
-            return SYS_OK;
-        }
-
+    if (to->t_prio < prio) {
         sched_reprioritise(to, prio);
-
-        /* Follow the chain only where this thread is itself waiting. */
-        to = to->t_donor;
     }
-
-    return SYS_OK;
 }
 
 /* Recompute a thread's priority now that it owes nobody anything. */
@@ -169,12 +174,7 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         server->t_blocked_on = NULL;
         server->t_waitres = SYS_OK;
 
-        err = donate(server, self->t_prio);
-        if (err != SYS_OK) {
-            md_intr_restore(s);
-            return err;
-        }
-
+        donate(server, self->t_prio);
         sched_ready(server);
     } else {
         sender_insert(ch, self);
@@ -211,7 +211,7 @@ channel_recv(struct channel *ch, struct sys_msg *out,
         self->t_cookie = client->t_cookie;
         self->t_donor = client;
 
-        (void)donate(self, client->t_prio);
+        donate(self, client->t_prio);
 
         *out_peer = self->t_client;
         *out_cookie = self->t_cookie;
@@ -249,6 +249,7 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
     struct thread *self = thread_current();
     struct thread *client;
     intr_state_t s;
+    sys_err_t err;
 
     s = md_intr_disable();
 
@@ -266,18 +267,23 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
      * the object.
      */
     msg_copy(client->t_reply, reply);
+    client->t_reply->handle = SYS_ID_INVALID;
+
+    err = SYS_OK;
     if (reply->handle != SYS_ID_INVALID) {
-        sys_err_t merr = handle_move(&self->t_proc->p_handles,
+        err = handle_move(&self->t_proc->p_handles,
           &client->t_proc->p_handles, reply->handle,
           &client->t_reply->handle);
-
-        if (merr != SYS_OK) {
-            md_intr_restore(s);
-            return merr;
-        }
     }
+
+    /*
+     * The client is released whether or not the handle made it across.
+     * Returning early on a failed transfer would leave it blocked on a
+     * reply that has already been sent, which is a worse outcome than
+     * telling both sides the transfer failed.
+     */
     client->t_replied = true;
-    client->t_waitres = SYS_OK;
+    client->t_waitres = err;
     client->t_blocked_on = NULL;
 
     if (self->t_donor == client) {
@@ -289,5 +295,5 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
 
     md_intr_restore(s);
 
-    return SYS_OK;
+    return err;
 }

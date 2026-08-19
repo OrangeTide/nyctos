@@ -189,8 +189,13 @@ handle_checks(void)
  * was waiting for and yielded to itself for ever. Lowest priority means a
  * yield here always hands the core over, and boot only resumes when
  * nothing else can run.
+ *
+ * It is one rather than a comfortable middle value so that the rule is
+ * hard to break by accident. Documenting it was not enough: the fifth
+ * occurrence was a thread deliberately created below a boot thread that
+ * had been moved down to ten for exactly this reason.
  */
-#define PRIO_BOOT       10
+#define PRIO_BOOT       1
 #define PRIO_WAITER     25
 
 static struct timeline *tl_a;   /* signalled normally */
@@ -818,6 +823,114 @@ slice_checks(void)
       handle_lookup(&p->p_handles, root, SYS_OBJ_NONE, 0, NULL),
       SYS_ERR_STALE);
 }
+
+/*
+ * A three-level chain, to check the claim that transitivity falls out of
+ * each hop sending at its own effective priority rather than needing a
+ * walk. A client at 25 reaches a server at 10 which calls a server at 5;
+ * if the claim holds, all three run at 25.
+ */
+static struct channel *ch_mid;
+static struct channel *ch_low;
+static sys_handle_t h_mid_recv, h_mid_send, h_low_recv, h_low_send;
+static uint8_t deep_prio_seen;
+static bool chain_done;
+
+static void
+deep_server(void *arg)
+{
+    struct sys_op_reply_args tx;
+    struct sys_op_recv_args rx;
+
+    (void)arg;
+
+    memset(&rx, 0, sizeof(rx));
+    if (run(SYS_OP_IPC_RECV, h_low_recv, &rx, sizeof(rx)) != SYS_OK) {
+        panic("deep: receive failed");
+    }
+    deep_prio_seen = thread_current()->t_prio;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.peer = rx.peer;
+    (void)run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx));
+    thread_exit();
+}
+
+static void
+mid_server(void *arg)
+{
+    struct sys_op_reply_args tx;
+    struct sys_op_recv_args rx;
+    struct sys_op_send_args fwd;
+
+    (void)arg;
+
+    memset(&rx, 0, sizeof(rx));
+    if (run(SYS_OP_IPC_RECV, h_mid_recv, &rx, sizeof(rx)) != SYS_OK) {
+        panic("mid: receive failed");
+    }
+    cnprintf("    mid server (base 10) running at %u\n",
+      thread_current()->t_prio);
+
+    memset(&fwd, 0, sizeof(fwd));
+    if (run(SYS_OP_IPC_SEND, h_low_send, &fwd, sizeof(fwd)) != SYS_OK) {
+        panic("mid: forward failed");
+    }
+
+    memset(&tx, 0, sizeof(tx));
+    tx.peer = rx.peer;
+    (void)run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx));
+    thread_exit();
+}
+
+static void
+chain_client(void *arg)
+{
+    struct sys_op_send_args tx;
+
+    (void)arg;
+
+    memset(&tx, 0, sizeof(tx));
+    if (run(SYS_OP_IPC_SEND, h_mid_send, &tx, sizeof(tx)) != SYS_OK) {
+        panic("chain client: send failed");
+    }
+    chain_done = true;
+    thread_exit();
+}
+
+static void
+chain_checks(void)
+{
+    struct proc *p = proc_current();
+
+    ch_mid = channel_create("mid", p);
+    ch_low = channel_create("low", p);
+    if (ch_mid == NULL || ch_low == NULL) {
+        panic("chain: no channel");
+    }
+    (void)handle_insert(&p->p_handles, ch_mid, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_mid_recv);
+    (void)handle_insert(&p->p_handles, ch_mid, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND, &h_mid_send);
+    (void)handle_insert(&p->p_handles, ch_low, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_low_recv);
+    (void)handle_insert(&p->p_handles, ch_low, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND, &h_low_send);
+
+    sched_ready(thread_create("deep", 5, deep_server, NULL));
+    sched_ready(thread_create("mid", 10, mid_server, NULL));
+    sched_ready(thread_create("chain-client", 25, chain_client, NULL));
+
+    while (!chain_done) {
+        sched_yield();
+    }
+
+    cnprintf("    deep server (base 5) ran at %u\n", deep_prio_seen);
+    if (deep_prio_seen != 25) {
+        panic("chain: donation did not reach the far end (%u)",
+          deep_prio_seen);
+    }
+}
 void
 kernel_main(void)
 {
@@ -864,6 +977,7 @@ kernel_main(void)
 
     cnputs("ipc: rendezvous, queue order and donation\n");
     ipc_checks();
+    chain_checks();
 
     cnputs("the slice: a file read from another process\n");
     slice_checks();

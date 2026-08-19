@@ -105,6 +105,15 @@ previous activation instead of the origin. In three of the four, repairing
 the test immediately found a real fault in the code it was supposed to
 cover. Before trusting that a check passed, make it fail.
 
+One shape accounts for most of them: a thread waiting for another thread
+it outranks. The boot thread yields, the scheduler correctly picks the
+highest runnable thread, which is the boot thread again, and the test
+spins for ever without the thing it is waiting for ever running. This
+happened five times across four stages, twice after it had been written
+down. It stopped happening when the boot thread was moved to priority one,
+where breaking the rule takes deliberate effort rather than inattention.
+A convention that has to be remembered is not a fix.
+
 **Each milestone names what it would falsify.** The design is a set of guesses
 and some of them are bad. The point of building in this order is to reach the
 bad ones early, so the milestone descriptions below say what result would count
