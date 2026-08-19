@@ -244,6 +244,17 @@ sched_block(void)
     struct thread *cur = thread_current();
 
     /*
+     * The deferral is one global counter, not one per thread, because it
+     * exists to make a short run of readies atomic and never spans a
+     * switch. Blocking while deferred would hand the deferral to whatever
+     * runs next, which would then not preempt when it should.
+     */
+    if (defer_depth != 0) {
+        panic("sched: %s blocked while preemption was deferred",
+          cur->t_name);
+    }
+
+    /*
      * A thread that has exited is already in its final state and must not
      * be described as merely waiting for something.
      */

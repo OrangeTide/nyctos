@@ -207,7 +207,7 @@ timeline_checks(void)
 {
     struct proc *p = proc_current();
     struct thread *a, *c;
-    sys_handle_t h;
+    sys_handle_t h_a_signal;
     sys_err_t err;
 
     tl_a = timeline_create("a");
@@ -216,8 +216,15 @@ timeline_checks(void)
         panic("timelines: pool exhausted");
     }
 
+    /*
+     * Held open for the whole test, and load-bearing rather than
+     * incidental. fence() below inserts a handle per call and closes it
+     * again, so without a signal right outliving those calls the first
+     * signal would take the count from zero to one and back to zero, and
+     * the timeline would abandon itself between one line and the next.
+     */
     err = handle_insert(&p->p_handles, tl_a, SYS_OBJ_TIMELINE,
-      SYS_RIGHT_WAIT | SYS_RIGHT_SIGNAL, &h);
+      SYS_RIGHT_WAIT | SYS_RIGHT_SIGNAL, &h_a_signal);
     expect("a signal-righted handle on A", err, SYS_OK);
 
     err = handle_insert(&p->p_handles, tl_c, SYS_OBJ_TIMELINE,
@@ -263,6 +270,19 @@ timeline_checks(void)
       SYS_OK);
     expect("signalling an abandoned timeline", fence(tl_c, 100, true),
       SYS_ERR_OWNER_DEAD);
+
+    /*
+     * A leaves the same way C did. Asserting the table drains afterwards is
+     * what makes a handle held on purpose distinguishable from one
+     * forgotten, which reading it alone does not.
+     */
+    expect("close A signal handle",
+      run(SYS_OP_HANDLE_CLOSE, h_a_signal, NULL, 0), SYS_OK);
+
+    if (p->p_handles.ht_used != 0) {
+        panic("timelines: %u handles left in the table",
+          p->p_handles.ht_used);
+    }
 }
 void
 kernel_main(void)

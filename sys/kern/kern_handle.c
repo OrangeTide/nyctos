@@ -124,23 +124,27 @@ handle_close(struct handle_table *ht, sys_handle_t h)
 {
     struct handle_slot *s;
     uint32_t index = slot_index(ht, h);
+    uint32_t rights;
+    uint32_t type;
+    void *obj;
 
     if (index == SYS_POOL_NIL) {
         return SYS_ERR_STALE;
     }
     s = &ht->ht_slots[index];
 
+    /*
+     * What the object needs to be told, captured before the slot holding it
+     * is taken apart.
+     */
+    type = s->h_type;
+    obj = s->h_object;
+    rights = s->h_rights;
+
     s->h_gen = (s->h_gen + 1) & SYS_ID_GEN_MASK;
     if (s->h_gen == 0) {
         s->h_gen = 1;
     }
-
-    /*
-     * The object is told before the slot is cleared, and after the
-     * generation has moved, so that anything the release triggers sees a
-     * table in which this handle is already stale.
-     */
-    handle_object_release(s->h_type, s->h_object, s->h_rights);
 
     s->h_object = NULL;
     s->h_type = SYS_OBJ_NONE;
@@ -149,6 +153,15 @@ handle_close(struct handle_table *ht, sys_handle_t h)
     s->h_next = ht->ht_free;
     ht->ht_free = index;
     ht->ht_used--;
+
+    /*
+     * Told last, and deliberately. Releasing the last signal right on a
+     * timeline wakes its waiters, and waking a waiter can switch straight
+     * to it, so this call can return in another thread. Everything that
+     * thread might see of this table has to be finished first, rather than
+     * merely unreachable because no live handle names the slot.
+     */
+    handle_object_release(type, obj, rights);
 
     return SYS_OK;
 }
