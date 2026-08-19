@@ -139,7 +139,7 @@ msg_copy(struct sys_msg *dst, const struct sys_msg *src)
 }
 
 sys_err_t
-channel_send(struct channel *ch, const struct sys_msg *req,
+channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
   struct sys_msg *reply)
 {
     struct thread *self = thread_current();
@@ -149,6 +149,7 @@ channel_send(struct channel *ch, const struct sys_msg *req,
 
     s = md_intr_disable();
 
+    self->t_cookie = cookie;
     self->t_msg = (struct sys_msg *)req;
     self->t_reply = reply;
     self->t_replied = false;
@@ -163,6 +164,7 @@ channel_send(struct channel *ch, const struct sys_msg *req,
          */
         msg_copy(server->t_msg, req);
         server->t_client = thread_id(self);
+        server->t_cookie = cookie;
         server->t_donor = self;
         server->t_blocked_on = NULL;
         server->t_waitres = SYS_OK;
@@ -194,7 +196,7 @@ channel_send(struct channel *ch, const struct sys_msg *req,
 
 sys_err_t
 channel_recv(struct channel *ch, struct sys_msg *out,
-  sys_thread_id_t *out_peer)
+  sys_thread_id_t *out_peer, uint64_t *out_cookie)
 {
     struct thread *self = thread_current();
     struct thread *client;
@@ -206,11 +208,13 @@ channel_recv(struct channel *ch, struct sys_msg *out,
     if (client != NULL) {
         msg_copy(out, client->t_msg);
         self->t_client = thread_id(client);
+        self->t_cookie = client->t_cookie;
         self->t_donor = client;
 
         (void)donate(self, client->t_prio);
 
         *out_peer = self->t_client;
+        *out_cookie = self->t_cookie;
         md_intr_restore(s);
 
         return SYS_OK;
@@ -225,6 +229,7 @@ channel_recv(struct channel *ch, struct sys_msg *out,
     sched_block();
 
     *out_peer = self->t_client;
+    *out_cookie = self->t_cookie;
 
     md_intr_restore(s);
 
@@ -253,7 +258,24 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
         return SYS_ERR_STALE;
     }
 
+    /*
+     * Section 7.4: a handle travels by move. The value changes across the
+     * boundary because a handle means something only in the table holding
+     * it, and the sender slot is invalidated rather than merely unused, so
+     * presenting the old value afterwards is refused rather than reaching
+     * the object.
+     */
     msg_copy(client->t_reply, reply);
+    if (reply->handle != SYS_ID_INVALID) {
+        sys_err_t merr = handle_move(&self->t_proc->p_handles,
+          &client->t_proc->p_handles, reply->handle,
+          &client->t_reply->handle);
+
+        if (merr != SYS_OK) {
+            md_intr_restore(s);
+            return merr;
+        }
+    }
     client->t_replied = true;
     client->t_waitres = SYS_OK;
     client->t_blocked_on = NULL;

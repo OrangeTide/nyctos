@@ -48,10 +48,15 @@ initialises its object pools, reports them, and powers the machine off.
   with absolute phase, catch-up as a single counter update, and absolute
   deadlines on waits. No tick: the hardware is armed for the earliest
   pending event and for nothing else. Stage 7.
+- Message passing: send, receive and reply, a receive queue ordered by
+  sender priority, and priority inheritance along a bounded chain.
+  Connections, handle transfer by move, process spawn with explicit
+  handle inheritance, and a filesystem server. Stage 8.
 
-Stages 1 through 7 of milestone 1 are done. What remains of it is stage 8,
-which is message passing, spawn, and the driver process that closes the
-slice.
+**Milestone 1 is done.** A client process, handed one connection at spawn,
+walks it to a file, reads the file, and prints it. The file is served by a
+different process over the protocol of section 25, and nothing on that path
+is inside the kernel except the message passing.
 - An unprivileged-mode entry, not reached.
 
 Kernel object memory went from 6720 bytes to 271424 the moment threads
@@ -158,6 +163,28 @@ blocking in receive is sufficient and the object is ceremony. Whether
 handle-relative naming with no ambient root is workable rather than merely
 defensible. Whether a protocol carrying the offset in the message survives a
 real client.
+
+*What the slice actually answered.* Send, receive and reply came to about
+two hundred lines, and the donation that goes with it to forty. Ordering the
+receive queue by sender priority and moving a donated thread between run
+queues were both cheap, because the scheduler already had one place that
+decides. Handle-relative naming was easier to build than to describe: a
+client handed one connection has nothing to name and nothing to guess, and
+the server needs no notion of a root at all. Offsets in the message removed
+state rather than adding a parameter.
+
+The one that did not survive contact is timelines. See below.
+
+*On timelines, after stage 8.* The verdict is now in and it is favourable,
+with one qualification worth stating. Interrupts, timer activation,
+one-shot completion and wait deadlines all landed on the one object. IPC
+did not: a thread blocked in send is waiting for a reply, not for a counter
+to reach a value, so a channel became the second thing a thread can block
+on after all. Section 9 opens by calling the timeline the single
+synchronization object, and that is now not quite true, though the
+invariant it exists to protect held: a thread is still blocked on exactly
+one thing, and the generic unwait that stage 7 forced is what made adding
+a second blocking object cost almost nothing.
 
 *On timelines, after stage 7.* The evidence is now positive and not yet
 conclusive. Three unrelated things have landed on the one object without

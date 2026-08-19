@@ -23,6 +23,7 @@
 
 #include <sys/pool.h>
 #include <sys/channel.h>
+#include <sys/connection.h>
 #include <sys/proc.h>
 #include <sys/thread.h>
 #include <sys/time.h>
@@ -45,6 +46,7 @@ struct program {
 struct pool *proc_pool(void);
 struct pool *thread_pool(void);
 struct pool *channel_pool(void);
+struct pool *connection_pool(void);
 struct pool *grant_pool(void);
 struct pool *timeline_pool(void);
 struct pool *timer_pool(void);

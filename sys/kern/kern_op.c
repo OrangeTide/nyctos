@@ -21,6 +21,7 @@
  */
 
 #include <sys/channel.h>
+#include <sys/connection.h>
 #include <sys/handle.h>
 #include <sys/op.h>
 #include <sys/proc.h>
@@ -67,6 +68,23 @@ op_send(struct proc *p, struct sys_op *op)
         return SYS_ERR_INVALID_ARG;
     }
 
+    /*
+     * A send names either a connection, which is the ordinary case and
+     * carries the server side state with it, or the channel itself, which
+     * a holder of the raw channel may do and which carries no state.
+     */
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_CONNECTION,
+      SYS_RIGHT_SEND, &obj);
+    if (err == SYS_OK) {
+        struct connection *cn = obj;
+
+        return channel_send(cn->cn_channel, cn->cn_cookie, &args->request,
+          &args->reply);
+    }
+    if (err != SYS_ERR_WRONG_TYPE) {
+        return err;
+    }
+
     err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_CHANNEL,
       SYS_RIGHT_SEND, &obj);
     if (err != SYS_OK) {
@@ -74,7 +92,7 @@ op_send(struct proc *p, struct sys_op *op)
     }
     ch = obj;
 
-    return channel_send(ch, &args->request, &args->reply);
+    return channel_send(ch, 0, &args->request, &args->reply);
 }
 
 static sys_err_t
@@ -97,7 +115,7 @@ op_recv(struct proc *p, struct sys_op *op)
     }
     ch = obj;
 
-    return channel_recv(ch, &args->message, &args->peer);
+    return channel_recv(ch, &args->message, &args->peer, &args->cookie);
 }
 
 /*
@@ -118,6 +136,44 @@ op_reply(struct proc *p, struct sys_op *op)
     }
 
     return channel_reply(args->peer, &args->reply);
+}
+
+/*
+ * Connect to a channel. The cookie is the server naming its own state for
+ * this connection, so this is a server-side operation: a client receives a
+ * connection rather than making one.
+ */
+static sys_err_t
+op_chan_connect(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_connect_args *args;
+    struct connection *cn;
+    sys_err_t err;
+    void *obj;
+
+    args = (struct sys_op_connect_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    cn = connection_create(obj, args->cookie);
+    if (cn == NULL) {
+        return SYS_ERR_NO_MEMORY;
+    }
+
+    err = handle_insert(&p->p_handles, cn, SYS_OBJ_CONNECTION, args->rights,
+      &args->out_handle);
+    if (err != SYS_OK) {
+        connection_destroy(cn);
+    }
+
+    return err;
 }
 
 static sys_err_t
@@ -180,6 +236,9 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_HANDLE_DUP:
         err = op_handle_dup(p, op);
+        break;
+    case SYS_OP_CHAN_CONNECT:
+        err = op_chan_connect(p, op);
         break;
     case SYS_OP_FENCE_WAIT:
         err = op_fence(p, op, false);

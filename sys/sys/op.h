@@ -76,6 +76,7 @@ typedef uint64_t  sys_handle_t;
 #define SYS_OBJ_PROCESS     6
 #define SYS_OBJ_THREAD      7
 #define SYS_OBJ_IRQ         8
+#define SYS_OBJ_CONNECTION  9
 
 /* Blocking ops. These are the only ones that can block. */
 #define SYS_OP_NOP                0
@@ -88,13 +89,14 @@ typedef uint64_t  sys_handle_t;
 #define SYS_OP_FENCE_SIGNAL       5
 #define SYS_OP_HANDLE_CLOSE       6
 #define SYS_OP_HANDLE_DUP         7
+#define SYS_OP_CHAN_CONNECT      11
 
 /* Issuing ops, which need a device that does DMA. */
 #define SYS_OP_DMA_ISSUE          8
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             11
+#define SYS_OP_COUNT             12
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the
@@ -138,6 +140,14 @@ typedef struct sys_msg {
     uint8_t         inline_data[SYS_IPC_INLINE_BYTES];
 } sys_msg_t;
 
+/* Argument structure for SYS_OP_CHAN_CONNECT. target names the channel. */
+typedef struct sys_op_connect_args {
+    uint64_t        cookie;
+    uint32_t        rights;     /* rights on the returned handle */
+    uint32_t        _pad;
+    sys_handle_t    out_handle; /* written by the kernel */
+} sys_op_connect_args_t;
+
 /* Argument structures for the three message operations. */
 typedef struct sys_op_send_args {
     sys_msg_t       request;
@@ -147,6 +157,12 @@ typedef struct sys_op_send_args {
 typedef struct sys_op_recv_args {
     sys_msg_t       message;    /* written by the kernel */
     sys_thread_id_t peer;       /* written by the kernel; reply to this */
+
+    /*
+     * The connection this arrived on, as the server named it when it made
+     * the connection. The kernel carries it and attaches no meaning.
+     */
+    uint64_t        cookie;     /* written by the kernel */
 } sys_op_recv_args_t;
 
 typedef struct sys_op_reply_args {

@@ -18,6 +18,7 @@ SRCS := arch/$(ARCH)/boot.S \
         arch/$(ARCH)/uart.c \
         kern/init_main.c \
         kern/kern_channel.c \
+        kern/kern_connection.c \
         kern/kern_handle.c \
         kern/kern_intr.c \
         kern/kern_object.c \

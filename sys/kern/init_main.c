@@ -5,6 +5,8 @@
 
 #include <sys/channel.h>
 #include <sys/config.h>
+#include <sys/connection.h>
+#include <sys/fs.h>
 #include <sys/handle.h>
 #include <sys/intr.h>
 #include <sys/object.h>
@@ -375,6 +377,7 @@ interrupt_checks(void)
  * rather than a backlog.
  */
 static sys_handle_t h_srv_recv;
+static bool slice_done;
 static struct timeline *tl_shot;
 static struct timeline *tl_tick;
 
@@ -594,6 +597,227 @@ ipc_checks(void)
         panic("ipc: the server never inherited a client priority");
     }
 }
+
+/*
+ * The vertical slice: one thread, one channel, one driver, one file read.
+ *
+ * A client process is handed a connection to a directory at spawn, walks
+ * it to a file, reads the file, and prints what it read. The file is
+ * served by a different process over the protocol of section 25, and
+ * nothing on the path is inside the kernel except the message passing.
+ *
+ * The client is given exactly one handle and can therefore reach exactly
+ * one directory. There is no root to name, no path that starts anywhere
+ * but the connection it was handed, and nothing it could have guessed.
+ */
+
+#define FS_NODE_ROOT    0
+
+static const char motd_text[] =
+    "served from outside the kernel\n";
+
+static struct {
+    const char *name;
+    const char *data;
+    uint32_t    len;
+} fs_nodes[] = {
+    { "/",     NULL,      0 },
+    { "motd",  motd_text, sizeof(motd_text) - 1 },
+};
+
+static struct channel *ch_fs;
+static sys_handle_t h_fs_recv;
+
+static void
+fs_server(void *arg)
+{
+    struct sys_op_connect_args cargs;
+    struct sys_op_reply_args tx;
+    struct sys_op_recv_args rx;
+    fs_request_t *req;
+    fs_reply_t *rep;
+    uint32_t node, n;
+
+    (void)arg;
+
+    for (;;) {
+        memset(&rx, 0, sizeof(rx));
+        if (run(SYS_OP_IPC_RECV, h_fs_recv, &rx, sizeof(rx)) != SYS_OK) {
+            panic("fs: receive failed");
+        }
+
+        req = (fs_request_t *)rx.message.inline_data;
+        node = (uint32_t)rx.cookie;
+
+        memset(&tx, 0, sizeof(tx));
+        tx.peer = rx.peer;
+        rep = (fs_reply_t *)tx.reply.inline_data;
+        rep->fr_status = SYS_ERR_NO_ENT;
+        tx.reply.inline_len = sizeof(*rep);
+        tx.reply.handle = SYS_ID_INVALID;
+
+        switch (req->fr_op) {
+        case FS_OP_WALK:
+            for (n = 0; n < 2; n++) {
+                if (fs_nodes[n].data != NULL &&
+                  fs_nodes[n].name[0] == req->fr_name[0]) {
+                    break;
+                }
+            }
+            if (n < 2) {
+                /*
+                 * A new connection naming the node found, handed back in
+                 * the message. The client could not have constructed this
+                 * itself, which is the point of it being a handle.
+                 */
+                memset(&cargs, 0, sizeof(cargs));
+                cargs.cookie = n;
+                cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+                if (run(SYS_OP_CHAN_CONNECT, h_fs_recv, &cargs,
+                  sizeof(cargs)) == SYS_OK) {
+                    tx.reply.handle = cargs.out_handle;
+                    rep->fr_status = SYS_OK;
+                    rep->fr_size = fs_nodes[n].len;
+                }
+            }
+            break;
+
+        case FS_OP_READ:
+            if (node < 2 && fs_nodes[node].data != NULL) {
+                uint64_t off = req->fr_offset;
+                uint32_t avail = 0;
+
+                if (off < fs_nodes[node].len) {
+                    avail = fs_nodes[node].len - (uint32_t)off;
+                }
+                if (avail > req->fr_length) {
+                    avail = req->fr_length;
+                }
+                if (avail > SYS_IPC_INLINE_BYTES - sizeof(*rep)) {
+                    avail = SYS_IPC_INLINE_BYTES - sizeof(*rep);
+                }
+
+                memcpy(&tx.reply.inline_data[sizeof(*rep)],
+                  &fs_nodes[node].data[off], avail);
+                rep->fr_length = avail;
+                rep->fr_status = SYS_OK;
+                tx.reply.inline_len = sizeof(*rep) + avail;
+            }
+            break;
+
+        case FS_OP_CLOSE:
+            rep->fr_status = SYS_OK;
+            break;
+
+        default:
+            rep->fr_status = SYS_ERR_INVALID_ARG;
+            break;
+        }
+
+        if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
+            panic("fs: reply failed");
+        }
+    }
+}
+
+static void
+fs_client(void *arg)
+{
+    const struct proc_startup *startup = arg;
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+    fs_reply_t *rep;
+    sys_handle_t dir, file;
+    char buf[SYS_IPC_INLINE_BYTES];
+
+    if (startup->ns_count != 1) {
+        panic("client: expected exactly one handle at spawn");
+    }
+    dir = startup->ns_handle[0];
+    cnprintf("    client: spawned holding %u handle, and no root to name\n",
+      startup->ns_count);
+
+    /* Walk the directory to the file. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WALK;
+    req->fr_name[0] = 'm';
+    tx.request.inline_len = sizeof(*req);
+
+    if (run(SYS_OP_IPC_SEND, dir, &tx, sizeof(tx)) != SYS_OK) {
+        panic("client: walk failed");
+    }
+    rep = (fs_reply_t *)tx.reply.inline_data;
+    if (rep->fr_status != SYS_OK) {
+        panic("client: walk refused");
+    }
+    file = tx.reply.handle;
+    cnprintf("    client: walked to a %lu byte file\n",
+      (unsigned long)rep->fr_size);
+
+    /* Read it. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = 0;
+    req->fr_length = sizeof(buf);
+    tx.request.inline_len = sizeof(*req);
+
+    if (run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx)) != SYS_OK) {
+        panic("client: read failed");
+    }
+    rep = (fs_reply_t *)tx.reply.inline_data;
+    if (rep->fr_status != SYS_OK) {
+        panic("client: read refused");
+    }
+
+    memcpy(buf, &tx.reply.inline_data[sizeof(*rep)], rep->fr_length);
+    buf[rep->fr_length] = '\0';
+    cnprintf("    client read: %s", buf);
+
+    slice_done = true;
+    thread_exit();
+}
+
+static void
+slice_checks(void)
+{
+    struct proc *p = proc_current();
+    struct sys_op_connect_args cargs;
+    struct thread *srv;
+    sys_handle_t root;
+    sys_err_t err;
+
+    ch_fs = channel_create("fs", p);
+    if (ch_fs == NULL) {
+        panic("slice: no channel");
+    }
+    err = handle_insert(&p->p_handles, ch_fs, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_fs_recv);
+    expect("a receive handle for the filesystem", err, SYS_OK);
+
+    srv = thread_create("fs-server", 15, fs_server, NULL);
+    sched_ready(srv);
+
+    /* A connection naming the root directory, to hand to the client. */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to the root directory",
+      run(SYS_OP_CHAN_CONNECT, h_fs_recv, &cargs, sizeof(cargs)), SYS_OK);
+    root = cargs.out_handle;
+
+    cnputs("    spawning a client process with that one handle\n");
+    (void)proc_spawn("fs-client", 20, fs_client, &root, 1);
+
+    while (!slice_done) {
+        sched_yield();
+    }
+
+    expect("the handle left this process when it was handed over",
+      handle_lookup(&p->p_handles, root, SYS_OBJ_NONE, 0, NULL),
+      SYS_ERR_STALE);
+}
 void
 kernel_main(void)
 {
@@ -640,6 +864,9 @@ kernel_main(void)
 
     cnputs("ipc: rendezvous, queue order and donation\n");
     ipc_checks();
+
+    cnputs("the slice: a file read from another process\n");
+    slice_checks();
 
     cnputs("stage 8 complete\n");
     machine_halt(0);

@@ -77,6 +77,15 @@ sys_err_t handle_lookup(const struct handle_table *ht, sys_handle_t h,
 sys_err_t handle_close(struct handle_table *ht, sys_handle_t h);
 
 /*
+ * Move a handle from one table to another, per section 7.4. The value
+ * changes, the source slot is invalidated, and the rights travel
+ * unchanged: attenuation happens before a transfer, not during one, so a
+ * sender that wants to give less duplicates with fewer rights first.
+ */
+sys_err_t handle_move(struct handle_table *from, struct handle_table *to,
+  sys_handle_t h, sys_handle_t *out);
+
+/*
  * Duplicate, attenuating. new_rights must be a subset of what the source
  * carries, and the source must carry SYS_RIGHT_DUPLICATE.
  */

@@ -17,6 +17,7 @@
 POOL_STORAGE(procs, struct proc, SYS_MAX_PROCESSES);
 POOL_STORAGE(threads, struct thread, SYS_MAX_THREADS);
 POOL_STORAGE(channels, struct channel, SYS_MAX_CHANNELS);
+POOL_STORAGE(connections, struct connection, SYS_MAX_CONNECTIONS);
 POOL_STORAGE(grants, struct grant, SYS_MAX_GRANTS);
 POOL_STORAGE(timelines, struct timeline, SYS_MAX_TIMELINES);
 POOL_STORAGE(timers, struct timer, SYS_MAX_TIMERS);
@@ -25,6 +26,7 @@ POOL_STORAGE(programs, struct program, SYS_MAX_PROGRAMS);
 static struct pool proc_p;
 static struct pool thread_p;
 static struct pool channel_p;
+static struct pool connection_p;
 static struct pool grant_p;
 static struct pool timeline_p;
 static struct pool timer_p;
@@ -33,6 +35,7 @@ static struct pool program_p;
 struct pool *proc_pool(void) { return &proc_p; }
 struct pool *thread_pool(void) { return &thread_p; }
 struct pool *channel_pool(void) { return &channel_p; }
+struct pool *connection_pool(void) { return &connection_p; }
 struct pool *grant_pool(void) { return &grant_p; }
 struct pool *timeline_pool(void) { return &timeline_p; }
 struct pool *timer_pool(void) { return &timer_p; }
@@ -42,6 +45,7 @@ static struct pool *const all_pools[] = {
     &proc_p,
     &thread_p,
     &channel_p,
+    &connection_p,
     &grant_p,
     &timeline_p,
     &timer_p,
@@ -56,6 +60,7 @@ object_init(void)
     POOL_INIT(&proc_p, procs, "proc", SYS_MAX_PROCESSES);
     POOL_INIT(&thread_p, threads, "thread", SYS_MAX_THREADS);
     POOL_INIT(&channel_p, channels, "channel", SYS_MAX_CHANNELS);
+    POOL_INIT(&connection_p, connections, "connection", SYS_MAX_CONNECTIONS);
     POOL_INIT(&grant_p, grants, "grant", SYS_MAX_GRANTS);
     POOL_INIT(&timeline_p, timelines, "timeline", SYS_MAX_TIMELINES);
     POOL_INIT(&timer_p, timers, "timer", SYS_MAX_TIMERS);

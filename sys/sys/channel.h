@@ -54,12 +54,12 @@ struct channel *channel_create(const char *name, struct proc *owner);
  * thread rather than shared, so neither side holds a pointer into the
  * other; see section 12.4 on why the inline payload exists at all.
  */
-sys_err_t channel_send(struct channel *ch, const struct sys_msg *req,
-  struct sys_msg *reply);
+sys_err_t channel_send(struct channel *ch, uint64_t cookie,
+  const struct sys_msg *req, struct sys_msg *reply);
 
 /* Receive, filling out_peer with the id to reply to. */
 sys_err_t channel_recv(struct channel *ch, struct sys_msg *out,
-  sys_thread_id_t *out_peer);
+  sys_thread_id_t *out_peer, uint64_t *out_cookie);
 
 sys_err_t channel_reply(sys_thread_id_t peer, const struct sys_msg *reply);
 

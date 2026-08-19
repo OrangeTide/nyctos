@@ -124,6 +124,7 @@ struct thread {
     struct sys_msg     *t_reply;        /* where the reply is to be written */
     sys_thread_id_t     t_client;       /* the client this thread owes */
     struct thread      *t_donor;        /* who raised this thread priority */
+    uint64_t            t_cookie;       /* connection the request arrived on */
     bool                t_replied;
 
     /*

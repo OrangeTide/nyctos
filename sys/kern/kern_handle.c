@@ -194,3 +194,32 @@ handle_dup(struct handle_table *ht, sys_handle_t h, uint32_t new_rights,
 
     return handle_insert(ht, s->h_object, s->h_type, new_rights, out);
 }
+
+sys_err_t
+handle_move(struct handle_table *from, struct handle_table *to,
+  sys_handle_t h, sys_handle_t *out)
+{
+    const struct handle_slot *s;
+    uint32_t index = slot_index(from, h);
+    sys_err_t err;
+
+    if (index == SYS_POOL_NIL) {
+        return SYS_ERR_STALE;
+    }
+    s = &from->ht_slots[index];
+
+    if ((s->h_rights & SYS_RIGHT_TRANSFER) == 0) {
+        return SYS_ERR_PERM_DENIED;
+    }
+
+    err = handle_insert(to, s->h_object, s->h_type, s->h_rights, out);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    /*
+     * Closed after the insert, so a failure to place it leaves the sender
+     * holding what it had rather than losing it to a full table.
+     */
+    return handle_close(from, h);
+}
