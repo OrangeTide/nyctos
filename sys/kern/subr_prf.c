@@ -118,6 +118,7 @@ cnvprintf(const char *fmt, va_list ap)
     unsigned long long uv;
     long long sv;
     const char *s;
+    const char *np;
     size_t len;
     char c;
     int longs;
@@ -182,14 +183,22 @@ cnvprintf(const char *fmt, va_list ap)
             } else {
                 uv = (unsigned long long)sv;
             }
+
+            /*
+             * The sign is part of the number for padding purposes, so it
+             * goes into the buffer rather than being written ahead of it.
+             * Emitting it first puts the padding between the sign and the
+             * digits, which is where -10 in a width of five becomes
+             * "-  10" instead of "  -10".
+             */
+            len = fmtnum(&numbuf[1], sizeof(numbuf) - 1, uv, 10);
+            np = &numbuf[1];
             if (neg) {
-                cnwrite("-", 1);
-                if (width > 0) {
-                    width--;
-                }
+                numbuf[0] = '-';
+                np = &numbuf[0];
+                len++;
             }
-            len = fmtnum(numbuf, sizeof(numbuf), uv, 10);
-            emit(numbuf, len, width, left);
+            emit(np, len, width, left);
             break;
         case 'u':
         case 'x':
