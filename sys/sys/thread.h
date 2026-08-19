@@ -41,10 +41,21 @@
 
 #define THREAD_GUARD    ((uint64_t)0x9e3779b97f4a7c15ULL)
 
+/*
+ * A subset of the states in section 10.6, carrying only what exists.
+ *
+ * READY means specifically "on a run queue", which is what lets the
+ * scheduler reject a thread being made runnable twice. That distinction is
+ * why NEW exists: a thread that has been built but not yet handed to the
+ * scheduler is not runnable, and calling it READY would make the two
+ * indistinguishable.
+ */
 enum thread_state {
-    THREAD_UNUSED = 0,
-    THREAD_READY,
+    THREAD_UNUSED = 0,  /* a pool slot that was never built */
+    THREAD_NEW,         /* built, not yet handed to the scheduler */
+    THREAD_READY,       /* on a run queue */
     THREAD_RUNNING,
+    THREAD_BLOCKED,     /* off the run queues, waiting for something */
     THREAD_DEAD,
 };
 

@@ -41,10 +41,32 @@ sched_init(void)
     }
 }
 
+/*
+ * A thread may only join a run queue from a state that means it is not on
+ * one. Enqueuing a thread that is already queued rewrites its link, which
+ * truncates the list and silently loses every thread behind it; the symptom
+ * of that surfaces far from the cause, so it is worth one comparison here.
+ *
+ * RUNNING is legal because a thread being preempted or yielding goes back
+ * on a queue from there.
+ */
 static void
 enqueue(struct thread *t)
 {
     struct runq *q = &runq[t->t_prio];
+
+    switch (t->t_state) {
+    case THREAD_NEW:
+    case THREAD_RUNNING:
+    case THREAD_BLOCKED:
+        break;
+    case THREAD_READY:
+        panic("thread %s: made runnable while already runnable", t->t_name);
+    case THREAD_DEAD:
+        panic("thread %s: made runnable after exiting", t->t_name);
+    default:
+        panic("thread %s: made runnable from an unbuilt slot", t->t_name);
+    }
 
     t->t_qnext = NULL;
     if (q->tail == NULL) {
@@ -96,7 +118,12 @@ dequeue_highest(void)
  * yet, so nothing could ever wake this core: reaching here means every
  * thread has finished and the system is done. Stage 6 gives this a device
  * to wait for and it becomes a real idle.
+ *
+ * Declared noreturn so that dispatch does not have to carry a path in which
+ * it continues with no thread to dispatch to.
  */
+static void sched_idle(void) __attribute__((noreturn));
+
 static void
 sched_idle(void)
 {
@@ -127,6 +154,14 @@ sched_ready(struct thread *t)
 {
     struct thread *cur = thread_current();
 
+    /*
+     * A thread readying itself would put a running thread on a run queue,
+     * leaving it both running and waiting to run.
+     */
+    if (t == cur) {
+        panic("thread %s: made itself runnable while running", t->t_name);
+    }
+
     enqueue(t);
 
     /*
@@ -151,5 +186,15 @@ sched_yield(void)
 void
 sched_block(void)
 {
+    struct thread *cur = thread_current();
+
+    /*
+     * A thread that has exited is already in its final state and must not
+     * be described as merely waiting for something.
+     */
+    if (cur->t_state != THREAD_DEAD) {
+        cur->t_state = THREAD_BLOCKED;
+    }
+
     dispatch();
 }

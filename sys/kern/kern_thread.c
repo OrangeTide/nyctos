@@ -29,6 +29,20 @@ thread_current(void)
     return current;
 }
 
+/*
+ * A priority outside the range would shift the ready bit off the end of the
+ * bitmap, which is undefined rather than merely wrong. Checked on both the
+ * paths that set one.
+ */
+static void
+check_prio(const char *name, unsigned int prio)
+{
+    if (prio > SYS_PRIO_MAX) {
+        panic("thread %s: priority %u above SYS_PRIO_MAX (%u)", name, prio,
+          (unsigned int)SYS_PRIO_MAX);
+    }
+}
+
 static void
 check_guard(const struct thread *t)
 {
@@ -73,6 +87,8 @@ thread_bootstrap(const char *name, uint8_t prio)
         panic("thread: no slot for the boot context");
     }
 
+    check_prio(name, prio);
+
     t->t_id = pool_id_of(thread_pool(), t);
     t->t_name = name;
     t->t_prio = prio;
@@ -99,9 +115,7 @@ thread_create(const char *name, uint8_t prio, void (*entry)(void *),
 {
     struct thread *t;
 
-    if (prio > SYS_PRIO_MAX) {
-        panic("thread %s: priority %u above SYS_PRIO_MAX", name, prio);
-    }
+    check_prio(name, prio);
 
     t = pool_alloc(thread_pool(), NULL);
     if (t == NULL) {
@@ -111,7 +125,7 @@ thread_create(const char *name, uint8_t prio, void (*entry)(void *),
     t->t_id = pool_id_of(thread_pool(), t);
     t->t_name = name;
     t->t_prio = prio;
-    t->t_state = THREAD_READY;
+    t->t_state = THREAD_NEW;
     t->t_guard = (uint64_t *)(void *)t->t_stack;
     *t->t_guard = THREAD_GUARD;
 
