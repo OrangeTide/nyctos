@@ -61,6 +61,13 @@ md_switch:
  */
 .global md_thread_start
 md_thread_start:
+    /*
+     * Every switch happens inside an interrupts-disabled region, so a
+     * thread that has never run inherits that state and has to leave it
+     * itself. A thread that started with interrupts masked would never be
+     * preempted and never see a timer.
+     */
+    csrsi   mstatus, 8
     mv      a0, s1
     jalr    s0
     call    thread_exited

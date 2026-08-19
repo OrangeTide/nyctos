@@ -11,12 +11,14 @@ include $(TOPDIR)/share/mk/nyc.own.mk
 SRCS := arch/$(ARCH)/boot.S \
         arch/$(ARCH)/exception.S \
         arch/$(ARCH)/halt.c \
+        arch/$(ARCH)/intr.c \
         arch/$(ARCH)/machdep.S \
         arch/$(ARCH)/swtch.S \
         arch/$(ARCH)/thread_md.c \
         arch/$(ARCH)/uart.c \
         kern/init_main.c \
         kern/kern_handle.c \
+        kern/kern_intr.c \
         kern/kern_object.c \
         kern/kern_op.c \
         kern/kern_objref.c \

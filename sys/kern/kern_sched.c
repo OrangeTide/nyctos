@@ -14,6 +14,7 @@
  */
 
 #include <sys/config.h>
+#include <sys/intr.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
@@ -132,22 +133,27 @@ dequeue_highest(void)
 /*
  * Nothing is runnable.
  *
- * Section 11.6 makes idle a state of the core rather than a thread, and
- * says a core leaves it on an interrupt. There are no interrupt sources
- * yet, so nothing could ever wake this core: reaching here means every
- * thread has finished and the system is done. Stage 6 gives this a device
- * to wait for and it becomes a real idle.
+ * Section 11.6 makes idle a state of the core rather than a thread: there
+ * is no idle thread occupying a priority level and no thread id meaning
+ * "nothing". A core is either running a thread or it is idle.
  *
- * Declared noreturn so that dispatch does not have to carry a path in which
- * it continues with no thread to dispatch to.
+ * Leaving idle is on the interrupt path, not the scheduling path. Waiting
+ * with interrupts enabled is the whole mechanism, and it is why this is
+ * reached only after they exist: before that, a core with nothing runnable
+ * had nothing that could ever wake it.
  */
-static void sched_idle(void) __attribute__((noreturn));
-
 static void
 sched_idle(void)
 {
-    cnputs("sched: nothing runnable\n");
-    machine_halt(0);
+    for (;;) {
+        md_intr_enable();
+        md_idle_wait();
+        (void)md_intr_disable();
+
+        if (ready_bits != 0) {
+            return;
+        }
+    }
 }
 
 static void
@@ -157,21 +163,40 @@ dispatch(void)
 
     next = dequeue_highest();
     if (next == NULL) {
+        /*
+         * Idle until an interrupt makes something runnable, then take the
+         * decision again. An interrupt handler may have readied several
+         * threads, so the queue is consulted afresh rather than assuming
+         * the first one found is the one to run.
+         */
         sched_idle();
-    }
-    if (next == thread_current()) {
-        next->t_state = THREAD_RUNNING;
-        return;
+        next = dequeue_highest();
+        if (next == NULL) {
+            panic("sched: left idle with nothing runnable");
+        }
     }
 
     next->t_state = THREAD_RUNNING;
+    if (next == thread_current()) {
+        return;
+    }
+
     thread_switch_to(next);
 }
-
+/*
+ * Everything below takes an interrupts-disabled critical section, because
+ * the run queues are now reached by interrupt handlers as well as by
+ * threads. Section 13.3 makes that the Tier 0 answer rather than locking,
+ * which is what buys a kernel with no internal locking at all.
+ *
+ * The saved state is restored rather than interrupts simply re-enabled, so
+ * a region nested inside another leaves it disabled as it found it.
+ */
 void
 sched_ready(struct thread *t)
 {
     struct thread *cur = thread_current();
+    intr_state_t s = md_intr_disable();
 
     /*
      * A thread readying itself would put a running thread on a run queue,
@@ -186,68 +211,77 @@ sched_ready(struct thread *t)
     /*
      * Section 11.3: a thread becoming runnable at a higher priority takes
      * the core immediately rather than waiting for a quantum. Equal
-     * priority does not preempt, because the policy within a level is FIFO
+     * priority does not preempt, because within a level the policy is FIFO
      * and the running thread got there first.
      */
-    if (cur == NULL || t->t_prio <= cur->t_prio) {
-        return;
+    if (cur != NULL && t->t_prio > cur->t_prio) {
+        if (defer_depth > 0) {
+            defer_pending = true;
+        } else {
+            enqueue(cur);
+            dispatch();
+        }
     }
 
-    if (defer_depth > 0) {
-        defer_pending = true;
-        return;
-    }
-
-    enqueue(cur);
-    dispatch();
+    md_intr_restore(s);
 }
 
 void
 sched_defer(void)
 {
+    intr_state_t s = md_intr_disable();
+
     defer_depth++;
+
+    md_intr_restore(s);
 }
 
 void
 sched_undefer(void)
 {
     struct thread *cur;
+    intr_state_t s = md_intr_disable();
 
     if (defer_depth == 0) {
         panic("sched: undefer without a matching defer");
     }
 
     defer_depth--;
-    if (defer_depth > 0 || !defer_pending) {
-        return;
+    if (defer_depth == 0 && defer_pending) {
+        defer_pending = false;
+
+        cur = thread_current();
+        if (cur != NULL && highest_ready() > (int)cur->t_prio) {
+            enqueue(cur);
+            dispatch();
+        }
     }
 
-    defer_pending = false;
-
-    cur = thread_current();
-    if (cur != NULL && highest_ready() > (int)cur->t_prio) {
-        enqueue(cur);
-        dispatch();
-    }
+    md_intr_restore(s);
 }
 
 void
 sched_yield(void)
 {
+    intr_state_t s = md_intr_disable();
+
     enqueue(thread_current());
     dispatch();
+
+    md_intr_restore(s);
 }
 
 void
 sched_block(void)
 {
     struct thread *cur = thread_current();
+    intr_state_t s;
 
     /*
-     * The deferral is one global counter, not one per thread, because it
-     * exists to make a short run of readies atomic and never spans a
-     * switch. Blocking while deferred would hand the deferral to whatever
-     * runs next, which would then not preempt when it should.
+     * The deferral is one counter for the system, not one per thread,
+     * because it exists to make a short run of readies atomic and never
+     * spans a switch. Blocking while deferred would hand the deferral to
+     * whatever runs next, which would then not preempt when it should.
      */
     if (defer_depth != 0) {
         panic("sched: %s blocked while preemption was deferred",
@@ -262,5 +296,7 @@ sched_block(void)
         cur->t_state = THREAD_BLOCKED;
     }
 
+    s = md_intr_disable();
     dispatch();
+    md_intr_restore(s);
 }

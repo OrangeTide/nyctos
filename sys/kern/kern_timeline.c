@@ -13,6 +13,7 @@
  * exists. Noted where it would go.
  */
 
+#include <sys/intr.h>
 #include <sys/object.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
@@ -83,6 +84,7 @@ sys_err_t
 timeline_wait(struct timeline *tl, uint64_t value)
 {
     struct thread *self = thread_current();
+    intr_state_t s = md_intr_disable();
 
     /*
      * A value that was reached stays reached, so this is checked before the
@@ -92,9 +94,11 @@ timeline_wait(struct timeline *tl, uint64_t value)
      * a late waiter safe, which is the more load-bearing of the two.
      */
     if (tl->tl_value >= value) {
+        md_intr_restore(s);
         return SYS_OK;
     }
     if (tl->tl_error) {
+        md_intr_restore(s);
         return SYS_ERR_OWNER_DEAD;
     }
 
@@ -105,7 +109,14 @@ timeline_wait(struct timeline *tl, uint64_t value)
 
     /* Section 9.2 donation would happen here. */
 
+    /*
+     * Interrupts come back on inside the switch, when whatever runs next
+     * restores its own state. They are off again by the time this returns,
+     * because the thread that woke this one did so from a critical section
+     * of its own.
+     */
     sched_block();
+    md_intr_restore(s);
 
     if (self->t_blocked_on != NULL) {
         panic("timeline %s: woke a thread still marked blocked", tl->tl_name);
@@ -118,8 +129,10 @@ sys_err_t
 timeline_signal(struct timeline *tl, uint64_t value)
 {
     struct thread *t;
+    intr_state_t s = md_intr_disable();
 
     if (tl->tl_error) {
+        md_intr_restore(s);
         return SYS_ERR_OWNER_DEAD;
     }
 
@@ -129,6 +142,7 @@ timeline_signal(struct timeline *tl, uint64_t value)
      * so going backwards is refused rather than clamped.
      */
     if (value <= tl->tl_value) {
+        md_intr_restore(s);
         return SYS_ERR_INVALID_ARG;
     }
 
@@ -141,6 +155,8 @@ timeline_signal(struct timeline *tl, uint64_t value)
         wait_release(t, SYS_OK);
     }
     sched_undefer();
+
+    md_intr_restore(s);
 
     return SYS_OK;
 }
@@ -160,12 +176,15 @@ timeline_add_signaler(struct timeline *tl)
 void
 timeline_drop_signaler(struct timeline *tl)
 {
+    intr_state_t s = md_intr_disable();
+
     if (tl->tl_signalers == 0) {
         panic("timeline %s: dropped a signal right it never had", tl->tl_name);
     }
 
     tl->tl_signalers--;
     if (tl->tl_signalers > 0 || tl->tl_error) {
+        md_intr_restore(s);
         return;
     }
 
@@ -174,4 +193,6 @@ timeline_drop_signaler(struct timeline *tl)
     sched_defer();
     release_all(tl, SYS_ERR_OWNER_DEAD);
     sched_undefer();
+
+    md_intr_restore(s);
 }

@@ -65,4 +65,10 @@
  */
 #define SYS_PRIO_RT_MIN         0
 
+/*
+ * Interrupt numbers the kernel will bind. Sized to cover the timer PPI on
+ * aarch64, which is 30, rather than to any real device census.
+ */
+#define SYS_MAX_IRQS            64
+
 #endif /* _SYS_CONFIG_H_ */

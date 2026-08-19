@@ -41,7 +41,10 @@ initialises its object pools, reports them, and powers the machine off.
 - Timelines: monotonic counters, waiting on a value reached or not yet
   reached, and the error state a timeline enters when its last signal right
   goes. Stage 5.
-- A trap path and an unprivileged-mode entry, neither of them reached.
+- Interrupts. A timer bound to a timeline on both boards, a handler that
+  advances it and returns, and a real idle state the core leaves on an
+  interrupt. Stage 6.
+- An unprivileged-mode entry, not reached.
 
 Kernel object memory went from 6720 bytes to 271424 the moment threads
 carried their own stacks, and 266240 of that is stack. That is the property

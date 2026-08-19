@@ -5,6 +5,7 @@
 
 #include <sys/config.h>
 #include <sys/handle.h>
+#include <sys/intr.h>
 #include <sys/object.h>
 #include <sys/op.h>
 #include <sys/proc.h>
@@ -284,6 +285,71 @@ timeline_checks(void)
           p->p_handles.ht_used);
     }
 }
+
+/*
+ * The interrupt path of section 13.2, end to end: a device raises an
+ * interrupt, the handler advances a timeline and returns, and a thread
+ * waiting on that timeline runs. The handler does no driver work at all,
+ * which is the whole of what the section asks for.
+ *
+ * The timeline is advanced to the number of interrupts seen, so a waiter
+ * asking for the third interrupt is asking for a value rather than for an
+ * event. That is what makes a late waiter safe in the way section 9.1
+ * describes: if the interrupt has already happened the value has already
+ * been passed, and the wait returns at once instead of hanging for
+ * something that is over.
+ */
+static struct timeline *tl_irq;
+
+static void
+irq_waiter(void *arg)
+{
+    uint64_t n = (uint64_t)(uintptr_t)arg;
+
+    cnprintf("    waiting for interrupt %lu\n", (unsigned long)n);
+    expect("released by the interrupt", timeline_wait(tl_irq, n), SYS_OK);
+    thread_exit();
+}
+
+static void
+interrupt_checks(void)
+{
+    struct thread *w;
+    unsigned int irq;
+
+    tl_irq = timeline_create("timer");
+    if (tl_irq == NULL) {
+        panic("interrupts: no timeline");
+    }
+
+    irq = md_timer_irq();
+    expect("attach the timer to a timeline", irq_attach(irq, tl_irq), SYS_OK);
+    expect("attaching it twice", irq_attach(irq, tl_irq),
+      SYS_ERR_INVALID_ARG);
+
+    /* Runs above this thread, so it is already blocked when we return. */
+    w = thread_create("waiter", PRIO_WAITER, irq_waiter, (void *)(uintptr_t)1);
+    sched_ready(w);
+
+    cnputs("    arming the timer for 10ms\n");
+    md_timer_arm(10000000ULL);
+
+    /*
+     * Nothing else is runnable while the waiter is blocked, so this yields
+     * into an idle core until the timer fires. Getting past it means the
+     * whole path worked: hardware, vector, handler, timeline, wake.
+     */
+    while (tl_irq->tl_value == 0) {
+        sched_yield();
+    }
+
+    cnprintf("    the timeline reached %lu\n",
+      (unsigned long)tl_irq->tl_value);
+
+    /* A value already passed satisfies a wait with no interrupt needed. */
+    expect("waiting for an interrupt already seen",
+      timeline_wait(tl_irq, 1), SYS_OK);
+}
 void
 kernel_main(void)
 {
@@ -294,6 +360,10 @@ kernel_main(void)
     object_init();
     object_check();
     object_report();
+
+    irq_init();
+    md_intr_init();
+    md_timer_init();
 
     sched_init();
     kproc = proc_bootstrap("kernel");
@@ -312,6 +382,10 @@ kernel_main(void)
     cnputs("timelines: the four waiters of section 9.1\n");
     timeline_checks();
 
-    cnputs("stage 5 complete\n");
+    cnputs("interrupts: a device advancing a timeline\n");
+    md_intr_enable();
+    interrupt_checks();
+
+    cnputs("stage 6 complete\n");
     machine_halt(0);
 }
