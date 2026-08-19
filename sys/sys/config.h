@@ -71,4 +71,14 @@
  */
 #define SYS_MAX_IRQS            64
 
+/*
+ * Depth of the priority donation chain of section 12.3. A send that would
+ * exceed it fails rather than walking an unbounded structure with
+ * interrupts disabled.
+ */
+#define SYS_PRIO_CHAIN_MAX      8
+
+/* Connections, which are what a client holds onto a server. */
+#define SYS_MAX_CONNECTIONS     32
+
 #endif /* _SYS_CONFIG_H_ */

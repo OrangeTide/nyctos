@@ -20,6 +20,7 @@
  * check that section 23.2 describes appears with the MMU in milestone 4.
  */
 
+#include <sys/channel.h>
 #include <sys/handle.h>
 #include <sys/op.h>
 #include <sys/proc.h>
@@ -51,6 +52,72 @@ op_fence(struct proc *p, struct sys_op *op, bool signalling)
 
     return signalling ? timeline_signal(tl, args->value)
       : timeline_wait(tl, args->value, args->deadline);
+}
+
+static sys_err_t
+op_send(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_send_args *args;
+    struct channel *ch;
+    sys_err_t err;
+    void *obj;
+
+    args = (struct sys_op_send_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+    ch = obj;
+
+    return channel_send(ch, &args->request, &args->reply);
+}
+
+static sys_err_t
+op_recv(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_recv_args *args;
+    struct channel *ch;
+    sys_err_t err;
+    void *obj;
+
+    args = (struct sys_op_recv_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+    ch = obj;
+
+    return channel_recv(ch, &args->message, &args->peer);
+}
+
+/*
+ * A reply names a thread rather than a channel, so it takes no handle and
+ * checks no right. The token is not authority: a server got it by being
+ * sent to, and the only thing it permits is answering that one request.
+ */
+static sys_err_t
+op_reply(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_reply_args *args;
+
+    (void)p;
+
+    args = (struct sys_op_reply_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    return channel_reply(args->peer, &args->reply);
 }
 
 static sys_err_t
@@ -121,8 +188,14 @@ sys_op_exec(struct sys_op *op)
         err = op_fence(p, op, true);
         break;
     case SYS_OP_IPC_SEND:
+        err = op_send(p, op);
+        break;
     case SYS_OP_IPC_RECV:
+        err = op_recv(p, op);
+        break;
     case SYS_OP_IPC_REPLY:
+        err = op_reply(p, op);
+        break;
     case SYS_OP_DMA_ISSUE:
     case SYS_OP_READ_ISSUE:
     case SYS_OP_WRITE_ISSUE:

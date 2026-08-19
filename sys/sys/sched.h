@@ -47,6 +47,13 @@ void sched_yield(void);
 void sched_block(void);
 
 /*
+ * Move a thread to a new effective priority. If it is queued it changes
+ * queue, which is what section 11.2 means by donation moving a thread
+ * rather than the dispatch decision knowing about donation.
+ */
+void sched_reprioritise(struct thread *t, uint8_t prio);
+
+/*
  * Hold off the preemption that sched_ready would otherwise take at once.
  *
  * Releasing several waiters is one operation: if the first release switched

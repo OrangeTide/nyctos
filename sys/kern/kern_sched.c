@@ -36,6 +36,33 @@ static bool defer_pending;
 _Static_assert(SYS_PRIO_COUNT <= 32,
   "the ready bitmap is one 32-bit word; see section 11.1");
 
+/* Take a specific thread off whatever run queue it is on. */
+static void
+dequeue_specific(struct thread *t)
+{
+    struct runq *q = &runq[t->t_prio];
+    struct thread **link = &q->head;
+    struct thread *prev = NULL;
+
+    while (*link != NULL && *link != t) {
+        prev = *link;
+        link = &(*link)->t_qnext;
+    }
+    if (*link != t) {
+        panic("sched: %s not on the queue it claims", t->t_name);
+    }
+
+    *link = t->t_qnext;
+    if (q->tail == t) {
+        q->tail = prev;
+    }
+    t->t_qnext = NULL;
+
+    if (q->head == NULL) {
+        ready_bits &= ~((uint32_t)1 << t->t_prio);
+    }
+}
+
 /* The highest priority anything runnable has, or -1 if nothing is. */
 static int
 highest_ready(void)
@@ -319,6 +346,33 @@ sched_block(void)
     }
 
     dispatch();
+
+    md_intr_restore(s);
+}
+
+/*
+ * Give a thread a new effective priority.
+ *
+ * If it is queued it moves queue, which is the whole of what section 11.2
+ * means by the scheduler seeing only the donated value: there is no second
+ * base-priority queue and no re-sorting pass, so the dispatch decision
+ * never has to know that donation exists.
+ */
+void
+sched_reprioritise(struct thread *t, uint8_t prio)
+{
+    intr_state_t s = md_intr_disable();
+    bool queued = (t->t_state == THREAD_READY);
+
+    if (queued) {
+        dequeue_specific(t);
+    }
+
+    t->t_prio = prio;
+
+    if (queued) {
+        enqueue(t);
+    }
 
     md_intr_restore(s);
 }

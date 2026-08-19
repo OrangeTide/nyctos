@@ -37,6 +37,8 @@
 #include <sys/op.h>
 #include <sys/pool.h>
 
+#include <stdbool.h>
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -81,6 +83,15 @@ struct thread {
      */
     uint8_t             t_prio;
 
+    /*
+     * What this thread would run at with nothing donated to it. Section
+     * 11.2 has the scheduler see only the effective priority above, so
+     * there is no second queue and no re-sorting pass: donation moves a
+     * thread between queues when it happens, and the dispatch decision
+     * never learns that donation exists.
+     */
+    uint8_t             t_base_prio;
+
     /* Link for the FIFO at this level. Owned by the scheduler. */
     struct thread      *t_qnext;
 
@@ -101,6 +112,19 @@ struct thread {
      */
     struct thread      *t_dnext;
     uint64_t            t_deadline;
+
+    /*
+     * Message state. A sender parks its request here and waits for a
+     * reply to be written back; a server records which client it owes one
+     * to. The blocked sender is itself the queue slot, which is why
+     * nothing here is a queue.
+     */
+    struct thread      *t_snext;        /* sender or receiver list link */
+    struct sys_msg     *t_msg;          /* the request being carried */
+    struct sys_msg     *t_reply;        /* where the reply is to be written */
+    sys_thread_id_t     t_client;       /* the client this thread owes */
+    struct thread      *t_donor;        /* who raised this thread priority */
+    bool                t_replied;
 
     /*
      * What this thread is blocked on, per the invariant in section 5. It
@@ -177,6 +201,17 @@ void thread_wake_timeout(struct thread *t);
 void thread_switch_to(struct thread *next);
 
 struct thread *thread_current(void);
+
+/*
+ * The reply token of section 5: an identity that confers nothing, as
+ * opposed to a handle, which is authority. A server learns this by serving
+ * a client and acquires no power over it by doing so.
+ */
+sys_thread_id_t thread_id(const struct thread *t);
+struct thread *thread_by_id(sys_thread_id_t id);
+
+/* Effective priority changed; move the thread if it is queued. */
+void sched_reprioritise(struct thread *t, uint8_t prio);
 
 /*
  * Used only by the idle path. Section 11.6 has a core either running a

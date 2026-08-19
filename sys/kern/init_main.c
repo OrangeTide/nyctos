@@ -3,6 +3,7 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
+#include <sys/channel.h>
 #include <sys/config.h>
 #include <sys/handle.h>
 #include <sys/intr.h>
@@ -180,7 +181,14 @@ handle_checks(void)
  * for.
  */
 
-#define PRIO_BOOT       20
+/*
+ * The boot thread runs below everything it creates. Four stages running,
+ * a test hung or silently did nothing because boot sat above a thread it
+ * was waiting for and yielded to itself for ever. Lowest priority means a
+ * yield here always hands the core over, and boot only resumes when
+ * nothing else can run.
+ */
+#define PRIO_BOOT       10
 #define PRIO_WAITER     25
 
 static struct timeline *tl_a;   /* signalled normally */
@@ -366,6 +374,7 @@ interrupt_checks(void)
  * the clock implies, and that catching up after a stall is one update
  * rather than a backlog.
  */
+static sys_handle_t h_srv_recv;
 static struct timeline *tl_shot;
 static struct timeline *tl_tick;
 
@@ -461,6 +470,130 @@ timer_checks(void)
     expect("close the wait-only handle",
       run(SYS_OP_HANDLE_CLOSE, h, NULL, 0), SYS_OK);
 }
+
+/*
+ * Message passing, and the priority inheritance that comes with it.
+ *
+ * Two properties are worth demonstrating and neither is visible from a
+ * single exchange. That a receive queue is ordered by sender priority
+ * rather than arrival, since FIFO there would be an inversion no donation
+ * could repair. And that a server runs at its client's priority for the
+ * duration of a request and reverts on reply, which is what stops a
+ * low-priority server holding up a high-priority client.
+ */
+static struct channel *ch_srv;
+static uint8_t server_prio_seen;
+static int served;
+
+static void
+server(void *arg)
+{
+    struct sys_op_recv_args rx;
+    struct sys_op_reply_args tx;
+    struct thread *self = thread_current();
+
+    (void)arg;
+
+    for (;;) {
+        memset(&rx, 0, sizeof(rx));
+        if (run(SYS_OP_IPC_RECV, h_srv_recv, &rx, sizeof(rx)) != SYS_OK) {
+            panic("server: receive failed");
+        }
+
+        /* The priority this thread is running at while serving. */
+        server_prio_seen = self->t_prio;
+        served++;
+
+        cnprintf("    server (base %u) serving '%s' at priority %u\n",
+          self->t_base_prio, (const char *)rx.message.inline_data,
+          self->t_prio);
+
+        memset(&tx, 0, sizeof(tx));
+        tx.peer = rx.peer;
+        tx.reply.inline_len = 3;
+        memcpy(tx.reply.inline_data, "ok", 3);
+        if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
+            panic("server: reply failed");
+        }
+
+        if (self->t_prio != self->t_base_prio) {
+            panic("server: still donated to after replying");
+        }
+    }
+}
+
+static void
+client(void *arg)
+{
+    struct sys_op_send_args tx;
+    const char *name = thread_current()->t_name;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.inline_len = 10;
+    memcpy(tx.request.inline_data, name, 10);
+
+    if (run(SYS_OP_IPC_SEND, (sys_handle_t)(uintptr_t)arg, &tx, sizeof(tx))
+      != SYS_OK) {
+        panic("client: send failed");
+    }
+    cnprintf("    %s got reply '%s'\n", name,
+      (const char *)tx.reply.inline_data);
+
+    thread_exit();
+}
+
+static void
+ipc_checks(void)
+{
+    struct proc *p = proc_current();
+    struct thread *srv, *lo, *hi;
+    sys_handle_t send_h;
+    sys_err_t err;
+
+    ch_srv = channel_create("srv", p);
+    if (ch_srv == NULL) {
+        panic("ipc: no channel");
+    }
+
+    err = handle_insert(&p->p_handles, ch_srv, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_srv_recv);
+    expect("a receive handle on the channel", err, SYS_OK);
+    err = handle_insert(&p->p_handles, ch_srv, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND, &send_h);
+    expect("a send handle on the channel", err, SYS_OK);
+
+    /*
+     * The server runs below both clients, so without donation it would not
+     * run until they had both given up the core, and neither can.
+     */
+    /*
+     * Both clients send before the server exists, so both are queued on
+     * the channel when it first receives. That is the only arrangement in
+     * which the queue order is observable: with a server already waiting,
+     * each send completes a rendezvous immediately and nothing is ever
+     * queued to be ordered.
+     */
+    cnputs("    the lower priority client sends first, then the higher\n");
+    lo = thread_create("client-lo", 21, client, (void *)(uintptr_t)send_h);
+    hi = thread_create("client-hi", 24, client, (void *)(uintptr_t)send_h);
+    sched_ready(lo);
+    sched_ready(hi);
+
+    /* Below both clients, so without donation it would not run at all. */
+    srv = thread_create("server", 15, server, NULL);
+    sched_ready(srv);
+
+    /* Let everything settle. */
+    while (served < 2) {
+        sched_yield();
+    }
+
+    cnprintf("    the server ran at %u while serving, base 15\n",
+      server_prio_seen);
+    if (server_prio_seen <= 15) {
+        panic("ipc: the server never inherited a client priority");
+    }
+}
 void
 kernel_main(void)
 {
@@ -488,7 +621,7 @@ kernel_main(void)
     cnputs("ops: the entry point\n");
     expect("nop", run(SYS_OP_NOP, 0, NULL, 0), SYS_OK);
     expect("an opcode that is defined but unbuilt",
-      run(SYS_OP_IPC_SEND, 0, NULL, 0), SYS_ERR_NOT_SUPPORTED);
+      run(SYS_OP_DMA_ISSUE, 0, NULL, 0), SYS_ERR_NOT_SUPPORTED);
     expect("an opcode that is not defined at all",
       run(SYS_OP_COUNT, 0, NULL, 0), SYS_ERR_INVALID_ARG);
 
@@ -505,6 +638,9 @@ kernel_main(void)
     cnputs("timers: activation, phase and deadlines\n");
     timer_checks();
 
-    cnputs("stage 7 complete\n");
+    cnputs("ipc: rendezvous, queue order and donation\n");
+    ipc_checks();
+
+    cnputs("stage 8 complete\n");
     machine_halt(0);
 }

@@ -22,15 +22,11 @@
 #define _SYS_OBJECT_H_
 
 #include <sys/pool.h>
+#include <sys/channel.h>
 #include <sys/proc.h>
 #include <sys/thread.h>
 #include <sys/time.h>
 #include <sys/timeline.h>
-
-/* Stage 8: receive queue, owner, pulse queue. */
-struct channel {
-    sys_id_t c_id;
-};
 
 /* Milestone 4: the backing region and the tier's mapping state. */
 struct grant {

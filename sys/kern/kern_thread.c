@@ -24,6 +24,23 @@ static struct thread *current;
 /* Written by the linker script, at the low end of the boot stack. */
 extern char _stack_bottom[];
 
+sys_thread_id_t
+thread_id(const struct thread *t)
+{
+    return t->t_id;
+}
+
+/*
+ * Resolve a reply token. A generation that no longer matches means the
+ * thread that sent the request is gone and its slot has been reused, which
+ * is exactly the hazard section 12.2 says the generation closes.
+ */
+struct thread *
+thread_by_id(sys_thread_id_t id)
+{
+    return pool_lookup(thread_pool(), id);
+}
+
 struct thread *
 thread_current(void)
 {
@@ -118,6 +135,7 @@ thread_bootstrap(const char *name, uint8_t prio, struct proc *p)
     t->t_id = pool_id_of(thread_pool(), t);
     t->t_name = name;
     t->t_prio = prio;
+    t->t_base_prio = prio;
     t->t_proc = p;
     t->t_state = THREAD_RUNNING;
 
@@ -152,6 +170,7 @@ thread_create(const char *name, uint8_t prio, void (*entry)(void *),
     t->t_id = pool_id_of(thread_pool(), t);
     t->t_name = name;
     t->t_prio = prio;
+    t->t_base_prio = prio;
     t->t_proc = thread_current() != NULL ? thread_current()->t_proc : NULL;
     t->t_state = THREAD_NEW;
     t->t_guard = (uint64_t *)(void *)t->t_stack;

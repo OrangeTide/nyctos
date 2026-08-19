@@ -118,6 +118,43 @@ typedef struct sys_op {
 } sys_op_t;
 
 /*
+ * The message of section 12.4: a small inline payload, and a handle that
+ * moves with it. The design allows zero or more handles; this carries at
+ * most one, which is enough for a connection to be handed back and is the
+ * only shape anything needs yet.
+ *
+ * The payload is a copy rather than a register transfer. Whether a port
+ * also carries the first words in registers is its own business and does
+ * not change what this means.
+ */
+#define SYS_IPC_INLINE_BYTES    64
+
+typedef uint64_t sys_thread_id_t;
+
+typedef struct sys_msg {
+    uint32_t        flags;
+    uint32_t        inline_len;
+    sys_handle_t    handle;     /* moved with the message, or INVALID */
+    uint8_t         inline_data[SYS_IPC_INLINE_BYTES];
+} sys_msg_t;
+
+/* Argument structures for the three message operations. */
+typedef struct sys_op_send_args {
+    sys_msg_t       request;
+    sys_msg_t       reply;      /* written by the kernel */
+} sys_op_send_args_t;
+
+typedef struct sys_op_recv_args {
+    sys_msg_t       message;    /* written by the kernel */
+    sys_thread_id_t peer;       /* written by the kernel; reply to this */
+} sys_op_recv_args_t;
+
+typedef struct sys_op_reply_args {
+    sys_msg_t       reply;
+    sys_thread_id_t peer;
+} sys_op_reply_args_t;
+
+/*
  * Argument structure for SYS_OP_FENCE_WAIT and SYS_OP_FENCE_SIGNAL. target
  * names the timeline. The deadline is ignored when signalling, which never
  * blocks.
