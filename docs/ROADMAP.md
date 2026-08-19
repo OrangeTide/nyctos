@@ -186,25 +186,81 @@ untested.
 
 **Cancellation, killing, and restart.**
 
-The design leans on death everywhere: cohort recovery (18.2), the supervision
-tree (24.3), and reclaiming server state (25). None of it has been exercised.
-This comes second because teardown is much easier to reason about in a system
-that already works.
+The design leans on death everywhere: cohort recovery (18.2), the
+supervision tree (24.3), and reclaiming server state (25). None of it has
+been exercised. This comes second because teardown is much easier to reason
+about in a system that already works, and milestone 1 strengthened that
+argument rather than merely confirming it: the commonest fault it produced
+was two paths ending the same wait, where the one written second forgot
+something. M2 adds two more such paths.
 
-*Needs.* Cancellation (10.5), process kill, completion timelines carrying exit
-status (10.4), dead-owner notification, and a parent that waits on a child's
-completion timeline and relaunches it.
+*Three things it needs that were not listed before.* Milestone 1 left them
+out and they are each load-bearing.
 
-*Done when* killing the driver mid-read releases the blocked client with an
-owner-dead error rather than hanging it, and a supervisor restarts the driver
-so that the client's next open succeeds.
+**Pulses do not exist.** Section 12.5 has a server learn of a dead client
+through `SYS_PULSE_DEAD_OWNER`, because a server is at a receive point and
+can collect one, where a blocked client is not and must be released with an
+error instead. Both halves are needed for death to be covered in both
+directions, so section 13.1 has to be built here: a fixed-size queued
+notification, with the reserved region that keeps a flood of user pulses
+from displacing a death notice. A dropped death notice leaks a dead
+client's resources permanently, which is why that reservation is
+correctness rather than politeness.
 
-*Would falsify.* Whether "the disappearance of the only party who could satisfy
-a wait is itself an event" is sufficient in practice. Whether a restarted
-server leaks per-connection records, which is the observation `PROPOSALS.md`
-gates connection death notification on.
+**Nothing is ever reaped.** A thread that exits stops being scheduled and
+keeps its pool slot for ever, so nothing has yet reused a slot. Restart
+needs reuse, and reuse is the first real test of the generation counters of
+section 7.1: milestone 1 asserted that a stale identifier is refused, but
+only ever against slots it had freed by hand.
 
-*Size.* Medium.
+**Donation has to unwind through death.** A server killed while running at
+a client's donated priority, or a client killed while its donation is
+held, both leave a priority that no longer has a reason to exist. Nothing
+in section 12.3 says what happens, and nothing in M1 could reach it.
+
+*Stages.*
+
+1. **Exit and completion timelines.** Exit advances a completion timeline;
+   the handle stays valid afterwards and carries the status, which is
+   section 10.4 avoiding a zombie concept. A joiner waits on it.
+2. **Reaping.** Return thread and process slots to their pools, and check
+   that an identifier held across the reuse is refused rather than reaching
+   the new occupant.
+3. **Cancellation.** Section 10.5, prompt, releasing a thread from whatever
+   it is blocked on without knowing which mechanism blocked it. This should
+   be cheap: the hook that makes it possible was forced into existence by
+   deadlines in stage 7 and already serves channels.
+4. **Pulses.** Section 13.1, including the reserved system region and the
+   overflow flag a receiver observes.
+5. **Death notification.** Section 12.5 in both directions: a blocked
+   client released with `SYS_ERR_OWNER_DEAD`, a server holding an
+   unanswered request given a pulse, and its later reply refused as stale.
+6. **Kill and restart.** A supervisor waiting on a child's completion
+   timeline and relaunching it, with restart bounded and escalating per
+   section 24.3.
+
+*Done when* killing the filesystem server mid-read releases the blocked
+client with an owner-dead error rather than hanging it, a supervisor
+restarts the server, and the client's next walk and read succeed against
+the replacement.
+
+*Would falsify.* Whether "the disappearance of the only party who could
+satisfy a wait is itself an event" is sufficient in practice, which is the
+claim the whole error state of section 9.3 rests on. Whether a restarted
+server leaks per-connection records, which is the observation
+`PROPOSALS.md` gates connection death notification on. And whether the
+generation counters actually close the recycling hazard under real reuse,
+which nothing has yet tried.
+
+*Watch for.* Teardown wakes things. Closing a dying process's handles drops
+signal rights, which puts timelines into the error state, which releases
+their waiters, all from inside the teardown. That is the same re-entrancy
+that produced three separate faults in M1, and it will be worse here
+because the structure being walked is the one being destroyed. Finish the
+structure before waking anything, as `handle_close` already has to.
+
+*Size.* Large. The original estimate of medium predated knowing that
+pulses, reaping and donation unwinding were all inside it.
 
 ### M3. A System You Can Talk To
 
@@ -508,7 +564,11 @@ system responding to hardware several stages earlier.
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
 
-**Forced.** M2 after M1, since there is nothing to tear down before that. M6
+**Forced.** M2 after M1, since there is nothing to tear down before that.
+Milestone 1 also made the case for it stronger than the original argument
+did: the fault it produced most often was two paths ending the same wait
+with the second forgetting something, and M2 adds two more such paths to a
+system that now has somewhere to put them. M6
 after M4, since a cohort without protection domains is a naming convention. M8
 after M3, since measuring a system with no workload measures nothing. M9 after
 M6, since issuing ops need a device that does DMA.
