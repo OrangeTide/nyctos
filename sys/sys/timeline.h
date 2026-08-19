@@ -70,6 +70,9 @@ sys_err_t timeline_wait(struct timeline *tl, uint64_t value,
 /* Take a waiter off the list, for a wake that did not come from a signal. */
 bool timeline_unwait(struct timeline *tl, struct thread *t);
 
+/* The same, shaped for struct thread t_unwait. */
+void timeline_unwait_thread(void *obj, struct thread *t);
+
 /* Advance to value, releasing every waiter that value satisfies. */
 sys_err_t timeline_signal(struct timeline *tl, uint64_t value);
 

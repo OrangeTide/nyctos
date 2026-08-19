@@ -111,6 +111,15 @@ struct thread {
     void               *t_blocked_on;
 
     /*
+     * How to take this thread off whatever it is blocked on, for a wake
+     * that did not come from that object. A deadline expiring is the first
+     * such wake and cancellation will be the next, and both have to leave
+     * the thread off the list rather than merely runnable: otherwise the
+     * object can go on to release a thread that has already been released.
+     */
+    void              (*t_unwait)(void *obj, struct thread *t);
+
+    /*
      * The lowest word of this thread stack region, which is the guard. For
      * a thread created here that is the base of t_stack; for the boot
      * context it is the bottom of the boot stack, which the linker script

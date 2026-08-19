@@ -230,8 +230,16 @@ timer_fire(struct timer *tm, sys_time_t now)
          * and makes every later wait return before its phase.
          */
         due = (uint64_t)((now - tm->tm_first) / tm->tm_period);
+
+        /*
+         * The caller only reaches here for a timer whose deadline has
+         * passed, which means at least one more activation is due than has
+         * been signalled. Returning without moving the timer would leave
+         * it at the head of a list the caller loops over while its
+         * deadline is past, which hangs rather than fails.
+         */
         if (due <= tm->tm_count) {
-            return;
+            panic("timer %s: fired with nothing due", tm->tm_name);
         }
         tm->tm_count = due;
 

@@ -76,13 +76,20 @@ thread_exited(void)
  * reaping belongs with that same later work.
  */
 /*
- * A deadline passed while this thread was still blocked. The waiter list it
- * is on is left alone: timeline_wait removes itself from whichever
- * mechanism did not wake it.
+ * A deadline passed while this thread was still blocked.
+ *
+ * It has to come off whatever it was blocked on before being made
+ * runnable, not merely be made runnable. Leaving it on the list lets that
+ * object release it a second time, and a thread cannot be made runnable
+ * twice. Symmetric with the signal path, which has always done both.
  */
 void
 thread_wake_timeout(struct thread *t)
 {
+    if (t->t_unwait != NULL && t->t_blocked_on != NULL) {
+        t->t_unwait(t->t_blocked_on, t);
+    }
+
     t->t_waitres = SYS_ERR_TIMEOUT;
     sched_ready(t);
 }

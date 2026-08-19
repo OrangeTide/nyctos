@@ -92,6 +92,12 @@ timeline_unwait(struct timeline *tl, struct thread *t)
     return true;
 }
 
+void
+timeline_unwait_thread(void *obj, struct thread *t)
+{
+    (void)timeline_unwait(obj, t);
+}
+
 static void
 release_all(struct timeline *tl, sys_err_t res)
 {
@@ -138,6 +144,7 @@ timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
     self->t_waitval = value;
     self->t_waitres = SYS_ERR_INTERRUPTED;   /* so a missing wake is loud */
     self->t_blocked_on = tl;
+    self->t_unwait = timeline_unwait_thread;
     wait_insert(tl, self);
     if (deadline != SYS_DEADLINE_NEVER) {
         time_sleep_until(self, deadline);
