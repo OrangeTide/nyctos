@@ -852,7 +852,9 @@ deep_server(void *arg)
 
     memset(&tx, 0, sizeof(tx));
     tx.peer = rx.peer;
-    (void)run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx));
+    if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
+        panic("deep: reply failed");
+    }
     thread_exit();
 }
 
@@ -879,7 +881,9 @@ mid_server(void *arg)
 
     memset(&tx, 0, sizeof(tx));
     tx.peer = rx.peer;
-    (void)run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx));
+    if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
+        panic("mid: reply failed");
+    }
     thread_exit();
 }
 
@@ -908,14 +912,24 @@ chain_checks(void)
     if (ch_mid == NULL || ch_low == NULL) {
         panic("chain: no channel");
     }
-    (void)handle_insert(&p->p_handles, ch_mid, SYS_OBJ_CHANNEL,
-      SYS_RIGHT_RECV, &h_mid_recv);
-    (void)handle_insert(&p->p_handles, ch_mid, SYS_OBJ_CHANNEL,
-      SYS_RIGHT_SEND, &h_mid_send);
-    (void)handle_insert(&p->p_handles, ch_low, SYS_OBJ_CHANNEL,
-      SYS_RIGHT_RECV, &h_low_recv);
-    (void)handle_insert(&p->p_handles, ch_low, SYS_OBJ_CHANNEL,
-      SYS_RIGHT_SEND, &h_low_send);
+    /*
+     * Checked rather than discarded. These are file-static and so start
+     * at SYS_ID_INVALID, which means a failed insert would not be
+     * undefined; it would surface much later as a stale handle in a
+     * server thread, a long way from the line that actually failed.
+     */
+    expect("a receive handle on the mid channel",
+      handle_insert(&p->p_handles, ch_mid, SYS_OBJ_CHANNEL,
+        SYS_RIGHT_RECV, &h_mid_recv), SYS_OK);
+    expect("a send handle on the mid channel",
+      handle_insert(&p->p_handles, ch_mid, SYS_OBJ_CHANNEL,
+        SYS_RIGHT_SEND, &h_mid_send), SYS_OK);
+    expect("a receive handle on the low channel",
+      handle_insert(&p->p_handles, ch_low, SYS_OBJ_CHANNEL,
+        SYS_RIGHT_RECV, &h_low_recv), SYS_OK);
+    expect("a send handle on the low channel",
+      handle_insert(&p->p_handles, ch_low, SYS_OBJ_CHANNEL,
+        SYS_RIGHT_SEND, &h_low_send), SYS_OK);
 
     sched_ready(thread_create("deep", 5, deep_server, NULL));
     sched_ready(thread_create("mid", 10, mid_server, NULL));

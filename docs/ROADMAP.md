@@ -173,51 +173,14 @@ handle-relative naming with no ambient root is workable rather than merely
 defensible. Whether a protocol carrying the offset in the message survives a
 real client.
 
-*What the slice actually answered.* Send, receive and reply came to about
-two hundred lines, and the donation that goes with it to forty. Ordering the
-receive queue by sender priority and moving a donated thread between run
-queues were both cheap, because the scheduler already had one place that
-decides. Handle-relative naming was easier to build than to describe: a
-client handed one connection has nothing to name and nothing to guess, and
-the server needs no notion of a root at all. Offsets in the message removed
-state rather than adding a parameter.
-
-The one that did not survive contact is timelines. See below.
-
-*On timelines, after stage 8.* The verdict is now in and it is favourable,
-with one qualification worth stating. Interrupts, timer activation,
-one-shot completion and wait deadlines all landed on the one object. IPC
-did not: a thread blocked in send is waiting for a reply, not for a counter
-to reach a value, so a channel became the second thing a thread can block
-on after all. Section 9 opens by calling the timeline the single
-synchronization object, and that is now not quite true, though the
-invariant it exists to protect held: a thread is still blocked on exactly
-one thing, and the generic unwait that stage 7 forced is what made adding
-a second blocking object cost almost nothing.
-
-*On timelines, after stage 7.* The evidence is now positive and not yet
-conclusive. Three unrelated things have landed on the one object without
-needing a mechanism of their own: an interrupt advancing a counter, a
-periodic timer whose counter is its activation number, and a one-shot
-completion. Timer overrun detection fell out of the counter for free rather
-than being designed, which is the strongest single piece of evidence so
-far. A deadline is not a second thing a thread waits on but a limit on the
-one thing it does, so the invariant held under the first real pressure on
-it.
-
-What it has cost is also clearer. The error state needs a count of
-signal-righted handles, so the handle table has to tell an object when a
-handle naming it appears or goes. Releasing several waiters has to be
-atomic against preemption, which is why the scheduler grew sched_defer. And
-waking a thread has to take it off whatever it was blocked on, not merely
-make it runnable, because there is now more than one way a wait can end.
-None of those is in section 9, and all three would be needed by any
-equivalent object.
-
-IPC in stage 8 is still the real test, because a channel is the first thing
-a thread might block on that is not a timeline.
+*On timelines.* Answered, in section 4. The short form: they earn a
+separate object but not the exclusive one section 9 claimed, and what they
+cost is three obligations that section does not mention.
 
 *Size.* Large. It is most of a kernel.
+
+**Done.** Section 4 says what it answered, what it cost, and what it left
+untested.
 
 ### M2. Death
 
@@ -406,7 +369,97 @@ nothing else.
 
 ---
 
-## 4. Bring-Up Order Within M1
+---
+
+## 4. Milestone 1, in Retrospect
+
+The slice was chosen as the smallest thing that could falsify the design
+rather than the largest that could demonstrate it. This is what it
+falsified, what it confirmed, and what it cost.
+
+### 4.1 The Four Questions
+
+**Is send, receive and reply with donation as small as assumed?** Yes.
+Message passing is about three hundred lines and donation about ten of
+them. The receive queue being ordered by sender priority and a donated
+thread changing run queue were both cheap, because the scheduler already
+had exactly one place that decides what runs.
+
+**Do timelines earn a separate object?** Yes, but not as the *single*
+object section 9 claimed. Interrupts, timer activation, one-shot
+completion and wait deadlines all landed on the one counter, and timer
+overrun detection fell out of it rather than being designed. IPC did not:
+a thread waiting for a reply is not waiting for a counter, so a channel
+became a second thing to block on. The invariant that mattered survived,
+because it was always section 5's "at most one object" rather than section
+9's "one kind of object". Section 9 is corrected.
+
+**Is handle-relative naming with no ambient root workable?** Yes, and
+easier to build than to describe. A client handed one connection has
+nothing to name and nothing to guess, and the server needs no notion of a
+root at all. The client in the slice holds exactly one handle and can
+reach exactly one directory, which took no enforcement machinery: it is
+what having one handle means.
+
+**Does a protocol with the offset in the message survive a real client?**
+Yes. It removed state rather than adding a parameter.
+
+### 4.2 What It Cost
+
+About 5400 lines of kernel, plus 1000 lines of the checks that exercise
+it. Two architectures from one source, with output identical apart from
+the banner.
+
+Kernel object memory is 319936 bytes, and the shape of that number is more
+useful than the number. Thread stacks are 274432 of it and process handle
+tables 34560, so 96% is two per-instance arrays sized by two constants.
+Every channel, timeline, timer and connection in the system together comes
+to about nine kilobytes. Section 8 claims kernel memory is a property of
+the configuration rather than the workload, and this is that claim holding
+in a way that also says the defaults are wrong: sixty-four threads at four
+kilobytes each is not a Tier 0 configuration.
+
+### 4.3 What Is Still Untested
+
+Worth stating because the milestone is easy to mistake for more than it
+was. Nothing here has been measured. No user code has run, so the trap
+edge is still unexercised and the operation entry point has only ever been
+called from inside the kernel. Tier 0 does not enforce the memory
+contract, so section 6.1 is unexercised and so is every fault path.
+Cohorts, multicore, namespaces, the submission engine and the whole of the
+MMU remain as they were.
+
+Two constants describe mechanisms that are not there. `SYS_PRIO_CHAIN_MAX`
+and `SYS_ERR_DEADLOCK` presuppose a donation walk that turned out to be
+unnecessary for transitivity and is therefore absent, so a cycle of
+servers would deadlock undetected. Section 12.3 now says so.
+
+### 4.4 What the Building Kept Finding
+
+Ten of the twenty-one commits fix work committed minutes earlier. That
+ratio is the useful output of the milestone, and the faults fell into
+recognisable kinds.
+
+**Obligations the design implies without stating.** Waking a thread has to
+take it off whatever it was blocked on. Releasing several waiters has to
+be atomic against preemption. Every change to what is pending has to
+recompute what the timer is armed for. An interrupt handler has to finish
+with its device before it advances anything. A core that is idle must have
+no current thread. None of these appear in the sections that require them,
+and each was found by something breaking.
+
+**Asymmetry between two paths to the same state.** The signal path
+unlinked a waiter and the timeout path did not. The scheduler owned thread
+states and one caller set them anyway. Wherever two mechanisms could end
+the same wait, the second one written was the one that forgot something.
+
+**Tests that could not fail.** Four stages running shipped a check that
+passed while testing less than it claimed, and in three of them repairing
+the test immediately exposed a real fault in the code it was meant to
+cover. This was the highest-yield defect finder in the milestone, ahead of
+either reading the code or reviewing it.
+
+## 5. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -450,7 +503,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 5. Ordering: What Is Forced and What Is Chosen
+## 6. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -471,7 +524,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 6. What Would Change This Plan
+## 7. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -501,7 +554,7 @@ reason, so nothing else moves.
 
 ---
 
-## 7. Deliberately Not Scheduled
+## 8. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

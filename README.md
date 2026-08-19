@@ -27,23 +27,30 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
-Static object pools, threads and the context switch, a strict-priority
-scheduler, per-process handle tables with rights, the operation entry
-point, timelines, interrupts, and timers with absolute deadlines. All of it
-runs on AArch64 and RISC-V64 under QEMU, from the same source, with
-identical output.
+**Milestone 1 is done.** A client process, handed a single connection when
+it is created, walks that connection to a file and reads the file from a
+server running as a different process. Nothing on that path is inside the
+kernel except the message passing.
 
-What does not exist yet: message passing, any process beyond the first, the
-MMU and everything that depends on it, driver cohorts, and multicore.
+Underneath it: static object pools, threads and the context switch, a
+strict-priority scheduler with priority inheritance, per-process handle
+tables with rights, the operation entry point, timelines, interrupts,
+timers with absolute deadlines, and process creation with explicit handle
+inheritance. All of it runs on AArch64 and RISC-V64 from one source, with
+output identical apart from the banner.
 
-Nothing has been measured. The one figure obtained so far is a footprint
-rather than a speed: kernel object memory is 271424 bytes, of which 266240
-is thread stacks, and it is a consequence of two constants in
-`sys/sys/config.h` and of nothing an application can do.
+What does not exist: the MMU and everything resting on it, driver cohorts,
+multicore, per-process namespaces, and the submission engine. No user code
+has run, so the trap is still unexercised from the outside.
 
-`docs/ROADMAP.md` names the milestone and the order of work. One stage of
-it remains: message passing, spawn, and a driver process serving a file
-from outside the kernel.
+Nothing has been measured. The one figure obtained is a footprint rather
+than a speed: kernel object memory is 319936 bytes, of which 274432 is
+thread stacks and 34560 is process handle tables. Ninety-six per cent of
+it is two arrays sized by two constants, which is section 8 of the design
+holding and also saying the defaults are wrong for a small target.
+
+`docs/ROADMAP.md` says what the milestone answered, what it cost, and what
+it left untested.
 
 ## Why it is shaped this way
 

@@ -39,13 +39,18 @@ Everything else follows from holding that commitment while keeping the kernel sm
 Part of this design has been built and part has not, and which is which
 governs how the rest should be read.
 
-**Roughly half the kernel exists.** Static object pools, threads and the
-context switch, a strict-priority scheduler, per-process handle tables, the
-operation entry point, timelines, interrupts, and timers with absolute
-deadlines all run on two architectures. What does not exist is message
-passing, processes beyond the first, the memory management unit and
-everything that depends on it, driver cohorts, multicore, and the
-submission engine. `ROADMAP.md` says where the line is at any moment.
+**Roughly half the kernel exists**, and one thing has been built end to
+end. A client process, handed a single connection when it was created,
+reaches a file through it and reads the file from a server that is a
+different process. Static pools, threads, the scheduler, handle tables,
+the operation entry point, timelines, interrupts, timers, message passing
+and process creation all run on two architectures from one source.
+
+What does not exist is the memory management unit and everything resting
+on it, driver cohorts, multicore, per-process namespaces, and the
+submission engine. No user code has run, so the trap is still unexercised
+from the outside. `ROADMAP.md` says where the line is and what building
+the first half corrected.
 
 **Nothing has been measured.** Every statement about cost, size or latency
 is still an intention. The one number obtained so far is a footprint rather
@@ -63,12 +68,11 @@ the operations that may block are enumerated in one place and nowhere else.
 Neither claim waits on an implementation, and neither says anything about
 how long anything takes.
 
-**Three mechanisms are explicitly provisional.** Timelines as the single
-object a thread waits on (section 9), per-process namespaces assembled in
-the C library (section 20), and the submission engine (section 17). Of the
-three, only timelines have met real code, and section 9 records what that
-has shown so far. The other two are still as unproven as when they were
-written.
+**Of the three mechanisms marked provisional, one has been settled.**
+Timelines earn a separate object and do not deserve the exclusive claim
+section 9 made for them, which that section now says. Per-process
+namespaces (section 20) and the submission engine (section 17) are exactly
+as unproven as when they were written.
 
 **What building it has already corrected is marked where it happened.**
 Sections 9.2, 9.3, 11.6, 13.2 and 14.1 carry notes of that kind: an
@@ -615,7 +619,11 @@ The root process holds every capability at handoff, including the root pager cha
 
 ## 9. Timelines and Fences
 
-The timeline is the system's single synchronization object. Driver completion, interrupt delivery, timer expiry, and thread exit are all timeline advances, so a thread blocks on one kind of object regardless of what it waits for.
+The timeline is the system's principal synchronization object. Driver completion, interrupt delivery, timer expiry, and thread exit are all timeline advances, so a thread waiting for work to finish waits on one kind of object whatever the work was.
+
+**It is not the only one, and an earlier draft of this sentence said it was.** A thread blocked in `sys_msg_send()` is waiting for a reply rather than for a counter to reach a value, so a channel is the second thing a thread can block on. Building the two showed the difference to be real: a reply carries data back to one specific waiter, where a signal releases everyone a value satisfies and carries nothing. Forcing the first into the second would have meant inventing a value for every request and a timeline per client.
+
+What survives is the invariant the claim existed to protect, which is section 5 rather than this one: a thread is blocked on **at most one object**, whatever kind. That is what reply addressing, the priority chain and cancellation all rest on, and none of them needs the object to be of a single type. The practical cost of a second kind was one function pointer per thread, saying how to take it off whatever it is on.
 
 ### 9.1 The Primitive
 
@@ -877,6 +885,10 @@ The hazard this exposes is recycling: the client dies, its id is reused, and the
 When a thread sends to a channel, the receiving thread runs at `max(its own priority, the client's priority)` for the duration of the request and reverts on reply.
 
 Donation is transitive. If the server blocks sending to a second server, the donated priority propagates along the chain. Chain length is bounded by `SYS_PRIO_CHAIN_MAX`, and a send that would exceed the bound fails with `SYS_ERR_DEADLOCK`. Section 21 covers composition with the other priority mechanisms.
+
+**Transitivity needs no walk, and the bound is therefore unenforced.** A server sends onward at its own effective priority, which is already the donated value, so each hop carries the donation forward by itself: a client at 25 reaching a server at 10 that calls a server at 5 leaves all three at 25 with nothing traversing a chain. A walk would only be needed to raise a thread that is *already* blocked onward, and donation happens at the rendezvous, when the target has just stopped being blocked.
+
+The consequence is that `SYS_PRIO_CHAIN_MAX` and `SYS_ERR_DEADLOCK` describe a mechanism that is not there, and a cycle of servers would deadlock undetected. Closing it needs a link from a blocked sender to whoever is serving it, which is the walk this paragraph assumes; the alternative is conceding that per-send donation is the whole mechanism and that deadlock detection belongs somewhere else.
 
 ```{=typst}
 #figure(include "fig/rendezvous.typ", caption: [A rendezvous, with the server running at the client's priority for the duration of the request.])
@@ -2017,6 +2029,7 @@ typedef uint64_t  sys_proc_id_t;
 #define SYS_OBJ_PROCESS     6
 #define SYS_OBJ_THREAD      7
 #define SYS_OBJ_IRQ         8
+#define SYS_OBJ_CONNECTION  9   /* section 25.2; absent from earlier drafts */
 
 sys_err_t sys_handle_close(sys_handle_t h);
 sys_err_t sys_handle_type(sys_handle_t h, uint32_t *out_type);
