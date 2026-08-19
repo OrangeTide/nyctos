@@ -18,6 +18,8 @@
 #include <sys/systm.h>
 #include <sys/thread.h>
 
+#include <stdbool.h>
+
 struct runq {
     struct thread *head;
     struct thread *tail;
@@ -26,8 +28,23 @@ struct runq {
 static struct runq runq[SYS_PRIO_COUNT];
 static uint32_t ready_bits;
 
+/* Preemption held off; see sched_defer. */
+static unsigned int defer_depth;
+static bool defer_pending;
+
 _Static_assert(SYS_PRIO_COUNT <= 32,
   "the ready bitmap is one 32-bit word; see section 11.1");
+
+/* The highest priority anything runnable has, or -1 if nothing is. */
+static int
+highest_ready(void)
+{
+    if (ready_bits == 0) {
+        return -1;
+    }
+
+    return (int)(31u - (unsigned int)__builtin_clz(ready_bits));
+}
 
 void
 sched_init(void)
@@ -35,6 +52,8 @@ sched_init(void)
     unsigned int i;
 
     ready_bits = 0;
+    defer_depth = 0;
+    defer_pending = false;
     for (i = 0; i < SYS_PRIO_COUNT; i++) {
         runq[i].head = NULL;
         runq[i].tail = NULL;
@@ -96,7 +115,7 @@ dequeue_highest(void)
         return NULL;
     }
 
-    prio = 31u - (unsigned int)__builtin_clz(ready_bits);
+    prio = (unsigned int)highest_ready();
     q = &runq[prio];
 
     t = q->head;
@@ -170,7 +189,43 @@ sched_ready(struct thread *t)
      * priority does not preempt, because the policy within a level is FIFO
      * and the running thread got there first.
      */
-    if (cur != NULL && t->t_prio > cur->t_prio) {
+    if (cur == NULL || t->t_prio <= cur->t_prio) {
+        return;
+    }
+
+    if (defer_depth > 0) {
+        defer_pending = true;
+        return;
+    }
+
+    enqueue(cur);
+    dispatch();
+}
+
+void
+sched_defer(void)
+{
+    defer_depth++;
+}
+
+void
+sched_undefer(void)
+{
+    struct thread *cur;
+
+    if (defer_depth == 0) {
+        panic("sched: undefer without a matching defer");
+    }
+
+    defer_depth--;
+    if (defer_depth > 0 || !defer_pending) {
+        return;
+    }
+
+    defer_pending = false;
+
+    cur = thread_current();
+    if (cur != NULL && highest_ready() > (int)cur->t_prio) {
         enqueue(cur);
         dispatch();
     }

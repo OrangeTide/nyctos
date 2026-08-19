@@ -81,6 +81,8 @@ handle_insert(struct handle_table *ht, void *obj, uint32_t type,
     s->h_inuse = true;
     ht->ht_used++;
 
+    handle_object_retain(type, obj, rights);
+
     *out = sys_id_make(index, s->h_gen);
 
     return SYS_OK;
@@ -132,6 +134,13 @@ handle_close(struct handle_table *ht, sys_handle_t h)
     if (s->h_gen == 0) {
         s->h_gen = 1;
     }
+
+    /*
+     * The object is told before the slot is cleared, and after the
+     * generation has moved, so that anything the release triggers sees a
+     * table in which this handle is already stale.
+     */
+    handle_object_release(s->h_type, s->h_object, s->h_rights);
 
     s->h_object = NULL;
     s->h_type = SYS_OBJ_NONE;

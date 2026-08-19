@@ -34,6 +34,7 @@
 #define _SYS_THREAD_H_
 
 #include <sys/config.h>
+#include <sys/op.h>
 #include <sys/pool.h>
 
 #include <stddef.h>
@@ -82,6 +83,15 @@ struct thread {
 
     /* Link for the FIFO at this level. Owned by the scheduler. */
     struct thread      *t_qnext;
+
+    /*
+     * Wait state. A thread is blocked on at most one object at a time per
+     * section 5, so one link and one awaited value is all any of this ever
+     * needs, however many kinds of thing become waitable.
+     */
+    struct thread      *t_wnext;
+    uint64_t            t_waitval;
+    sys_err_t           t_waitres;
 
     /*
      * What this thread is blocked on, per the invariant in section 5. It

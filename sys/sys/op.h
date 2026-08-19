@@ -117,6 +117,15 @@ typedef struct sys_op {
     uint32_t        _pad;
 } sys_op_t;
 
+/*
+ * Argument structure for SYS_OP_FENCE_WAIT and SYS_OP_FENCE_SIGNAL. target
+ * names the timeline. There is no deadline yet: section 14 has waits take
+ * an absolute one, and absolute deadlines need a clock.
+ */
+typedef struct sys_op_fence_args {
+    uint64_t        value;
+} sys_op_fence_args_t;
+
 /* Argument structure for SYS_OP_HANDLE_DUP. target names the source. */
 typedef struct sys_op_dup_args {
     uint32_t        new_rights;

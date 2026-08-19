@@ -24,6 +24,33 @@
 #include <sys/op.h>
 #include <sys/proc.h>
 #include <sys/systm.h>
+#include <sys/timeline.h>
+
+#include <stdbool.h>
+
+static sys_err_t
+op_fence(struct proc *p, struct sys_op *op, bool signalling)
+{
+    struct sys_op_fence_args *args;
+    struct timeline *tl;
+    sys_err_t err;
+    void *obj;
+
+    args = (struct sys_op_fence_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_TIMELINE,
+      signalling ? SYS_RIGHT_SIGNAL : SYS_RIGHT_WAIT, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+    tl = obj;
+
+    return signalling ? timeline_signal(tl, args->value)
+      : timeline_wait(tl, args->value);
+}
 
 static sys_err_t
 op_handle_close(struct proc *p, struct sys_op *op)
@@ -86,11 +113,15 @@ sys_op_exec(struct sys_op *op)
     case SYS_OP_HANDLE_DUP:
         err = op_handle_dup(p, op);
         break;
+    case SYS_OP_FENCE_WAIT:
+        err = op_fence(p, op, false);
+        break;
+    case SYS_OP_FENCE_SIGNAL:
+        err = op_fence(p, op, true);
+        break;
     case SYS_OP_IPC_SEND:
     case SYS_OP_IPC_RECV:
     case SYS_OP_IPC_REPLY:
-    case SYS_OP_FENCE_WAIT:
-    case SYS_OP_FENCE_SIGNAL:
     case SYS_OP_DMA_ISSUE:
     case SYS_OP_READ_ISSUE:
     case SYS_OP_WRITE_ISSUE:

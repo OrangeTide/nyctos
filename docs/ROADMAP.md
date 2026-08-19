@@ -38,6 +38,9 @@ initialises its object pools, reports them, and powers the machine off.
 - Per-process handle tables with rights, attenuating duplication and
   generation-checked staleness, and the section 23 operation entry point
   with SYS_OP_NOP behind it. Stage 4.
+- Timelines: monotonic counters, waiting on a value reached or not yet
+  reached, and the error state a timeline enters when its last signal right
+  goes. Stage 5.
 - A trap path and an unprivileged-mode entry, neither of them reached.
 
 Kernel object memory went from 6720 bytes to 271424 the moment threads
@@ -133,6 +136,17 @@ blocking in receive is sufficient and the object is ceremony. Whether
 handle-relative naming with no ambient root is workable rather than merely
 defensible. Whether a protocol carrying the offset in the message survives a
 real client.
+
+*On timelines, so far.* Built in stage 5 and behaving as section 9.1
+describes, but the verdict is not in and cannot be yet. The object is small
+and the wait and signal paths are short. What has not happened is anything
+else depending on it: interrupts land on one in stage 6 and driver
+completion in stage 8, and only then is there evidence about whether one
+wait object for everything pays for itself. Two things already cost more
+than expected. The error state needs a count of signal-righted handles,
+which means the handle table has to tell an object when one appears or
+goes. And releasing several waiters has to be atomic against preemption,
+which is why the scheduler grew sched_defer.
 
 *Size.* Large. It is most of a kernel.
 

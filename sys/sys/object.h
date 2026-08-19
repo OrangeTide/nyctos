@@ -24,6 +24,7 @@
 #include <sys/pool.h>
 #include <sys/proc.h>
 #include <sys/thread.h>
+#include <sys/timeline.h>
 
 /* Stage 8: receive queue, owner, pulse queue. */
 struct channel {
@@ -33,11 +34,6 @@ struct channel {
 /* Milestone 4: the backing region and the tier's mapping state. */
 struct grant {
     sys_id_t g_id;
-};
-
-/* Stage 5: the monotonic counter and its waiter list. */
-struct timeline {
-    sys_id_t tl_id;
 };
 
 /* Stage 7: deadline, period, and the timeline it advances. */

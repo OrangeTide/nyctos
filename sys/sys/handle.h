@@ -45,6 +45,14 @@ struct handle_table {
     uint32_t           ht_used;
 };
 
+/*
+ * Called when a handle is created or destroyed, so an object that cares who
+ * still holds authority over it can find out. A timeline that loses its
+ * last signal-righted handle enters the error state, per section 9.3.
+ */
+void handle_object_retain(uint32_t type, void *obj, uint32_t rights);
+void handle_object_release(uint32_t type, void *obj, uint32_t rights);
+
 void handle_table_init(struct handle_table *ht);
 
 /*

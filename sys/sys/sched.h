@@ -46,4 +46,18 @@ void sched_yield(void);
  */
 void sched_block(void);
 
+/*
+ * Hold off the preemption that sched_ready would otherwise take at once.
+ *
+ * Releasing several waiters is one operation: if the first release switched
+ * away, the rest would sit queued but unreleased until this thread happened
+ * to run again, and the signal that was supposed to free them all would
+ * have freed only some. Between defer and undefer, sched_ready queues
+ * without dispatching, and undefer takes the one decision that is owed.
+ *
+ * Nests, so a caller need not know whether its own caller deferred.
+ */
+void sched_defer(void);
+void sched_undefer(void);
+
 #endif /* _SYS_SCHED_H_ */
