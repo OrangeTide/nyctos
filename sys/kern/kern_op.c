@@ -59,6 +59,11 @@ sys_op_exec(struct sys_op *op)
     struct proc *p;
     sys_err_t err;
 
+    /*
+     * The one path that returns without writing a status, because there is
+     * nowhere to write it. Every other failure leaves the descriptor
+     * carrying the same value this returns.
+     */
     if (op == NULL) {
         return SYS_ERR_FAULT;
     }

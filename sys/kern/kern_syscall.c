@@ -22,14 +22,13 @@
 #include <sys/systm.h>
 
 long
-syscall_handler(long num, long a0, long a1, long a2)
+syscall_handler(struct sys_op *op, unsigned long count)
 {
-    struct sys_op *op = (struct sys_op *)(uintptr_t)num;
-    long count = a0;
-
-    (void)a1;
-    (void)a2;
-
+    /*
+     * The count is one until the submission engine of section 17 exists.
+     * Rejecting anything else here rather than ignoring it means a caller
+     * built against that engine fails loudly on a kernel without it.
+     */
     if (count != 1) {
         return SYS_ERR_INVALID_ARG;
     }

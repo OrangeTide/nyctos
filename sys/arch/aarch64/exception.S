@@ -67,10 +67,11 @@ el0_sync:
     cmp     x9, #0x15               /* SVC from AArch64 */
     b.ne    el0_fatal
 
-    mov     x3, x2
-    mov     x2, x1
-    mov     x1, x0
-    mov     x0, x8
+    /*
+     * Section 23.1 register mapping for this port: x0 carries the pointer
+     * to the operation descriptor and x1 the count, which is where the C
+     * calling convention already wants them. Nothing else is passed.
+     */
     bl      syscall_handler
     str     x0, [sp, #0]
 

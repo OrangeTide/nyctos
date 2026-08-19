@@ -39,7 +39,7 @@ void *memcpy(void *dst, const void *src, size_t len);
 void exec_user(void) __attribute__((noreturn));
 
 /* sys/kern/kern_syscall.c */
-long syscall_handler(long num, long a0, long a1, long a2);
+long syscall_handler(struct sys_op *op, unsigned long count);
 void trap_fatal(unsigned long cause, unsigned long pc) __attribute__((noreturn));
 
 /* sys/arch/<arch>/machdep.S */

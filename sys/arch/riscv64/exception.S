@@ -38,11 +38,11 @@ trap_entry:
     li      t1, 8                   /* environment call from U-mode */
     bne     t0, t1, trap_bad
 
-    /* a7 holds the call number, a0-a2 the arguments. */
-    mv      a3, a2
-    mv      a2, a1
-    mv      a1, a0
-    mv      a0, a7
+    /*
+     * Section 23.1 register mapping for this port: a0 carries the pointer
+     * to the operation descriptor and a1 the count, which is where the C
+     * calling convention already wants them. Nothing else is passed.
+     */
     call    syscall_handler
     sd      a0, 64(sp)
 

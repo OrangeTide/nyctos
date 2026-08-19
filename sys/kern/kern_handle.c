@@ -33,26 +33,27 @@ handle_table_init(struct handle_table *ht)
 }
 
 /*
- * Resolve without checking anything but liveness, which is what close and
- * dup need before they look at rights.
+ * Resolve to a slot index, checking nothing but liveness, which is what
+ * close and dup need before they look at rights. Returning the index rather
+ * than a pointer lets a caller that only reads keep its table const.
  */
-static struct handle_slot *
-slot_of(const struct handle_table *ht, sys_handle_t h)
+static uint32_t
+slot_index(const struct handle_table *ht, sys_handle_t h)
 {
     const struct handle_slot *s;
     uint32_t index;
 
     index = sys_id_index(h);
     if (index >= SYS_MAX_HANDLES_PER_PROC) {
-        return NULL;
+        return SYS_POOL_NIL;
     }
 
     s = &ht->ht_slots[index];
     if (!s->h_inuse || s->h_gen != sys_id_gen(h)) {
-        return NULL;
+        return SYS_POOL_NIL;
     }
 
-    return (struct handle_slot *)s;
+    return index;
 }
 
 sys_err_t
@@ -89,11 +90,14 @@ sys_err_t
 handle_lookup(const struct handle_table *ht, sys_handle_t h, uint32_t type,
   uint32_t need_rights, void **out_obj)
 {
-    const struct handle_slot *s = slot_of(ht, h);
+    const struct handle_slot *s;
+    uint32_t index = slot_index(ht, h);
 
-    if (s == NULL) {
+    if (index == SYS_POOL_NIL) {
         return SYS_ERR_STALE;
     }
+    s = &ht->ht_slots[index];
+
     if (type != SYS_OBJ_NONE && s->h_type != type) {
         return SYS_ERR_WRONG_TYPE;
     }
@@ -116,14 +120,13 @@ handle_lookup(const struct handle_table *ht, sys_handle_t h, uint32_t type,
 sys_err_t
 handle_close(struct handle_table *ht, sys_handle_t h)
 {
-    struct handle_slot *s = slot_of(ht, h);
-    uint32_t index;
+    struct handle_slot *s;
+    uint32_t index = slot_index(ht, h);
 
-    if (s == NULL) {
+    if (index == SYS_POOL_NIL) {
         return SYS_ERR_STALE;
     }
-
-    index = sys_id_index(h);
+    s = &ht->ht_slots[index];
 
     s->h_gen = (s->h_gen + 1) & SYS_ID_GEN_MASK;
     if (s->h_gen == 0) {
@@ -145,11 +148,14 @@ sys_err_t
 handle_dup(struct handle_table *ht, sys_handle_t h, uint32_t new_rights,
   sys_handle_t *out)
 {
-    struct handle_slot *s = slot_of(ht, h);
+    const struct handle_slot *s;
+    uint32_t index = slot_index(ht, h);
 
-    if (s == NULL) {
+    if (index == SYS_POOL_NIL) {
         return SYS_ERR_STALE;
     }
+    s = &ht->ht_slots[index];
+
     if ((s->h_rights & SYS_RIGHT_DUPLICATE) == 0) {
         return SYS_ERR_PERM_DENIED;
     }
