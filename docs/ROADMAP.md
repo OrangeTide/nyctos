@@ -59,13 +59,20 @@ walks it to a file, reads the file, and prints it. The file is served by a
 different process over the protocol of section 25, and nothing on that path
 is inside the kernel except the message passing.
 
-**Part of milestone 2 is done, and none of it has run.** The startup
-record of section 20.4, its consumption by libc before `main()`, the
-userland side of the operation entry point, the user-stack handling on
-both trap paths, and `fs_server` and `fs_client` as ordinary programs that
-build at distinct load addresses. What is missing is the thing that would
-execute any of it: nothing loads an image and enters user mode, so no user
-code has ever trapped. M2 says what is left.
+**Most of milestone 2 is done, and it runs.** The vertical slice executes a
+second time with both halves as loaded programs: a boot archive in the
+kernel's rodata, images copied to the addresses they were linked for, and
+`fs_client` and `fs_server` in EL0 on AArch64 and U-mode on RISC-V. The
+client walks a directory connection it was handed at spawn, reads the file
+over IPC, closes it, and exits with the byte count. Every operation on that
+path crossed the trap edge. What is left is the compound request of
+section 25.7, which is the only thing in the milestone that can still
+falsify a design decision, and enough introspection to show which side of
+a rendezvous was blocked.
+
+The programs cannot print. There is no console for user code, so results
+come back as exit status. M2 says why that is a decision rather than an
+omission.
 
 Identifiers are now one machine word rather than a fixed 64 bits, with the
 index and generation split sized to the pools: 20 and 44 bits on a 64-bit
@@ -212,19 +219,10 @@ them.** Tier 0, single core.
 
 Milestone 1 read a file from outside the kernel, but every participant was a
 kernel thread and every caller of the operation entry point was kernel code
-calling it directly. The interface was exercised and the boundary was not.
-This milestone puts the same slice across a real one: two independently
-loaded programs, a trap edge with user code on the far side of it, and a
-scheduler that blocks and resumes both as the rendezvous requires.
-
-It comes second because it is what makes everything after it demonstrable.
-A shell needs processes to spawn. The MMU needs two address spaces to be
-worth having. Cohorts need members. None of that is testable while the
-system is one address space of kernel threads that happen to send each
-other messages.
-
-*Already built.* Everything on the far side of the boundary, and the edge
-itself, with nothing yet crossing it.
+*Already built, and running.* The slice runs a second time with both
+halves as loaded programs. `fs_client` walks a directory connection it was
+handed at spawn, reads the file over IPC from `fs_server`, closes it, and
+exits with the byte count, on both architectures.
 
 - **The startup record of section 20.4.** A versioned record carrying
   argc, argv, envp and a namespace table, written by `proc_spawn` and
@@ -243,27 +241,33 @@ itself, with nothing yet crossing it.
 - **The userland call interface.** `include/os/sys.h` and the wrappers
   behind it, each filling in one descriptor and submitting it through the
   single entry point of section 23.1.
-- **`fs_server` and `fs_client` as ordinary programs,** building on both
-  architectures at distinct load addresses. The server is handed its
-  receive handle at spawn and creates nothing, because there is no
-  operation for creating a channel and there should not be.
+- **`fs_server` and `fs_client` as ordinary programs.** The server is
+  handed its receive handle at spawn and creates nothing, because there is
+  no operation for creating a channel and there should not be.
+- **The boot archive of section 24.4, and loading from it.** A header, a
+  table of fixed-size records, and page-aligned payloads, written on the
+  host by `mkbootarch` and carried in the kernel's rodata, which is the
+  closest thing this port has to the flash that section assumes. Loading
+  is the RAM loader of section 15.2 rather than execute-in-place, because
+  the programs are linked at absolute addresses.
+- **Exit.** `SYS_OP_THREAD_EXIT` records a status and takes the thread off
+  the scheduler. Nothing else, per the note below.
 
-*What is left.* The parts that make any of the above run.
+*What is left.*
 
-- **Program loading on Tier 0** (section 15.2). Nothing copies an image
-  into memory and calls `enter_user`, so no user code has ever trapped.
-  This is the gating item: until it exists the trap edge is a compile-time
-  artifact.
-- **The scheduler running user threads.** Blocking and resumption on IPC
-  already work and have since stage 8; what is missing is threads that are
-  in user mode when they block.
+- **The compound form of section 25.7,** alongside the three separate
+  operations, since comparing them is half the point of the milestone and
+  is the only question here that can falsify a design decision.
 - **The operation descriptor validated across the boundary**, and the
-  register and memory guarantees of section 23.4. Today the descriptor is
-  a kernel pointer that the kernel wrote.
-- **The compound form of section 25.7**, alongside the three separate
-  operations, since comparing them is half the point of the milestone.
-- **Halt on exit,** with a `TODO` naming the milestone that will do it
-  properly.
+  register and memory guarantees of section 23.4. Tier 0 has no address
+  space to validate a user pointer against, so what is owed is a statement
+  of what is checked and what is trusted, not a check.
+- **Two programs blocking against each other under observation.** The
+  rendezvous happens, but nothing yet reports which side was SEND-blocked
+  and which REPLY-blocked, so the claim in *Watch for* below is still
+  unproven rather than merely untested.
+- **Halt on exit** as a general rule rather than the boot thread waiting
+  on one known process.
 
 *Not needed.* The MMU, cohorts, SMP, paging, the submission engine, and
 **anything to do with death**. Both programs run to completion or the
@@ -272,23 +276,26 @@ system halts. See below.
 *A loose end this created.* libc still carries V7-numbered stubs for
 `open`, `read`, `write` and `close`, which pass a call number where the
 trap path expects a descriptor pointer and a count. They are the only
-thing `puts` stands on, so removing them leaves a program unable to say
-anything, and giving a program a console is an M3 decision. Either the
-stubs go and the programs stay silent until M3, or a console arrives
-early. It should be settled deliberately rather than by whoever next
-needs to print something.
+thing `puts` stands on, so the programs report by exit status and say
+nothing. Either the stubs go and programs stay silent until M3 has a
+console, or a console arrives early. It should be settled deliberately
+rather than by whoever next needs to print something.
 
 *Done when* two programs load and run as separate processes, the client
 walks a directory handle it was given at spawn, reads the file, prints it,
 and the same read done as one compound request produces the same bytes in
 one rendezvous instead of three.
 
-*On death, deliberately.* When either process exits, the system prints a
-message and halts. Nothing is reaped, no slot is reused, no supervisor
-restarts anything, and a `TODO` in the exit path names the milestone that
-will do it. This is the whole of what M2 needs from teardown, and pulling
-any more of it forward would mean building cancellation and pulses for a
-system with nothing to cancel.
+Two of those three are done. The programs load and run and the read works;
+the client reports by exit status rather than printing, for the reason
+above, and the compound request is not built.
+
+*On death, deliberately.* When a process exits, `SYS_OP_THREAD_EXIT`
+records a status and takes the thread off the scheduler. Nothing is
+reaped, no slot is reused, no completion timeline is advanced, nothing can
+join, and a `TODO` in the exit path names M7. This is the whole of what M2
+needs from teardown, and pulling any more of it forward would mean
+building cancellation and pulses for a system with nothing to cancel.
 
 *Would falsify.* Whether the operation descriptor survives crossing a real
 protection boundary, or whether validating it costs enough to want a
@@ -300,24 +307,40 @@ batching, and the cheapest point at which to get it: if one message is not
 meaningfully better than three to the same server, section 25.7 is deleted
 and section 12.7 with it.
 
-*Watch for.* Two things, and the first is new.
+The first two are answered as far as a working slice can answer them. The
+descriptor crosses unchanged and nothing about it wanted a different
+shape, though Tier 0 validates nothing, so the real test of section 23.2
+waits for the MMU. The rendezvous needed no change to serve a program
+rather than a function. The third is untouched and is now the only
+question in this milestone that can falsify anything.
 
-**A trap edge that builds is not a trap edge that works.** The user-mode
-half of it has never executed a single instruction, so every line of it is
-unverified in the way that matters. The AArch64 restore path already had a
-real fault in it, found by reading rather than by running, and there is no
-reason to think it was the only one. The first user trap is the test.
+*Watch for.*
 
 **The scheduler is the part most likely to pass while testing less than it
 claims.** A two-process demonstration where one process happens to run to
 completion before the other starts exercises no blocking at all, and looks
 identical in the output. The client must be observed blocked in send while
 the server runs, and the server blocked in receive while the client works,
-or the milestone has not been demonstrated.
+or the milestone has not been demonstrated. This is currently the weakest
+part of the stage: the rendezvous plainly happens, but nothing reports
+which side was blocked on what, so the output would look the same if it
+did not.
 
-*Size.* Medium to large, down from large. The trap edge, the startup
-contract and the programs are done; program loading and the scheduler work
-that follows from it are what remains.
+**What was proved, and how.** Each of these was confirmed by breaking it
+and watching the stage fail. Entering at EL1h instead of EL0t makes the
+program's `svc` reach the current-EL vector and panic, so the working
+build is at EL0 rather than merely appearing to be. Demanding `mcause` 11
+instead of 8 panics with `cause=0x8`, which is ecall-from-U-mode, so the
+RISC-V side is in U-mode for the same reason. Changing the server's string
+to a twelve-byte one moved the client's exit status to 12, so the bytes
+executing are the bytes built, carried through the archive, and the count
+crossed a real IPC boundary between two user processes.
+
+*Size.* Small, from large. The trap edge, the startup contract, the
+programs, the archive and the loader are done and running. What remains is
+the compound request, a statement of what Tier 0 checks and what it
+trusts, and enough introspection to show which side of a rendezvous was
+blocked.
 
 ### M3. A System You Can Talk To
 
