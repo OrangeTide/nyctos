@@ -33,6 +33,7 @@ SRCS := arch/$(ARCH)/boot.S \
         kern/kern_time.c \
         kern/subr_mem.c \
         kern/subr_bootarch.c \
+        kern/subr_trace.c \
         kern/subr_pool.c \
         kern/subr_prf.c
 

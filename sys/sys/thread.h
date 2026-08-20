@@ -62,6 +62,26 @@ enum thread_state {
     THREAD_DEAD,
 };
 
+/*
+ * What a blocked thread is waiting for, per section 12.1.
+ *
+ * THREAD_BLOCKED says a thread is off the run queues and t_blocked_on says
+ * which object it is off them for, but neither distinguishes the two sides
+ * of a rendezvous, and section 12.1 makes that distinction load-bearing. A
+ * client accumulating time in SEND is waiting for server capacity and the
+ * answer is more receiving threads; a client accumulating time in REPLY is
+ * waiting for the work itself and more threads will not help. Section 22.2
+ * reports the two separately or it reports nothing useful about a
+ * saturated server.
+ */
+enum thread_wait {
+    THREAD_WAIT_NONE = 0,
+    THREAD_WAIT_SEND,       /* queued on a channel, no server has taken it */
+    THREAD_WAIT_REPLY,      /* a server holds the message and is working */
+    THREAD_WAIT_RECV,       /* a server waiting with no message available */
+    THREAD_WAIT_FENCE,      /* blocked on a timeline value */
+};
+
 struct thread {
     /*
      * Saved kernel stack pointer, and the only field md_switch knows about.
@@ -103,6 +123,7 @@ struct thread {
     struct thread      *t_wnext;
     uint64_t            t_waitval;
     sys_err_t           t_waitres;
+    enum thread_wait    t_wait;
 
     /*
      * Deadline, and the link for the list ordered by it. A thread can be

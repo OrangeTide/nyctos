@@ -17,6 +17,7 @@
 #include <sys/object.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
+#include <sys/trace.h>
 #include <sys/thread.h>
 #include <sys/time.h>
 #include <sys/timeline.h>
@@ -152,6 +153,9 @@ timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
 
     /* Section 9.2 donation would happen here. */
 
+    self->t_wait = THREAD_WAIT_FENCE;
+    trace_wait(self, THREAD_WAIT_FENCE);
+
     /*
      * Interrupts come back on inside the switch, when whatever runs next
      * restores its own state. They are off again by the time this returns,
@@ -159,6 +163,8 @@ timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
      * of its own.
      */
     sched_block();
+
+    self->t_wait = THREAD_WAIT_NONE;
 
     /*
      * Whichever of the two happened first, the other is now stale: a

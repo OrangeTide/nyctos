@@ -17,6 +17,7 @@
 #include <sys/thread.h>
 #include <sys/time.h>
 #include <sys/timeline.h>
+#include <sys/trace.h>
 
 #include <stdbool.h>
 
@@ -960,9 +961,15 @@ chain_checks(void)
  * is why they are the measurement rather than elapsed time: section 25.7's
  * claim is about round trips and about not touching a statically sized
  * pool, and under emulation a clock would answer a question nobody asked.
+ *
+ * The trace is the other half. A demonstration where one program runs to
+ * completion before the other starts exercises no blocking at all and
+ * produces byte counts that look exactly the same, so the states each
+ * thread passed through are checked rather than assumed.
  */
 static void
-run_client(const char *image, sys_handle_t root, uint32_t expect_bytes)
+run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
+  bool expect_send_block)
 {
     struct pool *conns = connection_pool();
     struct proc_ns_spec ns[1];
@@ -973,6 +980,9 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes)
     pool_highwater_reset(conns);
     pool_before = conns->highwater;
 
+    trace_reset();
+    trace_enable(true);
+
     ns[0].id = SYS_NS_ROOT;
     ns[0].handle = root;
     p = proc_spawn_image(image, 20, ns, 1);
@@ -981,14 +991,44 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes)
         sched_yield();
     }
 
+    trace_enable(false);
+
     cnprintf("    %-10s read %d bytes in %lu rendezvous, %lu connections\n",
       image, p->p_exit_code,
       (unsigned long)(channel_rendezvous - before),
       (unsigned long)(conns->highwater - pool_before));
+    trace_report(image);
 
     if (p->p_exit_code != (int32_t)expect_bytes) {
         panic("%s: read %d bytes, expected %u", image, p->p_exit_code,
           expect_bytes);
+    }
+
+    /*
+     * Both sides must have blocked on each other. Without this the stage
+     * passes on a run where the server happened to be waiting every time,
+     * which never queues a sender and never proves the client can wait for
+     * capacity as opposed to for work.
+     */
+    if (!trace_saw(THREAD_WAIT_RECV)) {
+        panic("%s: the server never blocked in receive", image);
+    }
+    if (!trace_saw(THREAD_WAIT_REPLY)) {
+        panic("%s: the client never waited for a reply", image);
+    }
+
+    /*
+     * Whether the client ever queued behind a busy server is not the same
+     * question, and the two forms answer it differently. Three messages
+     * give the server two chances to be elsewhere when the next one
+     * arrives, and it is both times. One message cannot queue at all: the
+     * server is waiting when it arrives, because the client has not given
+     * it anything else to do. Fewer sends is fewer chances to wait for
+     * capacity, which is a saving section 25.7 does not mention.
+     */
+    if (trace_saw(THREAD_WAIT_SEND) != expect_send_block) {
+        panic("%s: send-blocking was %sexpected and %shappened", image,
+          expect_send_block ? "" : "un", expect_send_block ? "never " : "");
     }
 }
 
@@ -1064,8 +1104,8 @@ user_slice(void)
      * cost a third of the round trips and none of the connection pool; if
      * it does not, the section is deleted and section 12.7 with it.
      */
-    run_client("fs_client", root, sizeof(motd_text) - 1);
-    run_client("fs_batch", root2, sizeof(motd_text) - 1);
+    run_client("fs_client", root, sizeof(motd_text) - 1, true);
+    run_client("fs_batch", root2, sizeof(motd_text) - 1, false);
 }
 
 void

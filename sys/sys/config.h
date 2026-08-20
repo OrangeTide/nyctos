@@ -78,6 +78,13 @@
  */
 #define SYS_PRIO_CHAIN_MAX      8
 
+/*
+ * Blocking transitions the tracer of section 22.2 keeps. Sized to hold a
+ * whole file read with room to see the shape of it; the ring overwrites
+ * rather than stopping, and reports that it did.
+ */
+#define TRACE_EVENTS            32
+
 /* Connections, which are what a client holds onto a server. */
 #define SYS_MAX_CONNECTIONS     32
 

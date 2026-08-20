@@ -14,6 +14,7 @@
 #include <sys/proc.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
+#include <sys/trace.h>
 #include <sys/thread.h>
 #include <sys/timeline.h>
 
@@ -205,11 +206,21 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         server->t_blocked_on = NULL;
         server->t_waitres = SYS_OK;
 
+        server->t_wait = THREAD_WAIT_NONE;
         donate(server, self->t_prio);
         sched_ready(server);
+
+        /*
+         * A server was already waiting, so this never queued: it is
+         * REPLY-blocked from the outset and section 12.1 says the two
+         * states are told apart precisely here.
+         */
+        self->t_wait = THREAD_WAIT_REPLY;
     } else {
         sender_insert(ch, self);
+        self->t_wait = THREAD_WAIT_SEND;
     }
+    trace_wait(self, self->t_wait);
 
     self->t_blocked_on = ch;
     self->t_unwait = channel_unwait_thread;
@@ -217,6 +228,7 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
     err = self->t_waitres;
 
+    self->t_wait = THREAD_WAIT_NONE;
     self->t_msg = NULL;
     self->t_reply = NULL;
 
@@ -245,6 +257,15 @@ channel_recv(struct channel *ch, struct sys_msg *out,
 
         donate(self, client->t_prio);
 
+        /*
+         * The client moves from SEND-blocked to REPLY-blocked without
+         * running. It was queued and is now being served.
+         */
+        client->t_wait = THREAD_WAIT_REPLY;
+        trace_wait(client, THREAD_WAIT_REPLY);
+
+        self->t_wait = THREAD_WAIT_NONE;
+
         *out_peer = self->t_client;
         *out_cookie = self->t_cookie;
         md_intr_restore(s);
@@ -255,6 +276,9 @@ channel_recv(struct channel *ch, struct sys_msg *out,
     self->t_msg = out;
     self->t_snext = ch->c_receivers;
     ch->c_receivers = self;
+
+    self->t_wait = THREAD_WAIT_RECV;
+    trace_wait(self, THREAD_WAIT_RECV);
 
     self->t_blocked_on = ch;
     self->t_unwait = channel_unwait_thread;
@@ -327,6 +351,7 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
     client->t_replied = true;
     client->t_waitres = err;
     client->t_blocked_on = NULL;
+    client->t_wait = THREAD_WAIT_NONE;
 
     if (self->t_donor == client) {
         undonate(self);
