@@ -729,7 +729,6 @@ static void
 fs_client(void *arg)
 {
     const sys_startup_t *startup = arg;
-    const sys_ns_entry_t *ns = (const sys_ns_entry_t *)startup->ns;
     struct sys_op_send_args tx;
     fs_request_t *req;
     fs_reply_t *rep;
@@ -739,12 +738,12 @@ fs_client(void *arg)
     if (startup->version != SYS_STARTUP_VERSION) {
         panic("client: startup record from a kernel it does not know");
     }
-    if (startup->ns_count != 1) {
-        panic("client: expected exactly one handle at spawn");
+    dir = sys_ns_find((const sys_handle_t *)startup->ns, startup->ns_words,
+      SYS_NS_ROOT);
+    if (dir == SYS_HANDLE_INVALID) {
+        panic("client: no root directory in the namespace it was given");
     }
-    dir = ns[0].handle;
-    cnprintf("    client: spawned holding %u handle named \"%s\", and no "
-      "root to name\n", startup->ns_count, ns[0].name);
+    cnputs("    client: spawned holding one handle, and no root to name\n");
 
     /* Walk the directory to the file. */
     memset(&tx, 0, sizeof(tx));
@@ -817,7 +816,7 @@ slice_checks(void)
       run(SYS_OP_CHAN_CONNECT, h_fs_recv, &cargs, sizeof(cargs)), SYS_OK);
     root = cargs.out_handle;
 
-    ns[0].name = "/";
+    ns[0].id = SYS_NS_ROOT;
     ns[0].handle = root;
     cnputs("    spawning a client process with that one handle\n");
     (void)proc_spawn("fs-client", 20, fs_client, ns, 1);

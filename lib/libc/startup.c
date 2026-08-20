@@ -8,10 +8,11 @@
  *
  * crt1 calls this with whatever the loader left in the first argument
  * register, before main() and before anything else in the library has run.
- * What it does is copy: the record and its array live in memory the loader
- * owns, and a library that kept pointers into it would be reading someone
- * else's storage for the life of the process. Copying costs one small
- * array and removes the question entirely.
+ * What it does is copy: the record and its table live in memory the loader
+ * owns, and a library that kept a pointer into it would be reading someone
+ * else's storage for the life of the process. The table is a flat array of
+ * identifier and handle pairs, so the copy is a few dozen bytes and needs
+ * no allocation.
  *
  * A record whose version is not the one this library was built against is
  * refused whole rather than read field by field. A program launched by a
@@ -24,69 +25,57 @@
 
 #include <stddef.h>
 
-static sys_ns_entry_t ns_table[SYS_NS_MAX];
-static unsigned int ns_n;
+static sys_handle_t ns_table[SYS_NS_WORDS];
+static uint32_t ns_words;
 
 void
 __libc_startup(const sys_startup_t *startup)
 {
-    unsigned int n, i;
+    const sys_handle_t *src;
+    uint32_t n, i;
 
-    ns_n = 0;
+    ns_words = 0;
     if (startup == NULL || startup->version != SYS_STARTUP_VERSION) {
         return;
     }
 
-    n = startup->ns_count;
-    if (n > SYS_NS_MAX) {
-        n = SYS_NS_MAX;
+    n = startup->ns_words;
+    if (n > SYS_NS_WORDS) {
+        n = SYS_NS_WORDS;
     }
-    if (n != 0 && startup->ns == 0) {
+    n &= ~1u;                   /* a trailing half-pair names nothing */
+    if (n == 0 || startup->ns == 0) {
         return;
     }
 
+    src = (const sys_handle_t *)startup->ns;
     for (i = 0; i < n; i++) {
-        ns_table[i] = ((const sys_ns_entry_t *)startup->ns)[i];
-        ns_table[i].name[SYS_NS_NAME_MAX - 1] = '\0';
+        ns_table[i] = src[i];
     }
-    ns_n = n;
+    ns_words = n;
 }
 
 sys_handle_t
-ns_lookup(const char *name)
+ns_lookup(sys_ns_id_t id)
 {
-    unsigned int i;
-    size_t j;
-
-    if (name == NULL) {
-        return SYS_HANDLE_INVALID;
-    }
-
-    for (i = 0; i < ns_n; i++) {
-        for (j = 0; j < SYS_NS_NAME_MAX; j++) {
-            if (ns_table[i].name[j] != name[j]) {
-                break;
-            }
-            if (name[j] == '\0') {
-                return ns_table[i].handle;
-            }
-        }
-    }
-
-    return SYS_HANDLE_INVALID;
+    return sys_ns_find(ns_table, ns_words, id);
 }
 
 unsigned int
-ns_count(void)
+ns_slots(void)
 {
-    return ns_n;
+    return ns_words / 2;
 }
 
-const sys_ns_entry_t *
-ns_entry(unsigned int i)
+void
+ns_slot(unsigned int i, sys_ns_id_t *id, sys_handle_t *handle)
 {
-    if (i >= ns_n) {
-        return NULL;
+    int present = i * 2 + 1 < ns_words;
+
+    if (id != NULL) {
+        *id = present ? (sys_ns_id_t)ns_table[i * 2] : SYS_NS_NONE;
     }
-    return &ns_table[i];
+    if (handle != NULL) {
+        *handle = present ? ns_table[i * 2 + 1] : SYS_HANDLE_INVALID;
+    }
 }

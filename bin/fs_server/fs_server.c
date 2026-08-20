@@ -6,8 +6,8 @@
 /*
  * A filesystem server, as an ordinary program.
  *
- * It is handed a receive handle for its channel in its startup namespace
- * and creates nothing. There is no operation for making a channel, and
+ * It is handed a receive handle for its channel as SYS_NS_SERVICE in its
+ * startup namespace, and creates nothing. There is no operation for making a channel, and
  * there should not be: a server that could conjure one would be naming
  * something nobody granted it. Section 24.5 has root create the channel
  * and pass both ends, which is what the namespace entry is.
@@ -142,7 +142,7 @@ main(void)
     uint64_t cookie;
     uint32_t node;
 
-    chan = ns_lookup("fs");
+    chan = ns_lookup(SYS_NS_SERVICE);
     if (chan == SYS_HANDLE_INVALID) {
         return 1;
     }

@@ -6,12 +6,17 @@
 /*
  * The namespace a program was launched with, per section 20.4.
  *
- * The C library consumes the startup record before main() runs and keeps
- * the entries here. This is the whole of naming at this stage: a lookup
- * against the array the process was given, with no resolution, no mount
- * table and no path syntax. Section 20 is what it grows into, and the
- * property it already has is the one that matters, which is that a name
- * that matches no entry reaches nothing at all.
+ * The C library consumes the startup table before main() runs and keeps
+ * the entries here. This is the whole of naming at this stage: a lookup by
+ * identifier against the table the process was given, with no resolution,
+ * no mount table and no path syntax. Section 20 is what it grows into, and
+ * the property it already has is the one that matters, which is that an
+ * identifier matching no entry reaches nothing at all.
+ *
+ * Identifiers below SYS_NS_PRIVATE are assigned in sys/startup.h and mean
+ * the same thing everywhere. Above it they mean whatever the parent and
+ * the child agreed, which is a library-level convention the kernel has no
+ * part in.
  */
 
 #ifndef _NS_H_
@@ -26,17 +31,18 @@
 void __libc_startup(const sys_startup_t *startup);
 
 /*
- * The handle bound to a name, or SYS_ID_INVALID. A miss is SYS_HANDLE_INVALID, an ordinary
- * result and not an error: a process is meant to be launchable with a
- * namespace that does not contain what some optional feature wants.
+ * The handle an identifier names, or SYS_HANDLE_INVALID. A miss is an
+ * ordinary result and not an error: a process is meant to be launchable
+ * with a namespace that does not contain what some optional feature wants.
  */
-sys_handle_t ns_lookup(const char *name);
+sys_handle_t ns_lookup(sys_ns_id_t id);
 
-/* How many entries the process was given, for a program that wants to walk
- * them rather than ask for one. */
-unsigned int ns_count(void);
-
-/* Entry i, or NULL if i is out of range. */
-const sys_ns_entry_t *ns_entry(unsigned int i);
+/*
+ * Slots in the table, for a program that wants to walk it rather than ask
+ * for one thing. A slot may be unused, in which case ns_slot() writes
+ * SYS_NS_NONE.
+ */
+unsigned int ns_slots(void);
+void ns_slot(unsigned int i, sys_ns_id_t *id, sys_handle_t *handle);
 
 #endif /* _NS_H_ */

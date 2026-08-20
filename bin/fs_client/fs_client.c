@@ -6,7 +6,7 @@
 /*
  * A program that opens a file and reads it.
  *
- * It is handed one connection, named "/", and holds nothing else. There is
+ * It is handed one connection, as SYS_NS_ROOT, and holds nothing else. There is
  * no root to name, no path that starts anywhere but the connection it was
  * given, and nothing it could have guessed: section 20.3 is what makes the
  * directory it was handed the entirety of what it can reach.
@@ -62,7 +62,7 @@ main(void)
     sys_handle_t dir, file;
     sys_msg_t reply;
 
-    dir = ns_lookup("/");
+    dir = ns_lookup(SYS_NS_ROOT);
     if (dir == SYS_HANDLE_INVALID) {
         return 1;
     }

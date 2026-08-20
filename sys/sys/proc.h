@@ -24,12 +24,12 @@
 #include <sys/startup.h>
 
 /*
- * What the caller of proc_spawn() says a child should be given: a name and
- * a handle, per entry. The handle is moved rather than copied, so this is
- * a list of things the parent is giving up.
+ * What the caller of proc_spawn() says a child should be given: an
+ * identifier and a handle, per entry. The handle is moved rather than
+ * copied, so this is a list of things the parent is giving up.
  */
 struct proc_ns_spec {
-    const char     *name;
+    sys_ns_id_t     id;
     sys_handle_t    handle;
 };
 
@@ -39,13 +39,13 @@ struct proc {
     struct handle_table p_handles;
 
     /*
-     * The startup record of section 20.4, and the array it points at. Both
-     * live in the process rather than in the child's memory because Tier 0
-     * has no address space to place them in; section 15.2 is where that
-     * changes and the loader starts writing them into the image.
+     * The startup record of section 20.4, and the table it points at.
+     * Both live in the process rather than in the child's memory because
+     * Tier 0 has no address space to place them in; section 15.2 is where
+     * that changes and the loader starts writing them into the image.
      */
     sys_startup_t       p_startup;
-    sys_ns_entry_t      p_ns[SYS_NS_MAX];
+    sys_handle_t        p_ns[SYS_NS_WORDS];
 };
 
 /*

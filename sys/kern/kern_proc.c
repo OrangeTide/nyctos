@@ -39,27 +39,6 @@ proc_current(void)
     return t->t_proc;
 }
 
-/*
- * Copy a namespace entry name, refusing one that does not fit rather than
- * truncating it. A truncated name is a name for something else, and a
- * child that looks up the short form would silently reach the wrong
- * handle.
- */
-static void
-ns_set_name(struct proc *p, sys_ns_entry_t *e, const char *name)
-{
-    size_t i;
-
-    for (i = 0; i < SYS_NS_NAME_MAX; i++) {
-        e->name[i] = name[i];
-        if (name[i] == '\0') {
-            return;
-        }
-    }
-
-    panic("spawn %s: namespace name '%s' does not fit", p->p_name, name);
-}
-
 struct proc *
 proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
   const struct proc_ns_spec *ns, uint32_t nns)
@@ -85,21 +64,27 @@ proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
     memset(&p->p_startup, 0, sizeof(p->p_startup));
     memset(p->p_ns, 0, sizeof(p->p_ns));
     p->p_startup.version = SYS_STARTUP_VERSION;
-    p->p_startup.ns_count = nns;
+    p->p_startup.ns_words = SYS_NS_WORDS;
     p->p_startup.ns = (uintptr_t)p->p_ns;
 
     /*
      * Moved rather than copied, per section 7.4. The parent gives up what
      * it hands over unless it deliberately duplicated first, which is what
      * makes the child's authority describable by looking at one list.
+     *
+     * The identifier is written after the move succeeds, so a slot the
+     * move failed on stays SYS_NS_NONE rather than naming a handle that is
+     * not there.
      */
     for (i = 0; i < nns; i++) {
-        ns_set_name(p, &p->p_ns[i], ns[i].name);
-        p->p_ns[i].type = SYS_OBJ_NONE;
+        if (ns[i].id == SYS_NS_NONE) {
+            panic("spawn %s: entry %u has no identifier", name, i);
+        }
         if (handle_move(parent, &p->p_handles, ns[i].handle,
-          &p->p_ns[i].handle) != SYS_OK) {
+          &p->p_ns[i * 2 + 1]) != SYS_OK) {
             panic("spawn %s: could not hand over handle %u", name, i);
         }
+        p->p_ns[i * 2] = (sys_handle_t)ns[i].id;
     }
 
     t = thread_create(name, prio, entry, &p->p_startup);
