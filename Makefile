@@ -13,8 +13,8 @@ export TOPDIR
 
 include $(TOPDIR)/share/mk/nyc.own.mk
 
-# libc is built but nothing links against it yet; it is kept building so it
-# does not rot before the stage that spawns the first process needs it.
+# Order matters: libc and crt1 before the programs that link against them,
+# and the programs before the kernel that will load them.
 SUBDIR := lib bin tools sys
 
 .PHONY: all clean cleandir run gh-pages

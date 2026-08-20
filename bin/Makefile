@@ -4,6 +4,6 @@
 
 include $(TOPDIR)/share/mk/nyc.own.mk
 
-SUBDIR :=
+SUBDIR := fs_server fs_client
 
 include $(TOPDIR)/share/mk/nyc.subdir.mk

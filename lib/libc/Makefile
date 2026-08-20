@@ -8,6 +8,7 @@ LIB := c
 
 SRCS := arch/$(ARCH)/sys/syscall.S \
         startup.c \
+        sys/op.c \
         sys/write.c \
         sys/open.c \
         sys/read.c \
@@ -17,7 +18,8 @@ SRCS := arch/$(ARCH)/sys/syscall.S \
         stdlib/exit.c \
         string/memcpy.c \
         string/memset.c \
-        string/strlen.c
+        string/strlen.c \
+        string/strncmp.c
 
 CFLAGS   += $(USER_CFLAGS)
 CPPFLAGS := -I$(TOPDIR)/include -I$(TOPDIR)/sys -I$(CURDIR)/include

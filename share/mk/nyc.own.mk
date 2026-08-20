@@ -60,7 +60,6 @@ MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mgeneral-regs-only \
 # has the same constraint. RISC-V gets the flag for the same reason.
 KERN_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align
 USER_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align
-# Must match share/ld/user-aarch64.ld.
 USER_LOAD_ADDR  := 0x40200000
 QEMU            := qemu-system-aarch64
 QEMU_FLAGS      := -M virt -cpu cortex-a53 -nographic
@@ -72,7 +71,6 @@ MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mcmodel=medany \
                    -DARCH_NAME=\"riscv64\"
 KERN_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64gc -mabi=lp64d -mstrict-align
 USER_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64imac -mabi=lp64 -mstrict-align
-# Must match share/ld/user-riscv64.ld.
 USER_LOAD_ADDR  := 0x80200000
 QEMU            := qemu-system-riscv64
 QEMU_FLAGS      := -M virt -bios none -nographic
@@ -88,6 +86,12 @@ OBJTOP := $(TOPDIR)/_out/$(TARGET_TRIPLE)
 LIBDIR := $(OBJTOP)/lib
 LIBC   := $(LIBDIR)/libc.a
 CRT1   := $(LIBDIR)/crt1.o
+
+# Where user images are linked. There is no MMU at Tier 0, so programs that
+# are live at once must not overlap: a program Makefile sets PROG_LOAD_SLOT
+# and share/mk/nyc.prog.mk turns it into a base address. Section 15.2 is
+# where a loader takes this over.
+USER_LOAD_STRIDE := 0x00100000
 
 USER_LDSCRIPT := $(TOPDIR)/share/ld/user-$(ARCH).ld
 KERN_LDSCRIPT := $(TOPDIR)/sys/arch/$(ARCH)/conf/kern.ld

@@ -19,3 +19,15 @@ __syscall:
     mov     x2, x3
     svc     #0
     ret
+
+/*
+ * long __sysop(sys_op_t *ops, unsigned long count)
+ *
+ * The operation entry point of section 23.1. Nothing shifts: x0 already
+ * holds the descriptor pointer and x1 the count, which is where the trap
+ * path expects them and where the C calling convention already put them.
+ */
+.global __sysop
+__sysop:
+    svc     #0
+    ret
