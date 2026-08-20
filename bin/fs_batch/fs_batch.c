@@ -20,6 +20,7 @@
 
 #include <os/sys.h>
 #include <ns.h>
+#include <debug.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -85,6 +86,7 @@ main(void)
     }
 
     rep = (const fs_batch_reply_t *)reply.inline_data;
+    DBG_PUTS("fs_batch: compound replied");
     if (rep->fb_status != SYS_OK) {
         return 3;
     }

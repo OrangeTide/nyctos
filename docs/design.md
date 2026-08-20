@@ -486,7 +486,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Exit and join | Exit advances a completion timeline; status read from the handle. |
 | Cancellation | Prompt, plus a death pulse to any server holding the request. |
 | Introspection | Text key-value attributes, declared with macros. |
-| Debug console | A handleless write, compiled out by default and announced when not. |
+| Debug console | A handleless write and a polled UART. Permanent, gated at build and at run time. |
 | Root process | Compiled-in policy table. Hierarchical supervision, then a watchdog. |
 | Boot archive | Aligned member table, no compression. Walked by root, served by romfs. |
 | Boot handover | A port stage builds `sys_bootinfo_t`. No device tree in the kernel. |
@@ -1712,25 +1712,52 @@ What it buys is that debuggability introduces no authority the system did not al
 
 A **compile-time debug capability**, granting enumeration to a designated agent in builds that opt into it, is a plausible future addition for development images, and section 22.4 is the first one of these: it exists only in some builds, its absence in production builds is the default, and its presence is announced at boot. Enumeration itself is still not specified, because that decision is better made against a real debugging workflow than in advance and the workflow that forced the console has not yet needed it.
 
-### 22.4 The Debug Console
+### 22.4 The Debug Console and the Bring-Up Stubs
 
-**A build may include a system call that writes to the kernel console, taking no handle and checking nothing about its caller.** It is enabled by `SYS_DEBUG_CONSOLE` and absent otherwise, and where it is absent `SYS_OP_DEBUG_WRITE` returns `SYS_ERR_NOT_SUPPORTED` like any other operation the build does not provide.
+**A port provides a polled UART the kernel can write to without any driver, a system call that lets a user program write to it, and a reserved place for a debugger stub. All three are permanent, and all three are compile-time options.** They are not scaffolding to be removed once the system has a console service, and this section does not apologise for them.
 
-**It is ambient authority, and that is the whole of the objection to it.** Section 20.1 is the argument that names are not authority and handles are; section 22.3 declines an enumeration primitive on the grounds that being able to list every object is being able to reach every object. This is a smaller version of exactly what those refuse: a capability every process holds because it exists rather than because anything granted it. The right shape is a console service reached through a handle placed in the startup namespace, and that is what replaces this.
+**The reason is driver bring-up, and it is not a small one.** In this design a driver is an ordinary user process, which is the whole point of sections 18 and 19. On a board nobody has run this system on before, that process is the thing least able to report what is happening: there is no console service yet, because writing one needs a working UART driver; there is no filesystem, no shell, and no supervisor to collect a status from. The first driver written for a new board has to be debuggable before anything it could report through exists.
 
-It is here anyway because the alternative is worse. A program with no way to say anything can only be debugged by inference from what the kernel observes about it, and a system whose first user programs cannot print is a system whose first user programs are debugged by guesswork. The cost of that is paid immediately and by everyone; the cost of the backdoor is paid by a build option.
+A pure design would say that a driver reports through the console service like everything else. That is correct and it is unavailable exactly when it is needed. **Every serious embedded kernel carries a polled debug UART and a debugger stub for this reason**, and a design that leaves them out does not eliminate them; it makes each porter reinvent them locally, in a hurry, against a board that does not work yet.
 
-**Three rules keep it from becoming an interface.**
+#### What is provided
 
-**Absence is the default and presence is announced.** A production configuration compiles it out. A build that does not prints a line at boot saying so, because a hole in the capability model that is invisible in the boot log is one that survives into an image nobody meant to ship it in.
+**The kernel's own console.** A polled write to a UART with no driver, no interrupt, and no service behind it, per section 27. The kernel already needs this for `panic` and for boot output, so it costs nothing additional.
 
-**The length is bounded, and the bound is interface rather than configuration.** The copy runs in the kernel at the caller's priority, and on Tier 0 with interrupts disabled, so an unbounded write is an unbounded non-preemptible section and belongs to the interrupt latency of section 13.3 rather than to taste. A caller with more to say makes more calls, and each is a preemption point. `SYS_DEBUG_WRITE_MAX` is therefore visible to callers, who have to split against it.
+**`SYS_OP_DEBUG_WRITE`.** A user program writing to that same console, taking no handle and checking nothing about its caller.
 
-**It carries no formatting and no file descriptors.** Bytes to the console. The C library's `write()` accepts standard output and standard error and refuses everything else, which is a truthful account of a system with no descriptor table rather than a stub that pretends to have one.
+**A debugger stub, reserved and not built.** The natural companion is a GDB remote stub over the same UART, able to stop the system, read and write memory and registers, and set breakpoints. It is named here so the place exists and so that when it is built it is understood as part of this facility rather than as a new idea. It is not specified further, because a stub written against a real debugging session is worth more than one designed in advance.
 
-**What it is not.** It is not `sys_stat_read()` and it is not a tracer. Sections 22.1 through 22.3 describe reading attributes from an object a caller holds a handle to, which is inspection that introduces no authority the system did not already have. This introduces some, deliberately and temporarily.
+#### The cost, stated plainly
 
----
+**`SYS_OP_DEBUG_WRITE` is ambient authority.** Every other operation reaches only what the caller's handle table contains; this one reaches the console because it exists. Section 20.1 is the argument that authority is a handle, and section 22.3 declines an enumeration primitive on the same grounds. This is a deliberate exception to both.
+
+A debugger stub is a larger one: a stub that can read and write arbitrary memory is total authority over the machine, granted to whoever holds the other end of a serial cable. That is understood and accepted for what it is, which is a facility for a board on a bench.
+
+#### Three gates instead of deletion
+
+**`SYS_DEBUG_CONSOLE` decides whether the operation is compiled in.** A build without it has no code for this and no way to acquire any.
+
+**A run-time flag decides whether a build that carries it is live**, starting from `SYS_DEBUG_CONSOLE_INIT`. An image can therefore ship with the console dormant and have it enabled to diagnose a fault, without being a different image from the one that failed. **This is the gate that matters most**, because a facility present only in development builds is missing exactly when a production fault needs it, and then the image being debugged is not the image that broke.
+
+The kernel owns that flag. Nothing reachable from a system call moves it, because a hole a program can open for itself is not gated at all. Section 24.3's supervisor is what should eventually drive it.
+
+**Both closed states return `SYS_ERR_NOT_SUPPORTED` and are indistinguishable.** A caller's correct behaviour is the same either way, which is to carry on silently, and a program that could tell them apart would depend on something about the build that is not its business. Which state a kernel is in is in its boot log, where the person debugging can see it and the program cannot.
+
+**A build that carries the console announces it at boot.** A hole in the capability model that is invisible in the boot log is one that survives into an image nobody meant to ship it in.
+
+#### On the userland side
+
+The C library provides macros, not functions, so that a program compiled without debug output contains none: no call, no string, no bytes spent on diagnostics the build does not want. `DEBUG_CONSOLE` in the program's own build turns them on.
+
+This is deliberately not the same spelling as `write()`. A program's real output is one thing and its diagnostics are another, and only the second is a category a build removes wholesale.
+
+**The macros ignore the result.** A diagnostic that fails is not an error worth handling, and a program that behaved differently depending on whether anyone was listening would be a program that cannot be debugged.
+
+#### The length bound
+
+**`SYS_DEBUG_WRITE_MAX` is interface rather than configuration, because callers split against it.** The copy runs in the kernel at the caller's priority, and on Tier 0 with interrupts disabled, so an unbounded write is an unbounded non-preemptible section and belongs to the interrupt latency of section 13.3. A caller with more to say makes more calls, and each is a preemption point.
+
 
 ## 23. The System Call Interface
 
@@ -2962,6 +2989,8 @@ This stage runs at the kernel's own privilege level, so it is not an isolation c
 It must be programmable **one-shot**, because section 14.1 has no tick and reprograms the timer at every scheduling decision that changes the earliest pending event. The cost of that reprogramming is a port characteristic worth knowing: on a part where the timer sits behind a slow peripheral bus, it is on the dispatch path and is not small.
 
 **A mapping from every hardware exception to a fault kind.** Section 16.1 enumerates the kinds, and a port must state which of its exceptions produces which. An exception with no mapping has undefined behaviour, and the ones most often left out are the imprecise external aborts that section 16.1 separates for exactly that reason. Where the hardware cannot raise a kind at all, which is most of them on Tier 0, the mapping says so rather than omitting the row.
+
+**A polled debug UART**, writable with no driver, no interrupt, and no service behind it. The kernel needs it for `panic` and for boot output before anything else exists, and section 22.4 needs it for the first driver written on a board that does not work yet. It is the one output path that must not depend on the system working, so it does not share code with the UART driver a running system uses.
 
 **Interrupt controller programming**: mask, unmask, acknowledge, and priority if the hardware has it.
 

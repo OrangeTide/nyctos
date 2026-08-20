@@ -551,6 +551,56 @@ client(void *arg)
     thread_exit();
 }
 
+/*
+ * The run-time gate of section 22.4, which is the half of it that a
+ * compile-time switch cannot demonstrate.
+ *
+ * A build carrying the console can have it dormant, so that an image ships
+ * with the facility present and unusable and has it turned on to diagnose
+ * something without becoming a different image. Refused and absent return
+ * the same error deliberately: a caller behaves the same either way and
+ * should not be able to tell which build it is running on.
+ */
+static void
+debug_console_checks(void)
+{
+#if SYS_DEBUG_CONSOLE
+    struct sys_op_debug_args args;
+    static const char probe[] = "    (this line is written by the probe)\n";
+
+    bool was_live = debug_console_is_live();
+
+    memset(&args, 0, sizeof(args));
+    args.buf = (uintptr_t)probe;
+    args.len = sizeof(probe) - 1;
+
+    cnprintf("    this build boots with it %s\n",
+      was_live ? "live" : "dormant");
+
+    /*
+     * Set the state each case wants rather than assuming the one the
+     * build chose, so this tests the gate and not SYS_DEBUG_CONSOLE_INIT.
+     */
+    debug_console_set(true);
+    expect("the console writes while live",
+      run(SYS_OP_DEBUG_WRITE, 0, &args, sizeof(args)), SYS_OK);
+
+    debug_console_set(false);
+    expect("and is refused while dormant",
+      run(SYS_OP_DEBUG_WRITE, 0, &args, sizeof(args)),
+      SYS_ERR_NOT_SUPPORTED);
+
+    debug_console_set(true);
+    expect("and writes again once live",
+      run(SYS_OP_DEBUG_WRITE, 0, &args, sizeof(args)), SYS_OK);
+
+    debug_console_set(was_live);
+#else
+    cnputs("    compiled out, so there is nothing to gate\n");
+#endif
+}
+
+
 static void
 ipc_checks(void)
 {
@@ -1227,7 +1277,8 @@ kernel_main(void)
      * anything, which is the one thing the rest of the system does not
      * allow. A production image compiles it out and this line goes with it.
      */
-    cnputs("*** debug console compiled in: any process may print ***\n");
+    cnprintf("*** debug console compiled in and %s: section 22.4 ***\n",
+      SYS_DEBUG_CONSOLE_INIT ? "live" : "dormant");
 #endif
 
     object_init();
@@ -1253,6 +1304,9 @@ kernel_main(void)
       run(SYS_OP_DMA_ISSUE, 0, NULL, 0), SYS_ERR_NOT_SUPPORTED);
     expect("an opcode that is not defined at all",
       run(SYS_OP_COUNT, 0, NULL, 0), SYS_ERR_INVALID_ARG);
+
+    cnputs("debug console: the run-time gate of section 22.4\n");
+    debug_console_checks();
 
     cnputs("handles: authority, rights and staleness\n");
     handle_checks();

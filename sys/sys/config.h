@@ -82,9 +82,22 @@
  * The debug console of section 22.4: a system call that prints, holding no
  * handle and asking nothing of the caller.
  *
- * It is ambient authority and a hole in the capability model, which is why
- * it is a build option whose absence is the default and whose presence the
- * kernel announces at boot. A build with this on is a development image.
+ * It is ambient authority and a permanent, gated exception to the
+ * capability model rather than scaffolding. A facility that exists only in
+ * development images means the image being debugged is not the image being
+ * shipped, which is the situation that makes a production-only fault
+ * undiagnosable. So it stays, and what varies is whether a build carries
+ * it and whether a build that carries it has it live.
+ *
+ * SYS_DEBUG_CONSOLE decides whether the operation is compiled in at all.
+ * A build without it has no code for this and no way to acquire any.
+ *
+ * SYS_DEBUG_CONSOLE_INIT decides whether a build that carries it starts
+ * with it live. An image can therefore ship with the console dormant and
+ * have it turned on to diagnose something, without being a different
+ * image. The kernel owns that switch; nothing reachable from a system
+ * call moves it, because a hole a program can open for itself is not
+ * gated at all.
  *
  * The length bound is not politeness. The write runs in the kernel at the
  * caller's priority, and on Tier 0 with interrupts disabled, so an
@@ -92,6 +105,7 @@
  * in the interrupt latency of section 13.3.
  */
 #define SYS_DEBUG_CONSOLE       1
+#define SYS_DEBUG_CONSOLE_INIT  1
 
 /*
  * Blocking transitions the tracer of section 22.2 keeps. Sized to hold a

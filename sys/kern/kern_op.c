@@ -210,24 +210,46 @@ op_handle_dup(struct proc *p, struct sys_op *op)
 /*
  * The debug console of section 22.4.
  *
- * There is no console service yet, and a program with no way to say
- * anything cannot be debugged by watching it. This is the backdoor that
- * fills the gap: a write that takes no handle, checks nothing about the
- * caller, and goes straight to the kernel's own console.
+ * A write that takes no handle, checks nothing about its caller, and goes
+ * straight to the kernel's console. It is ambient authority, which is the
+ * one thing the rest of this system does not have, and it is permanent
+ * rather than scaffolding: a diagnostic that exists only in development
+ * images is one that is missing exactly when a production fault needs it.
  *
- * It is ambient authority, which is the one thing the rest of this system
- * does not have. Every other operation reaches only what the caller's
- * handle table contains; this one reaches the console because it exists.
- * That is a hole in the capability model and it is not defensible on its
- * merits, so it is compiled out by default and the kernel says so at boot
- * when it is not.
+ * Two gates instead of deletion. SYS_DEBUG_CONSOLE decides whether any of
+ * this is compiled in. Where it is, a run-time flag decides whether the
+ * operation does anything, so an image can ship with the console dormant
+ * and have it turned on without becoming a different image.
  *
- * The length is bounded because the copy runs in the kernel at the
- * caller's priority, and on Tier 0 with interrupts disabled. An unbounded
- * write is an unbounded non-preemptible section, which is the interrupt
- * latency of section 13.3 rather than a matter of taste. A caller with
- * more to say makes more calls, and each is a preemption point.
+ * Both closed states return SYS_ERR_NOT_SUPPORTED and are deliberately
+ * indistinguishable. A caller's correct behaviour is the same either way,
+ * which is to carry on silently, and a program that could tell them apart
+ * would be learning something about the build that it has no business
+ * depending on. Which state a kernel is in is in its boot log, where the
+ * person debugging can see it and the program cannot.
  */
+#if SYS_DEBUG_CONSOLE
+static bool debug_console_live = SYS_DEBUG_CONSOLE_INIT;
+
+/*
+ * The switch. It is a kernel-internal call and not an operation, because
+ * an operation that opened this would be a hole any process could open for
+ * itself, which is not a gate. Section 24.3's supervisor is what should
+ * eventually drive it; until root exists, the kernel does.
+ */
+void
+debug_console_set(bool live)
+{
+    debug_console_live = live;
+}
+
+bool
+debug_console_is_live(void)
+{
+    return debug_console_live;
+}
+#endif
+
 static sys_err_t
 op_debug_write(struct proc *p, struct sys_op *op)
 {
@@ -235,6 +257,10 @@ op_debug_write(struct proc *p, struct sys_op *op)
     struct sys_op_debug_args *args;
 
     (void)p;
+
+    if (!debug_console_live) {
+        return SYS_ERR_NOT_SUPPORTED;
+    }
 
     args = (struct sys_op_debug_args *)op->arg_ptr;
     if (args == NULL || op->arg_len < sizeof(*args)) {

@@ -11,7 +11,9 @@ SRCS := fs_batch.c
 # different slots. See share/mk/nyc.prog.mk.
 PROG_LOAD_SLOT := 2
 
-CFLAGS   += $(USER_CFLAGS)
+# Built with its diagnostics on, to exercise the macro layer of
+# include/debug.h. Without this the DBG_ calls leave no trace in the image.
+CFLAGS   += $(USER_CFLAGS) -DDEBUG_CONSOLE=1
 CPPFLAGS := -I$(TOPDIR)/include -I$(TOPDIR)/sys
 
 include $(TOPDIR)/share/mk/nyc.prog.mk

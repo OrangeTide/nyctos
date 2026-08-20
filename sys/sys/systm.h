@@ -13,6 +13,7 @@
 #include <sys/op.h>
 #include <sys/startup.h>
 
+#include <stdbool.h>
 #include <stddef.h>
 
 /* Console: implemented per-architecture in sys/arch/<arch>/uart.c. */
@@ -35,6 +36,10 @@ void thread_exited(void) __attribute__((noreturn));
 /* sys/kern/subr_mem.c */
 void *memset(void *dst, int c, size_t len);
 void *memcpy(void *dst, const void *src, size_t len);
+
+/* sys/kern/kern_op.c, where SYS_DEBUG_CONSOLE is compiled in */
+void debug_console_set(bool live);
+bool debug_console_is_live(void);
 
 /* sys/kern/subr_bootarch.c */
 struct boot_member;

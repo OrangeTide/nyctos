@@ -82,10 +82,11 @@ blocked against each other rather than inferring it from the byte counts.
 That check found a scheduler defect, since fixed: a server whose base
 priority exceeded its client's corrupted the run queues.
 
-Programs can print, over the debug console of section 22.4. It takes no
-handle, is compiled out by default, and is announced at boot when it is
-not, because it is ambient authority and the one thing the rest of the
-system does not have. M3's console service is what removes it.
+Programs can print, over the debug console of section 22.4: a handleless
+write to the port's polled UART, gated at build time and again at run
+time. It is permanent rather than scaffolding, because a driver on a board
+nobody has run this system on has to be debuggable before the console
+service it would otherwise report through can exist.
 
 Identifiers are now one machine word rather than a fixed 64 bits, with the
 index and generation split sized to the pools: 20 and 44 bits on a 64-bit
@@ -294,11 +295,12 @@ fs_batch   read 31 bytes in 1 rendezvous, 0 connections
   and scatter-gather and are deferred with them to M6.
 - **Exit.** `SYS_OP_THREAD_EXIT` records a status and takes the thread off
   the scheduler. Nothing else, per the note below.
-- **The debug console of section 22.4.** A write that takes no handle,
-  compiled out by default and announced at boot when it is not. It is
-  ambient authority and the section says so; a console service reached
-  through a handle is what replaces it, in M3. The V7-numbered libc stubs
-  went with it, having never worked.
+- **The debug console of section 22.4.** A handleless write to the port's
+  polled UART, with a libc macro layer so a program's diagnostics leave no
+  trace in an image built without them. Gated at build time and again at
+  run time, and permanent: a driver on a new board has to be debuggable
+  before the console service it would report through can exist. The
+  V7-numbered libc stubs went with it, having never worked.
 - **What Tier 0 checks and what it trusts** on a descriptor crossing the
   boundary, in section 23.2, in section 27 as a port obligation, and in
   the trap path where someone reading it will find it. There is no address
@@ -886,11 +888,26 @@ that is the identity, so the half of it that matters arrives with the MMU.
 Cohorts, multicore, namespaces, the submission engine and death remain as
 they were.
 
-**One thing M2 built is meant to be deleted.** The debug console of
-section 22.4 is ambient authority and a hole in the capability model,
-compiled out by default and announced when it is not. M3's console service
-is what removes it, and a build that still needs it after that is a build
-with a bug in its namespace.
+**One thing M2 built is permanent, and was nearly written down as
+temporary.** The debug console of section 22.4 is ambient authority and a
+deliberate exception to the capability model, and the first draft of this
+section had M3's console service delete it. That was wrong, and the
+correction is worth keeping because the reasoning generalises.
+
+A driver here is an ordinary user process. On a board nobody has run this
+system on, that process is the least able thing in the system to report
+what is happening: the console service it would report through needs a
+working UART driver, which is the thing being brought up. Every serious
+embedded kernel carries a polled debug UART for this reason, and leaving
+it out does not remove it, it makes each porter write one locally against
+a board that does not work yet.
+
+So it stays, gated rather than deleted: compiled out or in, and where it
+is in, live or dormant at run time. The second gate is the one that
+matters, because a facility present only in development builds is missing
+exactly when a production fault needs it, and then the image being
+debugged is not the image that broke. A GDB stub over the same UART is
+named in 22.4 as the next thing of this kind and is not built.
 
 
 ## 6. Bring-Up Order Within M1
@@ -1009,6 +1026,10 @@ reason, so nothing else moves.
 
 Named here so that they stay named rather than drifting in.
 
+- A GDB remote stub over the debug UART of section 22.4. Named there as the
+  companion to the debug console, and deliberately unspecified, because a
+  stub written against a real debugging session is worth more than one
+  designed in advance. It arrives with the board that needs it.
 - Everything in `PROPOSALS.md`, until its own trigger fires.
 - Conformance testing, certification, and any statement about what an
   implementation must demonstrate to be Nyctos.
