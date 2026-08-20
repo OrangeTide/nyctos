@@ -1762,6 +1762,22 @@ On entry the kernel validates, in this order:
 
 The array must be writable because the kernel writes each entry's status field into it, per section 17.6.
 
+**What "readable and writable by the caller" means differs by tier, and the difference is the whole of what Tier 0 gives up.**
+
+On Tier 2 it is a question with an answer. The caller has an address space, the kernel can ask whether a range is mapped into it and with what permissions, and a descriptor array that is not returns `SYS_ERR_FAULT` before anything executes.
+
+**On Tier 0 there is no address space to ask about, so step 2 checks nothing.** Every process shares one flat address space and a pointer from a caller is a pointer to anywhere. A malformed or malicious descriptor pointer is not detected; it is dereferenced. The same is true of every `arg_ptr` a descriptor carries and of the buffer field of section 12.4.
+
+This is not a gap to be closed later by a cleverer check. It is section 6.1's bargain stated for the system call path: **the contract is the one the stronger tier enforces in hardware and the weaker tier merely trusts**, and a correct program behaves identically on both. What Tier 0 loses is the ability to catch an incorrect one, and it loses it here exactly as it loses it for the memory contract.
+
+Three things follow, and they are worth stating because each is easy to assume the other way.
+
+**A Tier 0 system's protection boundary is a convention.** A program that passes a bad pointer corrupts the kernel, and no amount of validation in the kernel changes that, because the validation has nothing to consult. Section 6 puts it in one line, that on Tier 0 handles enforce modularity and not security, and this is the sharpest form of what that line means.
+
+**What is still checked on Tier 0 is everything that does not need an address space.** The count against its bound, the opcode against the table, argument-structure lengths against what an operation requires, handles against the caller's table and its rights. All of these are questions about values the kernel holds, not about memory it does not own, and all of them are answered on both tiers identically. Only the address checks vanish.
+
+**A port states which of these checks it performs**, per section 27, rather than leaving a reader to infer it from the tier. A port that performs fewer than its tier allows is a defect, and one that performs more is doing something the design does not describe.
+
 **Validation of the array is not repeated during execution.** This is what makes the status write free of per-entry checking, and it is why the array must not be shared with another thread that could alter it mid-batch. An implementation may not assume the caller respects that; it must be safe against concurrent modification in the sense that the kernel never faults or misbehaves, but the resulting statuses are then unspecified.
 
 ### 23.3 Results
@@ -2937,7 +2953,7 @@ This stage runs at the kernel's own privilege level, so it is not an isolation c
 
 **Context switch.** Save and restore of a thread's register state, including whatever floating-point or vector state the target has and the system chooses to preserve. This is the only place in the kernel that knows the register file.
 
-**Trap entry and exit.** The instruction and the entry sequence for section 23, including the register mapping and the clearing of caller-saved registers on return.
+**Trap entry and exit.** The instruction and the entry sequence for section 23, including the register mapping and the clearing of caller-saved registers on return. A port also states which of the validation steps of section 23.2 it performs: the address checks require an address space to consult, so a Tier 0 port performs none of them, and saying so is part of describing what its protection boundary is worth.
 
 **A monotonic time source** with a resolution at least as fine as `ticks_per_sec` and a width that does not wrap within the system's service life, or a documented wrap handling.
 

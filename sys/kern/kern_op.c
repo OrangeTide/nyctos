@@ -282,6 +282,21 @@ op_thread_exit(struct proc *p, struct sys_op *op)
     p->p_exit_code = args->code;
     p->p_exited = true;
 
+    cnprintf("    %s exited with status %d\n", p->p_name, args->code);
+
+    /*
+     * An exit nobody was waiting for stops the system, named. This is
+     * the M2-shaped placeholder for supervision: section 24.3 has a
+     * parent watching a child and deciding, and until that parent exists
+     * the alternative to halting is a process disappearing in silence
+     * while whatever depended on it waits for something that will not
+     * happen. Loud and early beats a hang with no cause attached.
+     */
+    if (!p->p_watched) {
+        panic("%s exited with status %d and nothing was waiting for it",
+          p->p_name, args->code);
+    }
+
     thread_exit();
 }
 

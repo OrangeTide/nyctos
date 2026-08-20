@@ -65,6 +65,7 @@ proc_create(const char *name, const struct proc_ns_spec *ns, uint32_t nns)
     p->p_entry = 0;
     p->p_exit_code = 0;
     p->p_exited = false;
+    p->p_watched = false;
     handle_table_init(&p->p_handles);
 
     memset(&p->p_startup, 0, sizeof(p->p_startup));

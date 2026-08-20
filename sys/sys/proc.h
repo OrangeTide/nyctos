@@ -55,6 +55,14 @@ struct proc {
     uintptr_t           p_entry;
     int32_t             p_exit_code;
     bool                p_exited;
+
+    /*
+     * Whether anything is waiting for this process to finish. An exit
+     * nobody asked about halts the system rather than passing unnoticed,
+     * which is what stands in for supervision until section 24.3 has a
+     * parent to make the decision properly.
+     */
+    bool                p_watched;
 };
 
 /*

@@ -1082,7 +1082,17 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
 
     ns[0].id = SYS_NS_ROOT;
     ns[0].handle = root;
+
+    /*
+     * Spawning and saying that this exit is expected are one operation.
+     * The child outranks this thread, so without the deferral it runs and
+     * exits inside proc_spawn_image, before the flag is set, and halts the
+     * system for an exit nobody had claimed yet.
+     */
+    sched_defer();
     p = proc_spawn_image(image, 20, ns, 1);
+    p->p_watched = true;
+    sched_undefer();
 
     while (!p->p_exited) {
         sched_yield();
@@ -1090,8 +1100,7 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
 
     trace_enable(false);
 
-    cnprintf("    %-10s read %d bytes in %lu rendezvous, %lu connections\n",
-      image, p->p_exit_code,
+    cnprintf("    %-10s %lu rendezvous, %lu connections\n", image,
       (unsigned long)(channel_rendezvous - before),
       (unsigned long)(conns->highwater - pool_before));
     trace_report(image);

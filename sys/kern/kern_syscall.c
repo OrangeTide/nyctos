@@ -10,12 +10,22 @@
  * descriptor and a count, and no system call numbers. The count is one
  * until the submission engine of section 17 exists.
  *
- * The machine-dependent stubs land here with the arguments already in the C
- * calling convention. Nothing reaches this yet, because no user code runs:
- * the first process arrives in stage 9, and until then every caller of
- * sys_op_exec is kernel code calling it directly. That is the same entry
- * point and the same implementation, which is the point of section 23.1,
- * but it does mean the trap edge itself is unexercised.
+ * The machine-dependent stubs land here with the arguments already in the
+ * C calling convention.
+ *
+ * What is checked here, and what is not, is section 23.2 and is worth
+ * stating in the file rather than leaving to the reader. The count is
+ * checked against its bound. The opcode is checked against the table, and
+ * each operation checks its own argument length, its handles and their
+ * rights, because all of those are questions about values the kernel
+ * holds.
+ *
+ * The pointer is not checked at all. There is one flat address space on
+ * this tier, so there is nothing to ask whether a range is mapped into: a
+ * descriptor pointer from a user program is dereferenced, and so is every
+ * arg_ptr it carries. That is section 6's line about handles enforcing
+ * modularity and not security, arriving at the system call path. A Tier 2
+ * port is where step 2 of section 23.2 acquires an answer.
  */
 
 #include <sys/op.h>
