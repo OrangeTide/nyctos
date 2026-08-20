@@ -209,7 +209,7 @@ waiter_a(void *arg)
     (void)arg;
     cnputs("    A: blocking on 10\n");
     expect("A: released when 10 arrives", fence(tl_a, 10, false), SYS_OK);
-    thread_exit();
+    thread_exit(0);
 }
 
 static void
@@ -219,7 +219,7 @@ waiter_c(void *arg)
     cnputs("    C: blocking on 99, which nobody will signal\n");
     expect("C: released by the abandonment", fence(tl_c, 99, false),
       SYS_ERR_OWNER_DEAD);
-    thread_exit();
+    thread_exit(0);
 }
 
 static void
@@ -327,7 +327,7 @@ irq_waiter(void *arg)
 
     cnprintf("    waiting for interrupt %lu\n", (unsigned long)n);
     expect("released by the interrupt", timeline_wait(tl_irq, n, SYS_DEADLINE_NEVER), SYS_OK);
-    thread_exit();
+    thread_exit(0);
 }
 
 static void
@@ -383,7 +383,6 @@ interrupt_checks(void)
  * rather than a backlog.
  */
 static sys_handle_t h_srv_recv;
-static bool slice_done;
 static struct timeline *tl_shot;
 static struct timeline *tl_tick;
 
@@ -548,7 +547,7 @@ client(void *arg)
     cnprintf("    %s got reply '%s'\n", name,
       (const char *)tx.reply.inline_data);
 
-    thread_exit();
+    thread_exit(0);
 }
 
 /*
@@ -717,7 +716,7 @@ hp_client(void *arg)
         }
     }
 
-    thread_exit();
+    thread_exit(0);
 }
 
 static void
@@ -781,6 +780,155 @@ static struct {
 static struct channel *ch_fs;
 static sys_handle_t h_fs_recv;
 
+/*
+ * Joining a child, through the operations a program will use rather than
+ * by reading its process structure: a handle to the process, the
+ * completion timeline taken from it, an ordinary fence wait, and the
+ * status read from the object afterwards.
+ *
+ * Watching and spawning have to be one operation, which is why this is
+ * two calls and not one. A child that outranks the spawning thread runs
+ * and exits inside proc_spawn, so the caller holds a deferral across both,
+ * and the exit of a process nobody watches halts the machine.
+ */
+struct child {
+    struct proc    *c_proc;
+    sys_handle_t    c_handle;
+    sys_handle_t    c_completion;
+};
+
+static void
+child_watch(struct child *c, struct proc *p)
+{
+    struct sys_op_completion_args args;
+    struct handle_table *ht = &proc_current()->p_handles;
+
+    c->c_proc = p;
+    if (handle_insert(ht, p, SYS_OBJ_PROCESS,
+      SYS_RIGHT_WAIT | SYS_RIGHT_STAT, &c->c_handle) != SYS_OK) {
+        panic("join %s: no handle slot for the child", p->p_name);
+    }
+
+    memset(&args, 0, sizeof(args));
+    if (run(SYS_OP_OBJECT_COMPLETION, c->c_handle, &args,
+      sizeof(args)) != SYS_OK) {
+        panic("join %s: no completion timeline", p->p_name);
+    }
+    c->c_completion = args.out_handle;
+}
+
+static int32_t
+child_join(struct child *c)
+{
+    struct sys_op_status_args sargs;
+    struct sys_op_fence_args fargs;
+    struct handle_table *ht = &proc_current()->p_handles;
+
+    fargs.value = SYS_COMPLETION_EXITED;
+    /*
+     * A deadline, because the failure this check is here to catch is
+     * an exit that advances nothing, and waiting for ever on one is
+     * a machine that hangs with no cause attached. Section 14.3: a
+     * deadline is for detecting a failure, not for scheduling.
+     */
+    fargs.deadline = time_now() + time_from_ms(1000);
+    if (run(SYS_OP_FENCE_WAIT, c->c_completion, &fargs,
+      sizeof(fargs)) != SYS_OK) {
+        panic("join %s: it did not finish, or its exit advanced nothing",
+          c->c_proc->p_name);
+    }
+
+    memset(&sargs, 0, sizeof(sargs));
+    if (run(SYS_OP_PROC_STATUS, c->c_handle, &sargs,
+      sizeof(sargs)) != SYS_OK) {
+        panic("join %s: no status", c->c_proc->p_name);
+    }
+    if (sargs.out_state != SYS_STATUS_EXITED) {
+        panic("join %s: released by a completion that had not happened",
+          c->c_proc->p_name);
+    }
+
+    handle_close(ht, c->c_completion);
+    handle_close(ht, c->c_handle);
+
+    return sargs.out_code;
+}
+
+/*
+ * A process that does nothing but stop, at a priority below the thread
+ * that spawns it so that it cannot have finished before it is asked
+ * about. A child that outranks its parent would answer the "still
+ * running" checks below by having already run.
+ */
+static void
+exiter(void *arg)
+{
+    (void)arg;
+    thread_exit(7);
+}
+
+/*
+ * Exit, the completion timeline, and join, per section 10.4.
+ *
+ * The wait that times out is the part worth having. Without it the join
+ * below proves only that the wait returned, which a timeline that was
+ * already at its final value would also do, and the whole point is that
+ * the exit is what advances it.
+ */
+static void
+completion_checks(void)
+{
+    struct sys_op_completion_args cargs;
+    struct sys_op_status_args sargs;
+    struct sys_op_fence_args fargs;
+    struct handle_table *ht = &proc_current()->p_handles;
+    struct child c;
+    struct proc *p;
+    int32_t code;
+
+    sched_defer();
+    p = proc_spawn("exiter", PRIO_BOOT - 1, exiter, NULL, 0);
+    child_watch(&c, p);
+    sched_undefer();
+
+    memset(&sargs, 0, sizeof(sargs));
+    expect("the status of a process still running",
+      run(SYS_OP_PROC_STATUS, c.c_handle, &sargs, sizeof(sargs)), SYS_OK);
+    if (sargs.out_state != SYS_STATUS_LIVE) {
+        panic("completion: a running process reported itself exited");
+    }
+
+    fargs.value = SYS_COMPLETION_EXITED;
+    fargs.deadline = time_now();
+    /*
+     * A poll rather than a timed wait, because a timed wait would
+     * block, and blocking is exactly what lets the child run: the
+     * only other runnable thread is the one being asked about. A
+     * deadline already passed is the polling form, per section 14.3.
+     */
+    expect("its completion has not been reached",
+      run(SYS_OP_FENCE_WAIT, c.c_completion, &fargs, sizeof(fargs)),
+      SYS_ERR_TIMEOUT);
+
+    /*
+     * Obtaining the completion of something that is neither a thread nor
+     * a process is refused rather than reaching whatever the handle names.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    expect("the completion of a timeline",
+      run(SYS_OP_OBJECT_COMPLETION, c.c_completion, &cargs, sizeof(cargs)),
+      SYS_ERR_WRONG_TYPE);
+
+    code = child_join(&c);
+    cnprintf("    exiter finished with status %d\n", code);
+    if (code != 7) {
+        panic("completion: joined a child and read status %d", code);
+    }
+
+    expect("the completion handle after the join",
+      handle_lookup(ht, c.c_completion, SYS_OBJ_NONE, 0, NULL),
+      SYS_ERR_STALE);
+}
 static void
 fs_server(void *arg)
 {
@@ -931,8 +1079,7 @@ fs_client(void *arg)
     buf[rep->fr_length] = '\0';
     cnprintf("    client read: %s", buf);
 
-    slice_done = true;
-    thread_exit();
+    thread_exit(0);
 }
 
 static void
@@ -942,6 +1089,7 @@ slice_checks(void)
     struct sys_op_connect_args cargs;
     struct proc_ns_spec ns[1];
     struct thread *srv;
+    struct child c;
     sys_handle_t root;
     sys_err_t err;
 
@@ -967,11 +1115,11 @@ slice_checks(void)
     ns[0].id = SYS_NS_ROOT;
     ns[0].handle = root;
     cnputs("    spawning a client process with that one handle\n");
-    (void)proc_spawn("fs-client", 20, fs_client, ns, 1);
+    sched_defer();
+    child_watch(&c, proc_spawn("fs-client", 20, fs_client, ns, 1));
+    sched_undefer();
 
-    while (!slice_done) {
-        sched_yield();
-    }
+    (void)child_join(&c);
 
     expect("the handle left this process when it was handed over",
       handle_lookup(&p->p_handles, root, SYS_OBJ_NONE, 0, NULL),
@@ -1009,7 +1157,7 @@ deep_server(void *arg)
     if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
         panic("deep: reply failed");
     }
-    thread_exit();
+    thread_exit(0);
 }
 
 static void
@@ -1038,7 +1186,7 @@ mid_server(void *arg)
     if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
         panic("mid: reply failed");
     }
-    thread_exit();
+    thread_exit(0);
 }
 
 static void
@@ -1053,7 +1201,7 @@ chain_client(void *arg)
         panic("chain client: send failed");
     }
     chain_done = true;
-    thread_exit();
+    thread_exit(0);
 }
 
 static void
@@ -1100,7 +1248,6 @@ chain_checks(void)
     }
 }
 
-
 /*
  * Run one client program to completion and report what it cost.
  *
@@ -1121,6 +1268,8 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
     struct pool *conns = connection_pool();
     struct proc_ns_spec ns[1];
     struct proc *p;
+    struct child c;
+    int32_t code;
     uint64_t before = channel_rendezvous;
     uint32_t pool_before;
 
@@ -1134,19 +1283,17 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
     ns[0].handle = root;
 
     /*
-     * Spawning and saying that this exit is expected are one operation.
-     * The child outranks this thread, so without the deferral it runs and
-     * exits inside proc_spawn_image, before the flag is set, and halts the
-     * system for an exit nobody had claimed yet.
+     * Spawning and watching are one operation. The child outranks this
+     * thread, so without the deferral it runs and exits inside
+     * proc_spawn_image, before anything holds its completion timeline,
+     * and halts the system for an exit nobody had claimed.
      */
     sched_defer();
     p = proc_spawn_image(image, 20, ns, 1);
-    p->p_watched = true;
+    child_watch(&c, p);
     sched_undefer();
 
-    while (!p->p_exited) {
-        sched_yield();
-    }
+    code = child_join(&c);
 
     trace_enable(false);
 
@@ -1155,8 +1302,8 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
       (unsigned long)(conns->highwater - pool_before));
     trace_report(image);
 
-    if (p->p_exit_code != (int32_t)expect_bytes) {
-        panic("%s: read %d bytes, expected %u", image, p->p_exit_code,
+    if (code != (int32_t)expect_bytes) {
+        panic("%s: read %d bytes, expected %u", image, code,
           expect_bytes);
     }
 
@@ -1320,6 +1467,9 @@ kernel_main(void)
 
     cnputs("timers: activation, phase and deadlines\n");
     timer_checks();
+
+    cnputs("exit: completion timelines and join, section 10.4\n");
+    completion_checks();
 
     cnputs("ipc: rendezvous, queue order and donation\n");
     ipc_checks();

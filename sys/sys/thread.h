@@ -36,6 +36,7 @@
 #include <sys/config.h>
 #include <sys/op.h>
 #include <sys/pool.h>
+#include <sys/timeline.h>
 
 #include <stdbool.h>
 
@@ -166,6 +167,20 @@ struct thread {
     void              (*t_unwait)(void *obj, struct thread *t);
 
     /*
+     * The completion timeline of section 10.4, and the code a monotonic
+     * counter cannot carry. The timeline is part of the thread rather
+     * than an entry in the timeline pool, per section 8, so obtaining
+     * it cannot fail and the accounting for it is exact.
+     *
+     * Nothing here is reaped. The object keeps its slot after exit,
+     * which is what makes the status readable afterwards and is also
+     * why M7 rather than this milestone owns the freezing of a
+     * completion timeline into the handle slots that still hold it.
+     */
+    struct timeline     t_completion;
+    int32_t             t_exit_code;
+
+    /*
      * The lowest word of this thread stack region, which is the guard. For
      * a thread created here that is the base of t_stack; for the boot
      * context it is the bottom of the boot stack, which the linker script
@@ -198,6 +213,13 @@ _Static_assert(sizeof(struct thread) % 16 == 0,
  */
 void thread_bootstrap(const char *name, uint8_t prio, struct proc *p);
 
+/*
+ * Attach a thread to a process, keeping the count of live threads in
+ * step. A process finishes when its last thread does, per section 10.4,
+ * so nothing may write t_proc behind this.
+ */
+void thread_set_proc(struct thread *t, struct proc *p);
+
 struct thread *thread_create(const char *name, uint8_t prio,
   void (*entry)(void *), void *arg);
 
@@ -205,12 +227,15 @@ struct thread *thread_create(const char *name, uint8_t prio,
 struct proc;
 
 /*
- * Leave the run set for good. Section 10.4 has exit advance a completion
- * timeline that a joiner reads; there are no timelines yet, so for now this
- * only stops the thread being scheduled. The slot is not returned to the
- * pool, because reaping is part of the same later work.
+ * Leave the run set for good, recording code as the exit status.
+ *
+ * Section 10.4 has exit advance a completion timeline that a joiner
+ * reads, and it now does: the thread advances its own, and the last
+ * thread of a process advances the process one as well. Nothing is
+ * reaped and no slot is reused, which is M7 and is what keeps the
+ * status readable through a handle held afterwards.
  */
-void thread_exit(void) __attribute__((noreturn));
+void thread_exit(int32_t code) __attribute__((noreturn));
 
 /* Release a thread whose deadline passed while it was still blocked. */
 void thread_wake_timeout(struct thread *t);

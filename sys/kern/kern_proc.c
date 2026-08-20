@@ -9,6 +9,7 @@
 #include <sys/proc.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
+#include <sys/timeline.h>
 
 struct proc *
 proc_bootstrap(const char *name)
@@ -22,6 +23,8 @@ proc_bootstrap(const char *name)
 
     p->p_id = pool_id_of(proc_pool(), p);
     p->p_name = name;
+    timeline_init(&p->p_completion, name);
+    p->p_nthreads = 0;
     handle_table_init(&p->p_handles);
 
     return p;
@@ -63,6 +66,8 @@ proc_create(const char *name, const struct proc_ns_spec *ns, uint32_t nns)
     p->p_id = pool_id_of(proc_pool(), p);
     p->p_name = name;
     p->p_entry = 0;
+    timeline_init(&p->p_completion, name);
+    p->p_nthreads = 0;
     p->p_exit_code = 0;
     p->p_exited = false;
     p->p_watched = false;
@@ -105,7 +110,7 @@ proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
     struct thread *t;
 
     t = thread_create(name, prio, entry, &p->p_startup);
-    t->t_proc = p;
+    thread_set_proc(t, p);
 
     sched_ready(t);
 
@@ -155,9 +160,56 @@ proc_spawn_image(const char *image, uint8_t prio,
     p->p_entry = boot_load(m);
 
     t = thread_create(image, prio, proc_user_start, &p->p_startup);
-    t->t_proc = p;
+    thread_set_proc(t, p);
 
     sched_ready(t);
 
     return p;
+}
+
+struct timeline *
+proc_completion(struct proc *p)
+{
+    p->p_watched = true;
+
+    return &p->p_completion;
+}
+
+/*
+ * A thread of this process has exited. Section 10.4 has the process
+ * completion timeline advance when the process finishes, and a process
+ * finishes when its last thread does.
+ *
+ * The status is written before the advance, because a joiner released by
+ * it can outrank the exiting thread and read the status before that thread
+ * runs again.
+ */
+void
+proc_thread_exited(struct proc *p, int32_t code)
+{
+    if (p->p_nthreads == 0) {
+        panic("proc %s: a thread exited from a process with none", p->p_name);
+    }
+    if (--p->p_nthreads > 0) {
+        return;
+    }
+
+    p->p_exit_code = code;
+    p->p_exited = true;
+
+    /*
+     * An exit nobody was waiting for stops the system, named. This is the
+     * placeholder for supervision that M2 introduced, now asking a better
+     * question: not whether the kernel remembered to set a flag, but
+     * whether anything holds the completion timeline that would report
+     * this. Section 24.3 is where a parent makes the decision properly.
+     */
+    if (!p->p_watched) {
+        panic("%s exited with status %d and nothing was waiting for it",
+          p->p_name, code);
+    }
+
+    if (timeline_signal(&p->p_completion, SYS_COMPLETION_EXITED) != SYS_OK) {
+        panic("proc %s: completion advanced twice", p->p_name);
+    }
 }

@@ -57,6 +57,15 @@ struct timeline {
     bool            tl_error;
 };
 
+/*
+ * Prepare a timeline that is part of another object rather than an entry
+ * in the pool, per section 8: a completion timeline belongs to its thread
+ * or process, so obtaining it cannot fail for want of a slot. It carries
+ * no identifier, because nothing looks one of these up by id; it is
+ * reached through the object that owns it.
+ */
+void timeline_init(struct timeline *tl, const char *name);
+
 struct timeline *timeline_create(const char *name);
 
 /*

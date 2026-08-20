@@ -285,15 +285,15 @@ op_debug_write(struct proc *p, struct sys_op *op)
 }
 
 /*
- * Section 10.4 has exit advance a completion timeline that a joiner reads,
- * and section 10.4 with it has the handle stay valid afterwards carrying
- * the status. None of that is here.
+ * Exit, per section 10.4. The thread advances its own completion
+ * timeline and the last thread of a process advances the process one,
+ * both inside thread_exit, and the status stays readable through a
+ * handle to the object because nothing is reaped.
  *
- * TODO: milestone 7 is where this becomes death. Until then a thread that
- * exits records its status, stops being scheduled, and keeps its pool slot
- * for ever. Nothing is reaped, no slot is reused, no completion timeline
- * is advanced and nothing can join. That is deliberate: M2 needs a program
- * to be able to stop, and needs nothing else about teardown.
+ * TODO: milestone 7 is where this becomes death. A thread that exits
+ * keeps its pool slot for ever, nothing is killed and nothing is
+ * cancelled, which is deliberate: what a shell needs is a program
+ * that stops and a parent that hears about it.
  */
 static sys_err_t
 op_thread_exit(struct proc *p, struct sys_op *op)
@@ -305,25 +305,83 @@ op_thread_exit(struct proc *p, struct sys_op *op)
         return SYS_ERR_INVALID_ARG;
     }
 
-    p->p_exit_code = args->code;
-    p->p_exited = true;
-
     cnprintf("    %s exited with status %d\n", p->p_name, args->code);
 
-    /*
-     * An exit nobody was waiting for stops the system, named. This is
-     * the M2-shaped placeholder for supervision: section 24.3 has a
-     * parent watching a child and deciding, and until that parent exists
-     * the alternative to halting is a process disappearing in silence
-     * while whatever depended on it waits for something that will not
-     * happen. Loud and early beats a hang with no cause attached.
-     */
-    if (!p->p_watched) {
-        panic("%s exited with status %d and nothing was waiting for it",
-          p->p_name, args->code);
+    thread_exit(args->code);
+}
+
+
+/*
+ * The completion timeline of a thread or a process, per section 10.4.
+ *
+ * The handle carries SYS_RIGHT_WAIT and nothing else, and the kernel keeps
+ * the only means of advancing one: a process able to signal its own
+ * completion could fake its own exit, and whatever supervises it would
+ * reclaim it while it was still running.
+ *
+ * Holding a handle to the object is the whole of the authority required.
+ * Anything that can name a process can already be told when it stops, and
+ * a right for that would attenuate nothing a handle does not.
+ */
+static sys_err_t
+op_object_completion(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_completion_args *args;
+    struct timeline *tl;
+    void *obj;
+    sys_err_t err;
+
+    args = (struct sys_op_completion_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
     }
 
-    thread_exit();
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_PROCESS, 0, &obj);
+    if (err == SYS_OK) {
+        tl = proc_completion(obj);
+    } else if (err == SYS_ERR_WRONG_TYPE) {
+        err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_THREAD, 0,
+          &obj);
+        if (err != SYS_OK) {
+            return err;
+        }
+        tl = &((struct thread *)obj)->t_completion;
+    } else {
+        return err;
+    }
+
+    return handle_insert(&p->p_handles, tl, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_WAIT, &args->out_handle);
+}
+
+/*
+ * The exit code, which a monotonic counter cannot carry. Section 10.4 has
+ * it read from the object rather than from the timeline that reports the
+ * finishing, and the object keeps it because nothing is reaped.
+ */
+static sys_err_t
+op_proc_status(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_status_args *args;
+    struct proc *target;
+    void *obj;
+    sys_err_t err;
+
+    args = (struct sys_op_status_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_PROCESS, 0, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+    target = obj;
+
+    args->out_code = target->p_exited ? target->p_exit_code : 0;
+    args->out_state = target->p_exited ? SYS_STATUS_EXITED : SYS_STATUS_LIVE;
+
+    return SYS_OK;
 }
 
 sys_err_t
@@ -358,6 +416,12 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_HANDLE_DUP:
         err = op_handle_dup(p, op);
+        break;
+    case SYS_OP_OBJECT_COMPLETION:
+        err = op_object_completion(p, op);
+        break;
+    case SYS_OP_PROC_STATUS:
+        err = op_proc_status(p, op);
         break;
     case SYS_OP_THREAD_EXIT:
         err = op_thread_exit(p, op);

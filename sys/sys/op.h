@@ -109,6 +109,23 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_CHAN_CONNECT      11
 
 /*
+ * Obtain the completion timeline of a thread or a process, per section
+ * 10.4. The timeline is embedded in the object, so this cannot fail for
+ * want of a pool slot, and the handle it returns carries SYS_RIGHT_WAIT
+ * and nothing else: a process able to signal its own completion could
+ * fake its own exit and have whatever supervises it reclaim it while it
+ * was still running.
+ */
+#define SYS_OP_OBJECT_COMPLETION 14
+
+/*
+ * Read the exit code and state of a process. A timeline value is a
+ * monotonic counter and cannot carry a code, so the code is read from the
+ * object rather than from the timeline that says it has finished.
+ */
+#define SYS_OP_PROC_STATUS       15
+
+/*
  * Ends the calling thread. It does not return, so it has no status to
  * write and no place to write one.
  */
@@ -137,7 +154,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             14
+#define SYS_OP_COUNT             16
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the
@@ -262,6 +279,33 @@ typedef struct sys_op_exit_args {
     int32_t         code;
     uint32_t        _pad;
 } sys_op_exit_args_t;
+
+/*
+ * The value a completion timeline is advanced to when its thread or
+ * process finishes. It is a fixed value rather than a count because a
+ * thread finishes once: a joiner waits for this and a value already
+ * reached satisfies it immediately, which is what makes a late joiner
+ * safe without a registration protocol.
+ */
+#define SYS_COMPLETION_EXITED    1
+
+/* The state a status call reports, per section 10.6. */
+#define SYS_STATUS_LIVE          0
+#define SYS_STATUS_EXITED        1
+
+/*
+ * Argument structure for SYS_OP_OBJECT_COMPLETION. target names the
+ * thread or the process whose completion is wanted.
+ */
+typedef struct sys_op_completion_args {
+    sys_handle_t    out_handle;     /* written by the kernel */
+} sys_op_completion_args_t;
+
+/* Argument structure for SYS_OP_PROC_STATUS. target names the process. */
+typedef struct sys_op_status_args {
+    int32_t         out_code;       /* written by the kernel */
+    uint32_t        out_state;      /* written by the kernel: SYS_STATUS_* */
+} sys_op_status_args_t;
 
 /*
  * Argument structure for SYS_OP_DEBUG_WRITE. target is unused: this takes

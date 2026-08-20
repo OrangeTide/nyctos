@@ -22,6 +22,7 @@
 #include <sys/handle.h>
 #include <sys/pool.h>
 #include <sys/startup.h>
+#include <sys/timeline.h>
 
 #include <stdbool.h>
 
@@ -49,15 +50,24 @@ struct proc {
     sys_startup_t       p_startup;
     sys_handle_t        p_ns[SYS_NS_WORDS];
 
-    /* Where a user program starts, and how it finished. Section 10.4
-     * makes exit a completion timeline a joiner reads; this is the part
-     * of that M2 needs, which is a program being able to stop. */
+    /*
+     * The completion timeline of section 10.4, embedded rather than
+     * drawn from the pool, and the status a joiner reads once it has
+     * advanced. A process finishes when its last thread does, and the
+     * code it reports is that thread's: with one thread per process
+     * that is the program's exit status, and section 10.4 says nothing
+     * about which thread speaks for a process with several.
+     */
+    struct timeline     p_completion;
+    uint32_t            p_nthreads;
+
+    /* Where a user program starts, and how it finished. */
     uintptr_t           p_entry;
     int32_t             p_exit_code;
     bool                p_exited;
 
     /*
-     * Whether anything is waiting for this process to finish. An exit
+     * Whether anything took this process's completion timeline. An exit
      * nobody asked about halts the system rather than passing unnoticed,
      * which is what stands in for supervision until section 24.3 has a
      * parent to make the decision properly.
@@ -91,5 +101,22 @@ struct proc *proc_spawn(const char *name, uint8_t prio,
  */
 struct proc *proc_spawn_image(const char *image, uint8_t prio,
   const struct proc_ns_spec *ns, uint32_t nns);
+
+/*
+ * The completion timeline of section 10.4, and the record that someone
+ * is watching. Taking the timeline is what marks the process watched:
+ * an exit nobody asked about still halts the machine, but the question
+ * is now answered by whether anyone holds the thing that reports it
+ * rather than by a flag the kernel sets on its own behalf.
+ *
+ * It cannot fail. The timeline is part of the process, per section 8.
+ */
+struct timeline *proc_completion(struct proc *p);
+
+/*
+ * A thread of this process has exited. The last one out advances the
+ * process completion timeline and records the status, per section 10.4.
+ */
+void proc_thread_exited(struct proc *p, int32_t code);
 
 #endif /* _SYS_PROC_H_ */

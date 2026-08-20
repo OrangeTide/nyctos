@@ -83,15 +83,9 @@ check_guard(const struct thread *t)
 void
 thread_exited(void)
 {
-    thread_exit();
+    thread_exit(0);
 }
 
-/*
- * Section 10.4 has exit advance a completion timeline that a joiner reads.
- * There are no timelines yet, so all that happens here is that the thread
- * stops being scheduled. The pool slot is not returned either, because
- * reaping belongs with that same later work.
- */
 /*
  * A deadline passed while this thread was still blocked.
  *
@@ -112,12 +106,57 @@ thread_wake_timeout(struct thread *t)
 }
 
 void
-thread_exit(void)
+thread_exit(int32_t code)
 {
+    struct proc *p = current->t_proc;
+
+    current->t_exit_code = code;
+
+    /*
+     * The status is written before the timeline advances, and both
+     * before the thread leaves the run set. A joiner released by the
+     * advance can outrank this thread and run before it reaches
+     * sched_block, so everything a joiner reads has to be true
+     * already; and sched_block does not return, so nothing owed to
+     * one can be left until after it.
+     */
+    if (timeline_signal(&current->t_completion, SYS_COMPLETION_EXITED)
+      != SYS_OK) {
+        panic("thread %s: exited twice", current->t_name);
+    }
+    if (p != NULL) {
+        proc_thread_exited(p, code);
+    }
+
     current->t_state = THREAD_DEAD;
     sched_block();
 
     panic("thread %s: scheduled again after exiting", current->t_name);
+}
+
+/*
+ * Attach a thread to a process, keeping the count of live threads in
+ * step. A process finishes when its last thread does, per section
+ * 10.4, so the count is what decides that and nothing may set t_proc
+ * behind it. A thread created by one process and handed to another
+ * passes through both counts, which is why this subtracts before it
+ * adds rather than assuming the thread is new.
+ */
+void
+thread_set_proc(struct thread *t, struct proc *p)
+{
+    if (t->t_proc != NULL) {
+        if (t->t_proc->p_nthreads == 0) {
+            panic("proc %s: thread count below zero", t->t_proc->p_name);
+        }
+        t->t_proc->p_nthreads--;
+    }
+
+    t->t_proc = p;
+
+    if (p != NULL) {
+        p->p_nthreads++;
+    }
 }
 
 void
@@ -136,7 +175,8 @@ thread_bootstrap(const char *name, uint8_t prio, struct proc *p)
     t->t_name = name;
     t->t_prio = prio;
     t->t_base_prio = prio;
-    t->t_proc = p;
+    timeline_init(&t->t_completion, name);
+    thread_set_proc(t, p);
     t->t_state = THREAD_RUNNING;
 
     /*
@@ -171,8 +211,11 @@ thread_create(const char *name, uint8_t prio, void (*entry)(void *),
     t->t_name = name;
     t->t_prio = prio;
     t->t_base_prio = prio;
-    t->t_proc = thread_current() != NULL ? thread_current()->t_proc : NULL;
+    t->t_proc = NULL;
+    timeline_init(&t->t_completion, name);
     t->t_state = THREAD_NEW;
+    thread_set_proc(t,
+      thread_current() != NULL ? thread_current()->t_proc : NULL);
     t->t_guard = (uint64_t *)(void *)t->t_stack;
     *t->t_guard = THREAD_GUARD;
 

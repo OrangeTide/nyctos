@@ -22,6 +22,17 @@
 #include <sys/time.h>
 #include <sys/timeline.h>
 
+void
+timeline_init(struct timeline *tl, const char *name)
+{
+    tl->tl_id = SYS_ID_INVALID;
+    tl->tl_name = name;
+    tl->tl_value = 0;
+    tl->tl_waiters = NULL;
+    tl->tl_signalers = 0;
+    tl->tl_error = false;
+}
+
 struct timeline *
 timeline_create(const char *name)
 {
@@ -32,12 +43,8 @@ timeline_create(const char *name)
         return NULL;
     }
 
+    timeline_init(tl, name);
     tl->tl_id = pool_id_of(timeline_pool(), tl);
-    tl->tl_name = name;
-    tl->tl_value = 0;
-    tl->tl_waiters = NULL;
-    tl->tl_signalers = 0;
-    tl->tl_error = false;
 
     return tl;
 }
