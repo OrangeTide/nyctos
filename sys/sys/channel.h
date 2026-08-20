@@ -47,6 +47,8 @@ struct channel {
     struct thread  *c_receivers;
 };
 
+extern uint64_t channel_rendezvous;
+
 struct channel *channel_create(const char *name, struct proc *owner);
 
 /*

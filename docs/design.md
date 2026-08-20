@@ -466,6 +466,8 @@ Four constraints shape everything that follows, and they are stated here because
 | SMP | Partitioned scheduling with explicit migration. |
 | Co-scheduling | Cohort scheduling nodes, not gang admission. |
 | Buffer contract | Move semantics, identical on both tiers. |
+| Bulk payload | A buffer field in the message, rewritten at the rendezvous. Grants are for memory outliving a call. |
+| Compound requests | Inline sequence, implicit linear chaining, abort at the first failure. |
 | Cohort faults | The cohort is the recovery unit. |
 | Cohort restart | Parent process via a death timeline. Policy is not in the kernel. |
 | Handle transfer | Inline for small counts, count plus pointer for large. Move. |
@@ -523,9 +525,9 @@ The term "task" is not used anywhere in this document, because every real-time s
 
 A single API across two protection models is only meaningful if it states what a sender may do with a buffer after sending it. Without that rule portable code cannot be written, because on Tier 0 the receiver observes the sender's later writes and on Tier 2 it may not.
 
-**The rule is move semantics, and it is identical on every tier.**
+**The rule is move semantics, and it is identical on every tier.** It governs both forms in which memory crosses a boundary: the buffer field of a message (section 12.4), which is the ordinary case and needs no object, and a grant handle, which is what long-lived delegated authority over memory looks like: device registers, a page supplied by a pager, a scatter-gather target. The distinction is lifetime, not semantics. A payload lives for one call; a grant outlives the call that carried it.
 
-> When a memory grant is sent, the sender loses the right to read or write the underlying memory until the corresponding reply is received. When the reply arrives, the right returns to the sender.
+> When memory is sent, the sender loses the right to read or write it until the corresponding reply is received. When the reply arrives, the right returns to the sender.
 
 The tiers differ only in *enforcement*, never in *semantics*. Tier 2 enforces by unmapping from the sender and mapping into the receiver. Tier 0 does not enforce at all; the memory remains reachable and a violating program will not fault.
 
@@ -541,7 +543,7 @@ This is what makes Tier 0 a useful development target rather than merely a const
 
 A Tier 0 debug build should include software checks for grant access outside the owning window, because that is the class of bug Tier 0 cannot catch and Tier 2 catches for free. No API in this document exposes a raw pointer that crosses a process boundary.
 
-**Reply-path caveat.** The move rule above governs the forward path. The reply path is asymmetric, because a server that mapped its own memory into a client could not tell when the client had finished reading it, and so could never safely reclaim it. Reply payloads larger than the inline area therefore use a grant the *client* supplied in the original send, returning ownership to a party that already knows the lifetime. **A server does not hand back a grant of its own memory.**
+**Reply-path caveat.** The move rule above governs the forward path. The reply path is asymmetric, because a server that mapped its own memory into a client could not tell when the client had finished reading it, and so could never safely reclaim it. Reply payloads larger than the inline area therefore use the buffer the *client* supplied in the original send, returning ownership to a party that already knows the lifetime. **A server does not hand back memory of its own.**
 
 ### 6.2 The System Page
 
@@ -1045,7 +1047,7 @@ The kernel provides no server framework, and this section is what a server has t
 
 Nothing in this section says a message carries one operation, and for a request whose steps are known in advance it should not.
 
-**The kernel does not know how many operations a message contains, and must not.** A message is a payload and a grant, and what a server finds inside is between the client and that server. A batched request is therefore not a kernel feature at all: it is a protocol whose request structure happens to be a sequence. Section 25.7 defines the one for filesystems.
+**The kernel does not know how many operations a message contains, and must not.** A message is a payload and a buffer, and what a server finds inside is between the client and that server. A batched request is therefore not a kernel feature at all: it is a protocol whose request structure happens to be a sequence. Section 25.7 defines the one for filesystems.
 
 **The saving is rendezvous, and rendezvous is the expensive part.** Three requests to one server cost three rendezvous and six context switches. The same three operations in one message cost one rendezvous and two, and the server executes the whole sequence with its caches warm and without yielding to the client's scheduler between steps. On Tier 2 it also costs one grant setup rather than three.
 
@@ -2030,7 +2032,7 @@ This removes shared mutable state from the connection, so several threads may us
 
 ### 25.5 Payload
 
-**Small payloads travel inline and bulk payloads travel in a grant**, per section 12.4. A client passes a grant for the destination of a read or the source of a write, and by section 6.1 must not touch that memory until the reply arrives.
+**Small payloads travel inline and bulk payloads travel in the message buffer**, per section 12.4. A client passes a buffer for the destination of a read or the source of a write, and by section 6.1 must not touch that memory until the reply arrives. A reply larger than the inline payload writes into that buffer, because the reply-path caveat of section 6.1 forbids a server handing back memory of its own.
 
 On Tier 2 a server forwarding a payload it does not inspect never maps it, per the lazy mapping of section 18.4. This is what keeps a filesystem layered over a block driver from paying a mapping cost per layer.
 
@@ -2056,35 +2058,67 @@ Opening a file and reading it is the operation this protocol exists for, and in 
 
 #### Shape
 
-The compound is a sequence of ordinary `fs_req_t` entries in the grant, each followed by its path bytes and padded to eight. The outer `fs_req_t` carries `FS_OP_BATCH` and a count. The reply's grant carries a matching sequence of `fs_rep_t`, followed by any read payload.
+**The sequence travels inline, and only bulk data uses the message buffer.** A header carrying `FS_OP_BATCH` and a count, then fixed-size entries, each followed by its path bytes padded to eight. The reply is a header and nothing else, because the data went where the client asked for it.
+
+Putting the sequence inline rather than in a buffer is the same argument section 17.2 makes for a batch: it is small, bounded, and fixed in advance, so it can be checked once before any of it runs. A sequence in a buffer would additionally have to be checked against a length the client controls, on memory the client can change, which is the problem the inline payload exists to avoid.
 
 ```c
-/* Entry i names the node produced by entry j, for j < i, by setting
- * FS_BATCH_REF and putting j in offset. A path is then resolved relative
- * to that node instead of to the connection the message arrived on. */
-#define FS_BATCH_REF     (1u << 2)
+#define FS_BATCH_MAX     4
 
-typedef struct fs_batch_rep {
-    sys_err_t err;        /* the first failure, or SYS_OK */
-    uint32_t  failed;     /* index of the failing entry, when err != SYS_OK */
-    uint32_t  completed;  /* entries that ran to completion */
-    uint32_t  _pad;
-} fs_batch_rep_t;
+typedef struct fs_batch {
+    uint32_t fb_op;        /* FS_OP_BATCH */
+    uint32_t fb_count;     /* entries following this header */
+} fs_batch_t;
+
+/* Followed by fe_namelen path bytes, padded to eight. */
+typedef struct fs_entry {
+    uint8_t  fe_op;
+    uint8_t  fe_flags;
+    uint16_t fe_namelen;
+    uint32_t fe_length;    /* READ: bytes wanted */
+    uint64_t fe_offset;    /* READ: where to start */
+} fs_entry_t;
+
+typedef struct fs_batch_reply {
+    sys_err_t err;         /* the first failure, or SYS_OK */
+    uint32_t  failed;      /* entry that failed, when err is not SYS_OK */
+    uint32_t  completed;   /* entries that ran to completion */
+    uint32_t  length;      /* bytes the read produced */
+} fs_batch_reply_t;
 ```
 
 #### Rules
 
-**Every entry resolves against the connection the message arrived on, or against a node an earlier entry produced.** A compound therefore reaches exactly what the same operations sent one at a time would reach. The starting authority is the same connection handle, each walk applies the same root check as section 25.3, and `FS_BATCH_REF` can only name an entry in the same message. Nothing about confinement changes, which is what makes this an optimisation rather than a new interface.
+**Chaining is implicit and linear.** Each entry operates on the node the entry before it produced, and the first operates on the connection the message arrived on. There is no reference field.
 
-**Execution stops at the first failure and the reply names it.** Entries after the failing one do not run, and `failed` says which one, so a client that could not open the file learns that rather than receiving three separate errors it has to interpret. This is what a client wants from batching an open, and it is the reason the sequence is a protocol feature rather than a client-side convenience.
+An earlier draft gave each entry the index of the entry whose node it used, and that was wrong twice over. It put the index in `offset`, which a read needs for the file position, so a compound read at a non-zero offset could not be written at all. And it bought a generality nothing wanted: the sequence this exists for is a straight line, and section 17.5 makes the same argument about `LINK`, that chains are not graphs. An entry that needs to name something other than what came before it is a different request.
 
-**Intermediate nodes are named by index and are never handles.** An entry that produced a node holds it for the duration of the request only. This is what removes the pool allocation, and it is also what makes abort trivial: the state a failed compound abandons belongs to the server, which is the party doing the abandoning, so there is nothing to unwind across a boundary.
+**A compound reaches exactly what the same operations sent one at a time would reach.** The starting authority is the same connection handle and each walk applies the same root check as section 25.3. Nothing about confinement changes, which is what makes this an optimisation rather than a new interface.
 
-**A durable connection must be asked for explicitly.** A final entry may request that a node it produced be returned as a connection, which is then moved back in the reply as an ordinary handle and does draw from the pool. A compound that asks for nothing allocates nothing. Only one handle may be returned, per section 12.4's message shape.
+**Execution stops at the first failure and the reply names it.** Entries after the failing one do not run, `failed` says which one, and `completed` says how many ran. A client that could not open the file learns that rather than receiving three separate errors it has to interpret.
 
-**A short read is not a failure.** Reading past the end of a file yields a count smaller than requested and `SYS_OK`. Treating it as an error would make every whole-file read of a file whose length the client does not know abort its own close, which is precisely the case the compound exists to serve.
+**Intermediate nodes are named by position and are never handles.** An entry that produced a node holds it for the duration of the request only. This is what removes the pool allocation, and it is also what makes abort trivial: the state a failed compound abandons belongs to the server, which is the party doing the abandoning, so there is nothing to unwind across a boundary.
 
-**The compound is bounded, and the bound is a configuration value like every other in section 2.7.** A server rejects a compound with more entries than it is built for, or a grant it cannot address, with `SYS_ERR_INVALID_ARG` before executing anything.
+**There is no close entry, because there is nothing left to close.** The node is released when the reply is sent, whether or not anything asked. Including one would cost sixteen bytes of a sixty-four byte payload to do nothing. The honest comparison is therefore two operations in one message against three messages, not three against three.
+
+**A short read is not a failure.** Reading past the end of a file yields a count smaller than requested and `SYS_OK`. Treating it as an error would make every whole-file read of a file whose length the client does not know abort its own sequence, which is precisely the case the compound exists to serve.
+
+**There is one data-bearing entry and the reply carries one count.** Per-entry statuses are redundant under abort-at-first-failure: every entry below `failed` succeeded and every entry above it did not run. What is not redundant is a length, because a short read succeeds, so the read reports its own.
+
+**The compound is bounded, and the bound is a configuration value like every other in section 2.7.** A server rejects a sequence with more entries than it is built for, or one that does not fit the payload it arrived in, with `SYS_ERR_INVALID_ARG` before executing any of it.
+
+**A durable connection is not available from a compound.** A client that wants to keep a file open uses `FS_OP_WALK` and gets a connection, which is what that operation is for. Returning one from a compound would put back exactly the allocation the compound exists to avoid, for a client that has said by its choice of interface that it does not want one.
+
+#### What it measures
+
+The claim is that one message costs a third of the round trips and none of the connection pool. Both are countable rather than argued, and both hold:
+
+| | rendezvous | connections |
+| ----------- | ---------- | ----------- |
+| walk, read, close | 3 | 1 |
+| compound | 1 | 0 |
+
+The second column is the one worth having. Section 25.2 requires a build to size the connection pool for every file open at once across the whole system, and a client reading a small file end to end has no use for a durable reference to it. Context switches are the visible saving and the pool is the structural one.
 
 #### What it costs
 
@@ -2569,7 +2603,8 @@ sys_err_t sys_thread_cancel(sys_handle_t thread);
 
 #define SYS_MSG_IS_PULSE     (1u << 0)  /* recv: a pulse, not a message */
 #define SYS_MSG_IS_FAULT     (1u << 1)  /* recv: a page fault, section 15.3 */
-#define SYS_MSG_HAS_GRANT    (1u << 2)
+#define SYS_BUF_READ         (1u << 0)  /* buf_flags */
+#define SYS_BUF_WRITE        (1u << 1)
 #define SYS_MSG_PULSE_LOST   (1u << 3)  /* recv: user pulses were dropped */
 
 typedef struct sys_ipc_msg {
@@ -2585,9 +2620,15 @@ typedef struct sys_ipc_msg {
     uint8_t       inline_data[SYS_IPC_INLINE_BYTES];
 
     /* Bulk payload. Moved for the duration of the call: the sender may not
-     * touch the underlying memory until reply. See section 6.1. */
-    sys_handle_t  grant;
-    size_t        grant_len;
+     * touch the underlying memory until reply. See section 6.1.
+     *
+     * The address is the sender's on the way in and the receiver's on the
+     * way out, rewritten at the rendezvous, so nothing crosses unchanged.
+     * A field rather than a handle because a payload lives for one call;
+     * a grant is for memory that outlives the call carrying it. */
+    uintptr_t     buf;
+    uint32_t      buf_len;
+    uint32_t      buf_flags;      /* SYS_BUF_READ, SYS_BUF_WRITE */
 
     /* Handles, moved. Requires SYS_RIGHT_TRANSFER. Carried inline when
      * handle_count <= INLINE_HANDLES, otherwise entirely in handle_list. On

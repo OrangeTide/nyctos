@@ -952,19 +952,57 @@ chain_checks(void)
     }
 }
 
+
 /*
- * The same slice again, with both halves as loaded programs.
+ * Run one client program to completion and report what it cost.
+ *
+ * Rendezvous and connection-pool high water are both deterministic, which
+ * is why they are the measurement rather than elapsed time: section 25.7's
+ * claim is about round trips and about not touching a statically sized
+ * pool, and under emulation a clock would answer a question nobody asked.
+ */
+static void
+run_client(const char *image, sys_handle_t root, uint32_t expect_bytes)
+{
+    struct pool *conns = connection_pool();
+    struct proc_ns_spec ns[1];
+    struct proc *p;
+    uint64_t before = channel_rendezvous;
+    uint32_t pool_before;
+
+    pool_highwater_reset(conns);
+    pool_before = conns->highwater;
+
+    ns[0].id = SYS_NS_ROOT;
+    ns[0].handle = root;
+    p = proc_spawn_image(image, 20, ns, 1);
+
+    while (!p->p_exited) {
+        sched_yield();
+    }
+
+    cnprintf("    %-10s read %d bytes in %lu rendezvous, %lu connections\n",
+      image, p->p_exit_code,
+      (unsigned long)(channel_rendezvous - before),
+      (unsigned long)(conns->highwater - pool_before));
+
+    if (p->p_exit_code != (int32_t)expect_bytes) {
+        panic("%s: read %d bytes, expected %u", image, p->p_exit_code,
+          expect_bytes);
+    }
+}
+
+/*
+ * The same slice again, with both halves as loaded programs, and then the
+ * same read a second way to answer section 25.7.
  *
  * Stage 8 proved the protocol and the rendezvous with kernel threads
  * standing in for processes. What it could not reach is the boundary: the
  * trap edge, the startup record as a program reads it, and a scheduler
  * blocking and resuming threads that are in user mode when they block.
- * This stage is that, and nothing on the path is new except where the two
- * ends run.
  *
- * The programs cannot print. There is no console for user code, so the
+ * The programs cannot print. There is no console for user code, so each
  * client reports what it read as its exit status and the kernel says so.
- * Section 12.6 is where a console service belongs and M3 is when.
  */
 static void
 user_slice(void)
@@ -972,9 +1010,8 @@ user_slice(void)
     struct proc *self = proc_current();
     struct sys_op_connect_args cargs;
     struct proc_ns_spec ns[1];
-    struct proc *client;
     struct channel *ch;
-    sys_handle_t h_recv, root;
+    sys_handle_t h_recv, root, root2;
     sys_err_t err;
 
     boot_report();
@@ -983,6 +1020,7 @@ user_slice(void)
     if (ch == NULL) {
         panic("user slice: no channel");
     }
+
     /*
      * SYS_RIGHT_TRANSFER because this handle is going to be handed to the
      * server, and section 7.4 makes moving a handle a right rather than
@@ -993,14 +1031,14 @@ user_slice(void)
     expect("a receive handle for the filesystem", err, SYS_OK);
 
     /*
-     * The root connection is minted here, while this process still holds
-     * the receive right, because section 12.1 lets only a holder of that
-     * right mint one and handing it to the server moves it away.
+     * Two root connections, minted here while this process still holds the
+     * receive right, because section 12.1 lets only a holder of that right
+     * mint one and handing it to the server moves it away. One per client,
+     * since a handle moves rather than copies.
      *
      * The cookie is the server's own per-connection state, so this is the
      * one place the kernel has to know a convention that belongs to a
-     * program. It is what root does at boot, per section 24.5, and it goes
-     * away with the kernel-side half of this when root exists.
+     * program. It is what root does at boot, per section 24.5.
      */
     memset(&cargs, 0, sizeof(cargs));
     cargs.cookie = FS_NODE_ROOT;
@@ -1009,32 +1047,25 @@ user_slice(void)
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     root = cargs.out_handle;
 
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a second one, for the second client",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    root2 = cargs.out_handle;
+
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = h_recv;
     cnputs("    loading fs_server, which receives on that channel\n");
     (void)proc_spawn_image("fs_server", 15, ns, 1);
 
-    ns[0].id = SYS_NS_ROOT;
-    ns[0].handle = root;
-    cnputs("    loading fs_client, which holds one connection\n");
-    client = proc_spawn_image("fs_client", 20, ns, 1);
-
-    while (!client->p_exited) {
-        sched_yield();
-    }
-
-    cnprintf("    fs_client exited with status %d\n", client->p_exit_code);
-
     /*
-     * The client returns what it read. The length is the server's copy of
-     * the string, which is a separate copy from the one stage 8 uses: the
-     * two agree because they are the same text, not because anything
-     * makes them.
+     * The same file, read two ways. Section 25.7 says one message should
+     * cost a third of the round trips and none of the connection pool; if
+     * it does not, the section is deleted and section 12.7 with it.
      */
-    if (client->p_exit_code != (int32_t)(sizeof(motd_text) - 1)) {
-        panic("user slice: client read %d bytes, expected %u",
-          client->p_exit_code, (unsigned)(sizeof(motd_text) - 1));
-    }
+    run_client("fs_client", root, sizeof(motd_text) - 1);
+    run_client("fs_batch", root2, sizeof(motd_text) - 1);
 }
 
 void

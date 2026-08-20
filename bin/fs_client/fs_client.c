@@ -4,19 +4,19 @@
  */
 
 /*
- * A program that opens a file and reads it.
+ * Opening a file and reading it, the plain way: walk, read, close.
  *
- * It is handed one connection, as SYS_NS_ROOT, and holds nothing else. There is
- * no root to name, no path that starts anywhere but the connection it was
- * given, and nothing it could have guessed: section 20.3 is what makes the
- * directory it was handed the entirety of what it can reach.
+ * Three round trips, six context switches, and a connection held in the
+ * server's pool across two of them. This is the baseline that fs_batch is
+ * measured against; section 25.7 is the argument that it is the wrong
+ * shape for a client that only wants the bytes.
  *
- * Walk, read, close. Three round trips, which is what section 25.7 exists
- * to collapse once a server implements the compound form.
+ * It is handed one connection, as SYS_NS_ROOT, and holds nothing else.
+ * There is no root to name, no path that starts anywhere but the
+ * connection it was given, and nothing it could have guessed.
  *
  * The program produces no output. There is no console for a user program
- * yet, so the byte count comes back as the exit status; a console service
- * is milestone 3.
+ * yet, so the byte count comes back as the exit status.
  */
 
 #include <os/sys.h>
@@ -25,6 +25,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/fs.h>
+
+static char buf[256];
 
 static sys_err_t
 request(sys_handle_t target, uint32_t op, const char *name, uint64_t off,
@@ -37,6 +39,15 @@ request(sys_handle_t target, uint32_t op, const char *name, uint64_t off,
     memset(&message, 0, sizeof(message));
     message.handle = SYS_HANDLE_INVALID;
     message.inline_len = sizeof(*req);
+
+    /*
+     * The buffer travels with every request, because a reply larger than
+     * the inline payload has nowhere else to go: section 6.1 forbids the
+     * server handing back memory of its own.
+     */
+    message.buf = (uintptr_t)buf;
+    message.buf_len = sizeof(buf);
+    message.buf_flags = SYS_BUF_WRITE;
 
     req = (fs_request_t *)message.inline_data;
     req->fr_op = op;
@@ -57,7 +68,6 @@ request(sys_handle_t target, uint32_t op, const char *name, uint64_t off,
 int
 main(void)
 {
-    char buf[SYS_IPC_INLINE_BYTES];
     const fs_reply_t *rep;
     sys_handle_t dir, file;
     sys_msg_t reply;
@@ -78,15 +88,11 @@ main(void)
     }
     rep = (const fs_reply_t *)reply.inline_data;
     got = rep->fr_length;
-    memcpy(buf, &reply.inline_data[sizeof(*rep)], got);
 
     /*
      * The close is what returns the server's per-connection record to its
      * pool. Section 25.2 reclaims it here and nowhere else, because
      * destroying the handle locally would tell the server nothing.
-     *
-     * It overwrites the reply, which is why the read's count was taken
-     * before this rather than after it.
      */
     if (request(file, FS_OP_CLOSE, NULL, 0, 0, &reply) != SYS_OK) {
         return 4;

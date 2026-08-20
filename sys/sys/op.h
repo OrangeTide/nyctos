@@ -143,10 +143,12 @@ typedef struct sys_op {
 } sys_op_t;
 
 /*
- * The message of section 12.4: a small inline payload, and a handle that
- * moves with it. The design allows zero or more handles; this carries at
- * most one, which is enough for a connection to be handed back and is the
- * only shape anything needs yet.
+ * The message of section 12.4: a small inline payload, a handle that moves
+ * with it, and a buffer for bulk data.
+ *
+ * The design allows zero or more handles; this carries at most one, which
+ * is enough for a connection to be handed back and is the only shape
+ * anything needs yet.
  *
  * The payload is a copy rather than a register transfer. Whether a port
  * also carries the first words in registers is its own business and does
@@ -154,14 +156,39 @@ typedef struct sys_op {
  */
 #define SYS_IPC_INLINE_BYTES    64
 
-/* A reply token, carrying a thread index and generation. Not a handle:
- * it confers no authority, per section 5. */
-typedef uintptr_t sys_thread_id_t;
+/* Buffer access the receiver is being given, per section 6.1. */
+#define SYS_BUF_READ            (1u << 0)
+#define SYS_BUF_WRITE           (1u << 1)
+
+typedef uint64_t sys_thread_id_t;
 
 typedef struct sys_msg {
     uint32_t        flags;
     uint32_t        inline_len;
     sys_handle_t    handle;     /* moved with the message, or INVALID */
+
+    /*
+     * Bulk data, moved for the duration of the call. By section 6.1 the
+     * sender may not touch this memory between send and reply, and the
+     * right returns when the reply arrives. Tier 0 does not enforce that
+     * and Tier 2 will, which is the whole of the difference between them.
+     *
+     * The address is the sender's on the way in and the receiver's on the
+     * way out, rewritten by the kernel at the rendezvous. The rewrite is
+     * the identity at Tier 0 because there is one address space, which is
+     * why this is a field and not a handle: nothing here crosses a
+     * boundary unchanged, so section 6.1's rule against a raw pointer
+     * doing so is kept without an object to name the memory.
+     *
+     * Only the forward path carries one. A server does not hand back a
+     * buffer of its own memory, per the reply-path caveat in section 6.1,
+     * so a reply larger than the inline area writes into the buffer the
+     * client supplied in the request.
+     */
+    uintptr_t       buf;
+    uint32_t        buf_len;
+    uint32_t        buf_flags;  /* SYS_BUF_* */
+
     uint8_t         inline_data[SYS_IPC_INLINE_BYTES];
 } sys_msg_t;
 

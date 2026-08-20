@@ -53,10 +53,12 @@ $(KERNEL_ELF): $(OBJS) $(KERN_LDSCRIPT)
 # Makefile's decision and nothing else should be able to move it.
 $(BOOT_ARCHIVE): $(MKBOOTARCH) \
     $(OBJTOP)/bin/fs_server/fs_server.bin \
-    $(OBJTOP)/bin/fs_client/fs_client.bin
+    $(OBJTOP)/bin/fs_client/fs_client.bin \
+    $(OBJTOP)/bin/fs_batch/fs_batch.bin
 	@mkdir -p $(@D)
 	$(MKBOOTARCH) $@ \
 	    fs_server=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 0 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_server/fs_server.bin \
-	    fs_client=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 1 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_client/fs_client.bin
+	    fs_client=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 1 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_client/fs_client.bin \
+	    fs_batch=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 2 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_batch/fs_batch.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)

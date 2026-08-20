@@ -138,6 +138,14 @@ void *pool_lookup(const struct pool *p, sys_id_t id);
 /* Identifier of a live object, given the pointer pool_alloc returned. */
 sys_id_t pool_id_of(const struct pool *p, const void *obj);
 
+/*
+ * Forget the high-water mark, so a later measurement reports what one
+ * stretch of work cost rather than the largest the pool has ever been.
+ * The mark is otherwise monotonic, which makes two measurements in a row
+ * report the first one twice.
+ */
+void pool_highwater_reset(struct pool *p);
+
 /* Identifier of the object in slot index, or SYS_ID_INVALID if it is free. */
 sys_id_t pool_id_at(const struct pool *p, uint32_t index);
 

@@ -152,3 +152,9 @@ pool_id_at(const struct pool *p, uint32_t index)
 
     return sys_id_make(index, p->slots[index].gen);
 }
+
+void
+pool_highwater_reset(struct pool *p)
+{
+    p->highwater = p->used;
+}

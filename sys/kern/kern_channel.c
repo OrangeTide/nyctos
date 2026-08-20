@@ -143,6 +143,35 @@ msg_copy(struct sys_msg *dst, const struct sys_msg *src)
     memcpy(dst, src, sizeof(*dst));
 }
 
+/*
+ * Hand a request's buffer to the receiver, per section 6.1.
+ *
+ * The address in the message is the sender's on the way in and the
+ * receiver's on the way out. At Tier 0 that rewrite is the identity: one
+ * address space, nothing to map, and a sender that breaks the contract by
+ * touching the memory anyway will not fault. Tier 2 is where this unmaps
+ * from the sender and maps into the receiver, and where the contract stops
+ * being a convention.
+ *
+ * It is a function rather than nothing so that the place exists and is
+ * named. Section 15 is when it acquires a body.
+ */
+static void
+msg_buf_hand_over(struct sys_msg *m)
+{
+    if (m->buf_len == 0) {
+        m->buf = 0;
+        m->buf_flags = 0;
+    }
+}
+
+/*
+ * Rendezvous taken, for section 25.7's measurement. One per send,
+ * whichever side arrived first, so a request that crosses three messages
+ * counts three and a compound counts one.
+ */
+uint64_t channel_rendezvous;
+
 sys_err_t
 channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
   struct sys_msg *reply)
@@ -154,6 +183,7 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
     s = md_intr_disable();
 
+    channel_rendezvous++;
     self->t_cookie = cookie;
     self->t_msg = (struct sys_msg *)req;
     self->t_reply = reply;
@@ -168,6 +198,7 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
          * reply, which is what makes the blocked sender the queue slot.
          */
         msg_copy(server->t_msg, req);
+        msg_buf_hand_over(server->t_msg);
         server->t_client = thread_id(self);
         server->t_cookie = cookie;
         server->t_donor = self;
@@ -207,6 +238,7 @@ channel_recv(struct channel *ch, struct sys_msg *out,
     client = list_pop(&ch->c_senders);
     if (client != NULL) {
         msg_copy(out, client->t_msg);
+        msg_buf_hand_over(out);
         self->t_client = thread_id(client);
         self->t_cookie = client->t_cookie;
         self->t_donor = client;
@@ -268,6 +300,16 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
      */
     msg_copy(client->t_reply, reply);
     client->t_reply->handle = SYS_ID_INVALID;
+
+    /*
+     * A reply carries no buffer. Section 6.1: a server that handed back
+     * memory of its own could not tell when the client had finished with
+     * it and so could never reclaim it, which is why a large reply writes
+     * into the buffer the client supplied in the request instead.
+     */
+    client->t_reply->buf = 0;
+    client->t_reply->buf_len = 0;
+    client->t_reply->buf_flags = 0;
 
     err = SYS_OK;
     if (reply->handle != SYS_ID_INVALID) {
