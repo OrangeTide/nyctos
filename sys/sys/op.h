@@ -114,12 +114,30 @@ typedef uintptr_t sys_handle_t;
  */
 #define SYS_OP_THREAD_EXIT       12
 
+/*
+ * Write bytes to the kernel console. A debug facility and nothing else,
+ * present only in builds that opt into it; see SYS_DEBUG_CONSOLE and
+ * section 22.4. Returns SYS_ERR_NOT_SUPPORTED where it is compiled out,
+ * which is the default.
+ */
+#define SYS_OP_DEBUG_WRITE       13
+
+/*
+ * The most one call may write. The copy runs in the kernel at the caller's
+ * priority, and on Tier 0 with interrupts disabled, so an unbounded write
+ * is an unbounded non-preemptible section and lands in the interrupt
+ * latency of section 13.3. A caller with more to say makes more calls, and
+ * each is a preemption point. This is interface rather than
+ * configuration, because a caller has to split against it.
+ */
+#define SYS_DEBUG_WRITE_MAX      256
+
 /* Issuing ops, which need a device that does DMA. */
 #define SYS_OP_DMA_ISSUE          8
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             13
+#define SYS_OP_COUNT             14
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the
@@ -244,6 +262,17 @@ typedef struct sys_op_exit_args {
     int32_t         code;
     uint32_t        _pad;
 } sys_op_exit_args_t;
+
+/*
+ * Argument structure for SYS_OP_DEBUG_WRITE. target is unused: this takes
+ * no handle, which is the whole of what is wrong with it and is why it is
+ * a build option rather than an interface.
+ */
+typedef struct sys_op_debug_args {
+    uintptr_t       buf;
+    uint32_t        len;
+    uint32_t        _pad;
+} sys_op_debug_args_t;
 
 /* Argument structure for SYS_OP_HANDLE_DUP. target names the source. */
 typedef struct sys_op_dup_args {

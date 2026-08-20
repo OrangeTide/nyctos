@@ -486,6 +486,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Exit and join | Exit advances a completion timeline; status read from the handle. |
 | Cancellation | Prompt, plus a death pulse to any server holding the request. |
 | Introspection | Text key-value attributes, declared with macros. |
+| Debug console | A handleless write, compiled out by default and announced when not. |
 | Root process | Compiled-in policy table. Hierarchical supervision, then a watchdog. |
 | Boot archive | Aligned member table, no compression. Walked by root, served by romfs. |
 | Boot handover | A port stage builds `sys_bootinfo_t`. No device tree in the kernel. |
@@ -1709,7 +1710,25 @@ This has a real cost and it is stated rather than argued away. **A debugger can 
 
 What it buys is that debuggability introduces no authority the system did not already have. An enumeration primitive would necessarily be a master key, since being able to list every object is being able to reach every object, and that would be the single largest concentration of authority in a design that has otherwise avoided them.
 
-A **compile-time debug capability**, granting enumeration to a designated agent in builds that opt into it, is a plausible future addition for development images. It is deliberately not specified here, because a capability that exists only in some builds needs its absence in production builds to be the default and its presence to be conspicuous, and that is a decision better made against a real debugging workflow than in advance.
+A **compile-time debug capability**, granting enumeration to a designated agent in builds that opt into it, is a plausible future addition for development images, and section 22.4 is the first one of these: it exists only in some builds, its absence in production builds is the default, and its presence is announced at boot. Enumeration itself is still not specified, because that decision is better made against a real debugging workflow than in advance and the workflow that forced the console has not yet needed it.
+
+### 22.4 The Debug Console
+
+**A build may include a system call that writes to the kernel console, taking no handle and checking nothing about its caller.** It is enabled by `SYS_DEBUG_CONSOLE` and absent otherwise, and where it is absent `SYS_OP_DEBUG_WRITE` returns `SYS_ERR_NOT_SUPPORTED` like any other operation the build does not provide.
+
+**It is ambient authority, and that is the whole of the objection to it.** Section 20.1 is the argument that names are not authority and handles are; section 22.3 declines an enumeration primitive on the grounds that being able to list every object is being able to reach every object. This is a smaller version of exactly what those refuse: a capability every process holds because it exists rather than because anything granted it. The right shape is a console service reached through a handle placed in the startup namespace, and that is what replaces this.
+
+It is here anyway because the alternative is worse. A program with no way to say anything can only be debugged by inference from what the kernel observes about it, and a system whose first user programs cannot print is a system whose first user programs are debugged by guesswork. The cost of that is paid immediately and by everyone; the cost of the backdoor is paid by a build option.
+
+**Three rules keep it from becoming an interface.**
+
+**Absence is the default and presence is announced.** A production configuration compiles it out. A build that does not prints a line at boot saying so, because a hole in the capability model that is invisible in the boot log is one that survives into an image nobody meant to ship it in.
+
+**The length is bounded, and the bound is interface rather than configuration.** The copy runs in the kernel at the caller's priority, and on Tier 0 with interrupts disabled, so an unbounded write is an unbounded non-preemptible section and belongs to the interrupt latency of section 13.3 rather than to taste. A caller with more to say makes more calls, and each is a preemption point. `SYS_DEBUG_WRITE_MAX` is therefore visible to callers, who have to split against it.
+
+**It carries no formatting and no file descriptors.** Bytes to the console. The C library's `write()` accepts standard output and standard error and refuses everything else, which is a truthful account of a system with no descriptor table rather than a stub that pretends to have one.
+
+**What it is not.** It is not `sys_stat_read()` and it is not a tracer. Sections 22.1 through 22.3 describe reading attributes from an object a caller holds a handle to, which is inspection that introduces no authority the system did not already have. This introduces some, deliberately and temporarily.
 
 ---
 

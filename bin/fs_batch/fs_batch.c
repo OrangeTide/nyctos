@@ -21,6 +21,7 @@
 #include <os/sys.h>
 #include <ns.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/fs.h>
@@ -90,6 +91,11 @@ main(void)
     if (rep->fb_completed != hdr->fb_count) {
         return 4;
     }
+
+    size_t len = rep->fb_length < sizeof(buf) ? rep->fb_length : sizeof(buf);
+
+    puts("fs_batch read:");
+    (void)write(STDOUT_FILENO, buf, len);
 
     return (int)rep->fb_length;
 }

@@ -79,6 +79,21 @@
 #define SYS_PRIO_CHAIN_MAX      8
 
 /*
+ * The debug console of section 22.4: a system call that prints, holding no
+ * handle and asking nothing of the caller.
+ *
+ * It is ambient authority and a hole in the capability model, which is why
+ * it is a build option whose absence is the default and whose presence the
+ * kernel announces at boot. A build with this on is a development image.
+ *
+ * The length bound is not politeness. The write runs in the kernel at the
+ * caller's priority, and on Tier 0 with interrupts disabled, so an
+ * unbounded one is an unbounded non-preemptible section and lands straight
+ * in the interrupt latency of section 13.3.
+ */
+#define SYS_DEBUG_CONSOLE       1
+
+/*
  * Blocking transitions the tracer of section 22.2 keeps. Sized to hold a
  * whole file read with room to see the shape of it; the ring overwrites
  * rather than stopping, and reports that it did.

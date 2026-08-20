@@ -21,6 +21,7 @@
  */
 
 #include <sys/channel.h>
+#include <sys/config.h>
 #include <sys/connection.h>
 #include <sys/handle.h>
 #include <sys/op.h>
@@ -207,6 +208,57 @@ op_handle_dup(struct proc *p, struct sys_op *op)
 
 
 /*
+ * The debug console of section 22.4.
+ *
+ * There is no console service yet, and a program with no way to say
+ * anything cannot be debugged by watching it. This is the backdoor that
+ * fills the gap: a write that takes no handle, checks nothing about the
+ * caller, and goes straight to the kernel's own console.
+ *
+ * It is ambient authority, which is the one thing the rest of this system
+ * does not have. Every other operation reaches only what the caller's
+ * handle table contains; this one reaches the console because it exists.
+ * That is a hole in the capability model and it is not defensible on its
+ * merits, so it is compiled out by default and the kernel says so at boot
+ * when it is not.
+ *
+ * The length is bounded because the copy runs in the kernel at the
+ * caller's priority, and on Tier 0 with interrupts disabled. An unbounded
+ * write is an unbounded non-preemptible section, which is the interrupt
+ * latency of section 13.3 rather than a matter of taste. A caller with
+ * more to say makes more calls, and each is a preemption point.
+ */
+static sys_err_t
+op_debug_write(struct proc *p, struct sys_op *op)
+{
+#if SYS_DEBUG_CONSOLE
+    struct sys_op_debug_args *args;
+
+    (void)p;
+
+    args = (struct sys_op_debug_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    if (args->buf == 0) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    if (args->len > SYS_DEBUG_WRITE_MAX) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    cnwrite((const char *)args->buf, args->len);
+
+    return SYS_OK;
+#else
+    (void)p;
+    (void)op;
+
+    return SYS_ERR_NOT_SUPPORTED;
+#endif
+}
+
+/*
  * Section 10.4 has exit advance a completion timeline that a joiner reads,
  * and section 10.4 with it has the handle stay valid afterwards carrying
  * the status. None of that is here.
@@ -268,6 +320,9 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_THREAD_EXIT:
         err = op_thread_exit(p, op);
+        break;
+    case SYS_OP_DEBUG_WRITE:
+        err = op_debug_write(p, op);
         break;
     case SYS_OP_CHAN_CONNECT:
         err = op_chan_connect(p, op);

@@ -164,3 +164,16 @@ sys_thread_exit(int32_t code)
     for (;;) {
     }
 }
+
+sys_err_t
+sys_debug_write(const void *buf, uint32_t len)
+{
+    sys_op_debug_args_t args;
+
+    memset(&args, 0, sizeof(args));
+    args.buf = (uintptr_t)buf;
+    args.len = len;
+
+    return submit(SYS_OP_DEBUG_WRITE, SYS_HANDLE_INVALID, &args,
+      sizeof(args));
+}

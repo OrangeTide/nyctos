@@ -69,6 +69,14 @@ sys_err_t sys_chan_connect(sys_handle_t chan, uint64_t cookie,
  */
 void sys_thread_exit(int32_t code) __attribute__((noreturn));
 
+/*
+ * Write to the kernel console. A debug backdoor, per section 22.4: it
+ * takes no handle and is ambient authority, so it is present only in
+ * builds that opt into it and returns SYS_ERR_NOT_SUPPORTED otherwise.
+ * A console service reached by a handle is what replaces it.
+ */
+sys_err_t sys_debug_write(const void *buf, uint32_t len);
+
 sys_err_t sys_handle_close(sys_handle_t handle);
 
 sys_err_t sys_handle_dup(sys_handle_t handle, uint32_t new_rights,

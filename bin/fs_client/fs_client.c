@@ -22,6 +22,7 @@
 #include <os/sys.h>
 #include <ns.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/fs.h>
@@ -88,6 +89,11 @@ main(void)
     }
     rep = (const fs_reply_t *)reply.inline_data;
     got = rep->fr_length;
+
+    size_t len = got < sizeof(buf) ? got : sizeof(buf);
+
+    puts("fs_client read:");
+    (void)write(STDOUT_FILENO, buf, len);
 
     /*
      * The close is what returns the server's per-connection record to its

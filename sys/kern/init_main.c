@@ -1114,6 +1114,15 @@ kernel_main(void)
     struct proc *kproc;
 
     cnputs("Nyctos/" ARCH_NAME " kernel booting\n");
+#if SYS_DEBUG_CONSOLE
+    /*
+     * Section 22.4 requires that a build carrying the debug console say
+     * so. It is ambient authority: any process can print without holding
+     * anything, which is the one thing the rest of the system does not
+     * allow. A production image compiles it out and this line goes with it.
+     */
+    cnputs("*** debug console compiled in: any process may print ***\n");
+#endif
 
     object_init();
     object_check();

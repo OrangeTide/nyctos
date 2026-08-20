@@ -12,10 +12,13 @@
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 
+/*
+ * Standard output only, and only where the debug console of section 22.4
+ * is compiled in. There are no file descriptors and no open: a program
+ * reaches a file through a connection handle it was given, per section
+ * 25.2, and nothing here mediates that.
+ */
 ssize_t write(int fd, const void *buf, size_t nbytes);
-int open(const char *path, int flags);
-ssize_t read(int fd, void *buf, size_t nbytes);
-int close(int fd);
 void _exit(int status) __attribute__((noreturn));
 
 #endif /* _UNISTD_H_ */

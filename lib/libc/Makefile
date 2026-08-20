@@ -10,9 +10,6 @@ SRCS := arch/$(ARCH)/sys/syscall.S \
         startup.c \
         sys/op.c \
         sys/write.c \
-        sys/open.c \
-        sys/read.c \
-        sys/close.c \
         sys/_exit.c \
         stdio/puts.c \
         stdlib/exit.c \
