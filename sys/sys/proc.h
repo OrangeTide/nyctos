@@ -21,27 +21,31 @@
 
 #include <sys/handle.h>
 #include <sys/pool.h>
+#include <sys/startup.h>
 
 /*
- * What a child is handed at launch. Section 20.4 has named directory
- * handles passed at spawn and consumed by libc the way envp is; this is
- * the degenerate form of that, an ordered list with the names still
- * implicit in the order. It is a record rather than a convention because
- * handle values mean nothing outside the table holding them, so a child
- * cannot be told its handles any other way.
+ * What the caller of proc_spawn() says a child should be given: a name and
+ * a handle, per entry. The handle is moved rather than copied, so this is
+ * a list of things the parent is giving up.
  */
-#define PROC_MAX_STARTUP_HANDLES  8
-
-struct proc_startup {
-    uint32_t        ns_count;
-    sys_handle_t    ns_handle[PROC_MAX_STARTUP_HANDLES];
+struct proc_ns_spec {
+    const char     *name;
+    sys_handle_t    handle;
 };
 
 struct proc {
     sys_id_t            p_id;
     const char         *p_name;
     struct handle_table p_handles;
-    struct proc_startup p_startup;
+
+    /*
+     * The startup record of section 20.4, and the array it points at. Both
+     * live in the process rather than in the child's memory because Tier 0
+     * has no address space to place them in; section 15.2 is where that
+     * changes and the loader starts writing them into the image.
+     */
+    sys_startup_t       p_startup;
+    sys_ns_entry_t      p_ns[SYS_NS_MAX];
 };
 
 /*
@@ -61,6 +65,6 @@ struct proc *proc_current(void);
  * process that can do nothing at all.
  */
 struct proc *proc_spawn(const char *name, uint8_t prio,
-  void (*entry)(void *), const sys_handle_t *inherit, uint32_t ninherit);
+  void (*entry)(void *), const struct proc_ns_spec *ns, uint32_t nns);
 
 #endif /* _SYS_PROC_H_ */

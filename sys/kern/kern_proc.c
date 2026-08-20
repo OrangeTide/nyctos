@@ -39,16 +39,37 @@ proc_current(void)
     return t->t_proc;
 }
 
+/*
+ * Copy a namespace entry name, refusing one that does not fit rather than
+ * truncating it. A truncated name is a name for something else, and a
+ * child that looks up the short form would silently reach the wrong
+ * handle.
+ */
+static void
+ns_set_name(struct proc *p, sys_ns_entry_t *e, const char *name)
+{
+    size_t i;
+
+    for (i = 0; i < SYS_NS_NAME_MAX; i++) {
+        e->name[i] = name[i];
+        if (name[i] == '\0') {
+            return;
+        }
+    }
+
+    panic("spawn %s: namespace name '%s' does not fit", p->p_name, name);
+}
+
 struct proc *
 proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
-  const sys_handle_t *inherit, uint32_t ninherit)
+  const struct proc_ns_spec *ns, uint32_t nns)
 {
     struct handle_table *parent = &proc_current()->p_handles;
     struct thread *t;
     struct proc *p;
     uint32_t i;
 
-    if (ninherit > PROC_MAX_STARTUP_HANDLES) {
+    if (nns > SYS_NS_MAX) {
         panic("spawn %s: too many handles to inherit", name);
     }
 
@@ -60,16 +81,23 @@ proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
     p->p_id = pool_id_of(proc_pool(), p);
     p->p_name = name;
     handle_table_init(&p->p_handles);
-    p->p_startup.ns_count = ninherit;
+
+    memset(&p->p_startup, 0, sizeof(p->p_startup));
+    memset(p->p_ns, 0, sizeof(p->p_ns));
+    p->p_startup.version = SYS_STARTUP_VERSION;
+    p->p_startup.ns_count = nns;
+    p->p_startup.ns = (uintptr_t)p->p_ns;
 
     /*
      * Moved rather than copied, per section 7.4. The parent gives up what
      * it hands over unless it deliberately duplicated first, which is what
      * makes the child's authority describable by looking at one list.
      */
-    for (i = 0; i < ninherit; i++) {
-        if (handle_move(parent, &p->p_handles, inherit[i],
-          &p->p_startup.ns_handle[i]) != SYS_OK) {
+    for (i = 0; i < nns; i++) {
+        ns_set_name(p, &p->p_ns[i], ns[i].name);
+        p->p_ns[i].type = SYS_OBJ_NONE;
+        if (handle_move(parent, &p->p_handles, ns[i].handle,
+          &p->p_ns[i].handle) != SYS_OK) {
             panic("spawn %s: could not hand over handle %u", name, i);
         }
     }

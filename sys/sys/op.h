@@ -31,6 +31,13 @@
 typedef int32_t   sys_err_t;
 typedef uint64_t  sys_handle_t;
 
+/*
+ * A handle value that names nothing. Zero, so a zeroed structure carries
+ * no authority by accident and a caller that forgot to fill one in is
+ * refused rather than reaching slot zero.
+ */
+#define SYS_HANDLE_INVALID    ((sys_handle_t)0)
+
 #define SYS_OK                    0
 #define SYS_ERR_TIMEOUT          -1
 #define SYS_ERR_WOULDBLOCK       -2

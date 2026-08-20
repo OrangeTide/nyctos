@@ -5,13 +5,21 @@
 
 /*
  * C runtime startup. The kernel enters here with nothing set up but the
- * program counter, so crt1 owns the stack, zeroes .bss (which is not part
- * of the loaded image) and turns main()'s return value into exit().
+ * program counter and a0, so crt1 owns the stack, zeroes .bss (which is
+ * not part of the loaded image) and turns main()'s return value into
+ * exit().
+ *
+ * a0 holds the pointer to the startup record of section 20.4. It is
+ * stashed in a callee-saved register across the stack and .bss work rather
+ * than reloaded, because there is nowhere to reload it from: .bss is being
+ * zeroed and the record is the only thing this program was told.
  */
 
 .section .text.start
 .global _start
 _start:
+    mv      s0, a0
+
     la      sp, _stack_top
 
     la      t0, _bss_start
@@ -22,6 +30,9 @@ zero_bss:
     addi    t0, t0, 8
     j       zero_bss
 zero_done:
+
+    mv      a0, s0
+    call    __libc_startup
 
     call    main
     call    exit

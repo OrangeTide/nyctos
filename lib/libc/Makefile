@@ -7,6 +7,7 @@ include $(TOPDIR)/share/mk/nyc.own.mk
 LIB := c
 
 SRCS := arch/$(ARCH)/sys/syscall.S \
+        startup.c \
         sys/write.c \
         sys/open.c \
         sys/read.c \

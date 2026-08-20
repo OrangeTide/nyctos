@@ -728,19 +728,23 @@ fs_server(void *arg)
 static void
 fs_client(void *arg)
 {
-    const struct proc_startup *startup = arg;
+    const sys_startup_t *startup = arg;
+    const sys_ns_entry_t *ns = (const sys_ns_entry_t *)startup->ns;
     struct sys_op_send_args tx;
     fs_request_t *req;
     fs_reply_t *rep;
     sys_handle_t dir, file;
     char buf[SYS_IPC_INLINE_BYTES];
 
+    if (startup->version != SYS_STARTUP_VERSION) {
+        panic("client: startup record from a kernel it does not know");
+    }
     if (startup->ns_count != 1) {
         panic("client: expected exactly one handle at spawn");
     }
-    dir = startup->ns_handle[0];
-    cnprintf("    client: spawned holding %u handle, and no root to name\n",
-      startup->ns_count);
+    dir = ns[0].handle;
+    cnprintf("    client: spawned holding %u handle named \"%s\", and no "
+      "root to name\n", startup->ns_count, ns[0].name);
 
     /* Walk the directory to the file. */
     memset(&tx, 0, sizeof(tx));
@@ -789,6 +793,7 @@ slice_checks(void)
 {
     struct proc *p = proc_current();
     struct sys_op_connect_args cargs;
+    struct proc_ns_spec ns[1];
     struct thread *srv;
     sys_handle_t root;
     sys_err_t err;
@@ -812,8 +817,10 @@ slice_checks(void)
       run(SYS_OP_CHAN_CONNECT, h_fs_recv, &cargs, sizeof(cargs)), SYS_OK);
     root = cargs.out_handle;
 
+    ns[0].name = "/";
+    ns[0].handle = root;
     cnputs("    spawning a client process with that one handle\n");
-    (void)proc_spawn("fs-client", 20, fs_client, &root, 1);
+    (void)proc_spawn("fs-client", 20, fs_client, ns, 1);
 
     while (!slice_done) {
         sched_yield();
