@@ -25,6 +25,7 @@
 #include <sys/handle.h>
 #include <sys/op.h>
 #include <sys/proc.h>
+#include <sys/thread.h>
 #include <sys/systm.h>
 #include <sys/time.h>
 #include <sys/timeline.h>
@@ -204,6 +205,34 @@ op_handle_dup(struct proc *p, struct sys_op *op)
     return SYS_OK;
 }
 
+
+/*
+ * Section 10.4 has exit advance a completion timeline that a joiner reads,
+ * and section 10.4 with it has the handle stay valid afterwards carrying
+ * the status. None of that is here.
+ *
+ * TODO: milestone 7 is where this becomes death. Until then a thread that
+ * exits records its status, stops being scheduled, and keeps its pool slot
+ * for ever. Nothing is reaped, no slot is reused, no completion timeline
+ * is advanced and nothing can join. That is deliberate: M2 needs a program
+ * to be able to stop, and needs nothing else about teardown.
+ */
+static sys_err_t
+op_thread_exit(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_exit_args *args;
+
+    args = (struct sys_op_exit_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    p->p_exit_code = args->code;
+    p->p_exited = true;
+
+    thread_exit();
+}
+
 sys_err_t
 sys_op_exec(struct sys_op *op)
 {
@@ -236,6 +265,9 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_HANDLE_DUP:
         err = op_handle_dup(p, op);
+        break;
+    case SYS_OP_THREAD_EXIT:
+        err = op_thread_exit(p, op);
         break;
     case SYS_OP_CHAN_CONNECT:
         err = op_chan_connect(p, op);

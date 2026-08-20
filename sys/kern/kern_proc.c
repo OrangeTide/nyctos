@@ -39,12 +39,15 @@ proc_current(void)
     return t->t_proc;
 }
 
-struct proc *
-proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
-  const struct proc_ns_spec *ns, uint32_t nns)
+/*
+ * The part of spawning that does not care whether the child is a kernel
+ * thread or a loaded program: a process, a handle table, and the startup
+ * record of section 20.4 filled in from the parent's handles.
+ */
+static struct proc *
+proc_create(const char *name, const struct proc_ns_spec *ns, uint32_t nns)
 {
     struct handle_table *parent = &proc_current()->p_handles;
-    struct thread *t;
     struct proc *p;
     uint32_t i;
 
@@ -59,6 +62,9 @@ proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
 
     p->p_id = pool_id_of(proc_pool(), p);
     p->p_name = name;
+    p->p_entry = 0;
+    p->p_exit_code = 0;
+    p->p_exited = false;
     handle_table_init(&p->p_handles);
 
     memset(&p->p_startup, 0, sizeof(p->p_startup));
@@ -87,7 +93,67 @@ proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
         p->p_ns[i * 2] = (sys_handle_t)ns[i].id;
     }
 
+    return p;
+}
+
+struct proc *
+proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
+  const struct proc_ns_spec *ns, uint32_t nns)
+{
+    struct proc *p = proc_create(name, ns, nns);
+    struct thread *t;
+
     t = thread_create(name, prio, entry, &p->p_startup);
+    t->t_proc = p;
+
+    sched_ready(t);
+
+    return p;
+}
+
+/*
+ * The first thing a loaded program's thread runs, in kernel mode, on the
+ * thread's own kernel stack. It drops to user mode and does not come back;
+ * the stack it leaves behind is where the trap path will build its frame
+ * on the next system call, which is why the trampoline must not return.
+ */
+static void
+proc_user_start(void *arg)
+{
+    struct proc *p = proc_current();
+
+    (void)arg;
+    enter_user(p->p_entry, &p->p_startup);
+}
+
+/*
+ * Spawn a program from the boot archive. The image is copied to the
+ * address it was linked for before the thread is made runnable, so the
+ * copy happens in the caller's context and a failure is the caller's to
+ * see rather than a fault in a process that has already started.
+ *
+ * The startup record the child is given points into this process
+ * structure, which is kernel memory the program can read because Tier 0
+ * has no protection to stop it. That is the tier's bargain, per section
+ * 6.1, and section 15.2 is where a loader places the record in the image
+ * instead.
+ */
+struct proc *
+proc_spawn_image(const char *image, uint8_t prio,
+  const struct proc_ns_spec *ns, uint32_t nns)
+{
+    const struct boot_member *m = boot_lookup(image);
+    struct proc *p;
+    struct thread *t;
+
+    if (m == NULL) {
+        panic("spawn %s: no such member in the boot archive", image);
+    }
+
+    p = proc_create(image, ns, nns);
+    p->p_entry = boot_load(m);
+
+    t = thread_create(image, prio, proc_user_start, &p->p_startup);
     t->t_proc = p;
 
     sched_ready(t);

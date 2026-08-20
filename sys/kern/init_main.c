@@ -951,6 +951,92 @@ chain_checks(void)
           deep_prio_seen);
     }
 }
+
+/*
+ * The same slice again, with both halves as loaded programs.
+ *
+ * Stage 8 proved the protocol and the rendezvous with kernel threads
+ * standing in for processes. What it could not reach is the boundary: the
+ * trap edge, the startup record as a program reads it, and a scheduler
+ * blocking and resuming threads that are in user mode when they block.
+ * This stage is that, and nothing on the path is new except where the two
+ * ends run.
+ *
+ * The programs cannot print. There is no console for user code, so the
+ * client reports what it read as its exit status and the kernel says so.
+ * Section 12.6 is where a console service belongs and M3 is when.
+ */
+static void
+user_slice(void)
+{
+    struct proc *self = proc_current();
+    struct sys_op_connect_args cargs;
+    struct proc_ns_spec ns[1];
+    struct proc *client;
+    struct channel *ch;
+    sys_handle_t h_recv, root;
+    sys_err_t err;
+
+    boot_report();
+
+    ch = channel_create("fs-user", self);
+    if (ch == NULL) {
+        panic("user slice: no channel");
+    }
+    /*
+     * SYS_RIGHT_TRANSFER because this handle is going to be handed to the
+     * server, and section 7.4 makes moving a handle a right rather than
+     * something a holder may always do.
+     */
+    err = handle_insert(&self->p_handles, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_recv);
+    expect("a receive handle for the filesystem", err, SYS_OK);
+
+    /*
+     * The root connection is minted here, while this process still holds
+     * the receive right, because section 12.1 lets only a holder of that
+     * right mint one and handing it to the server moves it away.
+     *
+     * The cookie is the server's own per-connection state, so this is the
+     * one place the kernel has to know a convention that belongs to a
+     * program. It is what root does at boot, per section 24.5, and it goes
+     * away with the kernel-side half of this when root exists.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to the root directory",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    root = cargs.out_handle;
+
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = h_recv;
+    cnputs("    loading fs_server, which receives on that channel\n");
+    (void)proc_spawn_image("fs_server", 15, ns, 1);
+
+    ns[0].id = SYS_NS_ROOT;
+    ns[0].handle = root;
+    cnputs("    loading fs_client, which holds one connection\n");
+    client = proc_spawn_image("fs_client", 20, ns, 1);
+
+    while (!client->p_exited) {
+        sched_yield();
+    }
+
+    cnprintf("    fs_client exited with status %d\n", client->p_exit_code);
+
+    /*
+     * The client returns what it read. The length is the server's copy of
+     * the string, which is a separate copy from the one stage 8 uses: the
+     * two agree because they are the same text, not because anything
+     * makes them.
+     */
+    if (client->p_exit_code != (int32_t)(sizeof(motd_text) - 1)) {
+        panic("user slice: client read %d bytes, expected %u",
+          client->p_exit_code, (unsigned)(sizeof(motd_text) - 1));
+    }
+}
+
 void
 kernel_main(void)
 {
@@ -1002,6 +1088,9 @@ kernel_main(void)
     cnputs("the slice: a file read from another process\n");
     slice_checks();
 
-    cnputs("stage 8 complete\n");
+    cnputs("the slice again, with both halves in user mode\n");
+    user_slice();
+
+    cnputs("stage 9 complete\n");
     machine_halt(0);
 }

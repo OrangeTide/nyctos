@@ -143,3 +143,24 @@ sys_handle_dup(sys_handle_t handle, uint32_t new_rights,
 
     return err;
 }
+
+void
+sys_thread_exit(int32_t code)
+{
+    sys_op_exit_args_t args;
+
+    memset(&args, 0, sizeof(args));
+    args.code = code;
+
+    (void)submit(SYS_OP_THREAD_EXIT, SYS_HANDLE_INVALID, &args,
+      sizeof(args));
+
+    /*
+     * Only reached if the kernel refused the operation, which it does for
+     * a malformed descriptor. There is nothing useful to do about it and
+     * nowhere to report it, so stop here rather than returning into a
+     * caller that has already given up its stack frame.
+     */
+    for (;;) {
+    }
+}

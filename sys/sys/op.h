@@ -108,12 +108,18 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_HANDLE_DUP         7
 #define SYS_OP_CHAN_CONNECT      11
 
+/*
+ * Ends the calling thread. It does not return, so it has no status to
+ * write and no place to write one.
+ */
+#define SYS_OP_THREAD_EXIT       12
+
 /* Issuing ops, which need a device that does DMA. */
 #define SYS_OP_DMA_ISSUE          8
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             12
+#define SYS_OP_COUNT             13
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the
@@ -205,6 +211,12 @@ typedef struct sys_op_fence_args {
      */
     uint64_t        deadline;
 } sys_op_fence_args_t;
+
+/* Argument structure for SYS_OP_THREAD_EXIT. target is unused. */
+typedef struct sys_op_exit_args {
+    int32_t         code;
+    uint32_t        _pad;
+} sys_op_exit_args_t;
 
 /* Argument structure for SYS_OP_HANDLE_DUP. target names the source. */
 typedef struct sys_op_dup_args {

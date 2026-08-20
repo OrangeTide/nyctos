@@ -3,15 +3,13 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
-#include <sys/syscall.h>
+#include <os/sys.h>
 #include <unistd.h>
-
-#include "libc_syscall.h"
 
 void
 _exit(int status)
 {
-    __syscall(SYS_exit, status, 0, 0);
+    sys_thread_exit(status);
     for (;;) {
         /* The kernel does not return from exit. */
     }

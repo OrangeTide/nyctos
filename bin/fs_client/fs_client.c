@@ -61,6 +61,7 @@ main(void)
     const fs_reply_t *rep;
     sys_handle_t dir, file;
     sys_msg_t reply;
+    uint32_t got;
 
     dir = ns_lookup(SYS_NS_ROOT);
     if (dir == SYS_HANDLE_INVALID) {
@@ -76,17 +77,21 @@ main(void)
         return 3;
     }
     rep = (const fs_reply_t *)reply.inline_data;
-    memcpy(buf, &reply.inline_data[sizeof(*rep)], rep->fr_length);
+    got = rep->fr_length;
+    memcpy(buf, &reply.inline_data[sizeof(*rep)], got);
 
     /*
      * The close is what returns the server's per-connection record to its
      * pool. Section 25.2 reclaims it here and nowhere else, because
      * destroying the handle locally would tell the server nothing.
+     *
+     * It overwrites the reply, which is why the read's count was taken
+     * before this rather than after it.
      */
     if (request(file, FS_OP_CLOSE, NULL, 0, 0, &reply) != SYS_OK) {
         return 4;
     }
     (void)sys_handle_close(file);
 
-    return (int)((const fs_reply_t *)reply.inline_data)->fr_length;
+    return (int)got;
 }

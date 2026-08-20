@@ -36,8 +36,11 @@ void thread_exited(void) __attribute__((noreturn));
 void *memset(void *dst, int c, size_t len);
 void *memcpy(void *dst, const void *src, size_t len);
 
-/* sys/kern/kern_exec.c */
-void exec_user(void) __attribute__((noreturn));
+/* sys/kern/subr_bootarch.c */
+struct boot_member;
+const struct boot_member *boot_lookup(const char *name);
+uintptr_t boot_load(const struct boot_member *m);
+void boot_report(void);
 
 /* sys/kern/kern_syscall.c */
 long syscall_handler(struct sys_op *op, unsigned long count);

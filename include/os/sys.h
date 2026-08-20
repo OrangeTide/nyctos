@@ -62,6 +62,13 @@ sys_err_t sys_msg_reply(sys_thread_id_t peer, const sys_msg_t *reply);
 sys_err_t sys_chan_connect(sys_handle_t chan, uint64_t cookie,
   uint32_t rights, sys_handle_t *out_conn);
 
+/*
+ * Ends the calling thread and does not return. Section 10.4 makes exit
+ * advance a completion timeline a joiner reads; none of that exists yet,
+ * so this stops the thread and records the status and nothing more.
+ */
+void sys_thread_exit(int32_t code) __attribute__((noreturn));
+
 sys_err_t sys_handle_close(sys_handle_t handle);
 
 sys_err_t sys_handle_dup(sys_handle_t handle, uint32_t new_rights,

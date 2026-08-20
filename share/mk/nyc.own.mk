@@ -98,3 +98,9 @@ KERN_LDSCRIPT := $(TOPDIR)/sys/arch/$(ARCH)/conf/kern.ld
 
 KERNEL_ELF := $(OBJTOP)/sys/kernel.elf
 
+# The boot archive of section 24.4, and the host tool that writes it. The
+# kernel embeds the archive, so it is built after the programs that go into
+# it and before the kernel that carries it.
+MKBOOTARCH   := $(OBJTOP)/tools/mkbootarch/mkbootarch
+BOOT_ARCHIVE := $(OBJTOP)/sys/boot.img
+

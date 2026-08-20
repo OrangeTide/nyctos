@@ -23,6 +23,8 @@
 #include <sys/pool.h>
 #include <sys/startup.h>
 
+#include <stdbool.h>
+
 /*
  * What the caller of proc_spawn() says a child should be given: an
  * identifier and a handle, per entry. The handle is moved rather than
@@ -46,6 +48,13 @@ struct proc {
      */
     sys_startup_t       p_startup;
     sys_handle_t        p_ns[SYS_NS_WORDS];
+
+    /* Where a user program starts, and how it finished. Section 10.4
+     * makes exit a completion timeline a joiner reads; this is the part
+     * of that M2 needs, which is a program being able to stop. */
+    uintptr_t           p_entry;
+    int32_t             p_exit_code;
+    bool                p_exited;
 };
 
 /*
@@ -66,5 +75,13 @@ struct proc *proc_current(void);
  */
 struct proc *proc_spawn(const char *name, uint8_t prio,
   void (*entry)(void *), const struct proc_ns_spec *ns, uint32_t nns);
+
+/*
+ * The same, for a program in the boot archive rather than a function in
+ * the kernel. The image is copied to the address it was linked for and a
+ * thread is started that drops into it.
+ */
+struct proc *proc_spawn_image(const char *image, uint8_t prio,
+  const struct proc_ns_spec *ns, uint32_t nns);
 
 #endif /* _SYS_PROC_H_ */
