@@ -47,6 +47,20 @@ void md_idle_wait(void);
 void md_irq_unmask(unsigned int irq);
 
 /*
+ * Mask one interrupt at the controller, so that a source the handler
+ * cannot finish with stops asserting. See irq_dispatch for why every
+ * interrupt bound to a timeline is masked before it is delivered.
+ */
+void md_irq_mask(unsigned int irq);
+
+/*
+ * The console UART's receive interrupt. The number is the port's business
+ * and nothing above here knows what it means; what matters is that there
+ * is exactly one of them and that the port can name it.
+ */
+unsigned int md_uart_irq(void);
+
+/*
  * Acknowledge whatever is pending and return its number, or IRQ_NONE.
  * Called by the trap path before irq_dispatch and paired with md_irq_eoi.
  */
@@ -86,9 +100,42 @@ sys_err_t irq_attach(unsigned int irq, struct timeline *tl);
  */
 sys_err_t irq_attach_handler(unsigned int irq, void (*fn)(void));
 
+/*
+ * The interrupt as an object a program can hold a handle to, per section
+ * 13.2, and the acknowledgement that unmasks it.
+ *
+ * A handler that advances a timeline has not finished with the device: the
+ * bytes are still in the UART and only the driver knows what to do with
+ * them. What the handler can do is silence the source, which it does, and
+ * what the driver does when it has drained the device is say so. Without
+ * that pair a level-triggered source is re-entered before the handler
+ * returns and the machine stops responding rather than failing.
+ *
+ * The timer does not take this path. Its handler is kernel code that
+ * reprograms the device, which is what finishing with it means, so it is
+ * never masked and there is nothing to acknowledge.
+ */
+struct irq;
+
+struct irq *irq_object(unsigned int irq);
+sys_err_t irq_ack(struct irq *ir);
+
 /* Called from the trap path with interrupts already disabled by hardware. */
 void irq_dispatch(void);
 
 void irq_init(void);
+
+/*
+ * Interrupts taken while a program was running, as opposed to while a
+ * kernel thread was.
+ *
+ * It is two instructions on a path that is already the slow one, and it is
+ * the only way to tell the two apart from above: an interrupt that arrives
+ * in user mode and one that arrives in the kernel run the same handler and
+ * leave the same trace. Section 22.2 wants a system that can say what it
+ * did, and "no program has ever been interrupted" was true for two
+ * milestones without anything being able to notice.
+ */
+extern unsigned long md_user_irqs;
 
 #endif /* _SYS_INTR_H_ */

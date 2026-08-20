@@ -518,10 +518,10 @@ now asks whether anything holds the completion timeline. Cost: 5632 bytes
 of kernel object memory, which is what embedding two timelines per thread
 and per process comes to.
 
-**2. The first external interrupt.** The riskiest stage and the one with no
-dependencies, so it goes first. It ends with the kernel printing a character
-somebody typed, which is a long way short of a console and is the whole of
-what this stage claims.
+**2. The first external interrupt.** *Built.* The riskiest stage and the
+one with no dependencies, so it went first. It ends with the kernel
+printing characters somebody typed, which is a long way short of a
+console and is the whole of what it claims.
 
 - Interrupts unmasked in user mode on both ports: `DAIF` cleared in the
   `SPSR` that `enter_user` builds, `MPIE` set on RISC-V, and the AArch64
@@ -549,11 +549,31 @@ what this stage claims.
   `SYS_RIGHT_IRQ`. Attaching stays kernel-internal, per section 19.2's
   preference for the launcher attaching rather than the driver.
 
-*Check.* The kernel waits on the UART receive timeline, reads what arrived,
-and prints it. Typing three characters advances the timeline three times.
-Removing the mask makes the machine wedge in the handler, which is the
-failure this stage exists to prevent, so the check has to be run once with
-the mask removed to see it happen.
+*Check.* The kernel waits on the UART receive timeline, reads what
+arrived, acknowledges the interrupt, and repeats until three characters
+have come in. A second check spawns a program that busy-loops with a
+timer armed behind it, and counts the interrupts taken while a program
+rather than a kernel thread was running.
+
+Each was confirmed by breaking it. Without the mask the machine wedges
+in the handler before it prints anything, which is the failure with the
+least information attached in the whole milestone and the reason the
+rule exists. Without the acknowledgement the second keystroke never
+arrives and the five-second deadline says so. With the AArch64 lower-EL
+vector put back to the fatal entry, the spinning program panics with an
+unhandled trap at its own program counter.
+
+Two things it settled that the plan had guessed at. **Characters and
+interrupts are different counts**: three characters piped in arrive as
+one interrupt and one drain, and three characters typed with gaps
+arrive as three, so a check written against a count of interrupts would
+have hung on exactly the input a scripted session provides. And **the
+RISC-V side needed no unmasking at all**: the privileged specification
+enables machine interrupts whenever a hart is in a less privileged
+mode, regardless of MPIE, which was confirmed by removing the bit and
+watching the interrupt arrive anyway. It is set for the state to be
+intended rather than accidental, and the AArch64 side is where the
+actual change was.
 
 **3. Spawn as an operation.** What a shell needs, and no more of section
 24 than that.

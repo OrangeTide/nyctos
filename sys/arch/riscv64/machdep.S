@@ -16,9 +16,13 @@
  * The startup record of section 20.4 arrives in a0, which is where crt1
  * expects it. It is the only thing the program is told.
  *
- * MPIE stays clear, so a program cannot be interrupted. That matches the
- * AArch64 port, where unmasking would need a lower-EL interrupt vector
- * that is currently fatal.
+ * A program runs with machine interrupts live. U-mode cannot mask them
+ * and never could: the privileged specification enables interrupts from
+ * a more privileged mode regardless of that mode's own enable bit, so
+ * what actually decides is mie, and what changed is that the AArch64
+ * side now has a lower-EL vector to take them on. MPIE is set here so
+ * that the state a program returns to is the state the kernel meant
+ * rather than whatever was left over.
  */
 
 .section .text
@@ -34,6 +38,9 @@ enter_user:
 
     li      t0, (3 << 11)           /* mstatus.MPP = 0: return to U-mode */
     csrc    mstatus, t0
+
+    li      t0, (1 << 7)            /* mstatus.MPIE: interrupts on return */
+    csrs    mstatus, t0
 
     csrw    mepc, a0
     mv      a0, a1

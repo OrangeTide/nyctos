@@ -21,6 +21,9 @@
 
 #define GICD_CTLR       0x000
 #define GICD_ISENABLER  0x100
+#define GICD_ICENABLER  0x180
+#define GICD_IPRIORITYR 0x400
+#define GICD_ITARGETSR  0x800
 
 #define GICC_CTLR       0x000
 #define GICC_PMR        0x004
@@ -29,6 +32,15 @@
 
 /* The EL1 physical timer, INTID 30. */
 #define TIMER_PPI       30
+
+/*
+ * The PL011 on the virt board is shared peripheral interrupt 1, and a
+ * shared peripheral interrupt is INTID 32 plus its number. Unlike the
+ * timer, which is per-core by construction, it has to be routed to a
+ * core and given a priority the CPU interface will accept.
+ */
+#define UART_SPI        1
+#define UART_INTID      (32 + UART_SPI)
 
 /* GICv2 returns this from IAR when there is nothing pending. */
 #define GIC_SPURIOUS    1023
@@ -39,6 +51,12 @@ static void
 mmio_write(unsigned long base, unsigned int off, uint32_t v)
 {
     *(volatile uint32_t *)(base + off) = v;
+}
+
+static void
+mmio_write8(unsigned long base, unsigned int off, uint8_t v)
+{
+    *(volatile uint8_t *)(base + off) = v;
 }
 
 static uint32_t
@@ -78,6 +96,15 @@ md_intr_init(void)
     /* Accept every priority, then let the CPU interface deliver. */
     mmio_write(GICC_BASE, GICC_PMR, 0xff);
     mmio_write(GICC_BASE, GICC_CTLR, 1);
+
+    /*
+     * A shared peripheral interrupt reaches no core until it is told
+     * which one, and QEMU leaves the target register clear. It also
+     * needs a priority the CPU interface will accept: the mask above
+     * takes everything below 0xff, and 0xff itself is never.
+     */
+    mmio_write8(GICD_BASE, GICD_ITARGETSR + UART_INTID, 0x01);
+    mmio_write8(GICD_BASE, GICD_IPRIORITYR + UART_INTID, 0x80);
 }
 
 void
@@ -86,6 +113,20 @@ md_irq_unmask(unsigned int irq)
     unsigned int reg = (irq / 32) * 4;
 
     mmio_write(GICD_BASE, GICD_ISENABLER + reg, (uint32_t)1 << (irq % 32));
+}
+
+void
+md_irq_mask(unsigned int irq)
+{
+    unsigned int reg = (irq / 32) * 4;
+
+    mmio_write(GICD_BASE, GICD_ICENABLER + reg, (uint32_t)1 << (irq % 32));
+}
+
+unsigned int
+md_uart_irq(void)
+{
+    return UART_INTID;
 }
 
 unsigned int

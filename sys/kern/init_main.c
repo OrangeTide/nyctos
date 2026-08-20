@@ -929,6 +929,125 @@ completion_checks(void)
       handle_lookup(ht, c.c_completion, SYS_OBJ_NONE, 0, NULL),
       SYS_ERR_STALE);
 }
+
+/*
+ * The first external interrupt, and the first byte a person sent.
+ *
+ * Everything before this waited on the timer, which is per-core on one
+ * board and needs no controller at all on the other. A UART is neither: it
+ * is routed on AArch64 and it arrives through a PLIC on RISC-V, and until
+ * now neither port had a second interrupt to find out with.
+ *
+ * Reading the device here is scaffolding and is named as such. Stage 5 of
+ * this milestone moves it into a driver process, which is where section 19
+ * says it belongs; what stays is the timeline, the mask and the
+ * acknowledgement.
+ */
+static void
+console_checks(void)
+{
+    struct sys_op_fence_args fargs;
+    struct handle_table *ht = &proc_current()->p_handles;
+    struct timeline *tl;
+    unsigned int irq = md_uart_irq();
+    sys_handle_t h_irq, h_tl;
+    uint64_t seen = 0;
+    char line[4];
+    unsigned int got = 0;
+    int ch;
+
+    tl = timeline_create("uart-rx");
+    if (tl == NULL) {
+        panic("console: no timeline");
+    }
+    expect("attaching the UART receive interrupt", irq_attach(irq, tl),
+      SYS_OK);
+    expect("a handle to that interrupt",
+      handle_insert(ht, irq_object(irq), SYS_OBJ_IRQ, SYS_RIGHT_IRQ,
+        &h_irq), SYS_OK);
+    expect("acknowledging one that is not masked",
+      run(SYS_OP_IRQ_ACK, h_irq, NULL, 0), SYS_ERR_INVALID_ARG);
+
+    expect("a wait handle for its timeline",
+      handle_insert(ht, tl, SYS_OBJ_TIMELINE, SYS_RIGHT_WAIT, &h_tl),
+      SYS_OK);
+
+    uart_rx_enable();
+    cnputs("    type three characters, or pipe them in; five seconds of\n"
+      "    silence is a failure rather than a wait\n");
+
+    /*
+     * Bytes rather than interrupts, because they are not the same count.
+     * Input from a pipe arrives faster than the handler runs, so three
+     * characters can be one interrupt and one drain, and a check written
+     * against three interrupts would wait for ever on exactly the input a
+     * scripted session provides.
+     */
+    while (got < 3) {
+        fargs.value = seen + 1;
+        fargs.deadline = time_now() + time_from_ms(5000);
+        if (run(SYS_OP_FENCE_WAIT, h_tl, &fargs, sizeof(fargs)) != SYS_OK) {
+            panic("console: nothing arrived in five seconds");
+        }
+        seen = tl->tl_value;
+
+        while (got < 3 && (ch = uart_getc()) >= 0) {
+            line[got++] = (char)ch;
+        }
+
+        expect("acknowledging the interrupt",
+          run(SYS_OP_IRQ_ACK, h_irq, NULL, 0), SYS_OK);
+    }
+
+    line[3] = '\0';
+    cnprintf("    read '%s' in %lu interrupts\n", line, (unsigned long)seen);
+
+    handle_close(ht, h_tl);
+    handle_close(ht, h_irq);
+}
+
+/*
+ * An interrupt taken while a program was running, which no milestone
+ * before this one could take at all.
+ *
+ * Both ports entered user mode with interrupts masked, which was
+ * deliberate and written down: the AArch64 lower-EL vector was fatal, so
+ * unmasking would have panicked rather than delivered. A driver is a
+ * program that waits for a device, so both sides had to change, and this
+ * is the check that says the change is real.
+ *
+ * The timer is armed before the program starts and expires while it is the
+ * thread on the core. Nothing the program does can produce the interrupt,
+ * which is the point: it is being interrupted rather than trapping.
+ */
+static void
+user_interrupt_checks(void)
+{
+    struct timeline *tl;
+    struct timer *t;
+    struct child c;
+    unsigned long before = md_user_irqs;
+
+    tl = timeline_create("spin-timer");
+    if (tl == NULL) {
+        panic("spin: no timeline");
+    }
+    t = timer_create("spin", tl, time_now() + time_from_ms(1), 0);
+    if (t == NULL) {
+        panic("spin: no timer");
+    }
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("spin", 20, NULL, 0));
+    sched_undefer();
+    (void)child_join(&c);
+
+    if (md_user_irqs == before) {
+        panic("nothing interrupted the program while it ran");
+    }
+    cnprintf("    %lu interrupts taken while a program was running\n",
+      md_user_irqs - before);
+}
 static void
 fs_server(void *arg)
 {
@@ -1465,6 +1584,9 @@ kernel_main(void)
     md_intr_enable();
     interrupt_checks();
 
+    cnputs("the console: an external interrupt, and a person\n");
+    console_checks();
+
     cnputs("timers: activation, phase and deadlines\n");
     timer_checks();
 
@@ -1478,6 +1600,9 @@ kernel_main(void)
 
     cnputs("the slice: a file read from another process\n");
     slice_checks();
+
+    cnputs("user mode: a program that can be interrupted\n");
+    user_interrupt_checks();
 
     cnputs("the slice again, with both halves in user mode\n");
     user_slice();

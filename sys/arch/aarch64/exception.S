@@ -4,10 +4,10 @@
  */
 
 /*
- * EL1 exception vectors. Two entries do real work: a synchronous exception
- * from a lower exception level, which is how an SVC from a userland program
- * arrives, and an IRQ at the current level, which is how a kernel thread is
- * interrupted. Everything else is fatal.
+ * EL1 exception vectors. Three entries do real work: a synchronous
+ * exception from a lower exception level, which is how an SVC from a
+ * userland program arrives, and an IRQ at either level, because a
+ * program can now be interrupted as well as a kernel thread.
  */
 
 .macro VECTOR_ENTRY target
@@ -33,7 +33,7 @@ vectors:
 
     /* Lower EL, AArch64. */
     VECTOR_ENTRY el0_sync
-    VECTOR_ENTRY el1_fatal
+    VECTOR_ENTRY el0_irq
     VECTOR_ENTRY el1_fatal
     VECTOR_ENTRY el1_fatal
 
@@ -177,3 +177,74 @@ el1_irq:
     ldr     x30, [sp, #160]
     add     sp, sp, #192
     eret
+
+/*
+ * An IRQ taken while a userland program is running.
+ *
+ * The same frame as el1_irq, plus SP_EL0, and for the same reason el0_sync
+ * saves it: EL1 runs on SP_EL1, so nothing within one trap disturbs the
+ * user stack pointer, but a thread switch inside the handler makes it
+ * another thread's. An interrupt can switch threads exactly as a system
+ * call can, which is the whole reason this entry cannot simply be el1_irq.
+ */
+.balign 16
+.global el0_irq
+el0_irq:
+    sub     sp, sp, #192
+    stp     x0, x1, [sp, #0]
+    stp     x2, x3, [sp, #16]
+    stp     x4, x5, [sp, #32]
+    stp     x6, x7, [sp, #48]
+    stp     x8, x9, [sp, #64]
+    stp     x10, x11, [sp, #80]
+    stp     x12, x13, [sp, #96]
+    stp     x14, x15, [sp, #112]
+    stp     x16, x17, [sp, #128]
+    stp     x18, x29, [sp, #144]
+    str     x30, [sp, #160]
+
+    mrs     x9, elr_el1
+    mrs     x10, spsr_el1
+    stp     x9, x10, [sp, #168]
+    mrs     x9, sp_el0
+    str     x9, [sp, #184]
+
+    /*
+     * Counted here because nothing above the trap path can tell an
+     * interrupt taken in user mode from one taken in the kernel, and
+     * after the frame is built because x9 and x10 belong to the program
+     * until they are in it.
+     */
+    adrp    x9, md_user_irqs
+    add     x9, x9, :lo12:md_user_irqs
+    ldr     x10, [x9]
+    add     x10, x10, #1
+    str     x10, [x9]
+
+    bl      irq_dispatch
+
+    ldr     x9, [sp, #184]
+    msr     sp_el0, x9
+    ldp     x9, x10, [sp, #168]
+    msr     elr_el1, x9
+    msr     spsr_el1, x10
+
+    ldp     x0, x1, [sp, #0]
+    ldp     x2, x3, [sp, #16]
+    ldp     x4, x5, [sp, #32]
+    ldp     x6, x7, [sp, #48]
+    ldp     x8, x9, [sp, #64]
+    ldp     x10, x11, [sp, #80]
+    ldp     x12, x13, [sp, #96]
+    ldp     x14, x15, [sp, #112]
+    ldp     x16, x17, [sp, #128]
+    ldp     x18, x29, [sp, #144]
+    ldr     x30, [sp, #160]
+    add     sp, sp, #192
+    eret
+
+.section ".data"
+.balign 8
+.global md_user_irqs
+md_user_irqs:
+    .quad 0

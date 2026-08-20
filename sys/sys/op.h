@@ -126,6 +126,15 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_PROC_STATUS       15
 
 /*
+ * Unmask an interrupt the handler silenced. Section 13.2 has the
+ * handler advance a timeline and return, and a handler that cannot
+ * finish with its device masks the source instead; this is the driver
+ * saying it has drained the device and the source may assert again.
+ * target names the interrupt and carries SYS_RIGHT_IRQ.
+ */
+#define SYS_OP_IRQ_ACK           16
+
+/*
  * Ends the calling thread. It does not return, so it has no status to
  * write and no place to write one.
  */
@@ -154,7 +163,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             16
+#define SYS_OP_COUNT             17
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the

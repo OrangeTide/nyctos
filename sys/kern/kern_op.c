@@ -24,6 +24,7 @@
 #include <sys/config.h>
 #include <sys/connection.h>
 #include <sys/handle.h>
+#include <sys/intr.h>
 #include <sys/op.h>
 #include <sys/proc.h>
 #include <sys/thread.h>
@@ -384,6 +385,28 @@ op_proc_status(struct proc *p, struct sys_op *op)
     return SYS_OK;
 }
 
+
+/*
+ * A driver has drained its device, so the source may assert again.
+ *
+ * There are no arguments. What the operation needs is the interrupt, and
+ * an interrupt is a handle rather than a number here, which is what stops
+ * a program acknowledging one it was never given.
+ */
+static sys_err_t
+op_irq_ack(struct proc *p, struct sys_op *op)
+{
+    void *obj;
+    sys_err_t err;
+
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_IRQ,
+      SYS_RIGHT_IRQ, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    return irq_ack(obj);
+}
 sys_err_t
 sys_op_exec(struct sys_op *op)
 {
@@ -419,6 +442,9 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_OBJECT_COMPLETION:
         err = op_object_completion(p, op);
+        break;
+    case SYS_OP_IRQ_ACK:
+        err = op_irq_ack(p, op);
         break;
     case SYS_OP_PROC_STATUS:
         err = op_proc_status(p, op);

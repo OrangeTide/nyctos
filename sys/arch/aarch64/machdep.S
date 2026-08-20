@@ -23,7 +23,13 @@
 .global enter_user
 enter_user:
     msr     elr_el1, x0
-    mov     x2, #0x3c0              /* EL0t, DAIF masked */
+    /*
+     * EL0t with IRQ unmasked. A program that cannot be interrupted is
+     * a program no device can be waited for behind, and the lower-EL
+     * IRQ vector above is what makes this safe. Debug, SError and FIQ
+     * stay masked: nothing in this system raises any of them.
+     */
+    mov     x2, #0x340              /* EL0t, IRQ unmasked */
     msr     spsr_el1, x2
     mov     x0, x1
     isb

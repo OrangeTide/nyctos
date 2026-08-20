@@ -155,6 +155,21 @@ trap_interrupt:
     la      t1, md_pending_irq
     sd      t0, 0(t1)
 
+    /*
+     * MPP in the saved mstatus says where this trap came from, and zero
+     * is user mode. Nothing above the trap path can tell the two apart,
+     * and a program being interruptible at all is new.
+     */
+    ld      t1, 136(sp)
+    srli    t1, t1, 11
+    andi    t1, t1, 3
+    bnez    t1, 2f
+    la      t1, md_user_irqs
+    ld      t2, 0(t1)
+    addi    t2, t2, 1
+    sd      t2, 0(t1)
+2:
+
     call    irq_dispatch
     j       trap_restore
 
@@ -162,3 +177,9 @@ trap_bad:
     csrr    a0, mcause
     csrr    a1, mepc
     call    trap_fatal
+
+.section .data
+.balign 8
+.global md_user_irqs
+md_user_irqs:
+    .dword 0
