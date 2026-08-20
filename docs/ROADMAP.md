@@ -440,23 +440,124 @@ before the MMU rather than after it.
 shell that spawns a utility, waits on its completion timeline, and reports
 status. Enough libc to write the utilities.
 
+*Four things it needs that were not listed, and each is a stage rather than
+a detail.* M2 reached its own goal without any of them.
+
+**No program can spawn another.** M2's three programs are spawned by the
+kernel's boot thread calling `proc_spawn_image`, and a shell that cannot
+spawn is not a shell. Spawn becomes an operation naming a member of the boot
+archive, with the namespace array the caller assembles from handles it
+already holds. That leaves the archive walk and the image copy inside the
+kernel, which section 24.1 says they should not be. The debt is M2's rather
+than this milestone's and it is named here because this is where it becomes
+visible: it is paid when there is a process able to load an image, which is
+the loader of section 15.2 and the root process of section 24, and neither
+is worth building before the MMU gives them something to do.
+
+**No program can create a thread.** A console driver waits on its device and
+on its clients at once, and section 19.3 answers that with two threads and
+no shared state. There is no operation for creating one, so the shape this
+design prescribes for every driver from here on cannot be written at all.
+The stack comes from the caller, because the kernel allocates no user
+memory.
+
+**Neither board has an external interrupt.** The only interrupt in the
+system is the per-core timer, which is a private peripheral interrupt on
+AArch64 needing no routing and the machine timer on RISC-V needing no
+controller at all. A UART is neither. AArch64 needs the distributor
+programmed for a shared peripheral interrupt, and RISC-V needs a PLIC, which
+the port does not have in any form: `md_irq_unmask` knows one interrupt by
+name and `md_irq_claim` reads a variable the trap path set. This is port
+work under section 27, and it is the first evidence for or against the claim
+that the interrupt path of section 13.2 generalises past the device that was
+easiest to reach.
+
+**libc has neither end of a program's own I/O.** `write()` goes to the debug
+console, which is section 22.4's backdoor and deliberately not a program's
+real output, and `read()` was deleted in M2 along with the other V7 stubs. A
+utility needs both, reaching a console service through a handle it was
+handed at spawn, and the two spellings have to stay distinct or the
+distinction section 22.4 insists on is gone.
+
 *Exit and join, which is not death.* A process that exits advances a
 completion timeline, the handle stays valid afterwards and carries the
 status, and a joiner waits on it (section 10.4). This is the normal path and
 it belongs here, with the shell that is the first thing to need it. Nothing
 is reaped, no slot is reused, and nothing is killed; M7 is still where all of
-that lives.
+that lives. The freezing of a completion timeline into the holder's handle
+slot is part of reaping and goes with it.
 
-*Done when* an interactive shell runs, spawns a program as a separate process,
-and reports its exit status.
+*Stages.*
+
+1. **Exit, completion timelines, and join.** The timeline is embedded in the
+   thread and the process per section 10.4, so obtaining it cannot fail, and
+   the wait is the existing fence wait rather than a new primitive. Status is
+   read from the handle separately, since a monotonic counter cannot carry an
+   exit code. This replaces the M2 placeholder that halts the machine on an
+   exit nobody claimed, for children a joiner holds.
+2. **Spawn as an operation.** An image name, a namespace array, and rights
+   checked on every handle it carries. The caller can pass no authority it
+   does not hold, which is the whole of what section 20.4 asks for here.
+3. **Threads a program creates.** A caller-supplied stack, an entry point and
+   one argument. Section 10.2 already says what a thread is; nothing new is
+   being decided, only reached.
+4. **The first external interrupt.** The GIC distributor on AArch64 and a
+   PLIC on RISC-V, with the UART's receive interrupt attached to a timeline
+   by the launcher and the timeline handle handed to the driver, per section
+   19.2. The alternative of handing over the interrupt handle and letting the
+   driver attach is the one that section rejects.
+5. **The console driver, and the service behind it.** One process, two
+   threads: one blocked on the interrupt timeline filling a line buffer, one
+   blocked in receive serving reads and writes over section 25. The kernel's
+   polled console stays exactly as it is, per section 22.4, which means two
+   writers to one device and a rule about which of them may write when.
+6. **libc's two ends.** `read()` and `write()` against the console handle in
+   the startup namespace, and enough formatting and string handling for a
+   utility to be worth writing. The debug macros keep their own spelling.
+7. **The shell, two utilities, and a session that runs itself.** The shell
+   reads a line, spawns the named program, waits on its completion timeline,
+   and prints the status. One utility that only prints its arguments, and one
+   that reads a file through `fs_server`, so the M1 path stays exercised by
+   the thing built on top of it.
+
+*Done when* an interactive shell runs on both architectures, spawns a
+program as a separate process, and reports its exit status. And the same
+session driven from a pipe rather than a keyboard produces a transcript a
+check compares, because a demonstration that needs a person at a keyboard
+cannot be run twice the same way.
 
 *Would falsify.* **Whether one thread per event source is affordable.** A shell
 and a console service both want to wait on several things at once, and section
 19.3 forces two threads and no shared state where one would have done. This is
 the first real pressure on the decision to have no wait-set, and the first
-honest evidence for or against the trigger written into `PROPOSALS.md`.
+honest evidence for or against the trigger written into `PROPOSALS.md`. The
+evidence has to be a number rather than an impression: threads in the running
+system, and bytes of stack under them, reported the way M2 reported the
+connection pool.
 
-*Size.* Medium, and mostly userland.
+*Watch for.* **The check has to be able to fail, and interactive input is
+the easiest place yet to write one that cannot.** A session fed from a pipe
+arrives faster than a person types and with no gaps, so a driver that drops
+input while no reader is waiting passes the interactive demonstration and
+fails the scripted one, or the reverse. Decide which behaviour is correct,
+write it down, and then break the driver and watch the check fail.
+
+**Two writers to one UART.** The kernel's polled console and the driver's
+transmit path both reach the same device registers, and interleaving them
+produces output that looks like a bug in whatever printed second. This is
+the cost of section 22.4 being permanent, and it is paid with a rule rather
+than with a lock.
+
+**A shell blocks on two things in sequence and must never block on both.**
+Reading a line and joining a child are separate waits, and the blocking
+invariant of section 5 is satisfied only as long as they stay separate. The
+first shell that wants to notice a keystroke while a child runs is the one
+that needs a second thread, and noticing that is part of the answer this
+milestone owes.
+
+*Size.* Medium to large. Mostly userland, but three new operations and an
+interrupt controller per port are not userland at all, and the original
+estimate of medium predated all four.
 
 ### M4. The MMU
 
