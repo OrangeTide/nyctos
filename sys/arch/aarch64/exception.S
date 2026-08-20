@@ -44,9 +44,10 @@ vectors:
     VECTOR_ENTRY el1_fatal
 
 /*
- * The system call convention: x8 holds the call number, x0-x2 the
- * arguments, x0 the result. Only the caller-saved registers need saving,
- * because the C handler preserves the rest.
+ * The system call convention: x0 carries the pointer to the operation
+ * descriptor and x1 the count, per section 23.1, and x0 the result. Only
+ * the caller-saved registers are in the frame, because the C handler
+ * preserves the rest and a system call is a call.
  */
 .balign 16
 el0_sync:
@@ -68,23 +69,35 @@ el0_sync:
      * system registers. A handler may switch threads, and the thread it
      * switches to may take an exception of its own, which would overwrite
      * elr and spsr before this one returns.
+     *
+     * SP_EL0 is in the frame for the same reason and only that reason.
+     * EL1 runs on SP_EL1, so nothing here would disturb it within one
+     * trap; a thread switch is what makes it another thread's stack.
      */
     mrs     x9, elr_el1
     mrs     x10, spsr_el1
     stp     x9, x10, [sp, #168]
+    mrs     x9, sp_el0
+    str     x9, [sp, #184]
 
     mrs     x9, esr_el1
     lsr     x9, x9, #26
     cmp     x9, #0x15               /* SVC from AArch64 */
     b.ne    el0_fatal
 
-    /*
-     * Section 23.1 register mapping for this port: x0 carries the pointer
-     * to the operation descriptor and x1 the count, which is where the C
-     * calling convention already wants them. Nothing else is passed.
-     */
     bl      syscall_handler
     str     x0, [sp, #0]
+
+    /*
+     * System registers first, general registers last. The other order
+     * needs two of them as scratch after they have been restored, which
+     * hands the program its own elr and spsr back in place of x9 and x10.
+     */
+    ldr     x9, [sp, #184]
+    msr     sp_el0, x9
+    ldp     x9, x10, [sp, #168]
+    msr     elr_el1, x9
+    msr     spsr_el1, x10
 
     ldp     x0, x1, [sp, #0]
     ldp     x2, x3, [sp, #16]
@@ -96,10 +109,6 @@ el0_sync:
     ldp     x14, x15, [sp, #112]
     ldp     x16, x17, [sp, #128]
     ldp     x18, x29, [sp, #144]
-
-    ldp     x9, x10, [sp, #168]
-    msr     elr_el1, x9
-    msr     spsr_el1, x10
     ldr     x30, [sp, #160]
     add     sp, sp, #192
     eret

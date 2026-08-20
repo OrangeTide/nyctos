@@ -11,6 +11,7 @@
 #define _SYS_SYSTM_H_
 
 #include <sys/op.h>
+#include <sys/startup.h>
 
 #include <stddef.h>
 
@@ -43,7 +44,8 @@ long syscall_handler(struct sys_op *op, unsigned long count);
 void trap_fatal(unsigned long cause, unsigned long pc) __attribute__((noreturn));
 
 /* sys/arch/<arch>/machdep.S */
-void enter_user(unsigned long entry) __attribute__((noreturn));
+void enter_user(unsigned long entry, const sys_startup_t *startup)
+  __attribute__((noreturn));
 
 /* sys/arch/<arch>/halt.c */
 void machine_halt(int status) __attribute__((noreturn));

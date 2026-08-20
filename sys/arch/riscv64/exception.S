@@ -4,10 +4,14 @@
  */
 
 /*
- * Machine-mode trap entry. The only trap the kernel expects is an
- * environment call from U-mode, which is how a userland program makes a
- * system call. mscratch holds the kernel stack pointer while userland
- * runs, so the trap can swap onto it without trusting the user's sp.
+ * Machine-mode trap entry.
+ *
+ * mscratch carries the whole of the kernel-versus-user distinction on this
+ * port: it holds the running thread's kernel stack pointer while that
+ * thread is in user mode, and zero while it is in the kernel. A trap can
+ * therefore find its stack without trusting the user's sp and without
+ * needing a spare register to decide which case it is in, because the swap
+ * itself answers the question.
  */
 
 .section .text
@@ -15,18 +19,35 @@
 .global trap_entry
 trap_entry:
     /*
-     * No stack swap. Every trap taken so far comes from a kernel thread
-     * and belongs on the stack that thread is already using, which is also
-     * what lets the handler switch threads: the frame stays where it will
-     * be when something switches back.
-     *
-     * The swap through mscratch that a user trap needs, and the matching
-     * one on the way out, return in stage 9 along with user mode. Doing it
-     * now would mean writing a two-path exit for a case that cannot happen.
+     * Swap unconditionally, then look at what came back. A nonzero value
+     * was a parked kernel stack pointer, so this trap came from user mode
+     * and sp now points at the right stack. Zero means the kernel was
+     * already running on its own stack, so the swap is undone and nothing
+     * has moved.
      */
-    addi    sp, sp, -144
+    csrrw   sp, mscratch, sp
+    bnez    sp, 1f
+    csrrw   sp, mscratch, sp
+1:
+    /*
+     * The frame stays on the stack of the thread that took the trap, which
+     * is what lets the handler switch threads: the context is saved where
+     * it will still be when something switches back to it.
+     */
+    addi    sp, sp, -160
     sd      ra, 0(sp)
     sd      t0, 8(sp)
+
+    /*
+     * mscratch now holds the user stack pointer, or zero for a trap that
+     * came from the kernel. Either way it belongs in the frame rather than
+     * in a register, for the same reason mepc does: a thread switch would
+     * otherwise lose it. Clearing it restores the in-kernel invariant.
+     */
+    csrr    t0, mscratch
+    sd      t0, 144(sp)
+    csrw    mscratch, zero
+
     sd      t1, 16(sp)
     sd      t2, 24(sp)
     sd      t3, 32(sp)
@@ -83,7 +104,6 @@ trap_restore:
     csrw    mstatus, t0
 
     ld      ra, 0(sp)
-    ld      t0, 8(sp)
     ld      t1, 16(sp)
     ld      t2, 24(sp)
     ld      t3, 32(sp)
@@ -98,16 +118,36 @@ trap_restore:
     ld      a5, 104(sp)
     ld      a6, 112(sp)
     ld      a7, 120(sp)
-    addi    sp, sp, 144
+
+    /*
+     * MPP in the saved mstatus, still in t0, says where mret will land.
+     * Zero is user mode, and only that case has a stack to swap back to.
+     */
+    srli    t0, t0, 11
+    andi    t0, t0, 3
+    bnez    t0, trap_restore_kernel
+
+    /*
+     * Park the user stack pointer in mscratch, restore the last register,
+     * then swap: sp becomes the user stack and mscratch is left holding
+     * this thread's kernel stack for the next trap. That is the invariant
+     * the entry path above reads.
+     */
+    ld      t0, 144(sp)
+    csrw    mscratch, t0
+    ld      t0, 8(sp)
+    addi    sp, sp, 160
+    csrrw   sp, mscratch, sp
+    mret
+
+trap_restore_kernel:
+    ld      t0, 8(sp)
+    addi    sp, sp, 160
     mret
 
 /*
- * An interrupt. The frame is already on the interrupted thread stack, which
- * is what makes it safe for the handler to switch threads: the context is
- * saved where it will still be when something switches back to it.
- *
- * mepc is not advanced, because an interrupt is not an instruction that
- * has been executed.
+ * An interrupt. mepc is not advanced, because an interrupt is not an
+ * instruction that has been executed.
  */
 trap_interrupt:
     slli    t0, t0, 1               /* drop the interrupt bit */

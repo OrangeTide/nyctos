@@ -4,13 +4,21 @@
  */
 
 /*
- * void enter_user(unsigned long entry)
+ * void enter_user(unsigned long entry, const sys_startup_t *startup)
  *
  * Drops from M-mode to U-mode at the given address and never returns. A
  * single PMP entry covering the whole address space is needed because
  * without one U-mode may access nothing at all. crt1 establishes the user
  * stack itself, so only the kernel's stack pointer is stashed here, in
- * mscratch, for the trap handler to swap back to.
+ * mscratch, which is the invariant trap_entry reads to tell a user trap
+ * from a kernel one.
+ *
+ * The startup record of section 20.4 arrives in a0, which is where crt1
+ * expects it. It is the only thing the program is told.
+ *
+ * MPIE stays clear, so a program cannot be interrupted. That matches the
+ * AArch64 port, where unmasking would need a lower-EL interrupt vector
+ * that is currently fatal.
  */
 
 .section .text
@@ -28,4 +36,5 @@ enter_user:
     csrc    mstatus, t0
 
     csrw    mepc, a0
+    mv      a0, a1
     mret
