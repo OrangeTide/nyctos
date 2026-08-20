@@ -440,7 +440,7 @@ before the MMU rather than after it.
 shell that spawns a utility, waits on its completion timeline, and reports
 status. Enough libc to write the utilities.
 
-*Four things it needs that were not listed, and each is a stage rather than
+*Five things it needs that were not listed, and each is a stage rather than
 a detail.* M2 reached its own goal without any of them.
 
 **No program can spawn another.** M2's three programs are spawned by the
@@ -472,12 +472,26 @@ work under section 27, and it is the first evidence for or against the claim
 that the interrupt path of section 13.2 generalises past the device that was
 easiest to reach.
 
-**libc has neither end of a program's own I/O.** `write()` goes to the debug
-console, which is section 22.4's backdoor and deliberately not a program's
-real output, and `read()` was deleted in M2 along with the other V7 stubs. A
-utility needs both, reaching a console service through a handle it was
-handed at spawn, and the two spellings have to stay distinct or the
-distinction section 22.4 insists on is gone.
+**No program has ever been interrupted.** Both ports enter user mode with
+interrupts masked, deliberately and with the reason written down: the
+AArch64 lower-EL interrupt vector is the fatal entry, so an interrupt taken
+while a program runs would panic, and the RISC-V port leaves `MPIE` clear to
+match. A console driver is a program that waits for a device, so this has to
+be undone on both sides, and undoing it means a thread can now be switched
+out from an interrupt taken in user mode. The discipline for that exists,
+since M2 built it for the system call path, but nothing has ever entered it
+from an interrupt.
+
+**An interrupt a handler cannot finish with.** Section 13.2 requires the
+handler to be done with the device before it advances anything, because
+advancing can switch to a waiter that would otherwise re-enter a still
+asserting device. A timer is finished with by reprogramming it, which the
+kernel does. A UART is finished with by reading the byte, which is driver
+logic and belongs in a process. Nothing in the design resolves that, so this
+milestone has to: the handler silences the source at the controller, and the
+driver unsilences it after draining. That makes an interrupt an object a
+program holds a handle to, which is also half of the missing opcode section
+13.2 admits to.
 
 *Exit and join, which is not death.* A process that exits advances a
 completion timeline, the handle stays valid afterwards and carries the
@@ -487,38 +501,198 @@ is reaped, no slot is reused, and nothing is killed; M7 is still where all of
 that lives. The freezing of a completion timeline into the holder's handle
 slot is part of reaping and goes with it.
 
-*Stages.*
+*Stages.* Eight, ordered so that each leaves something that runs and so
+that the part which can fail for reasons outside this tree comes early.
+The port work is second rather than fourth for that reason: it is the
+only part that depends on hardware nobody here has run this system
+against, and it blocks the console rather than the other way round.
 
-1. **Exit, completion timelines, and join.** The timeline is embedded in the
-   thread and the process per section 10.4, so obtaining it cannot fail, and
-   the wait is the existing fence wait rather than a new primitive. Status is
-   read from the handle separately, since a monotonic counter cannot carry an
-   exit code. This replaces the M2 placeholder that halts the machine on an
-   exit nobody claimed, for children a joiner holds.
-2. **Spawn as an operation.** An image name, a namespace array, and rights
-   checked on every handle it carries. The caller can pass no authority it
-   does not hold, which is the whole of what section 20.4 asks for here.
-3. **Threads a program creates.** A caller-supplied stack, an entry point and
-   one argument. Section 10.2 already says what a thread is; nothing new is
-   being decided, only reached.
-4. **The first external interrupt.** The GIC distributor on AArch64 and a
-   PLIC on RISC-V, with the UART's receive interrupt attached to a timeline
-   by the launcher and the timeline handle handed to the driver, per section
-   19.2. The alternative of handing over the interrupt handle and letting the
-   driver attach is the one that section rejects.
-5. **The console driver, and the service behind it.** One process, two
-   threads: one blocked on the interrupt timeline filling a line buffer, one
-   blocked in receive serving reads and writes over section 25. The kernel's
-   polled console stays exactly as it is, per section 22.4, which means two
-   writers to one device and a rule about which of them may write when.
-6. **libc's two ends.** `read()` and `write()` against the console handle in
-   the startup namespace, and enough formatting and string handling for a
-   utility to be worth writing. The debug macros keep their own spelling.
-7. **The shell, two utilities, and a session that runs itself.** The shell
-   reads a line, spawns the named program, waits on its completion timeline,
-   and prints the status. One utility that only prints its arguments, and one
-   that reads a file through `fs_server`, so the M1 path stays exercised by
-   the thing built on top of it.
+**1. Exit, completion timelines, and join.** *Built.* The timeline is
+embedded in the thread and the process per section 10.4, so obtaining it
+cannot fail, and the wait is the existing fence wait rather than a new
+primitive. `SYS_OP_OBJECT_COMPLETION` hands out a wait-only handle and
+`SYS_OP_PROC_STATUS` reads the code a counter cannot carry. A process
+finishes when its last thread does, which is why threads are counted now
+rather than in stage 4. The M2 placeholder that halts on an unwatched exit
+now asks whether anything holds the completion timeline. Cost: 5632 bytes
+of kernel object memory, which is what embedding two timelines per thread
+and per process comes to.
+
+**2. The first external interrupt.** The riskiest stage and the one with no
+dependencies, so it goes first. It ends with the kernel printing a character
+somebody typed, which is a long way short of a console and is the whole of
+what this stage claims.
+
+- Interrupts unmasked in user mode on both ports: `DAIF` cleared in the
+  `SPSR` that `enter_user` builds, `MPIE` set on RISC-V, and the AArch64
+  lower-EL interrupt vector wired to a real entry rather than the fatal one.
+  That entry needs the `SP_EL0` handling the system call path already has,
+  because an interrupt from user mode can switch threads exactly as a system
+  call can.
+- Routing on AArch64: the distributor programmed for the PL011, which is
+  shared peripheral interrupt 1 and therefore INTID 33 on the virt board.
+- A PLIC on RISC-V, which is the whole controller and not an addition to
+  one: priority, enable for the machine-mode context of hart 0, and threshold,
+  with claim and complete wired into `md_irq_claim` and `md_irq_eoi`. The
+  16550 is source 10 there.
+- One numbering for both. The interrupt table is indexed by `mcause` on
+  RISC-V today, where the machine timer is 7, and PLIC source numbers start
+  again at 1. The two spaces have to stop overlapping before the table has a
+  second occupant.
+- `md_irq_mask`, and the rule it exists for. An interrupt bound to a
+  timeline is masked by the handler before the advance, and stays masked
+  until its driver says otherwise. An interrupt bound to a kernel handler,
+  which is only the timer, is not, because that handler does finish with its
+  device.
+- An interrupt as an object a program can hold: `SYS_OBJ_IRQ` filled in,
+  and `SYS_OP_IRQ_ACK` to unmask one through a handle carrying
+  `SYS_RIGHT_IRQ`. Attaching stays kernel-internal, per section 19.2's
+  preference for the launcher attaching rather than the driver.
+
+*Check.* The kernel waits on the UART receive timeline, reads what arrived,
+and prints it. Typing three characters advances the timeline three times.
+Removing the mask makes the machine wedge in the handler, which is the
+failure this stage exists to prevent, so the check has to be run once with
+the mask removed to see it happen.
+
+**3. Spawn as an operation.** What a shell needs, and no more of section
+24 than that.
+
+- `SYS_OP_PROC_SPAWN`: an image name, a priority, and a namespace array the
+  caller assembles. It returns a handle to the child carrying the rights the
+  parent needs to join it, which stage 1 already defines.
+- Every handle in the array is moved out of the caller's table, per section
+  7.4, and a caller that names a handle it does not hold gets an error rather
+  than a partly built child.
+- A failure that leaves nothing behind. The image is looked up and the array
+  is validated before a process exists, because the alternative is a process
+  half assembled and no way to unmake it before M7.
+- The load slot stays a build-time constant. There is no MMU, so two
+  programs live at once need two slots, and that is what keeps this
+  milestone's shell to one child at a time. Section 15.2 removes it.
+
+*Check.* A program spawns a program, joins it, and reports its status,
+with both of them ordinary members of the boot archive. Spawning with a
+handle the caller does not hold is refused and the caller is still able to
+use the handles it does hold.
+
+**4. Threads a program creates.** Nothing new is being decided here, only
+reached: section 10.2 already says the creator supplies the stack.
+
+- `SYS_OP_THREAD_CREATE`: a stack the caller owns, an entry point, one
+  argument, and a priority. The stack is memory in the program's own image,
+  because the kernel allocates no user memory at any tier.
+- A handle to the new thread, so that `SYS_OP_OBJECT_COMPLETION` reaches a
+  thread and not only a process, which is the arm of stage 1 that has had no
+  caller.
+- `SYS_OP_THREAD_STATUS`, for the same reason.
+- The process thread count from stage 1 stops being decoration: a process
+  with two threads finishes when the second one exits, and that has never
+  been exercised.
+
+*Check.* A program creates a thread, both threads block on different
+objects, and the process completes only when both have exited. The count
+is what makes that check able to fail: without it a process would finish
+when its first thread exited, and a joiner would be released while the
+other was still running.
+
+**5. The console.** One process, two threads, holding the UART.
+
+The roadmap said a driver process and a console service, and this builds
+them as one program. The split costs a rendezvous per line and buys nothing
+until there is a second character device to put behind the same service, and
+a milestone that is measuring what threads cost should not add a process to
+avoid one. Say so plainly rather than quietly, because it is a deviation
+from section 19's shape.
+
+- The receive thread: blocked on the interrupt timeline, draining the FIFO,
+  acknowledging the interrupt, and putting bytes into a line buffer. Echo and
+  the two editing keys a person needs live here, because a line the user
+  cannot correct is a demonstration nobody can drive.
+- The request thread: blocked in receive, serving reads and writes over
+  section 25 on connections it mints itself.
+- A reader waits when there is no line, and that wait is the reply it has not
+  sent yet, per section 12.1. There is no queue and no second buffer of
+  requests, since a console with two readers is not something this milestone
+  has.
+- The transmit path is polled, at the priority of whoever asked. The kernel's
+  own console stays exactly as it is, per section 22.4, which means two
+  writers to one device and a rule saying the kernel's writes are for panics
+  and boot and the driver owns everything else.
+- Its device authority is the register base, compiled in. There is no grant
+  object until M4, and section 19.2 wants one; what Tier 0 has instead is a
+  region the process may already address, so what is written down is the
+  deviation and where it goes.
+
+*Check.* Typing a line while the request thread is blocked in receive
+delivers it, and typing a line before anybody has asked for one delivers it
+too. Those are different paths and the second is the one that gets forgotten.
+The trace of section 22.2 shows both threads blocked on different objects at
+once, which is the shape section 19.3 claims and the first time anything has
+demonstrated it.
+
+**6. libc's two ends.** A program's own input and output, distinct from the
+diagnostics of section 22.4.
+
+- `read()` and `write()` against the console connection found in the startup
+  namespace under `SYS_NS_CONSOLE`, which already has an identifier and has
+  never had a holder.
+- `FS_OP_WRITE` in the protocol header, which the implemented subset does not
+  have. Adding it is the point at which the subset's opcode numbers have to
+  be reconciled with section 25.3, which numbers `READ` 3 and `WRITE` 4 where
+  the implementation numbers `READ` 2. A sparse subset of the real numbering
+  is right; a dense subset of a different numbering is a second protocol.
+- Enough formatting for a utility to be worth writing, and a line reader over
+  `read()`.
+- The debug macros keep their own spelling and their own build switch. A
+  program's real output is one thing and its diagnostics are another, per
+  section 22.4, and the moment `write()` stops going to the backdoor is the
+  moment that distinction becomes real rather than stated.
+
+*Check.* A program that prints through `write()` produces nothing when the
+debug console is compiled out, and the same program's diagnostics disappear
+independently. Both directions matter: an image built without the backdoor
+must still talk to a person.
+
+**7. The shell, and two utilities.** The milestone's stated goal.
+
+- Read a line, split it, match the first word against the boot archive, spawn,
+  join, print the status. That is the whole loop.
+- Two built-ins and no more: one to leave, which is what ends a scripted
+  session, and one to report the last status.
+- A child gets the console by duplicating the shell's connection and moving
+  the duplicate into the child, per section 7.4. The alternative is asking the
+  console for a fresh connection per child, which is one rendezvous per spawn
+  and the same authority; either is defensible and the choice should be
+  recorded rather than absorbed.
+- `echo`, which needs argument passing and nothing else, and `cat`, which
+  reads through `fs_server` so that the M1 path stays exercised by the thing
+  built on top of it.
+- The shell blocks on reading a line and on joining a child, one after the
+  other and never both at once. The first shell that wants a keystroke while
+  a child runs is the one that needs a second thread, and noticing that is
+  part of what this milestone owes.
+
+*Check.* A person types `echo hello`, sees it, and sees the status. Then
+`cat motd`, and the bytes are the ones M1 read.
+
+**8. The session that runs itself.** A demonstration needing a person at a
+keyboard cannot be run twice the same way, and every stage above is checked
+by hand until this exists.
+
+- A canned session piped into the machine's console, ending in the command
+  that leaves the shell, with the kernel halting afterwards as it does now.
+- A `make check` target that runs it on both architectures under a timeout,
+  and compares what came back against a recorded transcript.
+- The comparison starts at a marker line and not at boot. The boot output
+  carries measured values that differ between runs, and a check that compares
+  them is a check that fails for the wrong reason.
+- Input from a pipe arrives faster than a person types and with no gaps
+  between characters, which is a different test of the driver than a person
+  is. Both are run.
+
+*Check.* This stage is the check, so what has to be shown is that it fails:
+change one byte of an expected reply and the target must say so.
 
 *Done when* an interactive shell runs on both architectures, spawns a
 program as a separate process, and reports its exit status. And the same
@@ -533,7 +707,17 @@ the first real pressure on the decision to have no wait-set, and the first
 honest evidence for or against the trigger written into `PROPOSALS.md`. The
 evidence has to be a number rather than an impression: threads in the running
 system, and bytes of stack under them, reported the way M2 reported the
-connection pool.
+connection pool. A thread costs 4320 bytes of kernel object memory before it
+has a user stack, and 4096 of that is the kernel stack of section 8.
+
+**Whether an interrupt that the handler cannot finish with breaks section
+13.2.** The rule that an ISR advances a timeline and returns was written
+against a timer, which the kernel does finish with. A UART is the first
+device where finishing means reading data, and the answer this milestone
+gives is that the handler silences the source instead. If masking and
+acknowledging turns out to need per-device knowledge in the kernel after
+all, then section 13.2 is understating what an interrupt costs, and the
+driver model of section 19 is what pays.
 
 *Watch for.* **The check has to be able to fail, and interactive input is
 the easiest place yet to write one that cannot.** A session fed from a pipe
@@ -541,6 +725,13 @@ arrives faster than a person types and with no gaps, so a driver that drops
 input while no reader is waiting passes the interactive demonstration and
 fails the scripted one, or the reverse. Decide which behaviour is correct,
 write it down, and then break the driver and watch the check fail.
+
+**An interrupt that nothing quiets is a machine that stops responding, not
+a machine that panics.** It is the failure mode with the least information
+attached in the whole milestone, and stage 2 is where it will happen. A
+handler that is entered again before its first invocation returns has
+overwritten the state it would have returned through, so there is nothing
+to print afterwards.
 
 **Two writers to one UART.** The kernel's polled console and the driver's
 transmit path both reach the same device registers, and interleaving them
@@ -555,9 +746,15 @@ first shell that wants to notice a keystroke while a child runs is the one
 that needs a second thread, and noticing that is part of the answer this
 milestone owes.
 
-*Size.* Medium to large. Mostly userland, but three new operations and an
-interrupt controller per port are not userland at all, and the original
-estimate of medium predated all four.
+**Every process is watched or the machine halts.** Stage 1 made an
+unclaimed exit fatal, which is right while the kernel spawns everything and
+wrong the moment a shell spawns a child and gets bored. The shell joins
+every child it starts, and the day it does not, that is the rule it meets.
+
+*Size.* Medium to large. Mostly userland, but five new operations, an
+interrupt controller per port, and user mode taking interrupts for the first
+time are not userland at all, and the original estimate of medium predated
+all of it.
 
 ### M4. The MMU
 
