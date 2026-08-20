@@ -80,11 +80,12 @@ open at once, and a compound never draws from it.
 Threads now carry an explicit wait state and the kernel keeps a ring of
 blocking transitions, so the stage checks that the two programs actually
 blocked against each other rather than inferring it from the byte counts.
-That check found a scheduler defect: a server whose base priority exceeds
-its client's corrupts the run queues. M2 has the reproduction.
+That check found and fixed a scheduler defect: a server whose base
+priority exceeded its client's corrupted the run queues. M2 has the
+account.
 
 What is left is a statement of what Tier 0 checks and what it trusts on a
-descriptor crossing the boundary, a general halt on exit, and that defect.
+descriptor crossing the boundary, and a general halt on exit.
 
 The programs cannot print. There is no console for user code, so results
 come back as exit status. M2 says why that is a decision rather than an
@@ -297,9 +298,14 @@ fs_batch   read 31 bytes in 1 rendezvous, 0 connections
   and scatter-gather and are deferred with them to M6.
 - **Exit.** `SYS_OP_THREAD_EXIT` records a status and takes the thread off
   the scheduler. Nothing else, per the note below.
+- **The debug console of section 22.4.** A write that takes no handle,
+  compiled out by default and announced at boot when it is not. It is
+  ambient authority and the section says so; a console service reached
+  through a handle is what replaces it, in M3. The V7-numbered libc stubs
+  went with it, having never worked.
 
 *What is left.* Two things, neither of which can falsify a design
-decision, and one defect.
+decision.
 
 - **A statement of what Tier 0 checks and what it trusts** on a descriptor
   crossing the boundary, and the register and memory guarantees of section
@@ -313,53 +319,48 @@ decision, and one defect.
 **anything to do with death**. Programs run to completion or the system
 halts. See below.
 
-*A defect this found, not yet fixed.* **A server whose base priority
-exceeds its client's corrupts the scheduler.**
+*A defect this found, and fixed.* **A server whose base priority exceeded
+its client's corrupted the run queues.**
 
-`channel_send` hands the message to a waiting server and calls
-`sched_ready` on it, and only then marks itself blocked and calls
-`sched_block`. `sched_ready` dispatches immediately when the readied
-thread outranks the running one, per section 11.3, so in that case the
-server runs before the sender has blocked. The sender was enqueued by that
-preemption and is `THREAD_READY`; the server replies and calls
-`sched_ready` on it again, and `enqueue` panics with "made runnable while
-already runnable".
+`channel_send` handed the message over and called `sched_ready` on the
+server, which dispatches at once when the readied thread outranks the
+running one. The server ran, replied, and readied a sender that the
+preemption had already queued and that had never reached `sched_block`.
 
-Reproduced by raising `fs_server` above `fs_client` in the stage and
-running it. Nothing exercises it otherwise, and donation does not: a
-donated server is raised to exactly its client's priority, and equal
-priority does not preempt.
+Found by raising `fs_server` above `fs_client` while testing the tracer,
+which is the whole argument for building the tracer. Nothing else reaches
+it: donation raises a server to exactly its client's priority, and equal
+priority does not preempt, so only a base priority above the client's gets
+there.
 
-The fix is not a line. What has to be atomic is "the peer becomes runnable
-and the sender becomes blocked", and the mechanism for that is
-`sched_defer`, which `sched_block` refuses to run inside for a stated
-reason: a deferral handed across a switch would leave whatever runs next
-not preempting when it should. Reordering does not help either, since the
-sender cannot be marked blocked before readying the peer without
-`sched_ready` enqueueing a blocked thread. It wants a scheduler change
-with the nesting thought through, and doing it inside an unrelated commit
-is how the two-paths-ending-the-same-wait faults of M1 happened.
+`sched_ready_nopreempt` makes a thread runnable and takes no scheduling
+decision, for a caller that is about to take it in `sched_block`. A server
+at 26 serving a client at 22 is now a permanent check, and it panics
+without the fix.
 
-Fix before M3, which is the first milestone with a program whose priority
-relative to its server is not a demo constant.
+**The first estimate of this was wrong and is worth recording as such.** It
+said the fix needed a scheduler change with deferral nesting thought
+through. It did not: `sched_ready` does two things and this caller wants
+one of them, and separating them does not touch deferral at all. The estimate came
+from reading `sched_defer` as the only tool for making two scheduler
+operations atomic, rather than asking whether the second operation was
+needed here.
 
-*A loose end this created.* libc still carries V7-numbered stubs for
-`open`, `read`, `write` and `close`, which pass a call number where the
-trap path expects a descriptor pointer and a count. They are the only
-thing `puts` stands on, so the programs report by exit status and say
-nothing. Either the stubs go and programs stay silent until M3 has a
-console, or a console arrives early. It should be settled deliberately
-rather than by whoever next needs to print something.
+*A loose end this created, and closed.* libc carried V7-numbered stubs for
+`open`, `read`, `write` and `close` that passed a call number where the
+trap path expects a descriptor pointer and a count, so they would have
+failed had anything called them. The debug console settled it: `write`
+goes to the console, the other three are deleted rather than left as
+plausible-looking traps, and there are no file descriptors to pretend
+otherwise about.
 
 *Done when* two programs load and run as separate processes, the client
 walks a directory handle it was given at spawn, reads the file, prints it,
 and the same read done as one compound request produces the same bytes in
 one rendezvous instead of three.
 
-Two of the three are done, and the third will not be met as written: the
-client reports by exit status rather than printing, for the reason above,
-and printing is an M3 capability rather than an M2 one. The clause should
-have said "reports" rather than "prints".
+Met, including the printing, which the debug console of section 22.4 made
+possible after this clause had been written off as unmeetable.
 
 *On death, deliberately.* When a process exits, `SYS_OP_THREAD_EXIT`
 records a status and takes the thread off the scheduler. Nothing is
@@ -421,11 +422,12 @@ for two is refused before any of it runs. And the two clients report the
 same numbers in either order, which is what makes the pool measurement
 mean anything: `highwater` is monotonic, so without a reset whichever ran
 second could not raise it and would have reported zero connections even if
-it allocated one.
+it allocated one. The high-priority-server check panics without the
+scheduler fix, and the debug console leaves no banner, no program output
+and a still-passing stage when it is compiled out.
 
-*Size.* Small, from large. What remains is a paragraph of specification,
-a generalised halt, and the scheduler defect above, which is the only
-part of it that is work rather than tidying.
+*Size.* Small, from large. What remains is a paragraph of specification
+and a generalised halt.
 
 ### M3. A System You Can Talk To
 
