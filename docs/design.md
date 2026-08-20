@@ -474,7 +474,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Paging scope | Shared library text. No copy-on-write, no swap. |
 | Loading | XIP from flash. Optional compile-time RAM loader. |
 | Kernel memory | Static per-tier object pools. No kernel heap. Permanent. |
-| Identifier layout | 20-bit index, 44-bit generation, so 32-bit fields carry generation too. |
+| Identifier layout | One machine word: index low, generation high, split sized to the pools per word size. |
 | Mount table | In the C library, not the kernel. |
 | Naming | Handle-relative only. No global namespace, no absolute paths, no ambient root. |
 | Namespace handoff | Named directory handles passed at spawn, consumed by libc like `envp`. |
@@ -559,15 +559,28 @@ Every kernel object is referenced through a per-process handle table. Channels, 
 
 ### 7.1 Representation
 
-Every identifier is 64 bits: a **20-bit table index** in the low bits and a **44-bit generation** above it, incremented when a slot is reused. The generation costs nothing and buys use-after-close detection, since a stale identifier names a valid index whose generation no longer matches and is rejected with `SYS_ERR_STALE`. This is what makes reply-by-thread-id safe against a client dying and its id being recycled before the server replies.
+**An identifier is one machine word: a table index in the low bits and a generation above it**, incremented when a slot is reused. The generation costs nothing and buys use-after-close detection, since a stale identifier names a valid index whose generation no longer matches and is rejected with `SYS_ERR_STALE`. This is what makes reply-by-thread-id safe against a client dying and its id being recycled before the server replies.
 
-The 20/44 split rather than an even 32/32 is deliberate, and the reason is not the index range. Two places in this document must compress an identity into 32 bits: the pulse value field (section 10.5) and the priority-inheriting futex word (section 21.1). With a 20-bit index, those 32 bits carry the index **and generation bits alongside it**, so both become self-validating and neither can mistake a recycled slot for the original. With a 32-bit index neither could, and each would have needed its own answer to the same problem.
+**The split is sized to the pools, so it differs by word size.**
+
+| Word size | Index | Generation | Slots per pool |
+| --------- | ----- | ---------- | -------------- |
+| 64-bit | 20 | 44 | 1,048,576 |
+| 32-bit | 10 | 22 | 1,024 |
+
+Twenty bits of index on a part whose entire system holds a few dozen objects would spend half the word describing a range no configuration of that part could reach. Those bits are worth more as generation, which is where they defend against something that can actually happen. A thousand slots per pool is still an order of magnitude beyond what a design with `max_threads` in the tens will configure, and section 8 makes that number a build-time decision that a static assertion checks rather than a limit anything discovers at runtime.
+
+**Neither split is close to the hazard.** Aliasing requires one slot to be recycled through the entire generation range while a stale identifier naming it is still held, which is four million reuses in the narrower case.
+
+**Neither split is an even division, and on a 64-bit build that is the whole point.** Two places in this document compress an identity into 32 bits: the pulse value field (section 10.5) and the priority-inheriting futex word (section 21.1). On a 64-bit build those are truncations, and the 20/44 split is what makes them carry the index **and generation bits alongside it**, so both are self-validating and neither can mistake a recycled slot for the original. With a 32-bit index neither could, and each would have needed its own answer to the same problem.
 
 The two truncations differ slightly. `SYS_ID_TAG32` keeps 12 generation bits and is what a pulse carries. `SYS_ID_TAG31` keeps 11, because the futex word must reserve its top bit for the waiters flag and cannot widen to 64 bits, since Tier 0 targets have no 64-bit atomic instruction.
 
-A false match then requires thousands of recycles of one slot inside the window between a value being written and being read, which is bounded and absurd. The authoritative generation remains the full 44 bits in the identifier itself, so the truncation costs nothing outside those two windows.
+A false match then requires thousands of recycles of one slot inside the window between a value being written and being read, which is bounded and absurd. The authoritative generation remains the full width in the identifier itself, so the truncation costs nothing outside those two windows.
 
-Index range is not a constraint under static pools. 20 bits is 1,048,575 objects per table, three orders of magnitude beyond any plausible `max_threads` or `max_handles_per_proc`.
+**On a 32-bit build both compressions get stronger rather than weaker.** An identifier is already 32 bits, so `SYS_ID_TAG32` is the identifier and no information is lost at all; `SYS_ID_TAG31` gives up one bit to the waiters flag and still carries twenty-one generation bits against the eleven a 64-bit build has. The part with the least memory is the one whose compressed identities are the most exact, which is the opposite of the usual direction and follows from sizing the split to the pools.
+
+**Handles are opaque to a program.** The split is the kernel's, and the only operations userland performs on a handle are passing it and comparing it to `SYS_HANDLE_INVALID`. Nothing above the kernel may extract an index, and a program that does is reading a layout no part of this interface promises.
 
 ### 7.2 Rights
 
@@ -758,7 +771,7 @@ Cancellation is **prompt**, and the interesting case is a client cancelled after
 
 The pulse in step 2 is what makes prompt cancellation safe. Without it a server only learns at reply time, and a server that ignores a failed reply leaks the request's resources permanently. Deferring cancellation until the server replies would avoid the issue but would make cancellation unbounded when a server is wedged, which defeats the purpose during restart.
 
-**Why the pulse carries a tag rather than a bare index.** A pulse value is 32 bits and a thread id is 64, so the identity must be compressed. A bare index is not sufficient: the client is cancelled, the kernel enqueues the pulse, the slot is recycled to a new thread which sends to the same server, and the server matches the late pulse against the new request and releases the wrong one. That is the ordinary ABA problem. `SYS_ID_TAG32` carries the index plus 12 bits of generation, so a false match would require 4096 recycles of that slot between enqueue and dequeue. The server matches by comparing `SYS_ID_TAG32(client_id)` against the pulse value, using the id it already holds. This is the reason for the 20/44 identifier layout in section 7.1.
+**Why the pulse carries a tag rather than a bare index.** A pulse value is 32 bits, so on a 64-bit build the identity must be compressed; on a 32-bit build it fits whole and the paragraph below describes a hazard that build does not have. A bare index is not sufficient: the client is cancelled, the kernel enqueues the pulse, the slot is recycled to a new thread which sends to the same server, and the server matches the late pulse against the new request and releases the wrong one. That is the ordinary ABA problem. `SYS_ID_TAG32` carries the index plus 12 bits of generation, so a false match would require 4096 recycles of that slot between enqueue and dequeue. The server matches by comparing `SYS_ID_TAG32(client_id)` against the pulse value, using the id it already holds. This is why the 64-bit split leaves generation bits below bit 32, per section 7.1.
 
 **Process termination cancels every thread.** `sys_proc_kill()` promptly unblocks all threads of the target process exactly as if each had been cancelled individually, including delivering the `DEAD_OWNER` pulse to every server holding one of their requests. This is the path cohort restart actually takes, and it has to work without per-thread handles: a supervisor holds a handle to the cohort's processes and no handles at all to the threads inside them.
 
@@ -1652,7 +1665,7 @@ A futex offering only `WAIT` and `WAKE` cannot implement priority inheritance, b
 
 `SYS_FUTEX_LOCK_PI` and `SYS_FUTEX_UNLOCK_PI` use the owner-in-word protocol: the low bits of the futex word identify the owning thread and a waiters bit is set under contention. The kernel reads the owner from the word and donates to it.
 
-Because the futex word is 32 bits and `sys_thread_id_t` is 64, the word carries `SYS_ID_TAG31` of the owner: a 20-bit index plus 11 bits of generation, with `SYS_FUTEX_WAITERS` in the top bit. This is the second beneficiary of the identifier layout in section 7.1, and arguably the stronger case of the two. A word carrying only an index cannot distinguish a lock owner from a later thread that inherited its slot, so the kernel would have to treat the word as a hint and validate against its own table on every operation. With generation bits present the word identifies an incarnation on its own, and one ABA argument covers pulses and futexes rather than each needing its own.
+Because the futex word is 32 bits and cannot widen, it carries `SYS_ID_TAG31` of the owner: the index plus as many generation bits as fit below `SYS_FUTEX_WAITERS` in the top bit, which is eleven on a 64-bit build and twenty-one on a 32-bit one. This is the second beneficiary of the identifier layout in section 7.1, and arguably the stronger case of the two. A word carrying only an index cannot distinguish a lock owner from a later thread that inherited its slot, so the kernel would have to treat the word as a hint and validate against its own table on every operation. With generation bits present the word identifies an incarnation on its own, and one ABA argument covers pulses and futexes rather than each needing its own.
 
 The futex uses a 31-bit tag where the pulse uses 32 because it must reserve the top bit for the waiters flag. The word stays 32 bits rather than widening to hold a full identifier because Tier 0 targets have no 64-bit atomic instruction.
 
@@ -2135,30 +2148,47 @@ typedef uint64_t  sys_deadline_t;
 #define SYS_DEADLINE_NOW      ((sys_deadline_t)0)          /* poll, never block */
 #define SYS_DEADLINE_NEVER    ((sys_deadline_t)UINT64_MAX) /* block forever */
 
-/* All identifiers carry a 20-bit table index in the low bits and a 44-bit
+/* An identifier is one machine word: a table index in the low bits and a
  * generation above it, making use-after-free detectable rather than silently
  * operating on a recycled slot.
  *
- * The 20/44 split exists so the low 32 bits carry the index plus 12 bits of
- * generation. Two places in this document must fit an identity into 32
- * bits: the pulse value field and the PI futex word. Both carry generation
- * bits alongside the index, so neither is vulnerable to a slot being
- * recycled between when a value is written and when it is read.
- * See sections 10.5 and 21.1. */
-typedef uint64_t  sys_handle_t;
-typedef uint64_t  sys_thread_id_t;
+ * The split is sized to the pools and therefore differs by word size:
+ * 20 and 44 on a 64-bit build, 10 and 22 on a 32-bit one. Twenty bits of
+ * index on a part holding a few dozen objects would describe a range no
+ * configuration of it could reach, and those bits are worth more as
+ * generation. See section 7.1.
+ *
+ * On a 64-bit build the split also exists so the low 32 bits carry the
+ * index plus 12 bits of generation. Two places in this document must fit
+ * an identity into 32 bits: the pulse value field and the PI futex word.
+ * Both carry generation bits alongside the index, so neither is vulnerable
+ * to a slot being recycled between when a value is written and when it is
+ * read. On a 32-bit build an identifier is already 32 bits and the pulse
+ * value carries all of it. See sections 10.5 and 21.1.
+ *
+ * A handle is opaque above the kernel. SYS_ID_INDEX and SYS_ID_GENERATION
+ * are here to document the layout, not to invite a program to read it. */
+typedef uintptr_t sys_handle_t;
+typedef uintptr_t sys_thread_id_t;
 /* Identity for introspection and reporting only. Operations take a handle,
  * because a handle carries authority and an identity does not. See section 5. */
-typedef uint64_t  sys_proc_id_t;
+typedef uintptr_t sys_proc_id_t;
 
-#define SYS_ID_INDEX_BITS     20
-#define SYS_ID_INDEX_MAX      ((1u << SYS_ID_INDEX_BITS) - 1u)   /* 1,048,575 */
+#if UINTPTR_MAX > 0xFFFFFFFFu
+#define SYS_ID_INDEX_BITS     20    /* 1,048,576 slots per pool */
+#define SYS_ID_GEN_BITS       44
+#else
+#define SYS_ID_INDEX_BITS     10    /* 1,024 slots per pool */
+#define SYS_ID_GEN_BITS       22
+#endif
+
+#define SYS_ID_INDEX_MAX      (((uintptr_t)1 << SYS_ID_INDEX_BITS) - 1u)
 
 #define SYS_HANDLE_INVALID    ((sys_handle_t)0)
 #define SYS_THREAD_INVALID    ((sys_thread_id_t)0)
 
 #define SYS_ID_INDEX(id)      ((uint32_t)((id) & SYS_ID_INDEX_MAX))
-#define SYS_ID_GENERATION(id) ((uint64_t)((id) >> SYS_ID_INDEX_BITS))
+#define SYS_ID_GENERATION(id) ((uintptr_t)((id) >> SYS_ID_INDEX_BITS))
 
 /* Index plus generation, truncated to fit where a full identifier cannot.
  * TAG32 (index + 12 generation bits) is carried in the pulse value field.
@@ -2613,7 +2643,8 @@ sys_err_t sys_msg_reply(sys_thread_id_t client, const sys_ipc_msg_t *reply);
  * id: index plus 12 bits of generation. A server matches it against
  * SYS_ID_TAG32(client_id) for the id it already holds. A bare index would be
  * vulnerable to the slot being recycled between enqueue and dequeue, which is
- * why identifiers use the 20/44 layout. See sections 7.1 and 10.5. */
+ * why a 64-bit build splits the identifier so that generation bits fall
+ * below bit 32. See sections 7.1 and 10.5. */
 typedef struct sys_pulse {
     uint16_t  code;
     uint16_t  _reserved;
@@ -2697,8 +2728,9 @@ sys_err_t sys_mem_lock(sys_handle_t proc);
 #define SYS_FUTEX_LOCK_PI       2
 #define SYS_FUTEX_UNLOCK_PI     3
 
-/* PI protocol: the word holds SYS_ID_TAG31 of the owning thread, a 20-bit
- * index plus 11 bits of generation, with SYS_FUTEX_WAITERS in the top bit.
+/* PI protocol: the word holds SYS_ID_TAG31 of the owning thread: the index
+ * plus as many generation bits as fit below SYS_FUTEX_WAITERS in the top
+ * bit, which is 11 on a 64-bit build and 21 on a 32-bit one.
  * The generation bits are what let the word identify an incarnation rather
  * than merely a slot, so a thread that inherits a dead owner's index does not
  * inherit its lock. An owner that dies leaves the lock inconsistent and the
@@ -2873,7 +2905,7 @@ Offered because they are the obvious choices and a team should not have to re-de
 
 **Ready queue.** A bitmap of non-empty priority levels plus a FIFO per level. Selecting the highest runnable thread is a count-leading-zeros on the bitmap and a head-of-list read. At 32 levels the bitmap is one word, which is why section 11.1 suggests 32 for Tier 0.
 
-**Handle table.** A flat array indexed by the handle's index field, each slot holding a generation counter, an object pointer, a rights mask, and a free-list link. Allocation pops the free list, and closing pushes and increments the generation. The 20-bit index of section 7.1 bounds the array; a sparse table only pays off at sizes a static configuration will not reach.
+**Handle table.** A flat array indexed by the handle's index field, each slot holding a generation counter, an object pointer, a rights mask, and a free-list link. Allocation pops the free list, and closing pushes and increments the generation. The index field of section 7.1 bounds the array; a sparse table only pays off at sizes a static configuration will not reach.
 
 **Receive queue.** For the small number of blocked senders a real system has, an insertion-sorted linked list ordered by effective priority is simpler than a heap and faster in practice. Note *effective* priority: a donated priority changes a blocked sender's queue position, so the insertion point can move while it waits.
 

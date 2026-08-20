@@ -28,8 +28,18 @@
 
 #include <stdint.h>
 
+/*
+ * A handle is one pointer-width word. The kernel splits it into a slot
+ * index and a generation, per section 7.1, but that split is the kernel's
+ * business: to a program a handle is opaque and the only operations on it
+ * are passing it and comparing it to SYS_HANDLE_INVALID.
+ *
+ * Pointer width rather than a fixed 64 bits because the split is sized to
+ * the pools, and a part whose whole system holds a few dozen objects
+ * should not carry a million slots of index in every message.
+ */
 typedef int32_t   sys_err_t;
-typedef uint64_t  sys_handle_t;
+typedef uintptr_t sys_handle_t;
 
 /*
  * A handle value that names nothing. Zero, so a zeroed structure carries
@@ -138,7 +148,9 @@ typedef struct sys_op {
  */
 #define SYS_IPC_INLINE_BYTES    64
 
-typedef uint64_t sys_thread_id_t;
+/* A reply token, carrying a thread index and generation. Not a handle:
+ * it confers no authority, per section 5. */
+typedef uintptr_t sys_thread_id_t;
 
 typedef struct sys_msg {
     uint32_t        flags;

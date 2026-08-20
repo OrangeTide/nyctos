@@ -10,7 +10,7 @@
  * contains, so this is the only place a reference to a kernel object is
  * turned into permission to act on it.
  *
- * Handle values carry the same 20-bit index and 44-bit generation as pool
+ * Handle values carry the same index and generation split as pool
  * identifiers, so a handle held across a close names a valid index whose
  * generation no longer matches and is rejected rather than reaching
  * whatever now occupies the slot.
@@ -32,7 +32,7 @@
 
 struct handle_slot {
     void       *h_object;
-    uint64_t    h_gen;
+    sys_id_t    h_gen;
     uint32_t    h_type;         /* SYS_OBJ_* */
     uint32_t    h_rights;
     uint32_t    h_next;         /* free list link, or SYS_POOL_NIL */

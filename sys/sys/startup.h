@@ -119,7 +119,7 @@ sys_ns_find(const sys_handle_t *ns, uint32_t words, sys_ns_id_t id)
     return SYS_HANDLE_INVALID;
 }
 
-_Static_assert(sizeof(sys_startup_t) == 40,
-  "sys_startup_t is an ABI structure and must stay 40 bytes");
+_Static_assert(sizeof(sys_startup_t) == 16 + 3 * sizeof(uintptr_t),
+  "sys_startup_t is an ABI structure: four words then three pointers");
 
 #endif /* _SYS_STARTUP_H_ */

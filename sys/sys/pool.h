@@ -13,9 +13,21 @@
  * longer matches and is rejected rather than silently naming the new
  * occupant. See design.md sections 7.1 and 8.
  *
- * An identifier is 64 bits: a 20-bit slot index in the low bits and a
- * 44-bit generation above it. Generations start at 1, so an all-zero
+ * An identifier is one pointer-width word: a slot index in the low bits
+ * and a generation above it. Generations start at 1, so an all-zero
  * identifier is never valid and zeroed memory does not name slot 0.
+ *
+ * The split differs by word size because the pools do. Twenty bits of
+ * index is a million slots, which is right for a system whose pools are
+ * sized in thousands and absurd for a part holding a few dozen objects in
+ * total: it would spend half the word describing a range no configuration
+ * of that part could reach. The narrower split spends those bits on
+ * generation instead, where they are what makes a stale identifier safe.
+ *
+ * Both splits leave far more generation than the hazard needs. Aliasing
+ * requires one slot to be recycled through the whole generation range
+ * while a stale identifier naming it is still being held, which is four
+ * million reuses in the narrow case.
  */
 
 #ifndef _SYS_POOL_H_
@@ -25,17 +37,26 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef uint64_t sys_id_t;
+typedef uintptr_t sys_id_t;
 
 #define SYS_ID_INVALID          ((sys_id_t)0)
 
+#if UINTPTR_MAX > 0xffffffffu
 #define SYS_ID_INDEX_BITS       20
-#define SYS_ID_INDEX_MASK       ((sys_id_t)((1u << SYS_ID_INDEX_BITS) - 1))
 #define SYS_ID_GEN_BITS         44
-#define SYS_ID_GEN_MASK         ((((sys_id_t)1 << SYS_ID_GEN_BITS) - 1))
+#else
+#define SYS_ID_INDEX_BITS       10
+#define SYS_ID_GEN_BITS         22
+#endif
+
+_Static_assert(SYS_ID_INDEX_BITS + SYS_ID_GEN_BITS == sizeof(sys_id_t) * 8,
+  "the index and generation must together fill an identifier exactly");
+
+#define SYS_ID_INDEX_MASK       ((sys_id_t)(((sys_id_t)1 << SYS_ID_INDEX_BITS) - 1))
+#define SYS_ID_GEN_MASK         ((sys_id_t)(((sys_id_t)1 << SYS_ID_GEN_BITS) - 1))
 
 /* One more than the largest index a pool may hold. */
-#define SYS_POOL_MAX_SLOTS      (1u << SYS_ID_INDEX_BITS)
+#define SYS_POOL_MAX_SLOTS      ((uint32_t)1 << SYS_ID_INDEX_BITS)
 
 /* Free-list terminator. Not a valid slot index, since a pool may never hold
  * SYS_POOL_MAX_SLOTS entries. */
@@ -47,16 +68,16 @@ sys_id_index(sys_id_t id)
     return (uint32_t)(id & SYS_ID_INDEX_MASK);
 }
 
-static inline uint64_t
+static inline sys_id_t
 sys_id_gen(sys_id_t id)
 {
     return (id >> SYS_ID_INDEX_BITS) & SYS_ID_GEN_MASK;
 }
 
 static inline sys_id_t
-sys_id_make(uint32_t index, uint64_t gen)
+sys_id_make(uint32_t index, sys_id_t gen)
 {
-    return ((sys_id_t)(gen & SYS_ID_GEN_MASK) << SYS_ID_INDEX_BITS) |
+    return ((gen & SYS_ID_GEN_MASK) << SYS_ID_INDEX_BITS) |
       ((sys_id_t)index & SYS_ID_INDEX_MASK);
 }
 
@@ -65,7 +86,7 @@ sys_id_make(uint32_t index, uint64_t gen)
  * carries no pool machinery of its own.
  */
 struct pool_slot {
-    uint64_t gen;               /* generation, masked to SYS_ID_GEN_BITS */
+    sys_id_t gen;               /* generation, masked to SYS_ID_GEN_BITS */
     uint32_t next;              /* next free slot, or SYS_POOL_NIL */
     bool     inuse;
 };

@@ -23,6 +23,26 @@ POOL_STORAGE(timelines, struct timeline, SYS_MAX_TIMELINES);
 POOL_STORAGE(timers, struct timer, SYS_MAX_TIMERS);
 POOL_STORAGE(programs, struct program, SYS_MAX_PROGRAMS);
 
+/*
+ * Every pool has to fit the index field of an identifier, and pool_init()
+ * checks that at boot. It is a build-time fact, though, so it is also
+ * checked here: the ceiling is a thousand slots on a 32-bit part rather
+ * than a million on a 64-bit one, which makes it a bound a configuration
+ * could actually cross.
+ */
+#define POOL_FITS(n)  _Static_assert((n) > 0 && (n) < SYS_POOL_MAX_SLOTS, \
+  #n " does not fit the index field of an identifier; see sys/pool.h")
+
+POOL_FITS(SYS_MAX_PROCESSES);
+POOL_FITS(SYS_MAX_THREADS);
+POOL_FITS(SYS_MAX_CHANNELS);
+POOL_FITS(SYS_MAX_CONNECTIONS);
+POOL_FITS(SYS_MAX_GRANTS);
+POOL_FITS(SYS_MAX_TIMELINES);
+POOL_FITS(SYS_MAX_TIMERS);
+POOL_FITS(SYS_MAX_PROGRAMS);
+POOL_FITS(SYS_MAX_HANDLES_PER_PROC);
+
 static struct pool proc_p;
 static struct pool thread_p;
 static struct pool channel_p;
