@@ -77,10 +77,14 @@ Batching pays, and the second column is why rather than the first.
 Section 25.2 makes the connection pool a build-time bound on every file
 open at once, and a compound never draws from it.
 
+Threads now carry an explicit wait state and the kernel keeps a ring of
+blocking transitions, so the stage checks that the two programs actually
+blocked against each other rather than inferring it from the byte counts.
+That check found a scheduler defect: a server whose base priority exceeds
+its client's corrupts the run queues. M2 has the reproduction.
+
 What is left is a statement of what Tier 0 checks and what it trusts on a
-descriptor crossing the boundary, introspection enough to show which side
-of a rendezvous was blocked, and a general halt on exit. None of it can
-falsify anything.
+descriptor crossing the boundary, a general halt on exit, and that defect.
 
 The programs cannot print. There is no console for user code, so results
 come back as exit status. M2 says why that is a decision rather than an
@@ -279,6 +283,12 @@ fs_batch   read 31 bytes in 1 rendezvous, 0 connections
   server is handed its receive handle at spawn and creates nothing,
   because there is no operation for creating a channel and there should
   not be.
+- **Blocked-state introspection.** Threads carry an explicit wait state
+  and a fixed ring records transitions, which is the smallest thing
+  section 22.2 means by enough to build a tracer. A rendezvous cannot be
+  observed by sampling, since whichever thread samples is running. Not
+  `sys_stat_read`, which needs thread handles and a supervisor to hold
+  them; that is M9.
 - **Compound requests, section 25.7.** Walk and read in one message, with
   implicit linear chaining and abort at the first failure. Bulk data moved
   to a buffer field on the message rather than a grant, which is a
@@ -288,23 +298,50 @@ fs_batch   read 31 bytes in 1 rendezvous, 0 connections
 - **Exit.** `SYS_OP_THREAD_EXIT` records a status and takes the thread off
   the scheduler. Nothing else, per the note below.
 
-*What is left.* Three things, none of which can falsify a design decision.
+*What is left.* Two things, neither of which can falsify a design
+decision, and one defect.
 
 - **A statement of what Tier 0 checks and what it trusts** on a descriptor
   crossing the boundary, and the register and memory guarantees of section
   23.4. There is no address space to validate a user pointer against, so
   what is owed is the statement rather than the check. Section 23.2's real
   test waits for the MMU.
-- **Two programs blocking against each other under observation.** The
-  rendezvous plainly happens, but nothing reports which side was
-  SEND-blocked and which REPLY-blocked, so the output would look the same
-  if it did not. See *Watch for*.
 - **Halt on exit** as a general rule rather than the boot thread waiting
   on processes it knows the names of.
 
 *Not needed.* The MMU, cohorts, SMP, paging, the submission engine, and
 **anything to do with death**. Programs run to completion or the system
 halts. See below.
+
+*A defect this found, not yet fixed.* **A server whose base priority
+exceeds its client's corrupts the scheduler.**
+
+`channel_send` hands the message to a waiting server and calls
+`sched_ready` on it, and only then marks itself blocked and calls
+`sched_block`. `sched_ready` dispatches immediately when the readied
+thread outranks the running one, per section 11.3, so in that case the
+server runs before the sender has blocked. The sender was enqueued by that
+preemption and is `THREAD_READY`; the server replies and calls
+`sched_ready` on it again, and `enqueue` panics with "made runnable while
+already runnable".
+
+Reproduced by raising `fs_server` above `fs_client` in the stage and
+running it. Nothing exercises it otherwise, and donation does not: a
+donated server is raised to exactly its client's priority, and equal
+priority does not preempt.
+
+The fix is not a line. What has to be atomic is "the peer becomes runnable
+and the sender becomes blocked", and the mechanism for that is
+`sched_defer`, which `sched_block` refuses to run inside for a stated
+reason: a deferral handed across a switch would leave whatever runs next
+not preempting when it should. Reordering does not help either, since the
+sender cannot be marked blocked before readying the peer without
+`sched_ready` enqueueing a blocked thread. It wants a scheduler change
+with the nesting thought through, and doing it inside an unrelated commit
+is how the two-paths-ending-the-same-wait faults of M1 happened.
+
+Fix before M3, which is the first milestone with a program whose priority
+relative to its server is not a demo constant.
 
 *A loose end this created.* libc still carries V7-numbered stubs for
 `open`, `read`, `write` and `close`, which pass a call number where the
@@ -351,13 +388,24 @@ were wrong and building it found them: an entry index placed in the field
 a read needs for its file position, and a close entry that does nothing
 because the server releases an intermediate node when it replies.
 
-*Watch for.* **The scheduler is the part most likely to pass while testing
-less than it claims.** A demonstration where one process happens to run to
-completion before the other starts exercises no blocking at all, and looks
-identical in the output. The client must be observed blocked in send while
-the server runs, and the server blocked in receive while the client works,
-or the milestone has not been demonstrated. This is the weakest part of
-the stage and the reason introspection is still on the list above.
+*Watch for.* **The scheduler was the part most likely to pass while
+testing less than it claimed**, and it now does not. A demonstration where
+one process runs to completion before the other starts exercises no
+blocking at all and produces identical byte counts, so the stage checks
+the states each thread passed through rather than inferring them from the
+result. `fs_client` must queue behind a busy server and `fs_batch` must
+not, and claiming otherwise for either fails the stage.
+
+The trace of a three-message read is the shape section 12.1 describes:
+
+```
+fs_client  reply-blocked      the server was waiting, so this never queued
+fs_client  send-blocked       the server was busy; this one did
+fs_client  reply-blocked      taken from the queue without running
+fs_client  send-blocked
+fs_client  reply-blocked
+fs_server  recv-blocked       nothing left to serve
+```
 
 **What was proved, and how.** Each of these was confirmed by breaking it
 and watching the stage fail. Entering at EL1h instead of EL0t makes the
@@ -376,7 +424,8 @@ second could not raise it and would have reported zero connections even if
 it allocated one.
 
 *Size.* Small, from large. What remains is a paragraph of specification,
-some introspection, and a generalised halt.
+a generalised halt, and the scheduler defect above, which is the only
+part of it that is work rather than tidying.
 
 ### M3. A System You Can Talk To
 
