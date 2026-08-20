@@ -154,6 +154,49 @@ an inter-processor interrupt to every member enters the analysis. Dynamically
 formed gangs additionally make admission a global decision and should not be
 attempted.
 
+**Return-path short-circuiting.** A read that crosses a filesystem and a
+block driver unwinds through both on the way back, so the reply pays a
+rendezvous per layer for data neither layer looks at. The extension is to
+let a server forward a request and hand the reply along with it: the
+driver completes the transfer and replies to the original client, and the
+filesystem is out of the return path entirely. With the client's own
+buffer travelling down the chain, per the reply-path caveat of section
+6.1, the transfer lands where it is wanted and only a status and a count
+come back. Four rendezvous become two.
+
+**Most of the mechanism is already here, which is the reason to write this
+down rather than to build it.** A reply is addressed by client thread id
+and not by channel (section 12.2), so a forwarded reply needs no new
+object and no reply capability: the id is the token, and passing it on is
+passing a value. `channel_reply` looks the thread up and checks that it is
+still waiting, and nothing in it requires the replying thread to be the
+one that received.
+
+That last sentence is also the problem. **There is no control over who may
+reply**, so forwarding and forging are the same operation, and today the
+only thing standing between them is that a thread id is hard to guess.
+Section 12.2 says the id "permits exactly one thing, which is completing
+the request the client is blocked in", which is precisely the authority a
+forwarded reply needs and precisely the authority a third party should not
+have. Making forwarding deliberate means making an unforwarded reply
+checkable, which is a rule the reply path does not currently have.
+
+Two further costs. **Donation would have to move with the reply.**
+`undonate` runs only when the replying thread is the one the client
+donated to, so a driver replying to a client it never received from keeps
+whatever priority it was donated and the client's donation is never
+returned. Section 12.3 says donation "reverts on reply" without saying
+which reply, and a forwarded chain is where that matters. And **the
+intermediate server stops learning whether the work succeeded**, which is
+tolerable for a stateless forwarder and not for one keeping a cache.
+
+The trigger is a layered driver stack that measures badly, which needs M6
+underneath it. Doing it earlier would optimise a path with one layer in
+it. `REF/ai-5` collects the background: L4's decoupled call and reply
+phases, seL4 reply capabilities delegated down a chain, Fuchsia handing a
+buffer capability to the block queue so file reads bypass the control
+plane, and Mach's proxy memory objects.
+
 **An asynchronous send.** Every send blocks, so a client cannot have two
 requests to servers outstanding at once and the concurrency of section 17.3
 reaches devices but not services. The extension is an issuing form of send
