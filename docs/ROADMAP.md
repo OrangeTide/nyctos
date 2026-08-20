@@ -10,8 +10,9 @@ This document says what exists, what is being built, and in what order.
 `design.md` says what the system is meant to be. `PROPOSALS.md` holds ideas
 that are not being built.
 
-Nothing in `design.md` has been implemented or measured. Until milestone 1 is
-reached, none of it has been tested against anything.
+Milestone 1 is done and nothing after it has been implemented or measured.
+What that milestone settled is recorded in section 4 and in section 4 of
+`design.md`; everything else in `design.md` is still a guess.
 
 **There are no dates here.** There is no evidence on which to base one. Each
 milestone carries a rough size, and sizes are relative to each other and to
@@ -121,14 +122,24 @@ as the design being wrong rather than the implementation being unfinished.
 
 **The three provisional mechanisms are scheduled where they can actually be
 tested.** Timelines are exercised in milestone 1, per-process namespaces in
-milestone 5, and the submission engine in milestone 9. Each is placed at the
+milestone 5, and the submission engine in milestone 10. Each is placed at the
 first point where the question about it can be answered, not at the first point
 where it could be written.
 
-**Teardown comes early, and measurement comes late.** Death paths are where the
-subtle bugs live and are far easier to add to a system that works than to build
-alongside one. Measurement needs a system and a real workload, and a number
-taken before both exist is a number about nothing.
+**A milestone is scheduled when something needs it, not when it becomes
+possible.** This rule replaced an earlier one that put teardown second, on
+the argument that death paths are where the subtle bugs live and are easier
+to add to a system that works than to build alongside one. That argument is
+still true and was still the wrong schedule: nothing in the first six
+milestones has anything worth reclaiming, since programs that run to
+completion, utilities that exit, and faults that panic all reach their goals
+without it. Building cancellation, pulses, reaping and restart ahead of a
+caller would have meant four milestones of maintaining machinery nothing
+ever entered. Death is now M7, immediately before the first mechanism that
+cannot be demonstrated without it, which is cohort recovery.
+
+**Measurement comes late.** It needs a system and a real workload, and a
+number taken before both exist is a number about nothing.
 
 ---
 
@@ -182,85 +193,70 @@ cost is three obligations that section does not mention.
 **Done.** Section 4 says what it answered, what it cost, and what it left
 untested.
 
-### M2. Death
+### M2. Two Processes
 
-**Cancellation, killing, and restart.**
+**A real scheduler running two user programs, and the file read between
+them.** Tier 0, single core.
 
-The design leans on death everywhere: cohort recovery (18.2), the
-supervision tree (24.3), and reclaiming server state (25). None of it has
-been exercised. This comes second because teardown is much easier to reason
-about in a system that already works, and milestone 1 strengthened that
-argument rather than merely confirming it: the commonest fault it produced
-was two paths ending the same wait, where the one written second forgot
-something. M2 adds two more such paths.
+Milestone 1 read a file from outside the kernel, but every participant was a
+kernel thread and every caller of the operation entry point was kernel code
+calling it directly. The interface was exercised and the boundary was not.
+This milestone puts the same slice across a real one: two independently
+loaded programs, a trap edge with user code on the far side of it, and a
+scheduler that blocks and resumes both as the rendezvous requires.
 
-*Three things it needs that were not listed before.* Milestone 1 left them
-out and they are each load-bearing.
+It comes second because it is what makes everything after it demonstrable.
+A shell needs processes to spawn. The MMU needs two address spaces to be
+worth having. Cohorts need members. None of that is testable while the
+system is one address space of kernel threads that happen to send each
+other messages.
 
-**Pulses do not exist.** Section 12.5 has a server learn of a dead client
-through `SYS_PULSE_DEAD_OWNER`, because a server is at a receive point and
-can collect one, where a blocked client is not and must be released with an
-error instead. Both halves are needed for death to be covered in both
-directions, so section 13.1 has to be built here: a fixed-size queued
-notification, with the reserved region that keeps a flood of user pulses
-from displacing a death notice. A dropped death notice leaks a dead
-client's resources permanently, which is why that reservation is
-correctness rather than politeness.
+*Needs.* Program loading on Tier 0 (section 15.2). The trap edge: user mode
+entry, the operation descriptor validated across the boundary, and the
+register and memory guarantees of section 23.4. A scheduler that runs more
+than one process, with blocking and resumption driven by IPC rather than by
+`sched_yield()` in a loop. Enough libc and startup code for a program to
+have a `main()` and a namespace array (section 20.4). The rendezvous of
+section 12 in full, including both blocked states and the connection
+minting of 12.1. `FS_OP_WALK`, `FS_OP_READ` and `FS_OP_CLOSE`, and the
+compound form of section 25.7 alongside them.
 
-**Nothing is ever reaped.** A thread that exits stops being scheduled and
-keeps its pool slot for ever, so nothing has yet reused a slot. Restart
-needs reuse, and reuse is the first real test of the generation counters of
-section 7.1: milestone 1 asserted that a stale identifier is refused, but
-only ever against slots it had freed by hand.
+*Not needed.* The MMU, cohorts, SMP, paging, the submission engine, and
+**anything to do with death**. Both programs run to completion or the
+system halts. See below.
 
-**Donation has to unwind through death.** A server killed while running at
-a client's donated priority, or a client killed while its donation is
-held, both leave a priority that no longer has a reason to exist. Nothing
-in section 12.3 says what happens, and nothing in M1 could reach it.
+*Done when* two programs load and run as separate processes, the client
+walks a directory handle it was given at spawn, reads the file, prints it,
+and the same read done as one compound request produces the same bytes in
+one rendezvous instead of three.
 
-*Stages.*
+*On death, deliberately.* When either process exits, the system prints a
+message and halts. Nothing is reaped, no slot is reused, no supervisor
+restarts anything, and a `TODO` in the exit path names the milestone that
+will do it. This is the whole of what M2 needs from teardown, and pulling
+any more of it forward would mean building cancellation and pulses for a
+system with nothing to cancel.
 
-1. **Exit and completion timelines.** Exit advances a completion timeline;
-   the handle stays valid afterwards and carries the status, which is
-   section 10.4 avoiding a zombie concept. A joiner waits on it.
-2. **Reaping.** Return thread and process slots to their pools, and check
-   that an identifier held across the reuse is refused rather than reaching
-   the new occupant.
-3. **Cancellation.** Section 10.5, prompt, releasing a thread from whatever
-   it is blocked on without knowing which mechanism blocked it. This should
-   be cheap: the hook that makes it possible was forced into existence by
-   deadlines in stage 7 and already serves channels.
-4. **Pulses.** Section 13.1, including the reserved system region and the
-   overflow flag a receiver observes.
-5. **Death notification.** Section 12.5 in both directions: a blocked
-   client released with `SYS_ERR_OWNER_DEAD`, a server holding an
-   unanswered request given a pulse, and its later reply refused as stale.
-6. **Kill and restart.** A supervisor waiting on a child's completion
-   timeline and relaunching it, with restart bounded and escalating per
-   section 24.3.
+*Would falsify.* Whether the operation descriptor survives crossing a real
+protection boundary, or whether validating it costs enough to want a
+different shape (section 23.2). Whether the rendezvous as specified in
+section 12 is what a server actually wants, now that a server is a program
+rather than a function called by the test. **Whether the compound request
+of section 25.7 pays**, which is the first evidence for or against
+batching, and the cheapest point at which to get it: if one message is not
+meaningfully better than three to the same server, section 25.7 is deleted
+and section 12.7 with it.
 
-*Done when* killing the filesystem server mid-read releases the blocked
-client with an owner-dead error rather than hanging it, a supervisor
-restarts the server, and the client's next walk and read succeed against
-the replacement.
+*Watch for.* The scheduler is the part most likely to pass while testing
+less than it claims. A two-process demonstration where one process happens
+to run to completion before the other starts exercises no blocking at all,
+and looks identical in the output. The client must be observed blocked in
+send while the server runs, and the server blocked in receive while the
+client works, or the milestone has not been demonstrated.
 
-*Would falsify.* Whether "the disappearance of the only party who could
-satisfy a wait is itself an event" is sufficient in practice, which is the
-claim the whole error state of section 9.3 rests on. Whether a restarted
-server leaks per-connection records, which is the observation
-`PROPOSALS.md` gates connection death notification on. And whether the
-generation counters actually close the recycling hazard under real reuse,
-which nothing has yet tried.
+*Size.* Large. The trap edge and program loading are each substantial, and
+neither has been touched.
 
-*Watch for.* Teardown wakes things. Closing a dying process's handles drops
-signal rights, which puts timelines into the error state, which releases
-their waiters, all from inside the teardown. That is the same re-entrancy
-that produced three separate faults in M1, and it will be worse here
-because the structure being walked is the one being destroyed. Finish the
-structure before waking anything, as `handle_close` already has to.
-
-*Size.* Large. The original estimate of medium predated knowing that
-pulses, reaping and donation unwinding were all inside it.
 
 ### M3. A System You Can Talk To
 
@@ -274,6 +270,13 @@ before the MMU rather than after it.
 *Needs.* The read side of the UART as a driver process. A console service. A
 shell that spawns a utility, waits on its completion timeline, and reports
 status. Enough libc to write the utilities.
+
+*Exit and join, which is not death.* A process that exits advances a
+completion timeline, the handle stays valid afterwards and carries the
+status, and a joiner waits on it (section 10.4). This is the normal path and
+it belongs here, with the shell that is the first thing to need it. Nothing
+is reaped, no slot is reused, and nothing is killed; M7 is still where all of
+that lives.
 
 *Done when* an interactive shell runs, spawns a program as a separate process,
 and reports its exit status.
@@ -332,27 +335,128 @@ substantially and section 25 with it.
 
 ### M6. Driver Cohorts
 
-**A shared protection domain, and the recovery unit that comes with it.**
+**A shared protection domain, and the zero-copy path it buys.**
 
 Cannot come before M4. Without protection domains a cohort is a naming
 convention that demonstrates nothing.
 
 *Needs.* Cohort membership fixed at build time. Zero-copy buffer handoff by
-address within a cohort. Scatter-gather with lazy mapping (18.4). Cohort fault
-recovery tearing down and restarting every member together (18.2). Cohort
+address within a cohort. Scatter-gather with lazy mapping (18.4). Cohort
 scheduling nodes (11.5).
 
-*Done when* a filesystem and a block driver in one cohort exchange a buffer as
-an address rather than a grant, and a fault in either tears down and restarts
-both.
+*Deferred to M7.* Cohort fault recovery (18.2). Tearing down and restarting
+every member together is the one mechanism in the plan that cannot be
+demonstrated without death, and it is the reason M7 sits immediately after
+this milestone rather than later.
 
-*Would falsify.* Whether the fault-domain trade is tolerable once it actually
-happens. A bug in a minor driver taking down the storage stack is easy to
-accept on paper and may not be acceptable in practice.
+*Done when* a filesystem and a block driver in one cohort exchange a buffer as
+an address rather than a grant, with no mapping cost per layer, and a fault in
+either halts the system with the recovery path stubbed and named.
+
+*Would falsify.* Whether zero-copy within a shared domain is worth a shared
+domain at all, which is the half of the trade this milestone can answer alone.
+Whether the fault-domain cost is tolerable is answered in M7, when a fault
+actually recovers rather than halting.
 
 *Size.* Medium.
 
-### M7. Multicore
+### M7. Death
+
+**Cancellation, killing, and restart.**
+
+The design leans on death everywhere: cohort recovery (18.2), the
+supervision tree (24.3), and reclaiming server state (25). None of it has
+been exercised.
+
+**This was scheduled second and has been moved.** The original argument was
+that teardown is easier to reason about in a system that already works, and
+that argument is still right. What it got wrong is how much system had to
+work first. Nothing before this point has anything worth reclaiming: two
+processes that run to completion (M2), a shell whose utilities exit
+normally (M3), and a page fault path whose faults are fatal (M4) all reach
+their goals with an exit that halts or a fault that panics. Building
+cancellation, pulses, reaping and restart ahead of them would have meant
+building the recovery machinery for a system with nothing yet to recover,
+and then maintaining it across four milestones that never called it.
+
+**What forces it here is cohort recovery.** M6 tears down and restarts every
+member of a cohort together, and that is the first mechanism in the plan
+that cannot be demonstrated without death. M6 is therefore scheduled for
+its zero-copy half only, and its recovery half is part of this milestone.
+Everything earlier can carry a `TODO` in its exit path and lose nothing.
+
+*Three things it needs that were not listed before.* Milestone 1 left them
+out and they are each load-bearing.
+
+**Pulses do not exist.** Section 12.5 has a server learn of a dead client
+through `SYS_PULSE_DEAD_OWNER`, because a server is at a receive point and
+can collect one, where a blocked client is not and must be released with an
+error instead. Both halves are needed for death to be covered in both
+directions, so section 13.1 has to be built here: a fixed-size queued
+notification, with the reserved region that keeps a flood of user pulses
+from displacing a death notice. A dropped death notice leaks a dead
+client's resources permanently, which is why that reservation is
+correctness rather than politeness.
+**Nothing is ever reaped.** A thread that exits stops being scheduled and
+keeps its pool slot for ever, so nothing has yet reused a slot. Restart
+needs reuse, and reuse is the first real test of the generation counters of
+section 7.1: milestone 1 asserted that a stale identifier is refused, but
+only ever against slots it had freed by hand.
+
+**Donation has to unwind through death.** A server killed while running at
+a client's donated priority, or a client killed while its donation is
+held, both leave a priority that no longer has a reason to exist. Nothing
+in section 12.3 says what happens, and nothing in M1 could reach it.
+
+*Exit and join already exist*, from M3. What is left is everything that
+happens when the exit was not the program's own idea.
+
+*Stages.*
+
+1. **Reaping.** Return thread and process slots to their pools, and check
+   that an identifier held across the reuse is refused rather than reaching
+   the new occupant.
+2. **Cancellation.** Section 10.5, prompt, releasing a thread from whatever
+   it is blocked on without knowing which mechanism blocked it. This should
+   be cheap: the hook that makes it possible was forced into existence by
+   deadlines in stage 7 and already serves channels.
+3. **Pulses.** Section 13.1, including the reserved system region and the
+   overflow flag a receiver observes.
+4. **Death notification.** Section 12.5 in both directions: a blocked
+   client released with `SYS_ERR_OWNER_DEAD`, a server holding an
+   unanswered request given a pulse, and its later reply refused as stale.
+5. **Kill and restart.** A supervisor waiting on a child's completion
+   timeline and relaunching it, with restart bounded and escalating per
+   section 24.3.
+6. **Cohort recovery.** The half of M6 that was deferred: a fault in one
+   member tears down and restarts every member together (18.2). This is
+   the case that forced the milestone to sit here rather than later.
+
+*Done when* killing the filesystem server mid-read releases the blocked
+client with an owner-dead error rather than hanging it, a supervisor
+restarts the server, the client's next walk and read succeed against the
+replacement, and a fault in one cohort member restarts the whole cohort.
+
+*Would falsify.* Whether "the disappearance of the only party who could
+satisfy a wait is itself an event" is sufficient in practice, which is the
+claim the whole error state of section 9.3 rests on. Whether a restarted
+server leaks per-connection records, which is the observation
+`PROPOSALS.md` gates connection death notification on. And whether the
+generation counters actually close the recycling hazard under real reuse,
+which nothing has yet tried.
+
+*Watch for.* Teardown wakes things. Closing a dying process's handles drops
+signal rights, which puts timelines into the error state, which releases
+their waiters, all from inside the teardown. That is the same re-entrancy
+that produced three separate faults in M1, and it will be worse here
+because the structure being walked is the one being destroyed. Finish the
+structure before waking anything, as `handle_close` already has to.
+
+*Size.* Large. The original estimate of medium predated knowing that
+pulses, reaping and donation unwinding were all inside it, and cohort
+recovery has since joined them.
+
+### M8. Multicore
 
 **Partitioned scheduling with explicit migration.**
 
@@ -371,7 +475,7 @@ than it was when it was made.
 
 *Size.* Medium to large.
 
-### M8. Real Time
+### M9. Real Time
 
 **Deadlines, the tickless timer, and the first measurements.**
 
@@ -396,7 +500,7 @@ is affordable on a part where reprogramming is a slow peripheral write.
 *Size.* Medium. Mostly instrumentation and discipline rather than new
 mechanism.
 
-### M9. The Submission Engine
+### M10. The Submission Engine
 
 **Section 17: the count exceeds one.**
 
@@ -564,22 +668,28 @@ system responding to hardware several stages earlier.
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
 
-**Forced.** M2 after M1, since there is nothing to tear down before that.
-Milestone 1 also made the case for it stronger than the original argument
-did: the fault it produced most often was two paths ending the same wait
-with the second forgetting something, and M2 adds two more such paths to a
-system that now has somewhere to put them. M6
-after M4, since a cohort without protection domains is a naming convention. M8
-after M3, since measuring a system with no workload measures nothing. M9 after
-M6, since issuing ops need a device that does DMA.
+**Forced.** M2 after M1, since a scheduler running two programs needs the
+message passing they rendezvous over. M3 after M2, since a shell that cannot
+spawn a process is not a shell. M6 after M4, since a cohort without protection
+domains is a naming convention. M7 after M6, since cohort recovery is the first
+mechanism that cannot be demonstrated without death, and M7 not before M2,
+since nothing earlier has anything to reclaim. M9 after M3, since measuring a
+system with no workload measures nothing. M10 after M6, since issuing ops need
+a device that does DMA.
 
 **Chosen, and reversible.** M3 before M4. The argument is that the MMU
 milestone's real test is running the same software on both tiers, which needs
 software. The counter-argument is that porting less code to Tier 2 is easier,
 which would put M4 first. If M3 grows larger than expected, invert them.
 
+Also chosen: M7 after M6 rather than between M4 and M5. Death could be built
+as soon as faults exist, and the reason not to is that M5 and M6 gain nothing
+from it while paying for it. If either turns out to need a process to die and
+be replaced before it can be demonstrated, M7 moves ahead of it and nothing
+else changes.
+
 **Independent.** M5 is pure userland and libc and blocks nothing, so it can
-move anywhere after M3. M7 is almost entirely kernel and shares little with M5,
+move anywhere after M3. M8 is almost entirely kernel and shares little with M5,
 so the two can proceed in parallel if there is ever reason to.
 
 ---
@@ -594,6 +704,12 @@ receive, and section 9 collapses. This is the cheapest thing on the list to
 discover and the most disruptive to the document, since fences run through
 interrupts, timers, exit and the submission engine.
 
+**Compound requests do not pay (M2).** Section 25.7 is deleted and section
+12.7 with it, servers implement one operation per message, and the classic
+open-read-close stays three round trips. This is the cheapest batching
+question in the plan to answer, which is why it is answered before anything
+is built on the answer.
+
 **One thread per source is unaffordable (M3).** Wait-sets come forward from
 `PROPOSALS.md`. The queue model, not the array model, and only after evaluating
 whether a timeline enqueuing a coalesced pulse on a channel is sufficient.
@@ -604,11 +720,11 @@ rewritten and the project needs a different reason to exist.
 **Namespaces are unworkable (M5).** Either the mount table moves, or the design
 concedes an ambient root. Sections 20 and 25 both change.
 
-**Cohort faults are intolerable (M6).** Cohorts drop to a naming convention and
+**Cohort faults are intolerable (M7).** Cohorts drop to a naming convention and
 zero-copy goes through ordinary grants, at the cost the design was trying to
 avoid.
 
-**The submission engine does not pay (M9).** It is deleted. Section 23 already
+**The submission engine does not pay (M10).** It is deleted. Section 23 already
 defines the calling convention around a single operation for exactly this
 reason, so nothing else moves.
 
