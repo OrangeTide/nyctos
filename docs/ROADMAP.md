@@ -60,15 +60,27 @@ different process over the protocol of section 25, and nothing on that path
 is inside the kernel except the message passing.
 
 **Most of milestone 2 is done, and it runs.** The vertical slice executes a
-second time with both halves as loaded programs: a boot archive in the
+second time with every participant a loaded program: a boot archive in the
 kernel's rodata, images copied to the addresses they were linked for, and
-`fs_client` and `fs_server` in EL0 on AArch64 and U-mode on RISC-V. The
-client walks a directory connection it was handed at spawn, reads the file
-over IPC, closes it, and exits with the byte count. Every operation on that
-path crossed the trap edge. What is left is the compound request of
-section 25.7, which is the only thing in the milestone that can still
-falsify a design decision, and enough introspection to show which side of
-a rendezvous was blocked.
+`fs_server`, `fs_client` and `fs_batch` in EL0 on AArch64 and U-mode on
+RISC-V. Every operation on that path crossed the trap edge.
+
+The same file read two ways answers section 25.7, which was the last
+question in the milestone that could falsify a design decision:
+
+```
+fs_client  read 31 bytes in 3 rendezvous, 1 connections
+fs_batch   read 31 bytes in 1 rendezvous, 0 connections
+```
+
+Batching pays, and the second column is why rather than the first.
+Section 25.2 makes the connection pool a build-time bound on every file
+open at once, and a compound never draws from it.
+
+What is left is a statement of what Tier 0 checks and what it trusts on a
+descriptor crossing the boundary, introspection enough to show which side
+of a rendezvous was blocked, and a general halt on exit. None of it can
+falsify anything.
 
 The programs cannot print. There is no console for user code, so results
 come back as exit status. M2 says why that is a decision rather than an
@@ -212,17 +224,33 @@ cost is three obligations that section does not mention.
 
 **Done.** Section 4 says what it answered, what it cost, and what it left
 untested.
+
 ### M2. Two Processes
 
 **A real scheduler running two user programs, and the file read between
 them.** Tier 0, single core.
 
-Milestone 1 read a file from outside the kernel, but every participant was a
-kernel thread and every caller of the operation entry point was kernel code
-*Already built, and running.* The slice runs a second time with both
-halves as loaded programs. `fs_client` walks a directory connection it was
-handed at spawn, reads the file over IPC from `fs_server`, closes it, and
-exits with the byte count, on both architectures.
+Milestone 1 read a file from outside the kernel, but every participant was
+a kernel thread and every caller of the operation entry point was kernel
+code calling it directly. The interface was exercised and the boundary was
+not. This milestone puts the same slice across a real one: independently
+loaded programs, a trap edge with user code on the far side of it, and a
+scheduler that blocks and resumes them as the rendezvous requires.
+
+It comes second because it is what makes everything after it demonstrable.
+A shell needs processes to spawn. The MMU needs two address spaces to be
+worth having. Cohorts need members. None of that is testable while the
+system is one address space of kernel threads that happen to send each
+other messages.
+
+*Built, and running on both architectures.* The slice runs a second time
+with every participant a loaded program, and then the same read a second
+way to answer section 25.7:
+
+```
+fs_client  read 31 bytes in 3 rendezvous, 1 connections
+fs_batch   read 31 bytes in 1 rendezvous, 0 connections
+```
 
 - **The startup record of section 20.4.** A versioned record carrying
   argc, argv, envp and a namespace table, written by `proc_spawn` and
@@ -241,37 +269,42 @@ exits with the byte count, on both architectures.
 - **The userland call interface.** `include/os/sys.h` and the wrappers
   behind it, each filling in one descriptor and submitting it through the
   single entry point of section 23.1.
-- **`fs_server` and `fs_client` as ordinary programs.** The server is
-  handed its receive handle at spawn and creates nothing, because there is
-  no operation for creating a channel and there should not be.
 - **The boot archive of section 24.4, and loading from it.** A header, a
   table of fixed-size records, and page-aligned payloads, written on the
   host by `mkbootarch` and carried in the kernel's rodata, which is the
   closest thing this port has to the flash that section assumes. Loading
   is the RAM loader of section 15.2 rather than execute-in-place, because
   the programs are linked at absolute addresses.
+- **`fs_server`, `fs_client` and `fs_batch` as ordinary programs.** The
+  server is handed its receive handle at spawn and creates nothing,
+  because there is no operation for creating a channel and there should
+  not be.
+- **Compound requests, section 25.7.** Walk and read in one message, with
+  implicit linear chaining and abort at the first failure. Bulk data moved
+  to a buffer field on the message rather than a grant, which is a
+  lifetime distinction: a payload lives for one call and a grant outlives
+  the call carrying it, so grants stay for device registers, pager pages
+  and scatter-gather and are deferred with them to M6.
 - **Exit.** `SYS_OP_THREAD_EXIT` records a status and takes the thread off
   the scheduler. Nothing else, per the note below.
 
-*What is left.*
+*What is left.* Three things, none of which can falsify a design decision.
 
-- **The compound form of section 25.7,** alongside the three separate
-  operations, since comparing them is half the point of the milestone and
-  is the only question here that can falsify a design decision.
-- **The operation descriptor validated across the boundary**, and the
-  register and memory guarantees of section 23.4. Tier 0 has no address
-  space to validate a user pointer against, so what is owed is a statement
-  of what is checked and what is trusted, not a check.
+- **A statement of what Tier 0 checks and what it trusts** on a descriptor
+  crossing the boundary, and the register and memory guarantees of section
+  23.4. There is no address space to validate a user pointer against, so
+  what is owed is the statement rather than the check. Section 23.2's real
+  test waits for the MMU.
 - **Two programs blocking against each other under observation.** The
-  rendezvous happens, but nothing yet reports which side was SEND-blocked
-  and which REPLY-blocked, so the claim in *Watch for* below is still
-  unproven rather than merely untested.
+  rendezvous plainly happens, but nothing reports which side was
+  SEND-blocked and which REPLY-blocked, so the output would look the same
+  if it did not. See *Watch for*.
 - **Halt on exit** as a general rule rather than the boot thread waiting
-  on one known process.
+  on processes it knows the names of.
 
 *Not needed.* The MMU, cohorts, SMP, paging, the submission engine, and
-**anything to do with death**. Both programs run to completion or the
-system halts. See below.
+**anything to do with death**. Programs run to completion or the system
+halts. See below.
 
 *A loose end this created.* libc still carries V7-numbered stubs for
 `open`, `read`, `write` and `close`, which pass a call number where the
@@ -286,9 +319,10 @@ walks a directory handle it was given at spawn, reads the file, prints it,
 and the same read done as one compound request produces the same bytes in
 one rendezvous instead of three.
 
-Two of those three are done. The programs load and run and the read works;
-the client reports by exit status rather than printing, for the reason
-above, and the compound request is not built.
+Two of the three are done, and the third will not be met as written: the
+client reports by exit status rather than printing, for the reason above,
+and printing is an M3 capability rather than an M2 one. The clause should
+have said "reports" rather than "prints".
 
 *On death, deliberately.* When a process exits, `SYS_OP_THREAD_EXIT`
 records a status and takes the thread off the scheduler. Nothing is
@@ -297,34 +331,33 @@ join, and a `TODO` in the exit path names M7. This is the whole of what M2
 needs from teardown, and pulling any more of it forward would mean
 building cancellation and pulses for a system with nothing to cancel.
 
-*Would falsify.* Whether the operation descriptor survives crossing a real
-protection boundary, or whether validating it costs enough to want a
-different shape (section 23.2). Whether the rendezvous as specified in
-section 12 is what a server actually wants, now that a server is a program
-rather than a function called by the test. **Whether the compound request
-of section 25.7 pays**, which is the first evidence for or against
-batching, and the cheapest point at which to get it: if one message is not
-meaningfully better than three to the same server, section 25.7 is deleted
-and section 12.7 with it.
+*Would falsify.* All three are now answered.
 
-The first two are answered as far as a working slice can answer them. The
-descriptor crosses unchanged and nothing about it wanted a different
-shape, though Tier 0 validates nothing, so the real test of section 23.2
-waits for the MMU. The rendezvous needed no change to serve a program
-rather than a function. The third is untouched and is now the only
-question in this milestone that can falsify anything.
+**Whether the operation descriptor survives crossing a real protection
+boundary.** It does, unchanged, and nothing about it wanted a different
+shape. Tier 0 validates nothing, so this is as far as the question goes
+until M4.
 
-*Watch for.*
+**Whether the rendezvous of section 12 is what a server actually wants**,
+now that a server is a program rather than a function called by the test.
+It needed no change.
 
-**The scheduler is the part most likely to pass while testing less than it
-claims.** A two-process demonstration where one process happens to run to
+**Whether the compound request of section 25.7 pays.** It does, and the
+reason is not the one the section leads with. Three rendezvous become one,
+which was expected; the connection pool goes from one allocation to none,
+which is the structural saving, because section 25.2 makes that pool a
+build-time bound on every file open at once. Two things in the section
+were wrong and building it found them: an entry index placed in the field
+a read needs for its file position, and a close entry that does nothing
+because the server releases an intermediate node when it replies.
+
+*Watch for.* **The scheduler is the part most likely to pass while testing
+less than it claims.** A demonstration where one process happens to run to
 completion before the other starts exercises no blocking at all, and looks
 identical in the output. The client must be observed blocked in send while
 the server runs, and the server blocked in receive while the client works,
-or the milestone has not been demonstrated. This is currently the weakest
-part of the stage: the rendezvous plainly happens, but nothing reports
-which side was blocked on what, so the output would look the same if it
-did not.
+or the milestone has not been demonstrated. This is the weakest part of
+the stage and the reason introspection is still on the list above.
 
 **What was proved, and how.** Each of these was confirmed by breaking it
 and watching the stage fail. Entering at EL1h instead of EL0t makes the
@@ -333,14 +366,17 @@ build is at EL0 rather than merely appearing to be. Demanding `mcause` 11
 instead of 8 panics with `cause=0x8`, which is ecall-from-U-mode, so the
 RISC-V side is in U-mode for the same reason. Changing the server's string
 to a twelve-byte one moved the client's exit status to 12, so the bytes
-executing are the bytes built, carried through the archive, and the count
-crossed a real IPC boundary between two user processes.
+executing are the bytes built. A compound walking a name that does not
+exist reports zero entries completed and entry zero failed, so a failed
+sequence genuinely stops. A compound claiming four entries with payload
+for two is refused before any of it runs. And the two clients report the
+same numbers in either order, which is what makes the pool measurement
+mean anything: `highwater` is monotonic, so without a reset whichever ran
+second could not raise it and would have reported zero connections even if
+it allocated one.
 
-*Size.* Small, from large. The trap edge, the startup contract, the
-programs, the archive and the loader are done and running. What remains is
-the compound request, a statement of what Tier 0 checks and what it
-trusts, and enough introspection to show which side of a rendezvous was
-blocked.
+*Size.* Small, from large. What remains is a paragraph of specification,
+some introspection, and a generalised halt.
 
 ### M3. A System You Can Talk To
 
@@ -788,11 +824,12 @@ receive, and section 9 collapses. This is the cheapest thing on the list to
 discover and the most disruptive to the document, since fences run through
 interrupts, timers, exit and the submission engine.
 
-**Compound requests do not pay (M2).** Section 25.7 is deleted and section
-12.7 with it, servers implement one operation per message, and the classic
-open-read-close stays three round trips. This is the cheapest batching
-question in the plan to answer, which is why it is answered before anything
-is built on the answer.
+**Compound requests do not pay (M2).** *Answered: they do.* Three
+rendezvous become one and the connection pool goes from one allocation to
+none, the second being the structural saving. Section 25.7 stands, with an
+entry-index field and a close entry removed from it that building it found
+to be wrong. Had it gone the other way, 25.7 would have been deleted and
+section 12.7 with it.
 
 **One thread per source is unaffordable (M3).** Wait-sets come forward from
 `PROPOSALS.md`. The queue model, not the array model, and only after evaluating
