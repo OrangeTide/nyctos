@@ -36,6 +36,14 @@ void sched_init(void);
  */
 void sched_ready(struct thread *t);
 
+/*
+ * Make a thread runnable without taking the scheduling decision, for a
+ * caller that is about to block and will take it in sched_block(). See the
+ * definition: this exists because readying a peer and ceasing to be
+ * runnable have to be one step.
+ */
+void sched_ready_nopreempt(struct thread *t);
+
 /* Current goes to the tail of its own level and the highest runnable runs. */
 void sched_yield(void);
 

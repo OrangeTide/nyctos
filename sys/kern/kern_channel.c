@@ -208,7 +208,15 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
         server->t_wait = THREAD_WAIT_NONE;
         donate(server, self->t_prio);
-        sched_ready(server);
+
+        /*
+         * Readied without preempting, because this thread is about to
+         * block and the two are one step. A server that outranks its
+         * client would otherwise run before the client had blocked, reply
+         * to a thread the preemption had already queued, and panic on
+         * readying a thread that is already runnable.
+         */
+        sched_ready_nopreempt(server);
 
         /*
          * A server was already waiting, so this never queued: it is

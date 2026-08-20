@@ -604,6 +604,103 @@ ipc_checks(void)
     }
 }
 
+
+/*
+ * A server that outranks its client, which is the case that found the
+ * defect this exists to keep out.
+ *
+ * channel_send hands the message over and then blocks. Where the server
+ * outranks the sender, readying it used to dispatch in between: the server
+ * ran, replied, and readied a sender that the preemption had already put
+ * on a run queue and that had never reached sched_block. Nothing else in
+ * the system arranges this. Donation cannot, because it raises a server to
+ * exactly its client's priority and equal priority does not preempt, so
+ * only a base priority above the client's reaches it.
+ */
+static struct channel *ch_hp;
+static sys_handle_t h_hp_recv;
+static int hp_served;
+
+static void
+hp_server(void *arg)
+{
+    struct sys_op_recv_args rx;
+    struct sys_op_reply_args tx;
+
+    (void)arg;
+
+    for (;;) {
+        memset(&rx, 0, sizeof(rx));
+        if (run(SYS_OP_IPC_RECV, h_hp_recv, &rx, sizeof(rx)) != SYS_OK) {
+            panic("hp server: receive failed");
+        }
+
+        memset(&tx, 0, sizeof(tx));
+        tx.peer = rx.peer;
+        tx.reply.inline_len = 3;
+        memcpy(tx.reply.inline_data, "ok", 3);
+        if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
+            panic("hp server: reply failed");
+        }
+        hp_served++;
+    }
+}
+
+static void
+hp_client(void *arg)
+{
+    struct sys_op_send_args tx;
+    int i;
+
+    /*
+     * Several times, because the failure needed the server to be waiting
+     * when the send arrived, and one send does not establish that it will
+     * be on the next one.
+     */
+    for (i = 0; i < 3; i++) {
+        memset(&tx, 0, sizeof(tx));
+        tx.request.inline_len = 4;
+        memcpy(tx.request.inline_data, "hp", 3);
+        if (run(SYS_OP_IPC_SEND, (sys_handle_t)(uintptr_t)arg, &tx,
+          sizeof(tx)) != SYS_OK) {
+            panic("hp client: send failed");
+        }
+    }
+
+    thread_exit();
+}
+
+static void
+high_priority_server_checks(void)
+{
+    struct proc *p = proc_current();
+    sys_handle_t send_h;
+    sys_err_t err;
+
+    ch_hp = channel_create("hp", p);
+    if (ch_hp == NULL) {
+        panic("hp: no channel");
+    }
+    err = handle_insert(&p->p_handles, ch_hp, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_hp_recv);
+    expect("a receive handle on the high-priority channel", err, SYS_OK);
+    err = handle_insert(&p->p_handles, ch_hp, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND, &send_h);
+    expect("a send handle on it", err, SYS_OK);
+
+    /* The server above the client, which is the whole point. */
+    sched_ready(thread_create("hp-server", 26, hp_server, NULL));
+    sched_ready(thread_create("hp-client", 22, hp_client,
+      (void *)(uintptr_t)send_h));
+
+    while (hp_served < 3) {
+        sched_yield();
+    }
+
+    cnprintf("    a server at 26 served a client at 22, %d times\n",
+      hp_served);
+}
+
 /*
  * The vertical slice: one thread, one channel, one driver, one file read.
  *
@@ -1164,6 +1261,7 @@ kernel_main(void)
     cnputs("ipc: rendezvous, queue order and donation\n");
     ipc_checks();
     chain_checks();
+    high_priority_server_checks();
 
     cnputs("the slice: a file read from another process\n");
     slice_checks();

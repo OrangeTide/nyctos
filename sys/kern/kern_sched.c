@@ -275,6 +275,41 @@ sched_ready(struct thread *t)
     md_intr_restore(s);
 }
 
+/*
+ * Make a thread runnable and take no scheduling decision at all.
+ *
+ * This is for a caller that is about to block. Handing a message to a
+ * server and ceasing to be runnable are one step from the sender's point
+ * of view, and sched_ready() would split them: it dispatches as soon as
+ * the readied thread outranks the caller, which is exactly the case where
+ * the server runs, replies, and readies a sender that the preemption has
+ * already put on a run queue and that has not reached sched_block(). The
+ * second ready then panics on a thread that is already queued.
+ *
+ * Deferral does not solve it. sched_defer() would hold the preemption off,
+ * but sched_block() refuses to run inside a deferral, and rightly: the
+ * counter is one for the system, so a deferral carried across a switch
+ * would leave whatever runs next not preempting when it should.
+ *
+ * Nothing is skipped, only postponed. The sched_block() that follows takes
+ * the decision, and takes it with the caller off the run queues where a
+ * blocking thread belongs. A caller that is not about to block wants
+ * sched_ready().
+ */
+void
+sched_ready_nopreempt(struct thread *t)
+{
+    intr_state_t s = md_intr_disable();
+
+    if (t == thread_current()) {
+        panic("thread %s: made itself runnable while running", t->t_name);
+    }
+
+    enqueue(t);
+
+    md_intr_restore(s);
+}
+
 void
 sched_defer(void)
 {
