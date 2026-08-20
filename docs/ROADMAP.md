@@ -58,7 +58,20 @@ initialises its object pools, reports them, and powers the machine off.
 walks it to a file, reads the file, and prints it. The file is served by a
 different process over the protocol of section 25, and nothing on that path
 is inside the kernel except the message passing.
-- An unprivileged-mode entry, not reached.
+
+**Part of milestone 2 is done, and none of it has run.** The startup
+record of section 20.4, its consumption by libc before `main()`, the
+userland side of the operation entry point, the user-stack handling on
+both trap paths, and `fs_server` and `fs_client` as ordinary programs that
+build at distinct load addresses. What is missing is the thing that would
+execute any of it: nothing loads an image and enters user mode, so no user
+code has ever trapped. M2 says what is left.
+
+Identifiers are now one machine word rather than a fixed 64 bits, with the
+index and generation split sized to the pools: 20 and 44 bits on a 64-bit
+build, 10 and 22 on a 32-bit one. Nothing in the tree targets 32 bits, so
+what is verified is that the headers compile at both widths and that the
+split round-trips.
 
 Kernel object memory went from 6720 bytes to 271424 the moment threads
 carried their own stacks, and 266240 of that is stack. That is the property
@@ -192,7 +205,6 @@ cost is three obligations that section does not mention.
 
 **Done.** Section 4 says what it answered, what it cost, and what it left
 untested.
-
 ### M2. Two Processes
 
 **A real scheduler running two user programs, and the file read between
@@ -211,19 +223,60 @@ worth having. Cohorts need members. None of that is testable while the
 system is one address space of kernel threads that happen to send each
 other messages.
 
-*Needs.* Program loading on Tier 0 (section 15.2). The trap edge: user mode
-entry, the operation descriptor validated across the boundary, and the
-register and memory guarantees of section 23.4. A scheduler that runs more
-than one process, with blocking and resumption driven by IPC rather than by
-`sched_yield()` in a loop. Enough libc and startup code for a program to
-have a `main()` and a namespace array (section 20.4). The rendezvous of
-section 12 in full, including both blocked states and the connection
-minting of 12.1. `FS_OP_WALK`, `FS_OP_READ` and `FS_OP_CLOSE`, and the
-compound form of section 25.7 alongside them.
+*Already built.* Everything on the far side of the boundary, and the edge
+itself, with nothing yet crossing it.
+
+- **The startup record of section 20.4.** A versioned record carrying
+  argc, argv, envp and a namespace table, written by `proc_spawn` and
+  consumed by libc before `main()`. The table is a flat array of
+  identifier and handle pairs rather than named entries: eight slots cost
+  128 bytes on a 64-bit build and 64 on a 32-bit one, and a lookup is an
+  integer compare. Identifiers below `SYS_NS_PRIVATE` mean the same thing
+  everywhere and the rest are a convention between a parent and its child.
+- **crt1 into `__libc_startup` into `main`,** on both architectures. libc
+  copies the table rather than holding a pointer into loader memory, and
+  refuses a record whose version it does not know.
+- **The trap edge, both ports.** SP_EL0 in the AArch64 exception frame and
+  the mscratch swap on RISC-V, so a thread switch inside a system call
+  does not lose a user stack. `enter_user` carries the startup record in
+  the first argument register.
+- **The userland call interface.** `include/os/sys.h` and the wrappers
+  behind it, each filling in one descriptor and submitting it through the
+  single entry point of section 23.1.
+- **`fs_server` and `fs_client` as ordinary programs,** building on both
+  architectures at distinct load addresses. The server is handed its
+  receive handle at spawn and creates nothing, because there is no
+  operation for creating a channel and there should not be.
+
+*What is left.* The parts that make any of the above run.
+
+- **Program loading on Tier 0** (section 15.2). Nothing copies an image
+  into memory and calls `enter_user`, so no user code has ever trapped.
+  This is the gating item: until it exists the trap edge is a compile-time
+  artifact.
+- **The scheduler running user threads.** Blocking and resumption on IPC
+  already work and have since stage 8; what is missing is threads that are
+  in user mode when they block.
+- **The operation descriptor validated across the boundary**, and the
+  register and memory guarantees of section 23.4. Today the descriptor is
+  a kernel pointer that the kernel wrote.
+- **The compound form of section 25.7**, alongside the three separate
+  operations, since comparing them is half the point of the milestone.
+- **Halt on exit,** with a `TODO` naming the milestone that will do it
+  properly.
 
 *Not needed.* The MMU, cohorts, SMP, paging, the submission engine, and
 **anything to do with death**. Both programs run to completion or the
 system halts. See below.
+
+*A loose end this created.* libc still carries V7-numbered stubs for
+`open`, `read`, `write` and `close`, which pass a call number where the
+trap path expects a descriptor pointer and a count. They are the only
+thing `puts` stands on, so removing them leaves a program unable to say
+anything, and giving a program a console is an M3 decision. Either the
+stubs go and the programs stay silent until M3, or a console arrives
+early. It should be settled deliberately rather than by whoever next
+needs to print something.
 
 *Done when* two programs load and run as separate processes, the client
 walks a directory handle it was given at spawn, reads the file, prints it,
@@ -247,16 +300,24 @@ batching, and the cheapest point at which to get it: if one message is not
 meaningfully better than three to the same server, section 25.7 is deleted
 and section 12.7 with it.
 
-*Watch for.* The scheduler is the part most likely to pass while testing
-less than it claims. A two-process demonstration where one process happens
-to run to completion before the other starts exercises no blocking at all,
-and looks identical in the output. The client must be observed blocked in
-send while the server runs, and the server blocked in receive while the
-client works, or the milestone has not been demonstrated.
+*Watch for.* Two things, and the first is new.
 
-*Size.* Large. The trap edge and program loading are each substantial, and
-neither has been touched.
+**A trap edge that builds is not a trap edge that works.** The user-mode
+half of it has never executed a single instruction, so every line of it is
+unverified in the way that matters. The AArch64 restore path already had a
+real fault in it, found by reading rather than by running, and there is no
+reason to think it was the only one. The first user trap is the test.
 
+**The scheduler is the part most likely to pass while testing less than it
+claims.** A two-process demonstration where one process happens to run to
+completion before the other starts exercises no blocking at all, and looks
+identical in the output. The client must be observed blocked in send while
+the server runs, and the server blocked in receive while the client works,
+or the milestone has not been demonstrated.
+
+*Size.* Medium to large, down from large. The trap edge, the startup
+contract and the programs are done; program loading and the scheduler work
+that follows from it are what remains.
 
 ### M3. A System You Can Talk To
 
