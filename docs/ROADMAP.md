@@ -10,9 +10,9 @@ This document says what exists, what is being built, and in what order.
 `design.md` says what the system is meant to be. `PROPOSALS.md` holds ideas
 that are not being built.
 
-Milestone 1 is done and nothing after it has been implemented or measured.
-What that milestone settled is recorded in section 4 and in section 4 of
-`design.md`; everything else in `design.md` is still a guess.
+Milestones 1 and 2 are done. What each settled is recorded in sections 4
+and 5 below, and section 4 of `design.md` carries the design decisions
+they forced; everything not yet reached by one of them is still a guess.
 
 **There are no dates here.** There is no evidence on which to base one. Each
 milestone carries a rough size, and sizes are relative to each other and to
@@ -59,37 +59,33 @@ walks it to a file, reads the file, and prints it. The file is served by a
 different process over the protocol of section 25, and nothing on that path
 is inside the kernel except the message passing.
 
-**Most of milestone 2 is done, and it runs.** The vertical slice executes a
-second time with every participant a loaded program: a boot archive in the
-kernel's rodata, images copied to the addresses they were linked for, and
-`fs_server`, `fs_client` and `fs_batch` in EL0 on AArch64 and U-mode on
-RISC-V. Every operation on that path crossed the trap edge.
+**Milestone 2 is done.** The vertical slice executes a second time with
+every participant a loaded program: a boot archive in the kernel's rodata,
+images copied to the addresses they were linked for, and `fs_server`,
+`fs_client` and `fs_batch` in EL0 on AArch64 and U-mode on RISC-V. Every
+operation on that path crossed the trap edge.
 
-The same file read two ways answers section 25.7, which was the last
-question in the milestone that could falsify a design decision:
+The same file read two ways answers section 25.7:
 
 ```
-fs_client  read 31 bytes in 3 rendezvous, 1 connections
-fs_batch   read 31 bytes in 1 rendezvous, 0 connections
+fs_client   3 rendezvous, 1 connections
+fs_batch    1 rendezvous, 0 connections
 ```
 
 Batching pays, and the second column is why rather than the first.
 Section 25.2 makes the connection pool a build-time bound on every file
 open at once, and a compound never draws from it.
 
-Threads now carry an explicit wait state and the kernel keeps a ring of
+Threads carry an explicit wait state and the kernel keeps a ring of
 blocking transitions, so the stage checks that the two programs actually
 blocked against each other rather than inferring it from the byte counts.
-That check found and fixed a scheduler defect: a server whose base
-priority exceeded its client's corrupted the run queues. M2 has the
-account.
+That check found a scheduler defect, since fixed: a server whose base
+priority exceeded its client's corrupted the run queues.
 
-What is left is a statement of what Tier 0 checks and what it trusts on a
-descriptor crossing the boundary, and a general halt on exit.
-
-The programs cannot print. There is no console for user code, so results
-come back as exit status. M2 says why that is a decision rather than an
-omission.
+Programs can print, over the debug console of section 22.4. It takes no
+handle, is compiled out by default, and is announced at boot when it is
+not, because it is ambient authority and the one thing the rest of the
+system does not have. M3's console service is what removes it.
 
 Identifiers are now one machine word rather than a fixed 64 bits, with the
 index and generation split sized to the pools: 20 and 44 bits on a 64-bit
@@ -303,17 +299,15 @@ fs_batch   read 31 bytes in 1 rendezvous, 0 connections
   ambient authority and the section says so; a console service reached
   through a handle is what replaces it, in M3. The V7-numbered libc stubs
   went with it, having never worked.
-
-*What is left.* Two things, neither of which can falsify a design
-decision.
-
-- **A statement of what Tier 0 checks and what it trusts** on a descriptor
-  crossing the boundary, and the register and memory guarantees of section
-  23.4. There is no address space to validate a user pointer against, so
-  what is owed is the statement rather than the check. Section 23.2's real
-  test waits for the MMU.
-- **Halt on exit** as a general rule rather than the boot thread waiting
-  on processes it knows the names of.
+- **What Tier 0 checks and what it trusts** on a descriptor crossing the
+  boundary, in section 23.2, in section 27 as a port obligation, and in
+  the trap path where someone reading it will find it. There is no address
+  space to validate a user pointer against, so what was owed was the
+  statement rather than the check, and section 23.2's real test waits for
+  the MMU.
+- **Halt on an exit nobody was waiting for.** The kernel announces every
+  exit and stops on an unclaimed one, naming the process. That is the
+  M2-shaped placeholder for the supervision of section 24.3.
 
 *Not needed.* The MMU, cohorts, SMP, paging, the submission engine, and
 **anything to do with death**. Programs run to completion or the system
@@ -426,8 +420,10 @@ it allocated one. The high-priority-server check panics without the
 scheduler fix, and the debug console leaves no banner, no program output
 and a still-passing stage when it is compiled out.
 
-*Size.* Small, from large. What remains is a paragraph of specification
-and a generalised halt.
+*Size.* Small, from large, and spent.
+
+**Done.** Section 5 says what it answered, what it cost, and what it left
+untested.
 
 ### M3. A System You Can Talk To
 
@@ -790,7 +786,114 @@ the test immediately exposed a real fault in the code it was meant to
 cover. This was the highest-yield defect finder in the milestone, ahead of
 either reading the code or reviewing it.
 
-## 5. Bring-Up Order Within M1
+---
+
+## 5. Milestone 2, in Retrospect
+
+M2 asked whether the interface survives a real protection boundary, and
+answered it by putting one there. This is what it settled, what it cost,
+and what it left alone.
+
+### 5.1 The Three Questions
+
+**Does the operation descriptor survive crossing a real boundary?** Yes,
+unchanged, and nothing about it wanted a different shape. The trap path
+shifts no registers on either port, because the descriptor pointer and the
+count are already where the C calling convention puts them. What the
+question cannot reach on this tier is the part that matters most: section
+23.2's address check has nothing to consult without an address space, so
+what M2 produced is a statement of what is trusted rather than a check.
+Section 23.2's real test is M4.
+
+**Is the rendezvous of section 12 what a server actually wants**, now that
+a server is a program rather than a function the test calls? Yes, with no
+change to it. The loop a program writes is the loop section 12.6
+describes, and the cookie carried the server's per-connection state
+without the kernel learning anything.
+
+**Does the compound request of section 25.7 pay?** Yes, and not for the
+reason the section leads with. Three rendezvous become one, which was
+expected. The connection pool goes from one allocation to none, which is
+the structural saving, because section 25.2 makes that pool a build-time
+bound on every file open at once and a client reading a small file end to
+end has no use for a durable reference to it. A third saving turned up
+that the section does not mention: three messages give a busy server two
+chances to be elsewhere when the next one arrives, and the compound cannot
+queue at all, because the client has given the server nothing else to do.
+
+### 5.2 What It Cost
+
+About 2900 lines added across sixty-four files, of which 530 are the three
+user programs and the rest is kernel, libc, the boot archive tool and the
+build changes to carry an archive.
+
+Kernel object memory went from 319936 bytes to 321728, and the shape is
+unchanged: thread stacks and process handle tables are still 96% of it.
+The startup record and the trace ring together are under a kilobyte. M2
+added a boot archive, a loader, three programs, a tracer and a debug
+console without moving the number that section 8 says is a property of the
+configuration.
+
+### 5.3 What the Building Kept Finding
+
+**The specification was wrong in three places, and building it is what
+found them.** Section 25.7 put an entry index in the field a read needs
+for its file position, so a compound read at a non-zero offset could not
+be written at all; it also had a close entry that does nothing, because
+the server releases an intermediate node when it replies whether or not
+anything asks. Section 6.1's reply-path caveat and section 25.5 both
+assumed a grant object for bulk payloads, which is sized for a case in
+section 18.4 that nothing before M6 needs. None of the three was visible
+by reading.
+
+**An estimate was wrong in a way worth recording.** The scheduler defect
+was written down as needing a change with deferral nesting thought
+through, and it needed neither: `sched_ready` does two things and the
+caller wanted one. The error was reading `sched_defer` as the only way to
+make two scheduler operations atomic rather than asking whether the second
+was needed at all. An estimate that argues for deferring work should be
+checked before it is acted on.
+
+**Tests that can fail found everything else.** Every claim in this
+milestone was confirmed by breaking it: entering at EL1h to prove the
+programs are at EL0, demanding the wrong `mcause` to prove they are in
+U-mode, changing the server's string to prove the bytes running are the
+bytes built, walking a name that does not exist to prove a compound stops,
+overrunning a compound's payload to prove it is refused before it runs,
+swapping the client order to prove the pool measurement is not an
+artifact, reverting the scheduler fix to prove the new check catches it,
+and compiling the debug console out to prove the system does not need it.
+
+**Two of those found real defects rather than confirming the expected.**
+Raising the server above its client to test the tracer corrupted the run
+queues, which is a legitimate configuration nothing else in the system
+reaches, since donation raises a server to exactly its client's priority
+and equal priority does not preempt. And the pool measurement would have
+reported zero connections for whichever client ran second whether or not
+it allocated one, because `highwater` is monotonic; the order swap is what
+turned that from a passing test into a correct one.
+
+### 5.4 What Is Still Untested
+
+Nothing has been measured. Tier 0 enforces nothing, so section 6.1 is
+still a convention and every fault path is unexercised. The trap edge now
+runs, but only the system-call half of it: no program has faulted, because
+a fault on this tier is a kernel bug rather than a message to a pager.
+
+The identifier split for 32-bit targets compiles and round-trips and has
+never run. The buffer field of section 12.4 is rewritten by a function
+that is the identity, so the half of it that matters arrives with the MMU.
+Cohorts, multicore, namespaces, the submission engine and death remain as
+they were.
+
+**One thing M2 built is meant to be deleted.** The debug console of
+section 22.4 is ambient authority and a hole in the capability model,
+compiled out by default and announced when it is not. M3's console service
+is what removes it, and a build that still needs it after that is a build
+with a bug in its namespace.
+
+
+## 6. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -834,7 +937,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 6. Ordering: What Is Forced and What Is Chosen
+## 7. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -865,7 +968,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 7. What Would Change This Plan
+## 8. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -902,7 +1005,7 @@ reason, so nothing else moves.
 
 ---
 
-## 8. Deliberately Not Scheduled
+## 9. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 
