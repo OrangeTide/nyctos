@@ -154,6 +154,28 @@ an inter-processor interrupt to every member enters the analysis. Dynamically
 formed gangs additionally make admission a global decision and should not be
 attempted.
 
+**An asynchronous send.** Every send blocks, so a client cannot have two
+requests to servers outstanding at once and the concurrency of section 17.3
+reaches devices but not services. The extension is an issuing form of send
+whose completion advances a timeline, with the reply written into the entry's
+already-validated argument structure. This buys concurrent service calls from
+one thread, and it costs the property that a blocked client thread is itself
+the reply's queue slot (section 12.2). Something else would have to hold the
+destination, which is a new object or a new thread state, and reply
+addressing, cancellation and owner-death all read from that slot today. The
+cheap alternative is more threads, and the trigger for revisiting is a client
+that genuinely cannot afford one thread per outstanding request.
+
+**A deferred entry flag for the submission engine.** A chain that aborts
+partway can leave a connection open in a server, because the entry that would
+have closed it never ran and its handle is only in a register (section 17.5).
+The extension is a flag meaning "run even if the chain aborted, provided the
+input register holds a value", which stays inside the branchless argument
+because the predicate is whether a register was written. It costs a second
+flag on every entry and a second pass over the array on the abort path. The
+trigger is a real batch that acquires something it must release; the
+compound requests of section 25.7 avoid the case rather than solving it.
+
 **Connection death notification.** A server learns that a client is finished with
 a connection only when the client closes it. Destroying the connection object
 tells the server nothing. This buys a kernel in which closing a handle is a

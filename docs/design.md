@@ -457,7 +457,11 @@ Four constraints shape everything that follows, and they are stated here because
 | Handle rights | Rights mask on every handle. Duplication may only attenuate. |
 | Vocabulary | `sys_proc_id_t` and `sys_thread_id_t`. `task_id_t` is deleted. |
 | Blocking | A thread blocks on exactly one thing at a time. Invariant. |
-| Reply addressing | By client thread id. No rcvid or transaction table. |
+| Reply addressing | By client thread id. No rcvid or transaction table. Any server thread may reply. |
+| Connections | Minted by the server and given away. A client cannot connect to a channel. |
+| Blocked states | SEND-blocked and REPLY-blocked are distinct and reported separately. |
+| Reply status | `sys_err_t` in the message, outside the payload, so a chain can abort on it. |
+| Batching | Two forms: a kernel batch collapses traps, a compound request collapses rendezvous. |
 | Multi-wait | One thread per source. Wait-sets remain deferred. |
 | SMP | Partitioned scheduling with explicit migration. |
 | Co-scheduling | Cohort scheduling nodes, not gang admission. |
@@ -864,13 +868,79 @@ nothing, and the implementation has to mean it.
 
 ## 12. Synchronous IPC
 
+Every request in the system crosses this boundary. A client asking a filesystem to read a file, a driver reporting a transfer, a faulting thread asking its pager for a page: all of them are these three operations. Section 2.2 says everything crosses the same boundary, and this is that boundary.
+
+It is therefore specified here in full rather than sketched. A microkernel is mostly the interface in this section, and a reader who has to guess at the rendezvous has to guess at everything built on it.
+
 ### 12.1 Rendezvous
 
-Communication is strict send, receive, reply. `sys_msg_send()` blocks the calling thread until a server thread receives the message and replies.
+Three operations, defined by what blocks.
 
-Receive queues are ordered by **sender priority**, highest first, not by arrival order. FIFO ordering on a receive queue is a priority inversion that no amount of donation can repair, because the inversion is in the queue rather than in the execution.
+| Operation | Blocks until |
+| --------------------- | ------------------------------------------------ |
+| `sys_msg_send()` | a server has received the message and replied to it |
+| `sys_msg_recv()` | a message or a pulse is available |
+| `sys_msg_reply()` | never; it does not block |
 
-Channel creation and connection are separate operations: a server creates a channel, a client connects to it, and the server sees the connecting client's identity and may reject the connection.
+**There is no message queue, and this is the central fact of the design.** A message is copied from the sender's buffer to the receiver's at the moment both are present, and at no other time. Nothing is buffered anywhere in between. The blocked senders *are* the queue, which is why the kernel needs no message pool, no per-channel storage sized at build time, and no policy for what to do when that storage fills.
+
+Three properties follow, and each is load-bearing elsewhere.
+
+**A sender is a thread the kernel can see, name, prioritise, and release.** A buffered message is anonymous data; a blocked sender is a scheduling entity. Priority ordering of the queue (below), donation (section 12.3), and release on server death (section 12.5) are all only possible because the queue holds threads.
+
+**Flow control needs no mechanism.** A client cannot outrun a server, because the client is stopped for the duration of every request it makes. A system where a fast client can pile work on a slow server needs a policy for the overflow; there is no overflow here to have a policy about.
+
+**The cost of a request is paid by whoever makes it.** The server's work runs at the client's priority, in a rendezvous the client is blocked in, so a client cannot push cost onto a server without accounting for it.
+
+#### Channels and connections
+
+**A channel is created by a server and never by a client.** `sys_chan_create()` returns a handle carrying `SYS_RIGHT_RECV`, and holding that right is what it means to be the server for a channel. A channel is owned by the process that created it, and that ownership is what section 12.5 keys death off.
+
+**A connection is minted by the server too, and given away.** `sys_chan_connect()` requires `SYS_RIGHT_RECV` on the channel, which a client by construction does not hold. The server names a connection with an opaque 64-bit **cookie**, which the kernel carries with every message that arrives on it and never interprets. The resulting handle is then moved to a client, either in a reply or in the startup namespace of section 20.4.
+
+**An earlier version of this section had the client connect and the server accept or reject, and that was wrong on its own terms.** Connecting requires naming the channel to connect to, and section 20.3 has removed every ambient name from the system. A client that could name a channel it was not given would be holding authority nobody granted it, which is the thing the handle model exists to prevent. Server-minted connections need no accept step, no rejection path, and no identity check at connect time, because a connection only ever exists in a client's table because a server put it there.
+
+**The cookie is where a server keeps its per-client state, and it is also where identity lives.** There is no kernel-supplied "which process is calling" field, and there should not be. A server that cares who is calling recorded it in the cookie when it minted the connection, which is the only moment at which it actually knew. This is the same argument as section 25.2: the connection is the state.
+
+**A message may also be sent on a bare channel handle carrying `SYS_RIGHT_SEND`.** The cookie delivered is zero, which is reserved to mean "no connection". This is the shape root uses when it creates a channel and hands both ends out at boot (section 24.5), before any connection exists to mint.
+
+#### The three blocked states
+
+A thread involved in IPC is in one of three states, and the distinction between the first two is not cosmetic.
+
+| State | Meaning | Released by |
+| ------------------ | -------------------------------------------------- | ---------------------- |
+| **SEND-blocked** | queued on the channel; no server has taken it yet | a server receiving |
+| **REPLY-blocked** | a server holds the message and is working on it | that server replying |
+| **RECEIVE-blocked** | a server waiting with no message available | a client sending |
+
+**SEND-blocked means the request has not been seen; REPLY-blocked means it has.** A client accumulating time SEND-blocked is waiting on server capacity, and the answer is more receiving threads. A client accumulating time REPLY-blocked is waiting on the work itself, and more threads will not help. Introspection (section 22) must report the two separately or it reports nothing useful about a saturated server. The distinction also decides what a timeout means, below, and what a dying client owes its server, in section 12.5.
+
+Both states satisfy the blocking invariant of section 5: the thread is blocked on the channel, on exactly one object, and the transition from one to the other happens inside the kernel with no window in which it is on neither.
+
+#### The sequence
+
+Whichever side arrives first, the same rendezvous occurs.
+
+**Server first.** The server calls `sys_msg_recv()` and finds no sender, so it becomes RECEIVE-blocked. A client calls `sys_msg_send()`, finds a waiting receiver, copies its message into that receiver's buffer, passes the cookie and its own thread id, donates its priority, makes the server runnable, and becomes REPLY-blocked. It was never SEND-blocked.
+
+**Client first.** The client calls `sys_msg_send()`, finds no receiver, and is inserted into the channel's sender queue, SEND-blocked. A server calls `sys_msg_recv()`, takes the highest-priority sender, copies that sender's message into its own buffer, takes the cookie and the sender's id, and accepts the donation. The client moves from SEND-blocked to REPLY-blocked without running.
+
+In both cases the server then does its work and calls `sys_msg_reply()`, which copies the reply into the client's buffer, moves any handle the reply carries into the client's table, drops the donated priority, and makes the client runnable. The reply does not block, so a server never waits on a client.
+
+**Receive queues are ordered by sender priority, highest first, and never by arrival.** FIFO ordering here is a priority inversion that no amount of donation can repair, because the inversion is in the queue rather than in the execution: donation raises the thread that is running, and a low-priority request ahead of a high-priority one in a FIFO queue is not running, it is next. Ties are broken by arrival order, so equal-priority clients are served fairly.
+
+**Threads blocked in receive are in no particular order.** They are interchangeable by construction, since a receiving thread has no message and no client, so any of them will do and the cheapest choice is correct.
+
+#### Timeouts and cancellation
+
+`sys_msg_send()` takes an absolute deadline, per section 14.3. Expiry, and cancellation under section 10.5, act on the two blocked states differently, and the difference has to be stated because the server's view differs.
+
+**A SEND-blocked client is removed from the queue and the server never learns it existed.** Nothing was delivered, nothing was allocated on its behalf, and the client returns `SYS_ERR_TIMEOUT` or `SYS_ERR_CANCELED`. This case is clean.
+
+**A REPLY-blocked client abandons work already in progress.** The client is released with the same error, but the server is still holding the message and will reply to a thread that is no longer waiting. That reply returns `SYS_ERR_STALE` (section 12.2), which is how the server discovers the outcome. Any resources the server committed to the request are released on that path, in the same place it would release them on a normal reply.
+
+**A server that must not have its work discarded should not be given a deadline to discard it.** This is a statement about how clients are written rather than a mechanism: a request with a side effect on the server, and a client-side deadline shorter than the operation, is a request whose completion the client will not learn about. Deadlines belong on operations a client can meaningfully abandon.
 
 ### 12.2 Reply Addressing
 
@@ -878,11 +948,19 @@ Channel creation and connection are separate operations: a server creates a chan
 
 This works without any transaction identifier because of the blocking invariant in section 5. A thread blocks on at most one thing, so a blocked sender is uniquely identified by its thread id and there is nothing for an rcvid to disambiguate. A server may hold a client's thread id and reply later, out of order with respect to other clients, because the blocked client thread is itself the queue slot.
 
-The hazard this exposes is recycling: the client dies, its id is reused, and the server replies into the wrong thread. The generation counter closes it, and a reply to a stale id returns `SYS_ERR_STALE`.
+**A reply may be made by a thread other than the one that received.** The id is a token, not a lock, so a server may receive on one thread and reply from another. This is what makes a receive-and-dispatch structure possible without the kernel knowing anything about worker threads, and it is the whole of the kernel's support for section 12.6.
+
+**The id confers no authority over the client**, per section 5. It permits exactly one thing, which is completing the request the client is blocked in. A server acquires no power over its clients by serving them, which would otherwise be an escalation available to every service in the system.
+
+The hazard this exposes is recycling: the client dies, its id is reused, and the server replies into the wrong thread. The generation counter closes it. A reply is refused with `SYS_ERR_STALE` when the id names a slot whose generation has moved on, and equally when it names a live thread that is not REPLY-blocked on this server. Both are the same check, which is that the thread the id names is not the thread that sent this request.
+
+**A reply that carries a handle can partly fail.** The handle move is subject to the receiving table having room, so the reply may deliver its payload and fail to deliver its handle. The client is released either way, with the error, because leaving it blocked on a reply that has already been sent is worse than telling both sides the transfer failed.
 
 ### 12.3 Priority Inheritance
 
 When a thread sends to a channel, the receiving thread runs at `max(its own priority, the client's priority)` for the duration of the request and reverts on reply.
+
+**Donation begins at the rendezvous and not at the send.** A SEND-blocked client donates to nobody, because there is nobody serving it yet, and there is no thread whose promotion would help. What serves that client is the queue being priority-ordered, so that it is taken first. The two mechanisms cover the two states, and neither covers the other's.
 
 Donation is transitive. If the server blocks sending to a second server, the donated priority propagates along the chain. Chain length is bounded by `SYS_PRIO_CHAIN_MAX`, and a send that would exceed the bound fails with `SYS_ERR_DEADLOCK`. Section 21 covers composition with the other priority mechanisms.
 
@@ -896,21 +974,73 @@ The consequence is that `SYS_PRIO_CHAIN_MAX` and `SYS_ERR_DEADLOCK` describe a m
 
 ### 12.4 Message Structure
 
-A message carries a small inline payload, an optional memory grant for bulk data, and zero or more handles.
+A message carries a small inline payload, an optional memory grant for bulk data, and zero or more handles. The same structure is used for a request and for a reply, so a server filling in a reply is doing what a client did to send.
 
 The inline payload exists so that small requests need no grant at all. Grant setup means address-space manipulation on Tier 2, which is disproportionate for a keystroke, a serial byte, or a short status word. Below `SYS_IPC_INLINE_BYTES` the payload is copied directly and no grant is constructed.
 
 `inline_data` is **a memory copy, not a register transfer.** The distinction matters because a register-based fast path and a copied struct field have different costs and different size limits, and conflating them leads to interfaces that promise register speed for payloads far too large to fit in registers. Whether a port additionally carries the first few words in CPU registers is an implementation choice that does not change the interface or its semantics.
 
+#### The reply carries a status the kernel can read
+
+**A reply has a `status` field of type `sys_err_t`, outside the opaque payload.** Section 25.6 already requires that servers report failure as `sys_err_t` and invent no codes of their own, so this costs a protocol nothing it was not already doing. What it buys is that the kernel can tell a successful *transport* from a successful *request*, which the payload alone never allowed.
+
+Two things depend on it. A tracing tool can report failed requests without understanding any protocol. And section 17.5's abort-on-failure becomes implementable for entries that send: without this field, a `FS_OP_WALK` for a file that does not exist is a completely successful `SYS_OP_IPC_SEND` as far as the kernel can see, so a linked chain would carry on and send a read on a connection that was never returned.
+
+The kernel copies the field and attaches no meaning to it beyond zero and non-zero. It does not learn the protocol, in exactly the way it does not learn the cookie.
+
+#### Sizes, and the one case that truncates
+
+**The inline payload cannot truncate.** It is a fixed-size array in a fixed-size structure, copied whole, with `inline_len` saying how much of it is meaningful. A sender giving an `inline_len` above `SYS_IPC_INLINE_BYTES` is rejected with `SYS_ERR_INVALID_ARG` before anything is copied, rather than silently shortened.
+
+**A grant is a handle to the sender's memory, and its size is data.** A server asked to fill a buffer smaller than the request it was given completes as much as fits and reports a short count in the protocol. That is a protocol outcome, not a kernel error, and no operation in this section returns a length the caller did not ask for.
+
+**The one truncating case is the handle array.** On receive, `handle_capacity` is the caller's array size and `handle_count` is written with the count the message actually carries. A short array yields `SYS_ERR_TRUNCATED` and **moves nothing**, so the message can be received again with a larger array and no handle is stranded in between.
+
+#### What moves, and when
+
+**Handles in a request move into the receiving process at receive. Handles in a reply move into the client at reply.** In both cases the value changes across the boundary, per section 7.4, because a handle means something only in the table holding it. The source slot is invalidated rather than merely unused, so presenting the old value afterwards is refused rather than reaching the object. Moving requires `SYS_RIGHT_TRANSFER` on the handle.
+
+**A grant is moved for the duration of the call and returns on reply.** By section 6.1 the sender may not touch the underlying memory between send and reply, and on Tier 2 that rule is enforced by unmapping rather than trusted. This is the uniform memory contract, and the rendezvous is the place it is most used.
+
 ### 12.5 When a Peer Dies
 
 A rendezvous has two sides and they fail differently, because they are waiting on different things.
 
-**A client blocked in `sys_msg_send()` is released with `SYS_ERR_OWNER_DEAD`** when the process owning the channel terminates. This is an error return, not a notification, and the distinction is forced rather than stylistic: the client is not receiving on that channel, it is waiting for a reply, so nothing delivered *to* the channel can reach it. A mechanism that only posted a pulse would leave every blocked client hanging on a dead server.
+**A client blocked in `sys_msg_send()` is released with `SYS_ERR_OWNER_DEAD`** when the process owning the channel terminates. This applies in both blocked states: a SEND-blocked client whose server never existed long enough to receive, and a REPLY-blocked client whose server died holding its request, are released the same way. This is an error return, not a notification, and the distinction is forced rather than stylistic: the client is not receiving on that channel, it is waiting for a reply, so nothing delivered *to* the channel can reach it. A mechanism that only posted a pulse would leave every blocked client hanging on a dead server.
 
-**A server holding an unanswered request learns through `SYS_PULSE_DEAD_OWNER`**, per section 10.5, because a server *is* at a receive point and can collect it. Its later reply, if it makes one anyway, returns `SYS_ERR_STALE`.
+**A server holding an unanswered request learns through `SYS_PULSE_DEAD_OWNER`**, per section 10.5, because a server *is* at a receive point and can collect it. Its later reply, if it makes one anyway, returns `SYS_ERR_STALE`. Only a REPLY-blocked client's death needs announcing; a SEND-blocked client that dies is removed from a queue the server never looked at.
 
 Both directions are therefore covered, and neither depends on a timeout. This matters most during cohort restart (section 18.2), where a supervisor is deliberately destroying processes that may have clients blocked on them and requires those clients to be released promptly rather than at the expiry of whatever deadline each happened to pass.
+
+**A server learns nothing when a client merely closes a connection.** Destroying the connection object is a local operation in the client's table and tells the server nothing, so per-connection state is reclaimed on an explicit protocol close (section 25.2) and not before. `PROPOSALS.md` describes what changing that would cost, and section 25.7 describes the shape that avoids needing to.
+
+### 12.6 The Shape of a Server
+
+The kernel provides no server framework, and this section is what a server has to do without one.
+
+**A server is a loop around `sys_msg_recv()`.** It receives, switches on the operation, and replies. The cookie tells it which of its objects the request is about; the client id tells it who to reply to; the payload or the grant carries the argument. Section 19.3 gives the same loop for a driver, and there is no difference between the two.
+
+**Concurrency is receiving threads, and the count is a configuration decision.** Several threads may be blocked in `sys_msg_recv()` on one channel, and each rendezvous pairs one client with one of them. A server that wants to serve *n* requests at once has *n* receiving threads. There is no kernel worker pool, and there could not be one that preserved section 2.4, since a kernel thread serving a request is a thread whose priority is not the client's.
+
+**A server that blocks onward stops serving on that thread, and the donation follows.** A filesystem receiving a read and sending to a block driver is REPLY-blocked on the driver, running at the client's donated priority, and carries that priority to the driver by section 12.3. This is the intended shape and needs no asynchrony. What it costs is a thread per outstanding request, which is the sizing decision above stated a second way.
+
+**Receive and reply may be split across threads**, per section 12.2, so a server may instead receive on one thread and hand the client id to a worker. Nothing in the kernel distinguishes the two structures. Which is right depends on whether the server's work is bounded and short, in which case serving inline is simpler and faster, or long and variable, in which case a dispatcher keeps the channel drained.
+
+**A server must not send to its own channel.** It would be SEND-blocked on a channel only it can receive on, with no thread left to receive. Section 10.3's process reentrancy mode is the related setting, and the general rule is that the connection graph among servers must be acyclic, since section 12.3 does not detect a cycle.
+
+### 12.7 One Message, Several Operations
+
+Nothing in this section says a message carries one operation, and for a request whose steps are known in advance it should not.
+
+**The kernel does not know how many operations a message contains, and must not.** A message is a payload and a grant, and what a server finds inside is between the client and that server. A batched request is therefore not a kernel feature at all: it is a protocol whose request structure happens to be a sequence. Section 25.7 defines the one for filesystems.
+
+**The saving is rendezvous, and rendezvous is the expensive part.** Three requests to one server cost three rendezvous and six context switches. The same three operations in one message cost one rendezvous and two, and the server executes the whole sequence with its caches warm and without yielding to the client's scheduler between steps. On Tier 2 it also costs one grant setup rather than three.
+
+**A batched request must abort at the first failure**, and the server is the one that aborts it, because the server is the only party that knows what the operations mean. The reply says which operation failed and why. A client that wanted the remaining operations attempted anyway is describing a different request and should send a different one.
+
+**Intermediate results stay inside the server.** An operation in the sequence refers to what an earlier operation in the same sequence produced, by index rather than by handle. Nothing is moved back to the client for a step it did not ask to keep, which means a sequence that opens, reads and closes never puts a durable object in either table. Section 25.7 shows what that saves, which turns out to be more than the context switches.
+
+**This is not the submission engine of section 17, and the two solve different costs.** A section 17 batch is executed by the kernel in the client's thread and collapses *traps*: three sends in one batch are still three rendezvous. A batched protocol request is executed by the server and collapses *rendezvous*. They compose, since a section 17 entry may send a message that itself carries a sequence, and neither depends on the other existing. Where only one is available, the protocol-level one is the one that pays for a request to a single server.
 
 ---
 
@@ -1260,6 +1390,10 @@ Dependencies that would have required branches are expressed as fences instead. 
 
 Issuing ops are where concurrency comes from. In an in-context engine there is one thread, so entries execute strictly in order and the kernel provides no parallelism. Concurrency comes from hardware. A batch issues three transfers, collects three timelines, then waits on each; three transfers are in flight simultaneously, the thread's own context executed all of it, and priority inheritance was never broken.
 
+**There is no issuing form of send, so this concurrency does not reach servers.** `SYS_OP_IPC_SEND` blocks, which means a batch cannot start two requests to a filesystem and wait on both. The concurrency above is hardware concurrency and applies to devices. A client wanting two file reads at once uses two threads, which is the same answer section 19.3 gives a driver and the same cost `PROPOSALS.md` names wait-sets for.
+
+An issuing send is not obviously incoherent, since the reply would land in the entry's argument structure, which was validated once at submission and is exactly the fixed buffer a reply needs. What it would break is the description in section 12.2 rather than the mechanism: a thread with an outstanding issuing send is not blocked on it, so the blocked client thread can no longer be the queue slot, and something else has to hold the reply's destination. That is a new object or a new thread state, and it is not a small change. `PROPOSALS.md` carries it.
+
 ```{=typst}
 #figure(include "fig/batch.typ", caption: [Issuing ops put three transfers in flight from one thread, with no worker pool and no broken priority relationship.])
 ```
@@ -1269,6 +1403,8 @@ Issuing ops are where concurrency comes from. In an in-context engine there is o
 The engine provides `SYS_BATCH_REGS` typed registers, private to one execution and zeroed at entry. Each holds either a handle or a scalar and is tagged with which. An entry reading a register as a handle when it contains a scalar fails with `SYS_ERR_INVALID_ARG` rather than fabricating a handle from an integer.
 
 The tagging is load-bearing. Without it a batch could construct a handle value arithmetically, defeating the handle table's unforgeability.
+
+**A reply's moved handle is written to `reg_out`.** `SYS_OP_IPC_SEND` is the second writer of a register, alongside the issuing ops, and without it a batch cannot use the result of a request it made. The case this exists for is a walk returning a connection that the next entry reads as its `target`. A reply carrying no handle leaves the register empty, and the dependent entry then fails on the tag check above rather than on a fabricated value, which is the failure mode wanted.
 
 ### 17.5 Chaining and Error Semantics
 
@@ -1282,9 +1418,15 @@ Two properties of `LINK` are easily assumed and both are false here.
 
 On abort, every timeline the batch was going to signal is force-signalled in error state.
 
-**That set is always determinable, and the branchless form is why.** The kernel must identify timelines a batch would have signalled without executing the remaining entries. An entry naming its target literally is visible by inspection. An entry taking its target from a register can only have got it from an earlier entry in the same batch, because registers are zeroed at entry and written only by `REG_OUT`. If that earlier entry ran, the kernel holds the value; if it did not, the register is empty and no timeline exists for anything to be waiting on. Both cases are covered, with no execution required.
+**That set is always determinable, and the branchless form is why.** The kernel must identify timelines a batch would have signalled without executing the remaining entries. An entry naming its target literally is visible by inspection. An entry taking its target from a register can only have got it from an earlier entry in the same batch, because registers are zeroed at entry and written only by an entry that has already run. If that earlier entry ran, the kernel holds the value; if it did not, the register is empty and no timeline exists for anything to be waiting on. Both cases are covered, with no execution required.
 
 A language with branches would lose this. Whether a given signal is reachable would depend on values not yet computed, so the kernel could not enumerate the set without running the batch, and the guarantee could not be made at all.
+
+**A failure reported by a server aborts the chain too, and this needs the status field of section 12.4.** Without it, an entry that sends is successful whenever the message was delivered, whatever the server said, so a chain of walk, read and close would carry on past a walk that found nothing and send a read on a connection that was never returned. With it, the kernel copies the reply's `status` into the entry's status field and treats non-zero as failure, learning nothing about what the value means. `LINK` covers protocol failures and transport failures the same way, which is the only behaviour a client would predict.
+
+**An aborted chain can leave state behind in another process, and the engine does not clean it up.** If a walk succeeds and the read that follows fails, the close never runs. The connection exists, its handle sits in a register that is zeroed when the batch ends, and the client never learns the value. The server still holds the record, and section 25.2 reclaims that record on an explicit close and on nothing else, so a slot in a statically sized pool is leaked in a process that did nothing wrong.
+
+The engine cannot fix this by closing register-held handles at exit, because destroying a connection object tells the server nothing (section 12.5). The choices are a deferred-entry flag, meaning "run even if the chain aborted, provided the register holds a value", which stays inside the branchless argument because the predicate is whether a register was written; or connection death notification, which `PROPOSALS.md` costs out; or arranging not to have the problem, which is what section 25.7 does by keeping the intermediate node inside the server. **The third is why a compound protocol request is the better tool for a batched open, and this is stated here rather than there because it is a limit of the engine.**
 
 ### 17.6 Status Reporting
 
@@ -1764,7 +1906,7 @@ A VFS process would sit in the path of every operation without being able to enf
 
 ### 25.2 A File Handle Is a Connection
 
-**A directory or file is named by a connection handle, obtained through `sys_chan_connect()` on the server's channel, and the server holds the per-connection state that binds it to a node.**
+**A directory or file is named by a connection handle, minted by the server with `sys_chan_connect()` on its own channel and moved to the client, with the server holding the per-connection state that binds it to a node.** Section 12.1 is why only the server can mint one.
 
 This follows the channel and connection split of section 12.1 and matches how QNX resource managers work, where a descriptor is a connection. It is the choice that makes handle-relative naming (section 20.3) real rather than conventional: the authority is a kernel object, so a client cannot forge a reference to a node it was never given, and passing a directory to a child is an ordinary handle move.
 
@@ -1791,6 +1933,7 @@ Three consequences follow.
 | `FS_OP_TRUNCATE` | Set the length of the node this connection names. |
 | `FS_OP_SYNC` | Commit outstanding writes to the underlying device. |
 | `FS_OP_CLOSE` | Release the server's state for this connection. |
+| `FS_OP_BATCH` | Execute a sequence of operations, stopping at the first failure. |
 
 **A server must implement every operation**, returning `SYS_ERR_NOT_SUPPORTED` where the backing store cannot provide one. A read-only server implements `FS_OP_WRITE` as a rejection rather than as silence, so that a client discovers the limit at the point of use rather than by inference.
 
@@ -1813,6 +1956,7 @@ typedef enum fs_op {
     FS_OP_TRUNCATE = 9,
     FS_OP_SYNC     = 10,
     FS_OP_CLOSE    = 11,
+    FS_OP_BATCH    = 12,
 } fs_op_t;
 
 #define FS_WRITE_APPEND  (1u << 0)   /* server computes the offset */
@@ -1889,7 +2033,55 @@ On Tier 2 a server forwarding a payload it does not inspect never maps it, per t
 
 Data with a durability requirement across power loss is not served by putting it on such a volume, and this document does not attempt to make it so. Calibration and configuration records want a small A/B or append-only store with an explicit commit, which is a different problem from a filesystem and is out of scope here.
 
-### 25.7 What Is Not in the Base Protocol
+### 25.7 Compound Requests
+
+Opening a file and reading it is the operation this protocol exists for, and in the form above it costs three round trips: walk, read, close. `FS_OP_BATCH` is those three in one message, and it is the concrete case of section 12.7.
+
+**What it saves is not mainly context switches.** Six become two, which is worth having. The larger saving is that a whole-file read stops allocating anything durable. Section 25.2 requires a build to size the connection pool for the maximum number of simultaneously open files across the whole system, and calls exhaustion a configuration error rather than a runtime condition. A client reading a small file end to end has no use for a durable reference to it, and in the three-message form it holds one anyway, across two further round trips. In the compound form the intermediate node lives only inside the server's execution of one request, and the pool is never touched.
+
+**Path resolution was already one round trip.** `FS_OP_WALK` takes a whole relative path, and section 20.3 puts lexical `..` reduction in the library before any message is sent. Compounding does not remove a resolution round trip, because there was not one to remove. What it removes is the open and the close.
+
+#### Shape
+
+The compound is a sequence of ordinary `fs_req_t` entries in the grant, each followed by its path bytes and padded to eight. The outer `fs_req_t` carries `FS_OP_BATCH` and a count. The reply's grant carries a matching sequence of `fs_rep_t`, followed by any read payload.
+
+```c
+/* Entry i names the node produced by entry j, for j < i, by setting
+ * FS_BATCH_REF and putting j in offset. A path is then resolved relative
+ * to that node instead of to the connection the message arrived on. */
+#define FS_BATCH_REF     (1u << 2)
+
+typedef struct fs_batch_rep {
+    sys_err_t err;        /* the first failure, or SYS_OK */
+    uint32_t  failed;     /* index of the failing entry, when err != SYS_OK */
+    uint32_t  completed;  /* entries that ran to completion */
+    uint32_t  _pad;
+} fs_batch_rep_t;
+```
+
+#### Rules
+
+**Every entry resolves against the connection the message arrived on, or against a node an earlier entry produced.** A compound therefore reaches exactly what the same operations sent one at a time would reach. The starting authority is the same connection handle, each walk applies the same root check as section 25.3, and `FS_BATCH_REF` can only name an entry in the same message. Nothing about confinement changes, which is what makes this an optimisation rather than a new interface.
+
+**Execution stops at the first failure and the reply names it.** Entries after the failing one do not run, and `failed` says which one, so a client that could not open the file learns that rather than receiving three separate errors it has to interpret. This is what a client wants from batching an open, and it is the reason the sequence is a protocol feature rather than a client-side convenience.
+
+**Intermediate nodes are named by index and are never handles.** An entry that produced a node holds it for the duration of the request only. This is what removes the pool allocation, and it is also what makes abort trivial: the state a failed compound abandons belongs to the server, which is the party doing the abandoning, so there is nothing to unwind across a boundary.
+
+**A durable connection must be asked for explicitly.** A final entry may request that a node it produced be returned as a connection, which is then moved back in the reply as an ordinary handle and does draw from the pool. A compound that asks for nothing allocates nothing. Only one handle may be returned, per section 12.4's message shape.
+
+**A short read is not a failure.** Reading past the end of a file yields a count smaller than requested and `SYS_OK`. Treating it as an error would make every whole-file read of a file whose length the client does not know abort its own close, which is precisely the case the compound exists to serve.
+
+**The compound is bounded, and the bound is a configuration value like every other in section 2.7.** A server rejects a compound with more entries than it is built for, or a grant it cannot address, with `SYS_ERR_INVALID_ARG` before executing anything.
+
+#### What it costs
+
+**A compound cannot adapt.** It cannot read the size out of the walk's answer and size the read from it, because that is a branch and the sequence has none, for the same reason section 17.2 has none. A client reads a fixed length and accepts a short count, or sends a second request. This is the ordinary shape of a whole-file read, where the client has already chosen a buffer, and it is a poor fit for anything whose next step depends on the last one's result.
+
+**A compound runs the server for longer at one client's priority.** This is correct rather than a problem, since the work is the same work, but a server sizing its receiving threads should count a compound as one request of several operations' duration rather than as one operation.
+
+**Two ways to write the same thing is a cost in itself.** A server must implement both forms, and a client library must decide which to use. The rule that keeps this small is that the compound is not a general facility: it exists for sequences fixed in advance, and a client doing anything conditional uses individual requests.
+
+### 25.8 What Is Not in the Base Protocol
 
 Each of these is absent for a reason, and the reason is the same in every case: it buys a property stated elsewhere.
 
@@ -2353,6 +2545,13 @@ sys_err_t sys_thread_cancel(sys_handle_t thread);
 typedef struct sys_ipc_msg {
     uint32_t      flags;
     uint32_t      inline_len;                       /* bytes valid below */
+
+    /* Replies only: the server's verdict on the request, outside the
+     * opaque payload so that the kernel can tell a delivered message from
+     * a satisfied request without knowing the protocol. Zero is success.
+     * Section 12.4. */
+    sys_err_t     status;
+    uint32_t      _pad;
     uint8_t       inline_data[SYS_IPC_INLINE_BYTES];
 
     /* Bulk payload. Moved for the duration of the call: the sender may not
@@ -2371,19 +2570,36 @@ typedef struct sys_ipc_msg {
     sys_handle_t *handle_list;
 } sys_ipc_msg_t;
 
+/* Creating a channel returns SYS_RIGHT_RECV: holding that right is what it
+ * means to be the server. */
 sys_err_t sys_chan_create(sys_handle_t *out_chan);
-sys_err_t sys_chan_connect(sys_handle_t chan, sys_handle_t *out_conn);
 
-/* Blocks until a server receives and replies. Receive queues are ordered by
- * sender priority, highest first. */
-sys_err_t sys_msg_send(sys_handle_t chan, const sys_ipc_msg_t *send,
+/* Mint a connection to this channel. Requires SYS_RIGHT_RECV, so only a
+ * server can do this; the resulting handle is then moved to a client. The
+ * cookie is the server's own per-connection state, delivered with every
+ * message that arrives on it and never interpreted by the kernel. Zero is
+ * reserved to mean "sent on the bare channel, no connection". Section
+ * 12.1. */
+sys_err_t sys_chan_connect(sys_handle_t chan, uint64_t cookie,
+                           uint32_t rights, sys_handle_t *out_conn);
+
+/* Blocks until a server receives and replies. Sender queues are ordered by
+ * sender priority, highest first, ties by arrival. `target` names a
+ * connection, or a bare channel handle carrying SYS_RIGHT_SEND. */
+sys_err_t sys_msg_send(sys_handle_t target, const sys_ipc_msg_t *send,
                        sys_ipc_msg_t *reply, sys_deadline_t deadline);
 
-/* Returns the client thread id. Valid as a reply target only while that
- * thread remains blocked; the generation makes a stale reply detectable. */
+/* Returns the client thread id and the connection cookie. The id is valid
+ * as a reply target only while that thread remains blocked; the generation
+ * makes a stale reply detectable. Any thread in the server process may
+ * reply, not only the one that received. */
 sys_err_t sys_msg_recv(sys_handle_t chan, sys_ipc_msg_t *recv,
-                       sys_thread_id_t *out_client, sys_deadline_t deadline);
+                       sys_thread_id_t *out_client, uint64_t *out_cookie,
+                       sys_deadline_t deadline);
 
+/* Never blocks. Returns SYS_ERR_STALE if the client is no longer blocked on
+ * this request, which covers a client that died, timed out, or was
+ * cancelled. */
 sys_err_t sys_msg_reply(sys_thread_id_t client, const sys_ipc_msg_t *reply);
 
 /* ========================================================================== */
