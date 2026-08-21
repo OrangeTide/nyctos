@@ -67,7 +67,7 @@ md_thread_start:
      * itself. A thread that started with interrupts masked would never be
      * preempted and never see a timer.
      */
-    csrsi   mstatus, 8
+    csrsi   sstatus, 2              /* sstatus.SIE */
     mv      a0, s1
     jalr    s0
     call    thread_exited

@@ -4,12 +4,13 @@
  */
 
 /*
- * The core-local interruptor, as QEMU's virt board presents it.
+ * The timer and the interrupt controller, as supervisor mode sees them.
  *
- * The kernel runs in machine mode, so the machine timer is reached
- * directly and there is no external controller in the way. That makes the
- * timer the easiest first device here for the same reason the private
- * peripheral timer is on the ARM side.
+ * The kernel runs in supervisor mode, because that is the only mode
+ * here with an MMU. Both of these moved down with it: the timer is the
+ * supervisor compare register of the Sstc extension rather than the
+ * machine one in the CLINT, and the controller's context is the
+ * supervisor context of hart zero rather than the machine one.
  */
 
 #include <sys/intr.h>
@@ -18,17 +19,19 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define CLINT_MTIMECMP  0x02004000UL    /* hart 0 */
-#define CLINT_MTIME     0x0200bff8UL
 
 /*
  * The platform-level interrupt controller, which is where every device
- * that is not the timer arrives. Context 0 is hart 0 in machine mode,
- * which is the only context this kernel has.
+ * that is not the timer arrives.
+ * Context 1 is hart 0 in supervisor mode, which is where this kernel
+ * runs; context 0 is its machine mode, which after boot does nothing.
  */
 #define PLIC_BASE       0x0c000000UL
 #define PLIC_PRIORITY   0x000000        /* one word per source */
 #define PLIC_ENABLE     0x002000        /* one bit per source, per context */
+#define PLIC_CONTEXT    1               /* hart 0, supervisor mode */
+#define PLIC_ENABLE_CTX (PLIC_ENABLE + PLIC_CONTEXT * 0x80)
+#define PLIC_HART_CTX   (PLIC_CONTEXT * 0x1000)
 #define PLIC_THRESHOLD  0x200000        /* per context */
 #define PLIC_CLAIM      0x200004        /* per context */
 
@@ -38,16 +41,16 @@
 /* QEMU's virt board runs the machine timer at 10 MHz. */
 #define TIMER_HZ        10000000ULL
 
-#define MSTATUS_MIE     (1UL << 3)
-#define MIE_MTIE        (1UL << 7)
-#define MIE_MEIE        (1UL << 11)
+#define SSTATUS_SIE     (1UL << 1)
+#define SIE_STIE        (1UL << 5)
+#define SIE_SEIE        (1UL << 9)
 
 /*
- * The machine timer has no interrupt number in the sense a controller
- * would give it, so it gets one of its own. Nothing outside this file
- * depends on the value.
+ * The supervisor timer has no interrupt number in the sense a
+ * controller would give it, so it gets one of its own, which is its
+ * cause code. Nothing outside this file depends on the value.
  */
-#define TIMER_IRQ       7
+#define TIMER_IRQ       5               /* supervisor timer */
 
 /*
  * Interrupt numbers above here are PLIC sources, and below here they
@@ -57,11 +60,8 @@
  */
 #define PLIC_IRQ_BASE   32
 
-/* mcause code for a machine external interrupt, which is what the PLIC is. */
-#define CAUSE_EXTERNAL  11
-
-static volatile uint64_t *const mtime = (volatile uint64_t *)CLINT_MTIME;
-static volatile uint64_t *const mtimecmp = (volatile uint64_t *)CLINT_MTIMECMP;
+/* scause code for a supervisor external interrupt, which is the PLIC. */
+#define CAUSE_EXTERNAL  9               /* supervisor external */
 
 /* Set by the trap path before irq_dispatch; see md_irq_claim. */
 unsigned long md_pending_irq;
@@ -76,7 +76,7 @@ plic_reg(unsigned long off)
 static void
 plic_enable(unsigned int source, bool on)
 {
-    volatile uint32_t *reg = plic_reg(PLIC_ENABLE + (source / 32) * 4);
+    volatile uint32_t *reg = plic_reg(PLIC_ENABLE_CTX + (source / 32) * 4);
     uint32_t bit = (uint32_t)1 << (source % 32);
 
     if (on) {
@@ -91,35 +91,35 @@ md_intr_disable(void)
 {
     intr_state_t s;
 
-    __asm__ volatile ("csrrc %0, mstatus, %1"
-      : "=r" (s) : "r" (MSTATUS_MIE) : "memory");
+    __asm__ volatile ("csrrc %0, sstatus, %1"
+      : "=r" (s) : "r" (SSTATUS_SIE) : "memory");
 
-    return s & MSTATUS_MIE;
+    return s & SSTATUS_SIE;
 }
 
 void
 md_intr_restore(intr_state_t saved)
 {
     if (saved != 0) {
-        __asm__ volatile ("csrs mstatus, %0" :: "r" (MSTATUS_MIE) : "memory");
+        __asm__ volatile ("csrs sstatus, %0" :: "r" (SSTATUS_SIE) : "memory");
     }
 }
 
 void
 md_intr_enable(void)
 {
-    __asm__ volatile ("csrs mstatus, %0" :: "r" (MSTATUS_MIE) : "memory");
+    __asm__ volatile ("csrs sstatus, %0" :: "r" (SSTATUS_SIE) : "memory");
 }
 
 void
 md_intr_init(void)
 {
     /*
-     * The timer needs nothing: it is reached from machine mode
-     * directly. The PLIC needs its source given a priority above the
-     * context threshold, or it delivers nothing and says nothing.
+     * The timer needs nothing: supervisor mode programs its own. The PLIC
+     * needs its source given a priority above the threshold of the context
+     * it is delivering to, or it delivers nothing and says nothing.
      */
-    *plic_reg(PLIC_THRESHOLD) = 0;
+    *plic_reg(PLIC_THRESHOLD + PLIC_HART_CTX) = 0;
     *plic_reg(PLIC_PRIORITY + UART_SOURCE * 4) = 1;
 }
 void
@@ -127,9 +127,9 @@ md_irq_unmask(unsigned int irq)
 {
     if (irq >= PLIC_IRQ_BASE) {
         plic_enable(irq - PLIC_IRQ_BASE, true);
-        __asm__ volatile ("csrs mie, %0" :: "r" (MIE_MEIE) : "memory");
+        __asm__ volatile ("csrs sie, %0" :: "r" (SIE_SEIE) : "memory");
     } else if (irq == TIMER_IRQ) {
-        __asm__ volatile ("csrs mie, %0" :: "r" (MIE_MTIE) : "memory");
+        __asm__ volatile ("csrs sie, %0" :: "r" (SIE_STIE) : "memory");
     }
 }
 
@@ -161,7 +161,7 @@ md_irq_claim(void)
      * reading it is what stops the PLIC re-raising while it is served.
      */
     if (cause == CAUSE_EXTERNAL) {
-        source = *plic_reg(PLIC_CLAIM);
+        source = *plic_reg(PLIC_CLAIM + PLIC_HART_CTX);
         if (source == 0) {
             return IRQ_NONE;
         }
@@ -182,7 +182,7 @@ void
 md_irq_eoi(unsigned int irq)
 {
     if (irq >= PLIC_IRQ_BASE) {
-        *plic_reg(PLIC_CLAIM) = irq - PLIC_IRQ_BASE;
+        *plic_reg(PLIC_CLAIM + PLIC_HART_CTX) = irq - PLIC_IRQ_BASE;
     } else if (irq == TIMER_IRQ) {
         md_timer_disarm();
     }
@@ -191,9 +191,8 @@ md_irq_eoi(unsigned int irq)
 void
 md_timer_init(void)
 {
-    *mtimecmp = ~(uint64_t)0;
+    md_timer_disarm();
 }
-
 unsigned int
 md_timer_irq(void)
 {
@@ -211,9 +210,17 @@ md_idle_wait(void)
 uint64_t
 md_time_now(void)
 {
-    return *mtime;
-}
+    uint64_t v;
 
+    /*
+     * The time counter, read as a counter rather than as a device.
+     * Machine mode permits it through mcounteren; without that this
+     * instruction is an illegal one.
+     */
+    __asm__ volatile ("rdtime %0" : "=r" (v));
+
+    return v;
+}
 uint64_t
 md_time_hz(void)
 {
@@ -223,11 +230,16 @@ md_time_hz(void)
 void
 md_timer_at(uint64_t when)
 {
-    *mtimecmp = when;
+    /*
+     * stimecmp, which supervisor mode owns because machine mode set
+     * menvcfg.STCE at boot. The number is used rather than the name so
+     * that an assembler which has not heard of Sstc still assembles
+     * it, which is a real risk for an extension this recent.
+     */
+    __asm__ volatile ("csrw 0x14d, %0" :: "r" (when));
 }
-
 void
 md_timer_disarm(void)
 {
-    *mtimecmp = ~(uint64_t)0;
+    __asm__ volatile ("csrw 0x14d, %0" :: "r" (~(uint64_t)0));
 }

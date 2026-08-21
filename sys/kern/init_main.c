@@ -1953,8 +1953,8 @@ kernel_main(void)
 {
     struct proc *kproc;
 
-    cnprintf("Nyctos/" ARCH_NAME " tier %u kernel booting\n",
-      (unsigned int)SYS_TIER);
+    cnprintf("Nyctos/" ARCH_NAME " tier %u kernel booting in %s\n",
+      (unsigned int)SYS_TIER, md_mode());
 #if SYS_DEBUG_CONSOLE
     /*
      * Section 22.4 requires that a build carrying the debug console say

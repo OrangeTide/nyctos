@@ -67,6 +67,9 @@ void trap_fatal(unsigned long cause, unsigned long pc) __attribute__((noreturn))
  * the region held back, which is everything from the load address to
  * the end of the linker script's layout.
  */
+/* The privilege level this kernel runs at, for the boot log. */
+const char *md_mode(void);
+
 void md_memory_map(uintptr_t *base, size_t *len, uintptr_t *hold,
   size_t *hold_len);
 

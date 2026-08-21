@@ -6,9 +6,10 @@
 /*
  * void enter_user(unsigned long entry, void *arg, unsigned long sp)
  *
- * Drops from M-mode to U-mode at the given address and never returns. A
- * single PMP entry covering the whole address space is needed because
- * without one U-mode may access nothing at all. The kernel stack pointer
+ * Drops from supervisor mode to user mode at the given address and never
+ * returns.
+ *
+ * The kernel stack pointer
  * is stashed in mscratch, which is the invariant trap_entry reads to tell
  * a user trap from a kernel one.
  *
@@ -26,8 +27,8 @@
  * A program runs with machine interrupts live. U-mode cannot mask them
  * and never could: the privileged specification enables interrupts from
  * a more privileged mode regardless of that mode's own enable bit, so
- * what actually decides is mie, and what changed is that the AArch64
- * side now has a lower-EL vector to take them on. MPIE is set here so
+ * what actually decides is sie, and what changed is that the AArch64
+ * side now has a lower-EL vector to take them on. SPIE is set here so
  * that the state a program returns to is the state the kernel meant
  * rather than whatever was left over.
  */
@@ -35,21 +36,15 @@
 .section .text
 .global enter_user
 enter_user:
-    csrw    mscratch, sp
+    csrw    sscratch, sp
 
-    li      t0, -1
-    srli    t0, t0, 10              /* NAPOT range covering all of memory */
-    csrw    pmpaddr0, t0
-    li      t0, 0x1f                /* NAPOT, read/write/execute */
-    csrw    pmpcfg0, t0
+    li      t0, (1 << 8)           /* sstatus.SPP = 0: return to U-mode */
+    csrc    sstatus, t0
 
-    li      t0, (3 << 11)           /* mstatus.MPP = 0: return to U-mode */
-    csrc    mstatus, t0
+    li      t0, (1 << 5)            /* sstatus.SPIE: interrupts on return */
+    csrs    sstatus, t0
 
-    li      t0, (1 << 7)            /* mstatus.MPIE: interrupts on return */
-    csrs    mstatus, t0
-
-    csrw    mepc, a0
+    csrw    sepc, a0
     mv      a0, a1
 
     /*
@@ -59,4 +54,4 @@ enter_user:
     beqz    a2, 1f
     mv      sp, a2
 1:
-    mret
+    sret

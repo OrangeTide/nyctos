@@ -1193,8 +1193,8 @@ the only allocator here that is not a pool. What keeps it inside the
 argument is where its bound comes from: a pool's size is a number
 somebody chose, and this one's is the memory the machine has.
 
-**2. RISC-V in supervisor mode, with the MMU still off.** The port change,
-alone, changing nothing above it.
+**2. RISC-V in supervisor mode, with the MMU still off.** *Built.* The
+port change, alone, changing nothing above it.
 
 - Machine mode delegates the exceptions and interrupts the kernel wants
   through `medeleg` and `mideleg`, opens the PMP for supervisor mode, and
@@ -1210,11 +1210,26 @@ alone, changing nothing above it.
   context number and nothing else.
 
 *Check.* Everything M3 checks passes on riscv64 with the kernel in
-supervisor mode, including the shell session, and the AArch64 image is
-untouched. This stage adds no feature: what it produces is the same system
-in a weaker mode, which is exactly what makes it checkable.
+supervisor mode, and `make check` produces the same transcript byte for
+byte as the machine-mode kernel did. That is the whole claim of the
+stage: the same system in a weaker mode. The AArch64 image is untouched
+and passes too.
 
-**3. The kernel's own address space.** Translation on, with the kernel
+Two things this settled. **The mode a kernel runs in is invisible until
+something touches a register the mode does not have.** Two instructions
+were left behind, both writes to `mstatus`, and each showed up as an
+illegal instruction at a program counter a long way from the decision
+that caused it: one in the thread trampoline, enabling interrupts for a
+thread that had never run, and one in `enter_user`. The boot log says
+which mode the kernel is in now, because a build that quietly went back
+would otherwise look identical.
+
+**Sstc is what makes this affordable.** With `stimecmp`, supervisor
+mode programs its own timer and machine mode is not involved in a timer
+interrupt at all. Without it, machine mode would need a trap handler
+whose only job is forwarding, which is the one piece of machine-mode
+code this port would otherwise have to keep. That it exists on this
+board was checked before the plan was written rather than after.
 running through it.
 
 - Page tables built for the kernel: its image, the frames it allocates,

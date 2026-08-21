@@ -4,9 +4,9 @@
  */
 
 /*
- * Machine-mode trap entry.
+ * Supervisor-mode trap entry.
  *
- * mscratch carries the whole of the kernel-versus-user distinction on this
+ * sscratch carries the whole of the kernel-versus-user distinction on this
  * port: it holds the running thread's kernel stack pointer while that
  * thread is in user mode, and zero while it is in the kernel. A trap can
  * therefore find its stack without trusting the user's sp and without
@@ -25,9 +25,9 @@ trap_entry:
      * already running on its own stack, so the swap is undone and nothing
      * has moved.
      */
-    csrrw   sp, mscratch, sp
+    csrrw   sp, sscratch, sp
     bnez    sp, 1f
-    csrrw   sp, mscratch, sp
+    csrrw   sp, sscratch, sp
 1:
     /*
      * The frame stays on the stack of the thread that took the trap, which
@@ -39,14 +39,14 @@ trap_entry:
     sd      t0, 8(sp)
 
     /*
-     * mscratch now holds the user stack pointer, or zero for a trap that
+     * sscratch now holds the user stack pointer, or zero for a trap that
      * came from the kernel. Either way it belongs in the frame rather than
-     * in a register, for the same reason mepc does: a thread switch would
+     * in a register, for the same reason sepc does: a thread switch would
      * otherwise lose it. Clearing it restores the in-kernel invariant.
      */
-    csrr    t0, mscratch
+    csrr    t0, sscratch
     sd      t0, 144(sp)
-    csrw    mscratch, zero
+    csrw    sscratch, zero
 
     sd      t1, 16(sp)
     sd      t2, 24(sp)
@@ -66,19 +66,19 @@ trap_entry:
     /*
      * The return state goes in the frame, not left in the CSRs. A handler
      * may switch threads, and the thread it switches to may take a trap of
-     * its own, which would overwrite mepc and mstatus before this one
+     * its own, which would overwrite sepc and sstatus before this one
      * returns.
      */
-    csrr    t0, mepc
+    csrr    t0, sepc
     sd      t0, 128(sp)
-    csrr    t0, mstatus
+    csrr    t0, sstatus
     sd      t0, 136(sp)
 
     /*
-     * An interrupt has the top bit of mcause set. Everything else is a
+     * An interrupt has the top bit of scause set. Everything else is a
      * synchronous trap, of which the only expected one is a system call.
      */
-    csrr    t0, mcause
+    csrr    t0, scause
     bltz    t0, trap_interrupt
 
     li      t1, 8                   /* environment call from U-mode */
@@ -99,9 +99,9 @@ trap_entry:
 
 trap_restore:
     ld      t0, 128(sp)
-    csrw    mepc, t0
+    csrw    sepc, t0
     ld      t0, 136(sp)
-    csrw    mstatus, t0
+    csrw    sstatus, t0
 
     ld      ra, 0(sp)
     ld      t1, 16(sp)
@@ -120,33 +120,33 @@ trap_restore:
     ld      a7, 120(sp)
 
     /*
-     * MPP in the saved mstatus, still in t0, says where mret will land.
+     * SPP in the saved sstatus, still in t0, says where sret will land.
      * Zero is user mode, and only that case has a stack to swap back to.
      */
-    srli    t0, t0, 11
-    andi    t0, t0, 3
+    srli    t0, t0, 8               /* sstatus.SPP */
+    andi    t0, t0, 1
     bnez    t0, trap_restore_kernel
 
     /*
-     * Park the user stack pointer in mscratch, restore the last register,
-     * then swap: sp becomes the user stack and mscratch is left holding
+     * Park the user stack pointer in sscratch, restore the last register,
+     * then swap: sp becomes the user stack and sscratch is left holding
      * this thread's kernel stack for the next trap. That is the invariant
      * the entry path above reads.
      */
     ld      t0, 144(sp)
-    csrw    mscratch, t0
+    csrw    sscratch, t0
     ld      t0, 8(sp)
     addi    sp, sp, 160
-    csrrw   sp, mscratch, sp
-    mret
+    csrrw   sp, sscratch, sp
+    sret
 
 trap_restore_kernel:
     ld      t0, 8(sp)
     addi    sp, sp, 160
-    mret
+    sret
 
 /*
- * An interrupt. mepc is not advanced, because an interrupt is not an
+ * An interrupt. sepc is not advanced, because an interrupt is not an
  * instruction that has been executed.
  */
 trap_interrupt:
@@ -156,13 +156,13 @@ trap_interrupt:
     sd      t0, 0(t1)
 
     /*
-     * MPP in the saved mstatus says where this trap came from, and zero
+     * SPP in the saved sstatus says where this trap came from, and zero
      * is user mode. Nothing above the trap path can tell the two apart,
      * and a program being interruptible at all is new.
      */
     ld      t1, 136(sp)
-    srli    t1, t1, 11
-    andi    t1, t1, 3
+    srli    t1, t1, 8               /* sstatus.SPP */
+    andi    t1, t1, 1
     bnez    t1, 2f
     la      t1, md_user_irqs
     ld      t2, 0(t1)
@@ -174,8 +174,8 @@ trap_interrupt:
     j       trap_restore
 
 trap_bad:
-    csrr    a0, mcause
-    csrr    a1, mepc
+    csrr    a0, scause
+    csrr    a1, sepc
     call    trap_fatal
 
 .section .data

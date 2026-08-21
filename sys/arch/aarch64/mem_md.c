@@ -33,3 +33,10 @@ md_memory_map(uintptr_t *base, size_t *len, uintptr_t *hold, size_t *hold_len)
     *hold = (uintptr_t)_start;
     *hold_len = (size_t)((uintptr_t)_stack_top - (uintptr_t)_start);
 }
+
+/* The privilege level this kernel runs at, for the boot log. */
+const char *
+md_mode(void)
+{
+    return "EL1";
+}

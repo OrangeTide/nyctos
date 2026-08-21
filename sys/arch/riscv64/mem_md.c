@@ -33,3 +33,17 @@ md_memory_map(uintptr_t *base, size_t *len, uintptr_t *hold, size_t *hold_len)
     *hold = (uintptr_t)_start;
     *hold_len = (size_t)((uintptr_t)_stack_top - (uintptr_t)_start);
 }
+
+/*
+ * The privilege level this kernel runs at, for the boot log.
+ *
+ * It is worth a line of output because it is not visible any other way and
+ * because getting it wrong is silent until something touches a register
+ * the mode does not have. This port moved down a mode for the MMU, and a
+ * build that quietly went back would otherwise look identical.
+ */
+const char *
+md_mode(void)
+{
+    return "supervisor";
+}
