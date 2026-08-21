@@ -45,6 +45,12 @@ bool debug_console_is_live(void);
 struct boot_member;
 const struct boot_member *boot_lookup(const char *name);
 uintptr_t boot_load(const struct boot_member *m);
+
+/* Hold back the memory the archive's programs are linked to run in. */
+void boot_reserve(void);
+
+/* Where the first member is linked to run. */
+uintptr_t boot_first_load(void);
 void boot_report(void);
 
 /* sys/kern/kern_syscall.c */

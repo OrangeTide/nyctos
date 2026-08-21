@@ -61,8 +61,9 @@
 /*
  * Frames the bitmap of sys/page.h can cover, which is a ceiling on the
  * memory a port may hand over rather than an amount reserved: the
- * bitmap is one bit each, so this costs four kilobytes for half a
- * gigabyte. A machine with more says so at boot and uses this much.
+ * bitmap is one bit each, so this costs sixteen kilobytes for the half
+ * a gigabyte it covers. A machine with more says so at boot and uses
+ * this much.
  */
 #define SYS_MAX_FRAMES        131072
 

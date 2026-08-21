@@ -58,6 +58,13 @@ void page_init(uintptr_t base, size_t len, uintptr_t hold, size_t hold_len);
  */
 uintptr_t page_alloc(void);
 
+/*
+ * Reserve one frame by address, for a caller that needs a particular one:
+ * memory a device occupies, or memory an image was linked to sit in.
+ * False means somebody has it already.
+ */
+bool page_take(uintptr_t pa);
+
 /* Give one back. Releasing a frame that is not allocated is a panic: it
  * means two owners believed they had it. */
 void page_free(uintptr_t pa);

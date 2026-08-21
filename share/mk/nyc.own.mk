@@ -16,6 +16,13 @@ ARCH ?= aarch64
 # rests on, so both are built and both are checked.
 TIER ?= 0
 
+# The span of memory each loaded program is given, which is what its
+# linker script places it at and what the kernel holds back from the
+# frame allocator. Defined here, above every use, because a := that
+# expands it before it exists expands to nothing and the kernel then
+# holds back a slot of zero bytes.
+USER_LOAD_STRIDE := 0x00100000
+
 VALID_TIERS := 0 2
 ifeq ($(filter $(TIER),$(VALID_TIERS)),)
 $(error Unknown TIER '$(TIER)'; expected one of: $(VALID_TIERS))
@@ -69,7 +76,8 @@ MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mgeneral-regs-only \
 # struct fields into one 64-bit store that is only 4-byte aligned, which
 # faults at boot. Userland runs with no memory protection behind it and
 # has the same constraint. RISC-V gets the flag for the same reason.
-KERN_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align -DSYS_TIER=$(TIER)
+KERN_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align -DSYS_TIER=$(TIER) \
+                   -DSYS_USER_SLOT_BYTES=$(USER_LOAD_STRIDE)
 USER_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align
 USER_LOAD_ADDR  := 0x40200000
 QEMU            := qemu-system-aarch64
@@ -81,7 +89,8 @@ TARGET_TRIPLE   := riscv64-none-elf
 MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mcmodel=medany \
                    -DARCH_NAME=\"riscv64\"
 KERN_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64gc -mabi=lp64d \
-                   -mstrict-align -DSYS_TIER=$(TIER)
+                   -mstrict-align -DSYS_TIER=$(TIER) \
+                   -DSYS_USER_SLOT_BYTES=$(USER_LOAD_STRIDE)
 USER_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64imac -mabi=lp64 -mstrict-align
 USER_LOAD_ADDR  := 0x80200000
 QEMU            := qemu-system-riscv64
@@ -102,11 +111,6 @@ LIBDIR := $(OBJTOP)/lib
 LIBC   := $(LIBDIR)/libc.a
 CRT1   := $(LIBDIR)/crt1.o
 
-# Where user images are linked. There is no MMU at Tier 0, so programs that
-# are live at once must not overlap: a program Makefile sets PROG_LOAD_SLOT
-# and share/mk/nyc.prog.mk turns it into a base address. Section 15.2 is
-# where a loader takes this over.
-USER_LOAD_STRIDE := 0x00100000
 
 USER_LDSCRIPT := $(TOPDIR)/share/ld/user-$(ARCH).ld
 KERN_LDSCRIPT := $(TOPDIR)/sys/arch/$(ARCH)/conf/kern.ld

@@ -24,6 +24,7 @@
  */
 
 #include <sys/bootarch.h>
+#include <sys/page.h>
 #include <sys/op.h>
 #include <sys/systm.h>
 
@@ -143,3 +144,61 @@ boot_report(void)
  */
 _Static_assert(SYS_IMAGE_NAME_MAX == BOOT_NAME_MAX,
   "the spawn interface and the boot archive must agree on name length");
+
+/*
+ * Hold back the memory the archive's programs are linked to occupy.
+ *
+ * A member is loaded at the address it was linked for and runs there, and
+ * everything it needs beyond its image, which is its zeroed data and its
+ * stack, is inside the slot the build gave it. So the unit to hold is the
+ * slot rather than the image: the image is what the archive carries and
+ * the slot is what the program uses.
+ *
+ * Without this the frame allocator hands out the text of a running
+ * program, which was true the moment it existed and would have been found
+ * out by the first page table that landed on one. Section 15.2's loader is
+ * what ends the whole arrangement, and at Tier 2 the slots go with it.
+ */
+void
+boot_reserve(void)
+{
+    const struct boot_header *h = (const struct boot_header *)boot_archive;
+    const struct boot_member *m;
+    uint32_t i;
+
+    if (h->bh_magic != BOOT_MAGIC) {
+        return;
+    }
+
+    m = (const struct boot_member *)(boot_archive + sizeof(*h));
+    for (i = 0; i < h->bh_count; i++) {
+        uintptr_t pa = PAGE_ALIGN_DOWN(m[i].bm_load);
+        uintptr_t end = pa + SYS_USER_SLOT_BYTES;
+
+        for (; pa < end; pa += PAGE_SIZE) {
+            if (!page_take(pa)) {
+                panic("boot: %s wants %p, which is already spoken for",
+                  m[i].bm_name, (void *)pa);
+            }
+        }
+    }
+
+    cnprintf("  %u slots of %u bytes held for loaded programs\n",
+      h->bh_count, (unsigned int)SYS_USER_SLOT_BYTES);
+}
+
+/* Where the first member is linked to run, for a caller checking that the
+ * memory a program occupies is not in the free map. */
+uintptr_t
+boot_first_load(void)
+{
+    const struct boot_header *h = (const struct boot_header *)boot_archive;
+    const struct boot_member *m;
+
+    if (h->bh_magic != BOOT_MAGIC || h->bh_count == 0) {
+        return 0;
+    }
+    m = (const struct boot_member *)(boot_archive + sizeof(*h));
+
+    return (uintptr_t)m[0].bm_load;
+}

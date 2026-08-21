@@ -1160,7 +1160,7 @@ boots, announces its tier and panics naming the stage that will make
 it true, because an image claiming enforcement it does not have would
 be worse than one that refuses to run.
 
-Two things this settled. **The check was written against the
+Three things this settled. **The check was written against the
 implementation rather than the contract**, and the implementation was
 not worth defending. A rotating cursor made a released frame not the
 next one out, so the only property worth checking was observable only
@@ -1168,6 +1168,25 @@ at exhaustion. The cursor is gone: the allocator takes the lowest free
 frame, which section 7.3 refuses for handles and for a reason that
 does not apply here, since a frame number is not a name a program
 sees.
+
+**The free map contained every running program**, which reviewing it
+found and no invariant of the allocator's own would have. A loaded
+image sits at the address it was linked for, and nothing told the
+allocator: a page table would eventually have landed in a running
+program's text, or the next spawn would have written over a page
+table, and the first symptom would have been neither. The slots are
+held back now, walked from the boot archive so that adding a program
+maintains it, and the span held is the slot rather than the image
+because a program's zeroed data and its stack are inside the slot and
+outside the image. Removing the reservation fails the check by name.
+
+Two smaller repairs went with it. The check that the port's memory
+claim is true wrote to a frame it had not allocated, which is the
+thing this system exists to prevent, so reserving a frame by address
+is now an operation the allocator offers and the check uses it. And a
+build variable was expanded before it was defined, which in make is
+not an error: the kernel was compiled to hold back slots of zero
+bytes.
 
 **Section 8 has an exception now, and says so.** The frame allocator is
 the only allocator here that is not a pool. What keeps it inside the

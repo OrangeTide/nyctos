@@ -894,6 +894,17 @@ page_checks(void)
 
     page_report();
 
+    /*
+     * The memory a loaded program occupies is not free memory, and the
+     * allocator thought it was until this was written: a page table
+     * would have landed in a running program's text, or the next spawn
+     * would have written over a page table. Nothing had allocated
+     * anything yet, so nothing had noticed.
+     */
+    if (page_take(boot_first_load())) {
+        panic("frames: a loaded program's memory is in the free map");
+    }
+
     before = page_used();
 
     a = page_alloc();
@@ -942,11 +953,16 @@ page_checks(void)
      * its memory map, and this is the line where a wrong statement stops
      * being a comment and starts being a fault.
      */
+    if (!page_take(page_last())) {
+        panic("frames: the last frame is spoken for at boot");
+    }
     top = (volatile uint64_t *)(uintptr_t)(page_last());
     *top = 0x0123456789abcdefULL;
     if (*top != 0x0123456789abcdefULL) {
         panic("frames: the last frame the port claims is not memory");
     }
+    page_free(page_last());
+
     cnprintf("    the last frame the port claims, %p, is memory\n",
       (void *)top);
 }
@@ -1971,6 +1987,7 @@ kernel_main(void)
 
         md_memory_map(&base, &len, &hold, &hold_len);
         page_init(base, len, hold, hold_len);
+        boot_reserve();
     }
 
     irq_init();

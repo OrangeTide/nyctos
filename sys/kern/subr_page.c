@@ -151,6 +151,40 @@ page_alloc(void)
     return 0;
 }
 
+
+/*
+ * Reserve one frame by address, for a caller that needs a particular one
+ * rather than any one: memory a device occupies, memory an image was
+ * linked to sit in, memory somebody else already owns. Returns false if it
+ * is taken, which is the answer that matters.
+ */
+bool
+page_take(uintptr_t pa)
+{
+    intr_state_t s = md_intr_disable();
+    uint32_t i;
+
+    if ((pa & PAGE_MASK) != 0 || pa < frame_base) {
+        md_intr_restore(s);
+        return false;
+    }
+    i = (uint32_t)((pa - frame_base) / PAGE_SIZE);
+    if (i >= frame_count || taken(i)) {
+        md_intr_restore(s);
+        return false;
+    }
+
+    take(i);
+    frame_used++;
+    if (frame_used > frame_highwater) {
+        frame_highwater = frame_used;
+    }
+
+    md_intr_restore(s);
+
+    return true;
+}
+
 void
 page_free(uintptr_t pa)
 {
