@@ -1,0 +1,9 @@
+hello
+world
+nyctos
+echo one two three
+cat motd
+nosuch
+cat nothing
+last
+exit

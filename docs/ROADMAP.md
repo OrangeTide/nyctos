@@ -906,9 +906,9 @@ duplicates its console and its directory for every child, and a
 duplicate is not moved by a spawn that fails: without closing them on
 that path a shell stops working after sixty typing mistakes.
 
-**8. The session that runs itself.** A demonstration needing a person at a
-keyboard cannot be run twice the same way, and every stage above is checked
-by hand until this exists.
+**8. The session that runs itself.** *Built.* A demonstration needing a
+person at a keyboard cannot be run twice the same way, and every stage
+above was checked by hand until this existed.
 
 - A canned session piped into the machine's console, ending in the command
   that leaves the shell, with the kernel halting afterwards as it does now.
@@ -921,14 +921,40 @@ by hand until this exists.
   between characters, which is a different test of the driver than a person
   is. Both are run.
 
-*Check.* This stage is the check, so what has to be shown is that it fails:
-change one byte of an expected reply and the target must say so.
+*Check.* `make check` runs the session twice and takes about thirty
+seconds. Paced, at two seconds a line, which is how a person types:
+every line arrives while the machine is already waiting for it, and the
+transcript from the shell's banner onward is compared against
+`share/check/expected.txt`. Then burst, with the whole session arriving
+before anything has asked for any of it, where what is checked is that
+the machine reaches the end without a panic. The comparison starts at
+the banner because everything before it carries numbers that differ
+between runs and between boards.
+
+Changing one byte of the expected transcript fails the target. That
+took two attempts, which is the first thing this settled: **the
+transcript was full of carriage returns**, so the edit meant to break
+the check matched nothing and the check passed. A terminal needs a
+carriage return before every line feed and the driver writes them, but
+a file a person reads and edits should not carry them, so the capture
+strips them.
+
+**Each mode catches what the other cannot**, which is what makes
+running both worth the time rather than a gesture at thoroughness.
+Restoring the console's first behaviour, where a completed line blocks
+everything typed behind it, leaves the paced session passing to the end
+and hangs the burst one after its first line. A ring too small for a
+burst fails both. A person and a pipe are different tests of the same
+driver.
 
 *Done when* an interactive shell runs on both architectures, spawns a
 program as a separate process, and reports its exit status. And the same
 session driven from a pipe rather than a keyboard produces a transcript a
 check compares, because a demonstration that needs a person at a keyboard
 cannot be run twice the same way.
+
+**Met, on both architectures.** `make check` is the second half and
+takes half a minute.
 
 *Would falsify.* **Whether one thread per event source is affordable.** A shell
 and a console service both want to wait on several things at once, and section

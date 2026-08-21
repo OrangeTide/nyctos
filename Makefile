@@ -17,10 +17,48 @@ include $(TOPDIR)/share/mk/nyc.own.mk
 # and the programs before the kernel that will load them.
 SUBDIR := lib bin tools sys
 
-.PHONY: all clean cleandir run gh-pages
+.PHONY: all check clean cleandir run gh-pages
 
 all clean:
 	@for d in $(SUBDIR); do $(MAKE) -C $$d $@ || exit $$?; done
+
+# The recorded session of milestone 3 stage 8, run twice.
+#
+# Paced, which is how a person types: every line arrives while the
+# machine is already waiting for it. The transcript from the shell's
+# banner onward is compared against share/check/expected.txt, and that
+# is where the comparison starts because everything before it carries
+# numbers that differ between runs and between boards. A check that
+# compared those would fail for the wrong reason.
+#
+# Then burst, which is how a pipe delivers a session: the whole thing
+# arrives before anything has asked for any of it. The transcript
+# differs, because the console echoes each line when it arrives rather
+# than when it is read, so what is checked there is that the machine
+#
+# The carriage returns go. A terminal needs one before every line feed
+# and the driver writes them, but a file a person reads and edits
+# should not carry them: the first attempt to break this check on
+# purpose failed to break it, because the line being edited ended in a
+# carriage return and the edit matched nothing.
+# reaches the end without a panic.
+check: all
+	@mkdir -p $(OBJTOP)/check
+	@echo "check: $(ARCH), paced"
+	@$(TOPDIR)/scripts/session.sh 2 "$(QEMU)" "$(QEMU_FLAGS)" \
+	    $(KERNEL_ELF) > $(OBJTOP)/check/paced.out
+	@sed -n '/^nyctos shell/,$$p' $(OBJTOP)/check/paced.out \
+	    | tr -d '\r' > $(OBJTOP)/check/paced.session
+	@diff -u $(TOPDIR)/share/check/expected.txt \
+	    $(OBJTOP)/check/paced.session
+	@echo "check: $(ARCH), burst"
+	@$(TOPDIR)/scripts/session.sh 0 "$(QEMU)" "$(QEMU_FLAGS)" \
+	    $(KERNEL_ELF) > $(OBJTOP)/check/burst.out
+	@grep -q '^stage 9 complete' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: the burst session did not finish'; false; }
+	@! grep -q '^panic:' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: the burst session panicked'; false; }
+	@echo "check: $(ARCH) ok"
 
 run: all
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
