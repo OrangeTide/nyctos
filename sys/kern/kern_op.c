@@ -452,7 +452,8 @@ op_proc_spawn(struct proc *p, struct sys_op *op)
     image[SYS_IMAGE_NAME_MAX] = '\0';
 
     err = proc_spawn_op(p, image, (uint8_t)prio,
-      (const sys_ns_spec_t *)args->ns, args->nns, &h);
+      (const sys_ns_spec_t *)args->ns, args->nns,
+      (const char *const *)args->argv, args->argc, &h);
     if (err != SYS_OK) {
         return err;
     }

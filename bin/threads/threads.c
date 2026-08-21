@@ -82,7 +82,7 @@ thread_a(void *arg)
 
     (void)arg;
 
-    if (sys_proc_spawn("status", SYS_PRIO_INHERIT, NULL, 0, &child)
+    if (sys_proc_spawn("status", SYS_PRIO_INHERIT, NULL, 0, NULL, 0, &child)
       != SYS_OK) {
         sys_thread_exit(ERR_CREATE);
     }
@@ -109,7 +109,7 @@ thread_b(void *arg)
 
     (void)arg;
 
-    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, &child)
+    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, NULL, 0, &child)
       != SYS_OK) {
         sys_thread_exit(ERR_CREATE);
     }

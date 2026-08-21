@@ -34,6 +34,19 @@ zero_done:
     mv      a0, s0
     call    __libc_startup
 
+    /*
+     * argc and argv in the first two registers, fetched one at a time
+     * so that no assembly here has to know the shape of a C type. The
+     * call is made from assembly rather than through a C declaration,
+     * which is what lets a program define main(void) and this pass
+     * arguments to it anyway.
+     */
+    call    __libc_argv
+    mv      s1, a0
+    call    __libc_argc
+    mv      a1, s1
+
+
     call    main
     call    exit
 hang:

@@ -4,6 +4,7 @@
 
 include $(TOPDIR)/share/mk/nyc.own.mk
 
-SUBDIR := fs_server fs_client fs_batch spin status spawner threads console greet
+SUBDIR := fs_server fs_client fs_batch spin status spawner threads console greet \
+          sh echo cat
 
 include $(TOPDIR)/share/mk/nyc.subdir.mk

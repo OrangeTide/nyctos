@@ -180,7 +180,8 @@ sys_debug_write(const void *buf, uint32_t len)
 
 sys_err_t
 sys_proc_spawn(const char *image, uint32_t prio, const sys_ns_spec_t *ns,
-  uint32_t nns, sys_handle_t *out_proc)
+  uint32_t nns, const char *const *argv, uint32_t argc,
+  sys_handle_t *out_proc)
 {
     sys_op_spawn_args_t args;
     sys_err_t err;
@@ -203,6 +204,8 @@ sys_proc_spawn(const char *image, uint32_t prio, const sys_ns_spec_t *ns,
     args.prio = prio;
     args.nns = nns;
     args.ns = (uintptr_t)ns;
+    args.argv = (uintptr_t)argv;
+    args.argc = argc;
 
     err = submit(SYS_OP_PROC_SPAWN, SYS_HANDLE_INVALID, &args,
       sizeof(args));

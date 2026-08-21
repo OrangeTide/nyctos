@@ -70,7 +70,7 @@ run(const char *image, int32_t *out_code, sys_handle_t *out_proc)
     sys_handle_t child;
     int err;
 
-    if (sys_proc_spawn(image, SYS_PRIO_INHERIT, NULL, 0, &child) != SYS_OK) {
+    if (sys_proc_spawn(image, SYS_PRIO_INHERIT, NULL, 0, NULL, 0, &child) != SYS_OK) {
         return ERR_SPAWN;
     }
 
@@ -109,7 +109,7 @@ main(void)
      */
     ns[0].id = SYS_NS_ROOT;
     ns[0].handle = (sys_handle_t)0x1234;
-    if (sys_proc_spawn("status", SYS_PRIO_INHERIT, ns, 1, NULL)
+    if (sys_proc_spawn("status", SYS_PRIO_INHERIT, ns, 1, NULL, 0, NULL)
       != SYS_ERR_STALE) {
         DBG_PUTS("spawner: a handle it does not hold was accepted");
         return ERR_STALE;
@@ -121,13 +121,13 @@ main(void)
      * one a right of its own that this was not given.
      */
     ns[0].handle = child;
-    if (sys_proc_spawn("status", SYS_PRIO_INHERIT, ns, 1, NULL)
+    if (sys_proc_spawn("status", SYS_PRIO_INHERIT, ns, 1, NULL, 0, NULL)
       != SYS_ERR_PERM_DENIED) {
         DBG_PUTS("spawner: a handle it may not transfer was accepted");
         return ERR_TRANSFER;
     }
 
-    if (sys_proc_spawn("nosuch", SYS_PRIO_INHERIT, NULL, 0, NULL)
+    if (sys_proc_spawn("nosuch", SYS_PRIO_INHERIT, NULL, 0, NULL, 0, NULL)
       != SYS_ERR_NO_ENT) {
         DBG_PUTS("spawner: an image that does not exist was accepted");
         return ERR_NOENT;
@@ -138,7 +138,7 @@ main(void)
      * given, and with no quantum anywhere a child that outranks its parent
      * owns the core until it stops.
      */
-    if (sys_proc_spawn("status", 31, NULL, 0, NULL) != SYS_ERR_PERM_DENIED) {
+    if (sys_proc_spawn("status", 31, NULL, 0, NULL, 0, NULL) != SYS_ERR_PERM_DENIED) {
         DBG_PUTS("spawner: a child above its own priority was accepted");
         return ERR_PRIO;
     }
@@ -151,10 +151,10 @@ main(void)
      * because it is at this program's own priority and equal priority does
      * not preempt.
      */
-    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, &busy) != SYS_OK) {
+    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, NULL, 0, &busy) != SYS_OK) {
         return ERR_SPAWN;
     }
-    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, NULL)
+    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, NULL, 0, NULL)
       != SYS_ERR_WOULDBLOCK) {
         DBG_PUTS("spawner: a second copy of a live image was accepted");
         return ERR_LIVE;
@@ -170,7 +170,7 @@ main(void)
      * from the start of this program. Five refusals mean nothing if a
      * spawn that failed took a slot, a handle or an address with it.
      */
-    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, &busy) != SYS_OK) {
+    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, NULL, 0, &busy) != SYS_OK) {
         DBG_PUTS("spawner: the address stayed busy after the child exited");
         return ERR_LIVE;
     }

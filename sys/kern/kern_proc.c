@@ -180,8 +180,8 @@ proc_spawn_image(const char *image, uint8_t prio,
     if (m == NULL) {
         panic("spawn %s: no such member in the boot archive", image);
     }
-
     p = proc_create(image, ns, nns);
+
     p->p_entry = boot_load(m);
 
     t = thread_create(image, prio, proc_user_start, &p->p_startup);
@@ -251,6 +251,53 @@ proc_thread_exited(struct proc *p, int32_t code)
 }
 
 
+
+/*
+ * Copy a command line into the process that will run it.
+ *
+ * The strings and the array both land in the process object, because the
+ * child reads them after the caller's frame is gone and there is nowhere
+ * else to put them until section 15.2's loader is writing images. What
+ * this refuses is a line that does not fit: truncating a command line
+ * silently is how a program ends up doing something close to what it was
+ * asked.
+ */
+static sys_err_t
+proc_set_args(struct proc *p, const char *const *argv, uint32_t argc)
+{
+    uint32_t used = 0;
+    uint32_t i;
+
+    if (argc > SYS_MAX_ARGS) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    for (i = 0; i < argc; i++) {
+        const char *s = argv[i];
+        uint32_t n = 0;
+
+        if (s == NULL) {
+            return SYS_ERR_INVALID_ARG;
+        }
+        while (s[n] != '\0') {
+            n++;
+            if (used + n + 1 > SYS_ARG_BYTES) {
+                return SYS_ERR_INVALID_ARG;
+            }
+        }
+
+        memcpy(&p->p_args[used], s, n + 1);
+        p->p_argv[i] = (uintptr_t)&p->p_args[used];
+        used += n + 1;
+    }
+
+    p->p_argv[argc] = 0;
+    p->p_startup.argc = (int32_t)argc;
+    p->p_startup.argv = (uintptr_t)p->p_argv;
+
+    return SYS_OK;
+}
+
 /*
  * Is something still running at this address?
  *
@@ -299,7 +346,8 @@ image_in_use(uintptr_t load)
  */
 sys_err_t
 proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
-  const sys_ns_spec_t *ns, uint32_t nns, sys_handle_t *out_handle)
+  const sys_ns_spec_t *ns, uint32_t nns, const char *const *argv,
+  uint32_t argc, sys_handle_t *out_handle)
 {
     sys_ns_spec_t spec[SYS_NS_MAX];
     const struct boot_member *m;
@@ -407,6 +455,20 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
             panic("spawn %s: handover failed after it was checked", image);
         }
         p->p_ns[i * 2] = (sys_handle_t)spec[i].id;
+    }
+
+    /*
+     * The command line before the image, because a line that does not
+     * fit is the last thing that can fail and there is nothing after
+     * it that could be undone.
+     */
+    err = proc_set_args(p, argv, argc);
+    if (err != SYS_OK) {
+        handle_close(&parent->p_handles, h);
+        thread_set_proc(t, NULL);
+        pool_free(thread_pool(), t->t_id);
+        pool_free(proc_pool(), p->p_id);
+        return err;
     }
 
     p->p_entry = boot_load(m);

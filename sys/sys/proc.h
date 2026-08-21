@@ -49,6 +49,17 @@ struct proc {
     sys_handle_t        p_ns[SYS_NS_WORDS];
 
     /*
+     * The command line, copied. Section 20.4 has the loader place the
+     * strings in the child's memory; the kernel is the loader here, so
+     * they live in the process object beside the record that points at
+     * them. Copied rather than pointed at for the reason every other
+     * copy here exists: the array a caller passed is a stack frame in
+     * a program, and the child reads it after that frame is gone.
+     */
+    char                p_args[SYS_ARG_BYTES];
+    uintptr_t           p_argv[SYS_MAX_ARGS + 1];
+
+    /*
      * The completion timeline of section 10.4, embedded rather than
      * drawn from the pool, and the status a joiner reads once it has
      * advanced. A process finishes when its last thread does, and the
@@ -124,7 +135,7 @@ sys_err_t proc_thread_create(struct proc *p, uintptr_t entry,
 
 sys_err_t proc_spawn_op(struct proc *parent, const char *image,
   uint8_t prio, const sys_ns_spec_t *ns, uint32_t nns,
-  sys_handle_t *out_handle);
+  const char *const *argv, uint32_t argc, sys_handle_t *out_handle);
 
 void proc_watch(struct proc *p);
 struct timeline *proc_completion(struct proc *p);

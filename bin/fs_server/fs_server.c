@@ -155,15 +155,29 @@ do_walk(sys_handle_t chan, const fs_request_t *req, uint32_t node,
 
 static void
 do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
-  fs_reply_t *rep)
+  sys_msg_t *reply, fs_reply_t *rep)
 {
     if (node >= FS_NODE_COUNT || fs_nodes[node].data == NULL) {
         rep->fr_status = SYS_ERR_NO_ENT;
         return;
     }
 
-    rep->fr_length = read_into((void *)message->buf, message->buf_len, node,
-      req->fr_offset, req->fr_length);
+    /*
+     * Into the buffer the client supplied, or inline when it supplied
+     * none. Section 25.5 puts bulk payloads in the buffer and small
+     * ones inline, and which one a reply is depends on the client's
+     * request rather than on which server answered it: a client that
+     * asks a console and a client that asks a filesystem should not
+     * have to send different messages to read a line.
+     */
+    if (message->buf != 0 && message->buf_len > 0) {
+        rep->fr_length = read_into((void *)message->buf,
+          message->buf_len, node, req->fr_offset, req->fr_length);
+    } else {
+        rep->fr_length = read_into(&reply->inline_data[sizeof(*rep)],
+          SYS_IPC_INLINE_BYTES - (uint32_t)sizeof(*rep), node,
+          req->fr_offset, req->fr_length);
+    }
     rep->fr_status = SYS_OK;
 }
 
@@ -298,7 +312,8 @@ main(void)
             do_walk(chan, req, node, &reply, rep);
             break;
         case FS_OP_READ:
-            do_read(&message, req, node, rep);
+            do_read(&message, req, node, &reply, rep);
+            reply.inline_len = sizeof(*rep) + rep->fr_length;
             break;
         case FS_OP_CLOSE:
             rep->fr_status = SYS_OK;

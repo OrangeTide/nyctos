@@ -836,27 +836,63 @@ cannot be duplicated cannot be shared. Also `child_join` now takes how
 long to wait, because a child that computes is done in milliseconds and
 a child that reads the console is waiting for a person.
 
-**7. The shell, and two utilities.** The milestone's stated goal.
+**7. The shell, and two utilities.** *Built.* The milestone's stated
+goal.
 
 - Read a line, split it, match the first word against the boot archive, spawn,
   join, print the status. That is the whole loop.
 - Two built-ins and no more: one to leave, which is what ends a scripted
   session, and one to report the last status.
-- A child gets the console by duplicating the shell's connection and moving
-  the duplicate into the child, per section 7.4. The alternative is asking the
-  console for a fresh connection per child, which is one rendezvous per spawn
-  and the same authority; either is defensible and the choice should be
-  recorded rather than absorbed.
-- `echo`, which needs argument passing and nothing else, and `cat`, which
-  reads through `fs_server` so that the M1 path stays exercised by the thing
-  built on top of it.
+- A child gets the console by duplicating the shell's connection and
+  moving the duplicate into the child, per section 7.4. That was the
+  open choice and it is closed: asking the console for a fresh
+  connection per child costs a rendezvous per spawn and buys nothing
+  while the console has no per-connection state to keep. It buys
+  something the moment it does, which is where M7 finds it.
+- `echo`, which needs argument passing and nothing else, and `cat`,
+  which reads through `fs_server` so that the M1 path stays exercised
+  by the thing built on top of it.
 - The shell blocks on reading a line and on joining a child, one after the
   other and never both at once. The first shell that wants a keystroke while
   a child runs is the one that needs a second thread, and noticing that is
   part of what this milestone owes.
 
-*Check.* A person types `echo hello`, sees it, and sees the status. Then
-`cat motd`, and the bytes are the ones M1 read.
+*Check.* A person types `echo one two three` and sees it, then
+`cat motd` and sees the bytes M1 read, then `nosuch` and is told the
+shell cannot run it, then `cat nothing` and sees a status of three,
+then `last` and sees the three again, then `exit`. The kernel joins the
+shell as it joins any child and reports how it ended; a shell that ends
+any way other than being told to is a fault rather than a session.
+
+Spawning it without a console in its namespace ends with status -1 and
+not one byte printed, which is the same evidence `greet` gave in stage
+6 and matters more here: a shell is the program with the most reason to
+have an ambient way out, and it has none.
+
+Three things this settled. **Arguments needed the operation, the record
+and the runtime.** `echo` exists to need them, and they arrive the way
+section 20.4 says: the loader places them in the child's memory, which
+at this tier is the process object, and the library copies them out
+before `main` runs for the same reason it copies the namespace table.
+crt1 puts them in the first two registers by asking the library for
+them one at a time, so no assembly knows the shape of a C type and no C
+declaration of `main` has to disagree with the definitions in the
+programs.
+
+**Two servers answered a read differently, and a client should not have
+to know which.** The filesystem wrote into the buffer the client
+supplied and the console replied inline, so `cat` written against the
+console read nothing from the filesystem and exited zero. Both now do
+what the client's request asks for: into the buffer when there is one,
+inline when there is not, which is section 25.5 read as a rule about
+the request rather than about the server. That is also the first
+evidence for the claim that anything speaking these messages is a
+filesystem, since the console now is one.
+
+**A failed spawn must not keep the handles it was given.** The shell
+duplicates its console and its directory for every child, and a
+duplicate is not moved by a spawn that fails: without closing them on
+that path a shell stops working after sixty typing mistakes.
 
 **8. The session that runs itself.** A demonstration needing a person at a
 keyboard cannot be run twice the same way, and every stage above is checked

@@ -28,6 +28,61 @@
 static sys_handle_t ns_table[SYS_NS_WORDS];
 static uint32_t ns_words;
 
+/*
+ * The command line, copied for the same reason the namespace table is.
+ * The record lives in loader memory, which at this tier is the process
+ * object and at the next one is wherever section 15.2's loader put it;
+ * either way a program that held pointers into it would be depending on
+ * something it does not own. Copying also lets main() do what C programs
+ * do to their arguments, which is edit them in place.
+ */
+static char arg_bytes[SYS_ARG_BYTES];
+static char *arg_vec[SYS_MAX_ARGS + 1];
+static int arg_count;
+
+
+/*
+ * Copy argc and argv out of the record. A string that does not fit ends
+ * the list rather than being truncated: an argument cut in half is an
+ * argument that means something else.
+ */
+static void
+copy_args(const sys_startup_t *startup)
+{
+    const char *const *src = (const char *const *)startup->argv;
+    uint32_t used = 0;
+    int i;
+
+    if (src == NULL || startup->argc <= 0) {
+        return;
+    }
+
+    for (i = 0; i < startup->argc && i < SYS_MAX_ARGS; i++) {
+        const char *s = src[i];
+        uint32_t n = 0;
+
+        if (s == NULL) {
+            break;
+        }
+        while (s[n] != '\0') {
+            n++;
+        }
+        if (used + n + 1 > sizeof(arg_bytes)) {
+            break;
+        }
+
+        for (n = 0; s[n] != '\0'; n++) {
+            arg_bytes[used + n] = s[n];
+        }
+        arg_bytes[used + n] = '\0';
+        arg_vec[i] = &arg_bytes[used];
+        used += n + 1;
+    }
+
+    arg_vec[i] = NULL;
+    arg_count = i;
+}
+
 void
 __libc_startup(const sys_startup_t *startup)
 {
@@ -35,6 +90,8 @@ __libc_startup(const sys_startup_t *startup)
     uint32_t n, i;
 
     ns_words = 0;
+    arg_count = 0;
+    arg_vec[0] = NULL;
     if (startup == NULL || startup->version != SYS_STARTUP_VERSION) {
         return;
     }
@@ -53,6 +110,8 @@ __libc_startup(const sys_startup_t *startup)
         ns_table[i] = src[i];
     }
     ns_words = n;
+
+    copy_args(startup);
 }
 
 sys_handle_t
@@ -78,4 +137,21 @@ ns_slot(unsigned int i, sys_ns_id_t *id, sys_handle_t *handle)
     if (handle != NULL) {
         *handle = present ? ns_table[i * 2 + 1] : SYS_HANDLE_INVALID;
     }
+}
+
+/*
+ * What crt1 puts in the first two argument registers before it calls
+ * main(). Two calls rather than one structure, because the alternative is
+ * assembly that knows the shape of a C type.
+ */
+int
+__libc_argc(void)
+{
+    return arg_count;
+}
+
+char **
+__libc_argv(void)
+{
+    return arg_vec;
 }

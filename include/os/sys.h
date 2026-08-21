@@ -75,11 +75,16 @@ sys_err_t sys_chan_connect(sys_handle_t chan, uint64_t cookie,
  * The child may not outrank the caller. Priority is authority over the
  * core, and a program cannot hand out what it was not given.
  *
+ * The arguments are copied into the child, so the caller may reuse the
+ * array and the strings the moment this returns. A command line that
+ * does not fit is refused rather than truncated.
+ *
  * The handle returned carries SYS_RIGHT_WAIT and SYS_RIGHT_STAT, which is
  * what joining and reading a status need and nothing else.
  */
 sys_err_t sys_proc_spawn(const char *image, uint32_t prio,
-  const sys_ns_spec_t *ns, uint32_t nns, sys_handle_t *out_proc);
+  const sys_ns_spec_t *ns, uint32_t nns, const char *const *argv,
+  uint32_t argc, sys_handle_t *out_proc);
 
 /*
  * The completion timeline of a thread or a process, per section 10.4.

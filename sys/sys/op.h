@@ -377,6 +377,17 @@ typedef struct sys_op_status_args {
 #define SYS_PRIO_INHERIT        0xffffffffu
 
 /*
+ * What a program may be started with. Section 20.4 has the loader place
+ * the strings in the child's memory alongside the record; the kernel is
+ * the loader here, so it copies them into the process object, and these
+ * are the bounds of that copy. Eight arguments and two hundred and
+ * fifty-six bytes is a command line, not a configuration file: a
+ * program that needs more than this needs a file.
+ */
+#define SYS_MAX_ARGS            8
+#define SYS_ARG_BYTES           256
+
+/*
  * Argument structure for SYS_OP_PROC_SPAWN. target is unused: there is
  * nothing to hold a handle to until a loader exists.
  *
@@ -391,6 +402,9 @@ typedef struct sys_op_spawn_args {
     uint32_t        prio;
     uint32_t        nns;
     uintptr_t       ns;             /* sys_ns_spec_t *, nns of them */
+    uint32_t        argc;
+    uint32_t        _pad;
+    uintptr_t       argv;           /* const char *const *, argc of them */
     sys_handle_t    out_handle;     /* written by the kernel */
 } sys_op_spawn_args_t;
 

@@ -1091,6 +1091,14 @@ thread_checks(void)
 
 
 /*
+ * The console and the directory the shell is handed, kept from the checks
+ * that created them. Root will hold both when there is a root; until then
+ * the kernel is what assembles the system.
+ */
+static sys_handle_t h_console;
+static sys_handle_t h_fs_root;
+
+/*
  * A program with no ambient authority saying something to a person.
  *
  * Every program before this one printed through the debug console of
@@ -1134,6 +1142,61 @@ greet_checks(sys_handle_t conn)
     cnprintf("    greet read %d bytes and said so through a handle\n", code);
     if (code < 0) {
         panic("greet: it could not reach the console it was given");
+    }
+}
+
+/*
+ * The shell, which is what this milestone is for.
+ *
+ * It is spawned exactly as any other program, with two handles and no
+ * privilege: a duplicate of the console connection and a duplicate of the
+ * filesystem root. Everything it can do is what those two reach, and
+ * everything a program it starts can do is what the shell chooses to hand
+ * on. There is nothing else in its namespace and no ambient anything
+ * behind it.
+ *
+ * The kernel waits for it the way it waits for any child, which is also
+ * how a supervisor will: a completion timeline and a status. A shell that
+ * ends by being told to is a session that ended, and a shell that ends any
+ * other way is a fault this reports rather than hides.
+ */
+static void
+shell_checks(sys_handle_t console, sys_handle_t root)
+{
+    struct sys_op_dup_args dup;
+    sys_ns_spec_t ns[2];
+    struct child c;
+    int32_t code;
+
+    memset(&dup, 0, sizeof(dup));
+    dup.new_rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
+      SYS_RIGHT_TRANSFER;
+    expect("a console for the shell",
+      run(SYS_OP_HANDLE_DUP, console, &dup, sizeof(dup)), SYS_OK);
+    ns[0].id = SYS_NS_CONSOLE;
+    ns[0].handle = dup.out_handle;
+
+    memset(&dup, 0, sizeof(dup));
+    dup.new_rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
+      SYS_RIGHT_TRANSFER;
+    expect("a directory for the shell",
+      run(SYS_OP_HANDLE_DUP, root, &dup, sizeof(dup)), SYS_OK);
+    ns[1].id = SYS_NS_ROOT;
+    ns[1].handle = dup.out_handle;
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("sh", 20, ns, 2));
+    sched_undefer();
+
+    /*
+     * As long as a person is willing to sit there. This is the one child
+     * in the system whose running time is somebody else's to decide.
+     */
+    code = child_join(&c, 300000);
+    cnprintf("    the shell exited with status %d\n", code);
+    if (code != 0) {
+        panic("sh: the shell ended with status %d rather than being told to",
+          code);
     }
 }
 /*
@@ -1237,6 +1300,7 @@ console_service(void)
     expect("a connection to it, for this thread",
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     conn = cargs.out_handle;
+    h_console = conn;
 
     /*
      * Three handles: what it serves on, and the two halves of the
@@ -1708,6 +1772,10 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
  * The programs cannot print. There is no console for user code, so each
  * client reports what it read as its exit status and the kernel says so.
  */
+/* The console and the directory the shell is handed, kept from the
+ * checks that created them. Root will hold both when there is a root;
+ * until then the kernel is what assembles the system. */
+
 static void
 user_slice(void)
 {
@@ -1757,6 +1825,20 @@ user_slice(void)
     expect("a second one, for the second client",
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     root2 = cargs.out_handle;
+
+    /*
+     * A third, for the shell, and duplicable because the shell hands a
+     * copy to every child that names a file. Minted here for the same
+     * reason as the other two: only a holder of the receive right may
+     * mint one, and that right is about to move to the server.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
+      SYS_RIGHT_TRANSFER;
+    expect("a third one, for the shell",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    h_fs_root = cargs.out_handle;
 
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = h_recv;
@@ -1857,6 +1939,9 @@ kernel_main(void)
 
     cnputs("the slice again, with both halves in user mode\n");
     user_slice();
+
+    cnputs("a shell, which is what all of it was for\n");
+    shell_checks(h_console, h_fs_root);
 
     cnputs("stage 9 complete\n");
     machine_halt(0);
