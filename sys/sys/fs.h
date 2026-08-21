@@ -29,10 +29,18 @@
 
 #include <stdint.h>
 
+/*
+ * The operation numbers are section 25.3's, and the subset is sparse
+ * rather than renumbered. A dense subset with its own numbering is a
+ * second protocol that happens to look like this one, and the first
+ * program written against the document would speak it wrongly. What is
+ * missing here is missing, not moved.
+ */
 #define FS_OP_WALK      1
-#define FS_OP_READ      2
-#define FS_OP_CLOSE     3
-#define FS_OP_BATCH     4
+#define FS_OP_READ      3
+#define FS_OP_WRITE     4
+#define FS_OP_CLOSE     11
+#define FS_OP_BATCH     12
 
 #define FS_NAME_MAX     24
 
@@ -53,6 +61,17 @@ typedef struct fs_reply {
     uint32_t    fr_length;
     uint64_t    fr_size;
 } fs_reply_t;
+
+/*
+ * A write carries its bytes inline, after the request header, exactly as a
+ * read carries them back after the reply header. Section 25.5 puts bulk
+ * payloads in the message buffer instead; what is here is the small case,
+ * and a console line is the small case by construction.
+ *
+ * fr_length is how many bytes follow. The reply reports how many were
+ * taken, which for a device that cannot refuse is all of them.
+ */
+#define FS_WRITE_MAX    (SYS_IPC_INLINE_BYTES - sizeof(fs_request_t))
 
 /*
  * Compound requests, per section 25.7.

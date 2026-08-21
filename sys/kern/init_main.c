@@ -931,89 +931,45 @@ completion_checks(void)
 }
 
 /*
- * The first external interrupt, and the first byte a person sent.
+ * The UART interrupt, attached and handed over.
  *
- * Everything before this waited on the timer, which is per-core on one
- * board and needs no controller at all on the other. A UART is neither: it
- * is routed on AArch64 and it arrives through a PLIC on RISC-V, and until
- * now neither port had a second interrupt to find out with.
- *
- * Reading the device here is scaffolding and is named as such. Stage 5 of
- * this milestone moves it into a driver process, which is where section 19
- * says it belongs; what stays is the timeline, the mask and the
- * acknowledgement.
+ * Stage 2 of this milestone read the device here, to show that an external
+ * interrupt arrives at all on boards whose only interrupt had been a
+ * timer. That was scaffolding and said so; the driver of stage 5 owns the
+ * device now, and what stays in the kernel is what section 19.2 says a
+ * launcher does: attach the interrupt to a timeline and hand the child the
+ * handles, so that the authority to attach an interrupt stays with
+ * whatever assembles the system.
  */
+static struct timeline *tl_uart;
+static sys_handle_t h_uart_irq, h_uart_fence;
+
 static void
 console_checks(void)
 {
-    struct sys_op_fence_args fargs;
     struct handle_table *ht = &proc_current()->p_handles;
-    struct timeline *tl;
     unsigned int irq = md_uart_irq();
-    sys_handle_t h_irq, h_tl;
-    uint64_t seen = 0;
-    char line[4];
-    unsigned int got = 0;
-    int ch;
 
-    tl = timeline_create("uart-rx");
-    if (tl == NULL) {
+    tl_uart = timeline_create("uart-rx");
+    if (tl_uart == NULL) {
         panic("console: no timeline");
     }
-    expect("attaching the UART receive interrupt", irq_attach(irq, tl),
+    expect("attaching the UART receive interrupt", irq_attach(irq, tl_uart),
       SYS_OK);
-    expect("a handle to that interrupt",
-      handle_insert(ht, irq_object(irq), SYS_OBJ_IRQ, SYS_RIGHT_IRQ,
-        &h_irq), SYS_OK);
-    expect("acknowledging one that is not masked",
-      run(SYS_OP_IRQ_UNMASK, h_irq, NULL, 0), SYS_ERR_INVALID_ARG);
-
-    expect("a wait handle for its timeline",
-      handle_insert(ht, tl, SYS_OBJ_TIMELINE, SYS_RIGHT_WAIT, &h_tl),
-      SYS_OK);
-
-    uart_rx_enable();
-    cnputs("    type three characters, or pipe them in; five seconds of\n"
-      "    silence is a failure rather than a wait\n");
 
     /*
-     * Bytes rather than interrupts, because they are not the same count.
-     * Input from a pipe arrives faster than the handler runs, so three
-     * characters can be one interrupt and one drain, and a check written
-     * against three interrupts would wait for ever on exactly the input a
-     * scripted session provides.
+     * SYS_RIGHT_TRANSFER because both of these are going to a child, and
+     * section 7.4 makes moving a handle a right rather than something a
+     * holder may always do.
      */
-    while (got < 3) {
-        fargs.value = seen + 1;
-        fargs.deadline = time_now() + time_from_ms(5000);
-        if (run(SYS_OP_FENCE_WAIT, h_tl, &fargs, sizeof(fargs)) != SYS_OK) {
-            panic("console: nothing arrived in five seconds");
-        }
-        seen = tl->tl_value;
-
-        /*
-         * Drained to empty rather than to the count wanted. A byte
-         * left in the device keeps it asserting, so the
-         * acknowledgement below unmasks a source that interrupts
-         * again at once, and that mask stays on with nothing left
-         * waiting to take it off. Wait, drain to empty, unmask, in
-         * that order, is the shape a driver has to have.
-         */
-        while ((ch = uart_getc()) >= 0) {
-            if (got < 3) {
-                line[got++] = (char)ch;
-            }
-        }
-
-        expect("acknowledging the interrupt",
-          run(SYS_OP_IRQ_UNMASK, h_irq, NULL, 0), SYS_OK);
-    }
-
-    line[3] = '\0';
-    cnprintf("    read '%s' in %lu interrupts\n", line, (unsigned long)seen);
-
-    handle_close(ht, h_tl);
-    handle_close(ht, h_irq);
+    expect("a handle to that interrupt",
+      handle_insert(ht, irq_object(irq), SYS_OBJ_IRQ,
+        SYS_RIGHT_IRQ | SYS_RIGHT_TRANSFER, &h_uart_irq), SYS_OK);
+    expect("unmasking one that is not masked",
+      run(SYS_OP_IRQ_UNMASK, h_uart_irq, NULL, 0), SYS_ERR_INVALID_ARG);
+    expect("a wait handle for its timeline",
+      handle_insert(ht, tl_uart, SYS_OBJ_TIMELINE,
+        SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &h_uart_fence), SYS_OK);
 }
 
 /*
@@ -1125,6 +1081,152 @@ thread_checks(void)
     if (code != 9) {
         panic("threads: the process reported %d, not its last thread's 9",
           code);
+    }
+}
+
+/*
+ * The console as a service, per section 19 and section 25.
+ *
+ * The kernel is the launcher here, which is what root will be: it creates
+ * the channel, hands the receive end to the driver along with the
+ * interrupt, and keeps a connection to send on. Section 24.5 has exactly
+ * this shape, and the readiness protocol it describes is the one this
+ * needs, which is none: a client that sends first blocks in the rendezvous
+ * until the server receives.
+ *
+ * Two reads, because a console has two paths and a filesystem has
+ * neither. The first finds a line already waiting, which is what a
+ * scripted session always produces, since a pipe delivers the whole
+ * session before anything asks for any of it. The second arrives at an
+ * empty ring and is held rather than refused, and the driver's other
+ * thread answers it when the line arrives. Only the second needs a person
+ * or a delay, and it is the one that would otherwise never be exercised.
+ */
+static void
+console_write(sys_handle_t conn, const char *s, uint32_t len)
+{
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WRITE;
+    req->fr_length = len;
+    memcpy(&tx.request.inline_data[sizeof(*req)], s, len);
+    tx.request.inline_len = sizeof(*req) + len;
+
+    if (run(SYS_OP_IPC_SEND, conn, &tx, sizeof(tx)) != SYS_OK) {
+        panic("console: a write failed");
+    }
+}
+
+static uint32_t
+console_read(sys_handle_t conn, char *out, uint32_t max)
+{
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+    fs_reply_t *rep;
+    uint32_t n;
+
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_length = max;
+    tx.request.inline_len = sizeof(*req);
+
+    if (run(SYS_OP_IPC_SEND, conn, &tx, sizeof(tx)) != SYS_OK) {
+        panic("console: a read failed");
+    }
+
+    rep = (fs_reply_t *)tx.reply.inline_data;
+    if (rep->fr_status != SYS_OK || rep->fr_length == 0) {
+        panic("console: a read returned %u bytes with status %d",
+          (unsigned int)rep->fr_length, rep->fr_status);
+    }
+
+    n = rep->fr_length;
+    if (n >= max) {
+        n = max - 1;
+    }
+    memcpy(out, &tx.reply.inline_data[sizeof(*rep)], n);
+    out[n] = '\0';
+
+    return n;
+}
+
+static void
+console_service(void)
+{
+    struct proc *self = proc_current();
+    struct sys_op_connect_args cargs;
+    sys_ns_spec_t ns[3];
+    struct channel *ch;
+    sys_handle_t h_recv, conn;
+    char line[SYS_IPC_INLINE_BYTES];
+    sys_err_t err;
+
+    ch = channel_create("console", self);
+    if (ch == NULL) {
+        panic("console: no channel");
+    }
+    err = handle_insert(&self->p_handles, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_recv);
+    expect("a receive handle for the console", err, SYS_OK);
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND;
+    expect("a connection to it, for this thread",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    conn = cargs.out_handle;
+
+    /*
+     * Three handles: what it serves on, and the two halves of the
+     * interrupt. The last two are private identifiers because an
+     * interrupt is not something that means the same in every process,
+     * which is what section 20.4 reserves the range above
+     * SYS_NS_PRIVATE for.
+     */
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = h_recv;
+    ns[1].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 0);
+    ns[1].handle = h_uart_irq;
+    ns[2].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 1);
+    ns[2].handle = h_uart_fence;
+
+    /*
+     * Tracing starts before the spawn and not after it. The driver
+     * outranks this thread, so it runs, takes its interrupt, drains
+     * whatever a pipe has already delivered and blocks, all inside
+     * proc_spawn_image. A window that opened afterwards would miss every
+     * transition this check is about.
+     */
+    trace_reset();
+    trace_enable(true);
+
+    (void)proc_spawn_image("console", 15, ns, 3);
+
+    console_write(conn, "\r\nline one: ", 12);
+    (void)console_read(conn, line, sizeof(line));
+    cnprintf("    first line, from the ring: %s", line);
+
+    console_write(conn, "line two: ", 10);
+    (void)console_read(conn, line, sizeof(line));
+    cnprintf("    second line, held until it arrived: %s", line);
+
+    trace_enable(false);
+    trace_report("console");
+
+    /*
+     * Both of the driver's threads blocked, on different objects,
+     * which is the arrangement section 19.3 prescribes and the reason
+     * this milestone is measuring what threads cost. Without this the
+     * stage passes on a driver that never waited for anything.
+     */
+    if (!trace_saw(THREAD_WAIT_RECV)) {
+        panic("console: its request thread never blocked in receive");
+    }
+    if (!trace_saw(THREAD_WAIT_FENCE)) {
+        panic("console: its receive thread never waited on the interrupt");
     }
 }
 static void
@@ -1663,7 +1765,7 @@ kernel_main(void)
     md_intr_enable();
     interrupt_checks();
 
-    cnputs("the console: an external interrupt, and a person\n");
+    cnputs("the console: an interrupt attached and handed over\n");
     console_checks();
 
     cnputs("timers: activation, phase and deadlines\n");
@@ -1688,6 +1790,9 @@ kernel_main(void)
 
     cnputs("threads: a program with more than one\n");
     thread_checks();
+
+    cnputs("the console: a driver process, and a line typed at it\n");
+    console_service();
 
     cnputs("the slice again, with both halves in user mode\n");
     user_slice();

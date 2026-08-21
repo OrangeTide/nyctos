@@ -1595,6 +1595,19 @@ Three properties of that arrangement come free and are worth naming, because a d
 
 **A slow client cannot stall the device.** The two threads block on different objects and neither waits for the other.
 
+**Where the two threads must share state, what protects it is the
+priority they share.** The arrangement above is described as two threads
+and no shared state, and for a driver that only programs a device and
+waits that is exact. A driver that carries data, like a console, has to
+move bytes from the thread that receives them to the thread that answers
+for them, and there is nothing to lock with: the kernel provides no
+mutex and Tier 0 has no atomic the design relies on. What makes it safe
+is that both threads run at the same priority, so neither preempts the
+other, and every point at which either touches the shared buffer sits
+between two blocking calls. That is a real argument rather than an
+absence of one, and it has a stated expiry: it is a uniprocessor
+argument, and section 11.4 is where it stops holding.
+
 **Priority follows the request.** A client at priority 40 sending to the driver donates to the driver's request thread for the duration of the rendezvous, per section 12.3. A driver serving two clients of different priorities does not need to know their priorities, sort them, or implement a queue discipline. It receives in donated-priority order because the kernel already ordered its senders.
 
 ### 19.4 Where the Data Goes
@@ -1766,6 +1779,8 @@ A pure design would say that a driver reports through the console service like e
 #### What is provided
 
 **The kernel's own console.** A polled write to a UART with no driver, no interrupt, and no service behind it, per section 27. The kernel already needs this for `panic` and for boot output, so it costs nothing additional.
+
+**Two writers to one device need a rule, and the rule is not a lock.** Once a console driver exists, the kernel and the driver both reach the same transmit register, and interleaving them produces output that looks like a fault in whichever printed second. The division is by occasion rather than by mechanism: the kernel writes at boot, in `panic`, and for the debug console, and the driver owns the device at every other time. Nothing enforces it, which is the honest position for a facility whose whole purpose is to work when the system does not.
 
 **`SYS_OP_DEBUG_WRITE`.** A user program writing to that same console, taking no handle and checking nothing about its caller.
 

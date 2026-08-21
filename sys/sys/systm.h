@@ -19,17 +19,6 @@
 /* Console: implemented per-architecture in sys/arch/<arch>/uart.c. */
 void uart_putc(char c);
 
-/*
- * The receive side, which exists here only until stage 5 of milestone 3
- * puts it in a driver process. The kernel needs it to demonstrate that
- * an external interrupt arrives at all, and it is the one part of this
- * that a console service replaces rather than extends.
- */
-void uart_rx_enable(void);
-
-/* One byte, or -1 if the receive FIFO is empty. */
-int uart_getc(void);
-
 /* sys/kern/subr_prf.c */
 void cnputs(const char *s);
 void cnwrite(const char *buf, size_t len);

@@ -59,7 +59,8 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
     $(OBJTOP)/bin/spin/spin.bin \
     $(OBJTOP)/bin/status/status.bin \
     $(OBJTOP)/bin/spawner/spawner.bin \
-    $(OBJTOP)/bin/threads/threads.bin
+    $(OBJTOP)/bin/threads/threads.bin \
+    $(OBJTOP)/bin/console/console.bin
 	@mkdir -p $(@D)
 	$(MKBOOTARCH) $@ \
 	    fs_server=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 0 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_server/fs_server.bin \
@@ -68,6 +69,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
 	    spin=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 3 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/spin/spin.bin \
 	    status=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 4 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/status/status.bin \
 	    spawner=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 5 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/spawner/spawner.bin \
-	    threads=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 6 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/threads/threads.bin
+	    threads=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 6 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/threads/threads.bin \
+	    console=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 7 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/console/console.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)

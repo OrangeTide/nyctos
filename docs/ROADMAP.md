@@ -695,7 +695,7 @@ in M2, the interrupt acknowledgement in stage 2, and now this. A thread
 reports which of the three live states it is in rather than a flag,
 since the states exist and the kernel knows them.
 
-**5. The console.** One process, two threads, holding the UART.
+**5. The console.** *Built.* One process, two threads, holding the UART.
 
 The roadmap said a driver process and a console service, and this builds
 them as one program. The split costs a rendezvous per line and buys nothing
@@ -705,7 +705,7 @@ avoid one. Say so plainly rather than quietly, because it is a deviation
 from section 19's shape.
 
 - The receive thread: blocked on the interrupt timeline, draining the FIFO,
-  acknowledging the interrupt, and putting bytes into a line buffer. Echo and
+  acknowledging the interrupt, and putting bytes into a ring. Echo and
   the two editing keys a person needs live here, because a line the user
   cannot correct is a demonstration nobody can drive.
 - The request thread: blocked in receive, serving reads and writes over
@@ -723,13 +723,43 @@ from section 19's shape.
   region the process may already address, so what is written down is the
   deviation and where it goes.
 
-*Check.* Typing a line while the request thread is blocked in receive
-delivers it, and typing a line before anybody has asked for one delivers it
-too. Those are different paths and the second is the one that gets forgotten.
-The trace of section 22.2 shows both threads blocked on different objects at
-once, which is the shape section 19.3 claims and the first time anything has
-demonstrated it.
+*Check.* Two reads, because a console has two paths and a filesystem
+has neither. The first finds a line already in the ring, which is what
+a scripted session always produces, since a pipe delivers the whole
+session before anything asks for any of it. The second arrives at an
+empty ring, is held rather than refused, and is answered by the other
+thread when the line comes in. The trace of section 22.2 shows both
+threads blocked on different objects at once, which is the shape
+section 19.3 claims and the first time anything has demonstrated it.
 
+Answering a read with nothing instead of holding it fails with a
+zero-byte read. Removing the unmask hangs the machine after the first
+line, which is the failure with the least information attached in this
+milestone and stays that way: a rendezvous carries no deadline, so a
+client that will never be answered waits for ever. Section 12.1
+describes a timeout on a rendezvous and the operation has no field for
+one; that is a gap, and M7 is where cancellation and timeouts arrive.
+
+Three things this settled. **The two threads share state, and section
+19.3 now says what protects it.** A driver that only programs a device
+needs nothing shared, and a driver that carries data has to move bytes
+from the thread that receives them to the thread that answers for them.
+There is no mutex to reach for. What makes it safe is that both threads
+run at the same priority, so neither preempts the other, and every
+point that touches the ring sits between two blocking calls. It is a
+uniprocessor argument with a stated expiry, and M8 is the expiry.
+
+**Input is a ring, and a full ring drops the newest byte.** The first
+attempt kept one line and dropped what followed, which works for a
+person typing and loses everything after the first line of a pipe. A
+ring makes a burst and a keystroke the same thing to a reader, which
+is what a scripted session and a person both need.
+
+**The protocol numbering was reconciled here rather than in stage 6,**
+because a console that serves reads and writes cannot wait for it.
+`FS_OP_WRITE` exists now and the subset uses section 25.3's numbers,
+so it is sparse rather than renumbered: what is missing is missing
+rather than moved.
 **6. libc's two ends.** A program's own input and output, distinct from the
 diagnostics of section 22.4.
 

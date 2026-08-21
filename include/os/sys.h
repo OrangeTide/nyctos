@@ -125,6 +125,15 @@ sys_err_t sys_fence_wait(sys_handle_t timeline, uint64_t value,
 sys_err_t sys_thread_create(void (*fn)(void *), void *arg, void *stack,
   size_t size, uint32_t prio, sys_handle_t *out_thread);
 
+/*
+ * Unmask an interrupt the handler silenced, per section 13.2. The
+ * driver has drained its device and the source may assert again;
+ * draining first is the caller's obligation, since unmasking with
+ * bytes still in the device interrupts again at once. Requires
+ * SYS_RIGHT_IRQ.
+ */
+sys_err_t sys_irq_unmask(sys_handle_t irq);
+
 /* The exit code and state of a thread. Requires SYS_RIGHT_STAT. */
 sys_err_t sys_thread_status(sys_handle_t thread, int32_t *out_code,
   uint32_t *out_state);
