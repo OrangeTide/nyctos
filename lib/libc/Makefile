@@ -9,8 +9,10 @@ LIB := c
 SRCS := arch/$(ARCH)/sys/syscall.S \
         startup.c \
         sys/op.c \
-        sys/write.c \
+        sys/console.c \
         sys/_exit.c \
+        stdio/printf.c \
+        stdio/gets.c \
         stdio/puts.c \
         stdlib/exit.c \
         string/memcpy.c \

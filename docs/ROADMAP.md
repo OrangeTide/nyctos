@@ -774,28 +774,55 @@ because a console that serves reads and writes cannot wait for it.
 `FS_OP_WRITE` exists now and the subset uses section 25.3's numbers,
 so it is sparse rather than renumbered: what is missing is missing
 rather than moved.
-**6. libc's two ends.** A program's own input and output, distinct from the
-diagnostics of section 22.4.
+**6. libc's two ends.** *Built.* A program's own input and output,
+distinct from the diagnostics of section 22.4.
 
 - `read()` and `write()` against the console connection found in the startup
   namespace under `SYS_NS_CONSOLE`, which already has an identifier and has
   never had a holder.
-- `FS_OP_WRITE` in the protocol header, which the implemented subset does not
-  have. Adding it is the point at which the subset's opcode numbers have to
-  be reconciled with section 25.3, which numbers `READ` 3 and `WRITE` 4 where
-  the implementation numbers `READ` 2. A sparse subset of the real numbering
-  is right; a dense subset of a different numbering is a second protocol.
-- Enough formatting for a utility to be worth writing, and a line reader over
-  `read()`.
+- `FS_OP_WRITE` and the numbering, which stage 5 had to do first: a
+  console that serves reads and writes cannot wait for the protocol to
+  agree with section 25.3.
+- Enough formatting for a utility to be worth writing, and a line reader
+  over `read()`.
 - The debug macros keep their own spelling and their own build switch. A
   program's real output is one thing and its diagnostics are another, per
   section 22.4, and the moment `write()` stops going to the backdoor is the
   moment that distinction becomes real rather than stated.
 
-*Check.* A program that prints through `write()` produces nothing when the
-debug console is compiled out, and the same program's diagnostics disappear
-independently. Both directions matter: an image built without the backdoor
-must still talk to a person.
+*Check.* `greet` is built with the debug console switched off, so the
+macros expand to nothing and there is no call to the backdoor anywhere
+in its image. It formats a line, asks for input, and says what it read.
+Everything it says arrives through a connection it was handed at spawn.
+
+Spawning it with no console in its namespace is the other half. It
+prints nothing at all, not one byte, and exits -1, which is what makes
+the first half evidence rather than a demonstration: an image without
+the backdoor talks to a person through a handle or it does not talk.
+
+The plan had this check the wrong way round. It asked for a program
+whose `write()` produced nothing with the debug console compiled out,
+which is the behaviour this stage exists to remove.
+
+Three things this settled. **All three descriptor numbers name the one
+connection.** There is one console and nothing else to open, so a
+descriptor table would be a table with one entry repeated; it arrives
+with the mount table in M5, and until then the POSIX numbers are a
+spelling rather than an index.
+
+**The library has a formatter of its own**, which is duplication with a
+reason. The kernel's writes a byte at a time to a device it owns; this
+one gathers bytes into a message, because every write is a rendezvous
+with another process. Sharing them would mean a formatter parameterised
+by how it emits, which is more machinery than either side saves.
+
+**A connection a parent hands out has to carry more than it hands
+over.** The kernel's console connection was minted with the right to
+send and nothing else, so the first attempt to give a child a copy was
+refused: section 7.4 attenuates on duplication, and a handle that
+cannot be duplicated cannot be shared. Also `child_join` now takes how
+long to wait, because a child that computes is done in milliseconds and
+a child that reads the console is waiting for a person.
 
 **7. The shell, and two utilities.** The milestone's stated goal.
 

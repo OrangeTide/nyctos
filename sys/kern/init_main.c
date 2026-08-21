@@ -818,7 +818,7 @@ child_watch(struct child *c, struct proc *p)
 }
 
 static int32_t
-child_join(struct child *c)
+child_join(struct child *c, uint32_t within_ms)
 {
     struct sys_op_status_args sargs;
     struct sys_op_fence_args fargs;
@@ -830,8 +830,13 @@ child_join(struct child *c)
      * an exit that advances nothing, and waiting for ever on one is
      * a machine that hangs with no cause attached. Section 14.3: a
      * deadline is for detecting a failure, not for scheduling.
+     *
+     * How long depends on what the child waits for. A child that only
+     * computes is done in milliseconds; a child that reads the console
+     * is waiting for a person, and a person is slower than any number
+     * that would still catch a hang.
      */
-    fargs.deadline = time_now() + time_from_ms(1000);
+    fargs.deadline = time_now() + time_from_ms(within_ms);
     if (run(SYS_OP_FENCE_WAIT, c->c_completion, &fargs,
       sizeof(fargs)) != SYS_OK) {
         panic("join %s: it did not finish, or its exit advanced nothing",
@@ -919,7 +924,7 @@ completion_checks(void)
       run(SYS_OP_OBJECT_COMPLETION, c.c_completion, &cargs, sizeof(cargs)),
       SYS_ERR_WRONG_TYPE);
 
-    code = child_join(&c);
+    code = child_join(&c, 1000);
     cnprintf("    exiter finished with status %d\n", code);
     if (code != 7) {
         panic("completion: joined a child and read status %d", code);
@@ -1016,7 +1021,7 @@ user_interrupt_checks(void)
     sched_defer();
     child_watch(&c, proc_spawn_image("spin", 20, NULL, 0));
     sched_undefer();
-    (void)child_join(&c);
+    (void)child_join(&c, 1000);
 
     timer_destroy(t);
 
@@ -1049,7 +1054,7 @@ spawn_checks(void)
     child_watch(&c, proc_spawn_image("spawner", 20, NULL, 0));
     sched_undefer();
 
-    code = child_join(&c);
+    code = child_join(&c, 1000);
     cnprintf("    spawner reported %d\n", code);
     if (code != 7) {
         panic("spawn: the spawner exited %d, expected the child's 7", code);
@@ -1076,7 +1081,7 @@ thread_checks(void)
     child_watch(&c, proc_spawn_image("threads", 20, NULL, 0));
     sched_undefer();
 
-    code = child_join(&c);
+    code = child_join(&c, 1000);
     cnprintf("    threads reported %d\n", code);
     if (code != 9) {
         panic("threads: the process reported %d, not its last thread's 9",
@@ -1084,6 +1089,53 @@ thread_checks(void)
     }
 }
 
+
+/*
+ * A program with no ambient authority saying something to a person.
+ *
+ * Every program before this one printed through the debug console of
+ * section 22.4, which takes no handle and reaches the device because it
+ * exists. greet is built without it, so there is no call to the backdoor
+ * anywhere in its image; what it has is a connection to the console
+ * service, handed over at spawn. If it says anything at all, output
+ * reached a person through a handle.
+ *
+ * It exits with the number of bytes it read, so the kernel can tell the
+ * difference between a program that talked to the console and one that
+ * only appeared to.
+ */
+static void
+greet_checks(sys_handle_t conn)
+{
+    struct sys_op_dup_args dup;
+    sys_ns_spec_t ns[1];
+    struct child c;
+    int32_t code;
+
+    /*
+     * A duplicate, because a handle moves rather than copies and this
+     * thread has more to say afterwards. Attenuated to what a child needs
+     * and no more: it may send on the connection and may hand it on, and
+     * it may not mint another.
+     */
+    memset(&dup, 0, sizeof(dup));
+    dup.new_rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a console handle for the child",
+      run(SYS_OP_HANDLE_DUP, conn, &dup, sizeof(dup)), SYS_OK);
+
+    ns[0].id = SYS_NS_CONSOLE;
+    ns[0].handle = dup.out_handle;
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("greet", 20, ns, 1));
+    sched_undefer();
+
+    code = child_join(&c, 60000);
+    cnprintf("    greet read %d bytes and said so through a handle\n", code);
+    if (code < 0) {
+        panic("greet: it could not reach the console it was given");
+    }
+}
 /*
  * The console as a service, per section 19 and section 25.
  *
@@ -1174,7 +1226,14 @@ console_service(void)
     expect("a receive handle for the console", err, SYS_OK);
 
     memset(&cargs, 0, sizeof(cargs));
-    cargs.rights = SYS_RIGHT_SEND;
+    /*
+     * Duplicable, because every program that talks to a person gets
+     * its console this way and a handle moves rather than copies.
+     * Section 7.4 has attenuation happen before a transfer, so what
+     * this thread holds has to carry more than what it hands out.
+     */
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
+      SYS_RIGHT_TRANSFER;
     expect("a connection to it, for this thread",
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     conn = cargs.out_handle;
@@ -1228,6 +1287,8 @@ console_service(void)
     if (!trace_saw(THREAD_WAIT_FENCE)) {
         panic("console: its receive thread never waited on the interrupt");
     }
+
+    greet_checks(conn);
 }
 static void
 fs_server(void *arg)
@@ -1419,7 +1480,7 @@ slice_checks(void)
     child_watch(&c, proc_spawn("fs-client", 20, fs_client, ns, 1));
     sched_undefer();
 
-    (void)child_join(&c);
+    (void)child_join(&c, 1000);
 
     expect("the handle left this process when it was handed over",
       handle_lookup(&p->p_handles, root, SYS_OBJ_NONE, 0, NULL),
@@ -1593,7 +1654,7 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
     child_watch(&c, p);
     sched_undefer();
 
-    code = child_join(&c);
+    code = child_join(&c, 1000);
 
     trace_enable(false);
 
