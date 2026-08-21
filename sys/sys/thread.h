@@ -177,6 +177,17 @@ struct thread {
      * why M7 rather than this milestone owns the freezing of a
      * completion timeline into the handle slots that still hold it.
      */
+    /*
+     * Where this thread starts in user mode, for one the program
+     * created. Section 10.2 has the creator supply the stack, so the
+     * kernel installs all three and the thread begins with no code of
+     * its own having run: a first thread has crt1 to set its stack up,
+     * and a created thread has nothing.
+     */
+    uintptr_t           t_uentry;
+    uintptr_t           t_uarg;
+    uintptr_t           t_ustack;
+
     struct timeline     t_completion;
     int32_t             t_exit_code;
 

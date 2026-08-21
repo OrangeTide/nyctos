@@ -1026,9 +1026,18 @@ console_checks(void)
  * program that waits for a device, so both sides had to change, and this
  * is the check that says the change is real.
  *
- * The timer is armed before the program starts and expires while it is the
- * thread on the core. Nothing the program does can produce the interrupt,
- * which is the point: it is being interrupted rather than trapping.
+ * The timer is periodic rather than one-shot, and that is not a
+ * detail. Under emulation the virtual clock runs on wall time while
+ * the first execution of a path pays for translating it, so a single
+ * activation one millisecond out can expire before the child has run
+ * an instruction, land in the kernel, and leave nothing for the
+ * program to be interrupted by. That is a check failing when nothing
+ * is wrong, which is worse than the check being absent, and it took
+ * a run in three to show it. A period gives the program eighty
+ * chances instead of one.
+ *
+ * Nothing the program does can produce the interrupt, which is the
+ * point: it is being interrupted rather than trapping.
  */
 static void
 user_interrupt_checks(void)
@@ -1042,7 +1051,8 @@ user_interrupt_checks(void)
     if (tl == NULL) {
         panic("spin: no timeline");
     }
-    t = timer_create("spin", tl, time_now() + time_from_ms(1), 0);
+    t = timer_create("spin", tl, time_now() + time_from_ms(1),
+      time_from_ms(1));
     if (t == NULL) {
         panic("spin: no timer");
     }
@@ -1051,6 +1061,8 @@ user_interrupt_checks(void)
     child_watch(&c, proc_spawn_image("spin", 20, NULL, 0));
     sched_undefer();
     (void)child_join(&c);
+
+    timer_destroy(t);
 
     if (md_user_irqs == before) {
         panic("nothing interrupted the program while it ran");
@@ -1085,6 +1097,34 @@ spawn_checks(void)
     cnprintf("    spawner reported %d\n", code);
     if (code != 7) {
         panic("spawn: the spawner exited %d, expected the child's 7", code);
+    }
+}
+
+/*
+ * Threads a program created, per section 10.2, and the rule that a process
+ * finishes when its last thread does.
+ *
+ * The status is what makes the second half a check rather than a
+ * demonstration. The main thread exits with zero while the thread it
+ * created is still blocked, so a kernel that ended the process at the
+ * first exit would report zero, and one that waits for the last reports
+ * what only the second thread could have written.
+ */
+static void
+thread_checks(void)
+{
+    struct child c;
+    int32_t code;
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("threads", 20, NULL, 0));
+    sched_undefer();
+
+    code = child_join(&c);
+    cnprintf("    threads reported %d\n", code);
+    if (code != 9) {
+        panic("threads: the process reported %d, not its last thread's 9",
+          code);
     }
 }
 static void
@@ -1645,6 +1685,9 @@ kernel_main(void)
 
     cnputs("spawn: a program that starts a program\n");
     spawn_checks();
+
+    cnputs("threads: a program with more than one\n");
+    thread_checks();
 
     cnputs("the slice again, with both halves in user mode\n");
     user_slice();

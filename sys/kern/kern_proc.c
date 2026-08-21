@@ -154,7 +154,7 @@ proc_user_start(void *arg)
     struct proc *p = proc_current();
 
     (void)arg;
-    enter_user(p->p_entry, &p->p_startup);
+    enter_user(p->p_entry, &p->p_startup, 0);
 }
 
 /*
@@ -411,6 +411,81 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
 
     p->p_entry = boot_load(m);
     thread_set_proc(t, p);
+    sched_ready(t);
+
+    if (out_handle != NULL) {
+        *out_handle = h;
+    }
+
+    return SYS_OK;
+}
+
+/*
+ * The first thing a thread the program created runs, in kernel mode, on
+ * its own kernel stack. It drops to user mode at the entry the creator
+ * named, on the stack the creator supplied, and does not come back.
+ *
+ * The three values travel in the thread object rather than as arguments
+ * because md_thread_init carries one word to the trampoline and this needs
+ * three. The thread is the obvious place to put them: they are what it is.
+ */
+static void
+proc_thread_start(void *arg)
+{
+    struct thread *t = arg;
+
+    enter_user(t->t_uentry, (void *)t->t_uarg, t->t_ustack);
+}
+
+/*
+ * Add a thread to a process, per section 10.2.
+ *
+ * The stack is the caller's, at any address it likes, because the kernel
+ * allocates no user memory at any tier. What it checks is alignment, since
+ * a misaligned stack pointer faults on one of these ports and silently
+ * corrupts on the other, and neither is a good way to find out.
+ */
+sys_err_t
+proc_thread_create(struct proc *p, uintptr_t entry, uintptr_t uarg,
+  uintptr_t stack, uint8_t prio, sys_handle_t *out_handle)
+{
+    struct thread *t;
+    sys_handle_t h;
+    sys_err_t err;
+
+    if (entry == 0 || stack == 0 || (stack & 15) != 0) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    if (prio > SYS_PRIO_MAX) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    if (prio > thread_current()->t_base_prio) {
+        return SYS_ERR_PERM_DENIED;
+    }
+
+    t = thread_alloc(p->p_name, prio, proc_thread_start, NULL);
+    if (t == NULL) {
+        return SYS_ERR_NO_MEMORY;
+    }
+    t->t_uentry = entry;
+    t->t_uarg = uarg;
+    t->t_ustack = stack;
+
+    /*
+     * The trampoline needs the thread it is running as, and md_thread_init
+     * has already written the argument into the saved frame, so it is
+     * rewritten here rather than passed above.
+     */
+    md_thread_init(t, proc_thread_start, t);
+
+    err = handle_insert(&p->p_handles, t, SYS_OBJ_THREAD,
+      SYS_RIGHT_WAIT | SYS_RIGHT_STAT, &h);
+    if (err != SYS_OK) {
+        thread_set_proc(t, NULL);
+        pool_free(thread_pool(), t->t_id);
+        return err;
+    }
+
     sched_ready(t);
 
     if (out_handle != NULL) {

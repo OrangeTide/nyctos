@@ -4,16 +4,23 @@
  */
 
 /*
- * void enter_user(unsigned long entry, const sys_startup_t *startup)
+ * void enter_user(unsigned long entry, void *arg, unsigned long sp)
  *
  * Drops from M-mode to U-mode at the given address and never returns. A
  * single PMP entry covering the whole address space is needed because
- * without one U-mode may access nothing at all. crt1 establishes the user
- * stack itself, so only the kernel's stack pointer is stashed here, in
- * mscratch, which is the invariant trap_entry reads to tell a user trap
- * from a kernel one.
+ * without one U-mode may access nothing at all. The kernel stack pointer
+ * is stashed in mscratch, which is the invariant trap_entry reads to tell
+ * a user trap from a kernel one.
  *
- * The startup record of section 20.4 arrives in a0, which is where crt1
+ * arg arrives in a0. For a process's first thread that is the startup
+ * record of section 20.4; for a thread the program created it is whatever
+ * the creator passed.
+ *
+ * sp is the user stack, or zero to leave it as it is. A program's first
+ * thread sets its own stack in crt1, because the image is where the stack
+ * is and the kernel does not know the image. A thread the program created
+ * runs on a stack the creator supplied, per section 10.2, and the kernel
+ * has to install it because the thread has no code that runs first.
  * expects it. It is the only thing the program is told.
  *
  * A program runs with machine interrupts live. U-mode cannot mask them
@@ -44,4 +51,12 @@ enter_user:
 
     csrw    mepc, a0
     mv      a0, a1
+
+    /*
+     * Last, because sp is the stack this code is running on: everything
+     * above needs the kernel stack and nothing below touches memory.
+     */
+    beqz    a2, 1f
+    mv      sp, a2
+1:
     mret

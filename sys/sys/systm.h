@@ -63,7 +63,7 @@ long syscall_handler(struct sys_op *op, unsigned long count);
 void trap_fatal(unsigned long cause, unsigned long pc) __attribute__((noreturn));
 
 /* sys/arch/<arch>/machdep.S */
-void enter_user(unsigned long entry, const sys_startup_t *startup)
+void enter_user(unsigned long entry, void *arg, unsigned long sp)
   __attribute__((noreturn));
 
 /* sys/arch/<arch>/halt.c */

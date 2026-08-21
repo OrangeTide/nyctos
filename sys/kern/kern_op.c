@@ -455,6 +455,73 @@ op_proc_spawn(struct proc *p, struct sys_op *op)
 
     return SYS_OK;
 }
+
+/*
+ * A thread the program created, per section 10.2.
+ */
+static sys_err_t
+op_thread_create(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_thread_args *args;
+    sys_handle_t h = SYS_HANDLE_INVALID;
+    uint32_t prio;
+    sys_err_t err;
+
+    args = (struct sys_op_thread_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    prio = args->prio;
+    if (prio == SYS_PRIO_INHERIT) {
+        prio = thread_current()->t_base_prio;
+    }
+    if (prio > SYS_PRIO_MAX) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    err = proc_thread_create(p, args->entry, args->arg, args->stack,
+      (uint8_t)prio, &h);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    args->out_handle = h;
+
+    return SYS_OK;
+}
+
+/*
+ * The exit code of a thread. The same structure as a process status and
+ * for the same reason: a counter cannot carry a code, so the code is read
+ * from the object rather than from the timeline that reports the finish.
+ */
+static sys_err_t
+op_thread_status(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_status_args *args;
+    struct thread *t;
+    void *obj;
+    sys_err_t err;
+
+    args = (struct sys_op_status_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_THREAD,
+      SYS_RIGHT_STAT, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+    t = obj;
+
+    args->out_code = t->t_state == THREAD_DEAD ? t->t_exit_code : 0;
+    args->out_state = t->t_state == THREAD_DEAD ? SYS_STATUS_EXITED
+      : SYS_STATUS_LIVE;
+
+    return SYS_OK;
+}
 sys_err_t
 sys_op_exec(struct sys_op *op)
 {
@@ -490,6 +557,12 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_OBJECT_COMPLETION:
         err = op_object_completion(p, op);
+        break;
+    case SYS_OP_THREAD_CREATE:
+        err = op_thread_create(p, op);
+        break;
+    case SYS_OP_THREAD_STATUS:
+        err = op_thread_status(p, op);
         break;
     case SYS_OP_PROC_SPAWN:
         err = op_proc_spawn(p, op);

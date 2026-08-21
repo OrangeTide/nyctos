@@ -260,3 +260,88 @@ sys_fence_wait(sys_handle_t timeline, uint64_t value, uint64_t deadline)
 
     return submit(SYS_OP_FENCE_WAIT, timeline, &args, sizeof(args));
 }
+
+/*
+ * What a created thread actually starts in.
+ *
+ * The operation carries one word to the new thread and a thread needs two,
+ * a function and its argument, so the pair is written to the top of the
+ * new stack and the trampoline is what unpacks it. It also gives the
+ * function somewhere to return to: a thread that runs off the end of its
+ * entry function has no return address at all, and this turns that into an
+ * ordinary exit.
+ */
+struct thread_start {
+    void  (*fn)(void *);
+    void   *arg;
+};
+
+static void
+thread_trampoline(void *p)
+{
+    struct thread_start *start = p;
+
+    start->fn(start->arg);
+
+    sys_thread_exit(0);
+}
+
+sys_err_t
+sys_thread_create(void (*fn)(void *), void *arg, void *stack, size_t size,
+  uint32_t prio, sys_handle_t *out_thread)
+{
+    sys_op_thread_args_t args;
+    struct thread_start *start;
+    uintptr_t top;
+    sys_err_t err;
+
+    if (fn == NULL || stack == NULL || size < sizeof(*start) + 64) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    /*
+     * The pair lives at the top of the new stack, and the stack pointer
+     * starts below it. Nothing else can hold it: there is no allocator in
+     * this library, and a static would make two threads share one.
+     */
+    top = ((uintptr_t)stack + size) & ~(uintptr_t)15;
+    top -= sizeof(*start);
+    top &= ~(uintptr_t)15;
+    start = (struct thread_start *)top;
+    start->fn = fn;
+    start->arg = arg;
+
+    memset(&args, 0, sizeof(args));
+    args.entry = (uintptr_t)thread_trampoline;
+    args.arg = (uintptr_t)start;
+    args.stack = top;
+    args.prio = prio;
+
+    err = submit(SYS_OP_THREAD_CREATE, SYS_HANDLE_INVALID, &args,
+      sizeof(args));
+    if (out_thread != NULL) {
+        *out_thread = err == SYS_OK ? args.out_handle : SYS_HANDLE_INVALID;
+    }
+
+    return err;
+}
+
+sys_err_t
+sys_thread_status(sys_handle_t thread, int32_t *out_code,
+  uint32_t *out_state)
+{
+    sys_op_status_args_t args;
+    sys_err_t err;
+
+    memset(&args, 0, sizeof(args));
+
+    err = submit(SYS_OP_THREAD_STATUS, thread, &args, sizeof(args));
+    if (out_code != NULL) {
+        *out_code = args.out_code;
+    }
+    if (out_state != NULL) {
+        *out_state = args.out_state;
+    }
+
+    return err;
+}

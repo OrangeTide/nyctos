@@ -114,6 +114,14 @@ struct proc *proc_spawn_image(const char *image, uint8_t prio,
  * anything that cannot be undone, so a caller that gets an error back
  * has a table and a set of pools exactly as they were.
  */
+/*
+ * Add a thread to a process, per section 10.2. The stack is the
+ * caller's, because the kernel allocates no user memory at any tier.
+ */
+sys_err_t proc_thread_create(struct proc *p, uintptr_t entry,
+  uintptr_t uarg, uintptr_t stack, uint8_t prio,
+  sys_handle_t *out_handle);
+
 sys_err_t proc_spawn_op(struct proc *parent, const char *image,
   uint8_t prio, const sys_ns_spec_t *ns, uint32_t nns,
   sys_handle_t *out_handle);

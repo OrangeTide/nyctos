@@ -577,6 +577,16 @@ watching the interrupt arrive anyway. It is set for the state to be
 intended rather than accidental, and the AArch64 side is where the
 actual change was.
 
+*Repaired in stage 4.* The second half of this check was flaky and
+nothing noticed for two stages. The timer was armed once, one
+millisecond out, and under emulation the virtual clock runs on wall
+time while the first execution of a path pays for translating it: the
+activation could expire before the child had run an instruction, land
+in the kernel, and leave the program with nothing to be interrupted
+by. It passed six times and then failed two runs in three. The timer
+is periodic now, so a program that runs for eighty milliseconds has
+eighty chances rather than one, and it reports how many it took.
+
 **3. Spawn as an operation.** *Built.* What a shell needs, and no more
 of section 24 than that.
 
@@ -634,8 +644,8 @@ make possible. And the rights the spawn hands out are enforced by the
 two operations that use them, which they were not: the handle carried
 SYS_RIGHT_WAIT and SYS_RIGHT_STAT and neither was ever checked.
 
-**4. Threads a program creates.** Nothing new is being decided here, only
-reached: section 10.2 already says the creator supplies the stack.
+**4. Threads a program creates.** *Built.* Nothing new was decided here,
+only reached: section 10.2 already said the creator supplies the stack.
 
 - `SYS_OP_THREAD_CREATE`: a stack the caller owns, an entry point, one
   argument, and a priority. The stack is memory in the program's own image,
@@ -648,11 +658,30 @@ reached: section 10.2 already says the creator supplies the stack.
   with two threads finishes when the second one exits, and that has never
   been exercised.
 
-*Check.* A program creates a thread, both threads block on different
-objects, and the process completes only when both have exited. The count
-is what makes that check able to fail: without it a process would finish
-when its first thread exited, and a joiner would be released while the
-other was still running.
+*Check.* `threads` creates a thread that spawns a program and waits for
+it, while the thread that created it waits on that thread's completion:
+two threads blocked on different objects at once, which is the shape
+section 19.3 prescribes and the first time anything here has had it. It
+then creates a second thread and exits while that one is still blocked.
+The process reports 9, which only the second thread could have written,
+and not the 0 the first thread exited with.
+
+Breaking the last-thread rule does not wait for that check to notice.
+The kernel's own process has many threads, so the first kernel thread
+to exit ends it, and the machine halts on an exit nobody was waiting
+for within the first few checks.
+
+Two things this settled. **A check that goes through the library cannot
+test what the library fixes up.** The misaligned stack this refuses was
+first checked by calling `sys_thread_create` with a misaligned array,
+which succeeded, because aligning the region it is handed is part of
+what the wrapper does. The check builds a descriptor and submits it
+instead, which is the operation and not the convenience over it.
+
+And **a thread costs 4320 bytes of kernel object memory before it has a
+user stack**, 4096 of which is the kernel stack of section 8. That is
+the first real number for the question this milestone exists to answer,
+and the program's own stacks are 4096 bytes each on top of it.
 
 **5. The console.** One process, two threads, holding the UART.
 

@@ -150,6 +150,18 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_PROC_SPAWN        17
 
 /*
+ * Add a thread to the calling process, per section 10.2. The creator
+ * supplies the stack, because the kernel allocates no user memory at
+ * any tier, and the thread begins with none of its own code having
+ * run: a first thread has crt1 and a created thread has nothing.
+ */
+#define SYS_OP_THREAD_CREATE     18
+
+/* The exit code and state of a thread, as SYS_OP_PROC_STATUS is for a
+ * process. Requires SYS_RIGHT_STAT. */
+#define SYS_OP_THREAD_STATUS     19
+
+/*
  * Ends the calling thread. It does not return, so it has no status to
  * write and no place to write one.
  */
@@ -178,7 +190,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             18
+#define SYS_OP_COUNT             20
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the
@@ -372,6 +384,24 @@ typedef struct sys_op_spawn_args {
     uintptr_t       ns;             /* sys_ns_spec_t *, nns of them */
     sys_handle_t    out_handle;     /* written by the kernel */
 } sys_op_spawn_args_t;
+
+/*
+ * Argument structure for SYS_OP_THREAD_CREATE. target is unused: a thread
+ * joins the process that asked for it, and a process cannot name another.
+ *
+ * stack is the highest address of the region, since stacks grow down on
+ * both ports, and must be sixteen-byte aligned. entry is where the thread
+ * starts and arg is its one argument, which is how the C library hands a
+ * thread both a function and its argument through a single word.
+ */
+typedef struct sys_op_thread_args {
+    uintptr_t       entry;
+    uintptr_t       arg;
+    uintptr_t       stack;
+    uint32_t        prio;
+    uint32_t        _pad;
+    sys_handle_t    out_handle;     /* written by the kernel */
+} sys_op_thread_args_t;
 
 /*
  * Argument structure for SYS_OP_DEBUG_WRITE. target is unused: this takes

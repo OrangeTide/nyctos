@@ -20,6 +20,8 @@
 #include <sys/op.h>
 #include <sys/startup.h>
 
+#include <stddef.h>
+
 /*
  * Execute count operations. The count is one until the submission engine
  * of section 17 exists, and a kernel without it rejects anything else
@@ -102,6 +104,30 @@ sys_err_t sys_proc_status(sys_handle_t proc, int32_t *out_code,
  */
 sys_err_t sys_fence_wait(sys_handle_t timeline, uint64_t value,
   uint64_t deadline);
+
+/*
+ * Add a thread to this process, per section 10.2.
+ *
+ * The stack is the caller's, at any address it likes, because the kernel
+ * allocates no user memory at any tier. stack names the region and size
+ * its length; what the kernel is given is the highest address, aligned
+ * down, since stacks grow down on both ports.
+ *
+ * The function may return. The library puts it and its argument on the new
+ * stack and starts the thread in a trampoline that calls it and then
+ * exits, which is the whole of why the operation takes one word where a
+ * thread needs two.
+ *
+ * The handle returned carries SYS_RIGHT_WAIT and SYS_RIGHT_STAT, so a
+ * creator can wait on the completion timeline of section 10.4 and read the
+ * status afterwards.
+ */
+sys_err_t sys_thread_create(void (*fn)(void *), void *arg, void *stack,
+  size_t size, uint32_t prio, sys_handle_t *out_thread);
+
+/* The exit code and state of a thread. Requires SYS_RIGHT_STAT. */
+sys_err_t sys_thread_status(sys_handle_t thread, int32_t *out_code,
+  uint32_t *out_state);
 
 /*
  * Ends the calling thread and does not return. Section 10.4 makes exit
