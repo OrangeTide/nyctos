@@ -1080,17 +1080,246 @@ move contract enforced by unmapping (6.1). The fault taxonomy and the fatal-by-
 default rule (16). Faults as messages the faulting thread sends (15.3). A root
 pager, demand-paged program text, and memory locking on the paging path (15).
 
+*Five things it needs that were not listed.* Each is a stage rather than a
+detail, and two of them are most of the milestone.
+
+**One of the two ports has no MMU in the mode its kernel runs in.** The
+RISC-V kernel runs in machine mode, where `satp` does nothing and the only
+protection is the PMP. Tier 2 there means moving the kernel to supervisor
+mode: delegating the traps it wants, moving to the supervisor trap
+registers, finding a timer that supervisor mode can program, and leaving
+the PMP open behind it. That is a second bring-up of a port that already
+works, and it is the riskiest thing in the milestone, so it goes early and
+alone. The AArch64 side needs no equivalent, because EL1 has had a full
+MMU available since the day it booted and simply has not used it.
+
+**There is no page allocator.** Section 8's pools allocate objects of a
+fixed type and a fixed count, and page tables are neither: how many a
+system needs depends on how its address spaces are shaped. Frames for
+tables, for process memory and for whatever a pager hands out all come
+from the same place, and that place does not exist. It is the first
+allocator in this kernel that is not a pool, and section 8's argument has
+to be extended rather than repeated: what makes a frame allocator
+acceptable is that its bound is the memory map rather than a guess.
+
+**The kernel reads user memory in a dozen places.** Every operation reads
+its argument structure from an address a program chose, every message
+carries an inline payload the kernel copies, and spawn reads a namespace
+array and a command line the same way. At Tier 0 a pointer is a pointer.
+At Tier 2 the kernel needs both permission to read a user page, which is
+`SUM` on one port and `PAN` on the other, and a reason to believe the
+address belongs to the caller. Section 23.2 says validation happens once
+before execution, and this is the milestone where it has something to
+validate against.
+
+**The startup record is kernel memory that a program reads.** The record
+of section 20.4 and the namespace table live in the process object, and
+the child reads them through a pointer the kernel puts in a register. That
+works only because there is one address space. At Tier 2 the loader has to
+place the record, the table and the argument strings in the child's own
+memory, which is what section 20.4 described in the first place and what
+Tier 0 was allowed to skip.
+
+**The console driver's registers are a constant compiled into it.** That
+was named as a deviation in M3 with this milestone against it, and the
+deviation ends here rather than later: an address space the driver did not
+ask for does not contain its UART, so the first thing it writes faults.
+Section 19.2's grant stops being deferrable at the moment a process has an
+address space at all.
+
+*Stages.* Eight. The port work comes first for the reason it did in M3,
+which is that it is the only part that can fail for reasons outside this
+tree, and the thesis check is as early as the machinery allows rather than
+at the end, because a milestone should reach the thing it exists to
+answer before it spends time on the thing it merely needs.
+
+**1. A page allocator, and a tier to build for.** Frames, and the switch
+that says which tier an image is.
+
+- A bitmap allocator over the memory the port hands across, with
+  allocation, release and a zeroing allocation, since a page table with
+  anything in it is a page table with somebody else's memory in it.
+- `SYS_TIER` as a build-time choice. Tier 0 builds exactly what M3 built,
+  which is what makes every check that follows a comparison rather than a
+  hope.
+- The bound is the memory map and not a constant, which is the one place
+  this departs from section 8 and the departure is worth stating in the
+  section rather than in a commit message.
+
+*Check.* The allocator's own invariants: everything it hands out is
+page-aligned, inside the map and not already out; a release makes exactly
+one frame available again; exhaustion is an error rather than a wrap. And
+a Tier 0 image still passes `make check` on both architectures, which is
+the property every later stage is measured against.
+
+**2. RISC-V in supervisor mode, with the MMU still off.** The port change,
+alone, changing nothing above it.
+
+- Machine mode delegates the exceptions and interrupts the kernel wants
+  through `medeleg` and `mideleg`, opens the PMP for supervisor mode, and
+  drops to S-mode with everything else unchanged.
+- The trap path moves to `stvec`, `sepc`, `scause`, `sscratch` and `sret`.
+  The mode bit that told a user trap from a kernel one moves with it.
+- A timer supervisor mode can program. `stimecmp` is the direct answer and
+  QEMU's `virt` provides it; a part without it needs machine mode to take
+  the timer and forward it, and which one this port does is a fact worth
+  recording rather than an implementation detail.
+- Interrupts arrive as supervisor external interrupts through the PLIC's
+  supervisor context rather than its machine one, which is a different
+  context number and nothing else.
+
+*Check.* Everything M3 checks passes on riscv64 with the kernel in
+supervisor mode, including the shell session, and the AArch64 image is
+untouched. This stage adds no feature: what it produces is the same system
+in a weaker mode, which is exactly what makes it checkable.
+
+**3. The kernel's own address space.** Translation on, with the kernel
+running through it.
+
+- Page tables built for the kernel: its image, the frames it allocates,
+  and the device registers it uses for the console and the controllers.
+- Enabling translation is the sharpest edge in the milestone, because the
+  instruction after the one that enables it is fetched through the tables
+  it just installed. Both ports need the sequence written down rather than
+  arrived at.
+- TLB maintenance in the port layer, per section 27: invalidate a range,
+  invalidate an address space, and the barriers each needs around it.
+
+*Check.* The whole of M3 passes with the kernel translated, on both
+architectures. Removing the mapping for a device the kernel writes to
+faults where it is used rather than at boot, which is what tells the
+difference between tables that are right and tables that happen not to
+have been consulted yet.
+
+**4. An address space per process, and a loader that fills it.** The stage
+that makes a process a process.
+
+- A table per process, the kernel mapped in the half a program cannot
+  reach, and a switch on dispatch with the maintenance that needs.
+- The image mapped rather than copied to an address chosen at build time.
+  The load slot of section 15.2 disappears at Tier 2, and with it the rule
+  that one image has one live process: two shells become possible, which
+  is the first thing this tier buys that Tier 0 cannot have.
+- The startup record, the namespace table and the command line placed in
+  the child's own memory, per section 20.4.
+- The kernel permitted to read user memory, and required to check it: the
+  validation of section 23.2, once, before an operation executes.
+
+*Check.* Two live copies of one image at Tier 2, refused at Tier 0, from
+one source and one set of programs. A descriptor pointing at an address
+the caller does not own is refused rather than read, and a program that
+passes one is still running afterwards. And `make check` passes at Tier 2
+on both architectures, which is the milestone's first real claim: the M3
+system, unchanged, on an enforced tier.
+
+**5. Faults, and death by default.** What the hardware raises, and what
+happens to the thread that raised it.
+
+- Every exception each port can raise mapped to one of section 16.1's
+  kinds, with the rows that cannot happen saying so rather than being
+  absent.
+- A fault terminates the faulting thread, per 16.2, with the kind, the
+  address and the program counter in its exit status. That is the path
+  exit already built, which is the point: a fault is an exit with a reason.
+- `sys_thread_status` reports it, so a supervisor or a shell can say what
+  happened rather than that something did.
+
+*Check.* A program that dereferences a null pointer dies with
+`SYS_FAULT_ACCESS`, the address it touched and the instruction that
+touched it, while the shell that started it carries on and reports it.
+The same program at Tier 0 does not fault at all, which is section 6.1's
+whole argument visible in two runs of one image.
+
+**6. The move contract, enforced.** The thesis, and the earliest point the
+machinery allows it.
+
+- A message buffer unmapped from the sender and mapped into the receiver
+  for the duration of the call, and the reverse at the reply.
+- The address the receiver sees is its own, which the kernel already
+  rewrites at the rendezvous because Tier 0 needed the field to exist.
+- Nothing in the interface changes. If anything has to, section 2.1 is
+  wrong and this is where that is discovered.
+
+*Check.* The milestone's own clause: a program that touches its buffer
+between send and reply faults at Tier 2 and does not at Tier 0, built from
+one source, with the fault carrying the address it touched. And every
+program written for Tier 0 in M1 through M3 runs unchanged at Tier 2,
+which is the other half of the same claim and the half that is easy to
+forget to check.
+
+**7. Grants, and the driver that needs one.** Section 19.2, no longer
+deferrable.
+
+- The grant object of section 7, covering a region with rights, handed
+  over at spawn like any other handle.
+- The console driver receives its registers as a grant rather than as a
+  constant, and the launcher is what holds the authority to make one.
+- Device memory mapped with device attributes rather than normal ones,
+  which is a port detail that produces silent corruption when it is wrong
+  rather than a fault.
+
+*Check.* The console works at Tier 2, which means the shell session does.
+Starting the driver without its grant faults on the first register it
+touches, at the address of the register, rather than producing a console
+that quietly does nothing.
+
+**8. Faults as messages, and text that arrives when it is touched.**
+Section 15.3 and the pager chain of 15.4.
+
+- A pager as a channel handle, inherited at spawn, and a fault that is a
+  message the faulting thread sends. The reply carries a grant and the
+  thread retries.
+- Priority inheritance across it, which needs nothing added: the faulting
+  thread is an ordinary blocked sender and donates to its pager exactly as
+  a client donates to a server. That property is the reason for the
+  formulation, so the check has to show it rather than assume it.
+- A root pager that terminates the chain, memory locking for everything on
+  the paging path, and a memory-locked process that faults being fatal.
+
+*Check.* A program whose text is demand-paged runs, with the pager
+supplying pages one fault at a time and the count of faults visible. A
+high-priority thread's fault is serviced at its priority while a
+low-priority thread is runnable, which is the property that would
+otherwise be an assertion. And a memory-locked process that faults halts
+the machine, named, rather than deadlocking.
+
 *Done when* the M3 system runs on Tier 2 from the same source, and a program
 that touches a granted buffer between send and reply faults on Tier 2 and does
 not on Tier 0.
 
 *Would falsify.* **The central claim of the whole design.** If the interface
 has to differ between tiers, section 2.1 is wrong and Part I needs rewriting.
+The evidence is the same programs, the same `make check` session, and one
+build switch: a difference that requires a source change is the claim
+failing, and a difference in what a violating program sees is the claim
+holding.
+
 Separately, whether modelling a fault as IPC from the faulting thread really
 reuses the reply path, the blocking invariant and donation without extending
 any of them, which is the single most valuable borrowed idea in the document.
+It is answered by building it and finding out whether anything in sections
+10, 12 and 21 needed a case added for it.
 
-*Size.* Large.
+*Watch for.* **Enabling translation is a cliff.** The instruction after
+the one that turns the MMU on is fetched through the tables it installed,
+and a mistake there produces a machine that stops with nothing printed.
+Both ports need the enable sequence and the identity mapping that carries
+it written down before either is run.
+
+**The kernel is the first thing that faults, not the last.** Every place
+the kernel reads user memory becomes a place it can fault, and a fault
+inside the kernel has no thread to kill. What is owed is a list of those
+places and a decision for each, not a fix per crash.
+
+**A tier that is only ever built one way is a tier nobody checks.** Four
+configurations exist the moment this milestone starts: two architectures
+by two tiers. `make check` has to run all four, or Tier 0 rots while Tier
+2 is being built and the claim that one source serves both stops being
+tested exactly when it starts mattering.
+
+*Size.* Large, and larger than M3. Two of the stages are ports of things
+that already work, which is the kind of work that produces no new
+behaviour and takes the longest to be sure of.
 
 ### M5. Namespaces
 
