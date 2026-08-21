@@ -21,6 +21,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -62,7 +63,17 @@ emit(struct out *o, char c)
 static void
 emit_str(struct out *o, const char *s, unsigned width, char pad)
 {
-    unsigned len = (unsigned)strlen(s);
+    unsigned len;
+
+    /*
+     * A null pointer is a mistake in the caller and printing is what a
+     * caller does when something has gone wrong, so this says so
+     * rather than faulting on the way to reporting it.
+     */
+    if (s == NULL) {
+        s = "(null)";
+    }
+    len = (unsigned)strlen(s);
 
     while (len < width) {
         emit(o, pad);
@@ -99,6 +110,9 @@ emit_num(struct out *o, unsigned long v, unsigned base, int negative,
          */
         if (pad == '0') {
             emit(o, '-');
+            if (width > 0) {
+                width--;   /* the sign is part of the width */
+            }
         } else {
             tmp[n++] = '-';
         }

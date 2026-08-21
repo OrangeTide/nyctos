@@ -26,9 +26,20 @@ main(void)
 {
     char line[64];
     int n;
+    const char *bad;
 
-    printf("greet: %s, %u %s, %d and %04d\r\n", "formatting works", 42u,
+    printf("greet: %s, %u %s, %d and %04d\n", "formatting works", 42u,
       "arguments", -7, 5);
+
+    /*
+     * The cases a formatter gets wrong quietly: a sign inside a
+     * zero-padded width, a string that is not there, and a percent
+     * with nothing after it that means anything. Through a variable,
+     * so that the compiler does not reject the conversion this is
+     * here to check the behaviour of.
+     */
+    bad = "greet: [%04d] [%6d] [%s] [%q]\n";
+    printf(bad, -7, 42, (char *)0, 1);
 
     printf("greet: type something: ");
     n = readline(line, sizeof(line));
@@ -36,7 +47,7 @@ main(void)
         return -1;
     }
 
-    printf("greet: %d bytes, and they were '%s'\r\n", n, line);
+    printf("greet: %d bytes, and they were '%s'\n", n, line);
 
     return n;
 }

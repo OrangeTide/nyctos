@@ -96,6 +96,16 @@ put(const char *s, uint32_t len)
     uint32_t i;
 
     for (i = 0; i < len; i++) {
+        /*
+         * A newline on a terminal is two characters, and a program
+         * that had to know that would be a program written for this
+         * console rather than for a console. The driver is where a
+         * terminal convention belongs, which is the same reason it is
+         * the driver that echoes and erases.
+         */
+        if (s[i] == '\n') {
+            uart_putc('\r');
+        }
         uart_putc(s[i]);
     }
 }
@@ -209,7 +219,7 @@ rx_thread(void *arg)
                 }
                 after_cr = (c == '\r');
 
-                put("\r\n", 2);
+                put("\n", 1);
                 if (ring_put('\n')) {
                     ring_lines++;
                 }

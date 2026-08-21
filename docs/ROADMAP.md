@@ -804,7 +804,7 @@ The plan had this check the wrong way round. It asked for a program
 whose `write()` produced nothing with the debug console compiled out,
 which is the behaviour this stage exists to remove.
 
-Three things this settled. **All three descriptor numbers name the one
+Four things this settled. **All three descriptor numbers name the one
 connection.** There is one console and nothing else to open, so a
 descriptor table would be a table with one entry repeated; it arrives
 with the mount table in M5, and until then the POSIX numbers are a
@@ -815,6 +815,18 @@ reason. The kernel's writes a byte at a time to a device it owns; this
 one gathers bytes into a message, because every write is a rendezvous
 with another process. Sharing them would mean a formatter parameterised
 by how it emits, which is more machinery than either side saves.
+
+**The driver was the only writer to that device that did not translate
+a newline.** The kernel's console has always written a carriage return
+before a line feed, and the driver did not, which is why the first
+program to print through a handle had `\r\n` in its format strings.
+A program that has to know that is a program written for this console
+rather than for a console, so the translation is in the driver, beside
+the echo and the erase, which are terminal conventions for the same
+reason. Two smaller repairs in the formatter went with it: the sign of
+a zero-padded negative counted toward its width, which printed -0007
+for -7 in four columns, and a null string faulted on the way to
+reporting whatever had gone wrong.
 
 **A connection a parent hands out has to carry more than it hands
 over.** The kernel's console connection was minted with the right to
