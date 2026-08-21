@@ -23,7 +23,17 @@
 #ifndef _SYS_CONFIG_H_
 #define _SYS_CONFIG_H_
 
-#define SYS_MAX_PROCESSES         16
+/*
+ * Sixteen was enough until the boot checks started spawning programs
+ * that spawn programs. Nothing is reaped before M7, so every process
+ * the checks create holds its slot for the rest of the run, and the
+ * seventeenth spawn is what found this: section 8 calls exhaustion a
+ * configuration error rather than a condition to recover from, and
+ * this is what fixing one looks like. It is also the clearest measure
+ * so far of what reaping buys, since a system that returned slots
+ * would need about four.
+ */
+#define SYS_MAX_PROCESSES         32
 #define SYS_MAX_THREADS           64
 #define SYS_MAX_CHANNELS          32
 #define SYS_MAX_GRANTS            64
