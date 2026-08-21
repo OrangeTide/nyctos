@@ -69,18 +69,25 @@ static uint32_t ring_tail;      /* written by the request thread */
 static uint32_t ring_lines;     /* complete lines waiting to be read */
 
 static sys_thread_id_t waiting_peer;
+static uint32_t waiting_want;
 static int waiting;
 
-static void
+/* Returns whether the byte was stored, which decides whether a
+ * newline counts as a line: a line whose terminator was dropped is
+ * not a line, and counting one would leave a reader waiting for a
+ * terminator that is not in the ring. */
+static int
 ring_put(char c)
 {
     uint32_t next = (ring_head + 1) % RING_BYTES;
 
     if (next == ring_tail) {
-        return;         /* full: the newest byte is the one that goes */
+        return 0;       /* full: the newest byte is the one that goes */
     }
     ring[ring_head] = c;
     ring_head = next;
+
+    return 1;
 }
 
 static void
@@ -94,8 +101,15 @@ put(const char *s, uint32_t len)
 }
 
 /*
- * Take one line out of the ring, up to and including its newline, and put
- * it in the reply. The caller has already established that there is one.
+ * Take up to max bytes of one line out of the ring, stopping after its
+ * newline.
+ *
+ * A line longer than the reply can carry is not an error and is not
+ * truncated: what fits is returned, the rest stays where it is, and the
+ * line stays counted until its newline has actually gone. Decrementing
+ * on the first read instead left the remainder in the ring with nothing
+ * saying it was there, so the next read was held and then answered with
+ * the tail of the line before it.
  */
 static uint32_t
 take_line(char *out, uint32_t max)
@@ -108,11 +122,10 @@ take_line(char *out, uint32_t max)
         ring_tail = (ring_tail + 1) % RING_BYTES;
         out[n++] = c;
         if (c == '\n') {
+            ring_lines--;
             break;
         }
     }
-
-    ring_lines--;
 
     return n;
 }
@@ -124,16 +137,22 @@ take_line(char *out, uint32_t max)
  * request the other thread accepted.
  */
 static void
-reply_line(sys_thread_id_t peer)
+reply_line(sys_thread_id_t peer, uint32_t want)
 {
     sys_msg_t reply;
     fs_reply_t *rep;
+    uint32_t max;
 
     memset(&reply, 0, sizeof(reply));
     rep = (fs_reply_t *)reply.inline_data;
     rep->fr_status = SYS_OK;
+    max = SYS_IPC_INLINE_BYTES - sizeof(*rep);
+    if (want < max) {
+        max = want;
+    }
+
     rep->fr_length = take_line((char *)&reply.inline_data[sizeof(*rep)],
-      SYS_IPC_INLINE_BYTES - sizeof(*rep));
+      max);
     reply.inline_len = sizeof(*rep) + rep->fr_length;
 
     (void)sys_msg_reply(peer, &reply);
@@ -149,6 +168,7 @@ static void
 rx_thread(void *arg)
 {
     uint64_t seen = 0;
+    int after_cr = 0;
 
     (void)arg;
 
@@ -177,10 +197,24 @@ rx_thread(void *arg)
             }
 
             if (c == '\r' || c == '\n') {
+                /*
+                 * A terminal sends CR and a pipe sends LF, so both end
+                 * a line, and a terminal that sends CR LF must not end
+                 * two. The second half of a pair is dropped rather than
+                 * delivered as an empty line.
+                 */
+                if (c == '\n' && after_cr) {
+                    after_cr = 0;
+                    continue;
+                }
+                after_cr = (c == '\r');
+
                 put("\r\n", 2);
-                ring_put('\n');
-                ring_lines++;
+                if (ring_put('\n')) {
+                    ring_lines++;
+                }
             } else if (c == 0x7f || c == 0x08) {
+                after_cr = 0;
                 /*
                  * Erase, which needs the ring to give a byte back. It can
                  * only take back what has not been read, and a newline
@@ -195,6 +229,7 @@ rx_thread(void *arg)
                     }
                 }
             } else if (c >= 0x20 && c < 0x7f) {
+                after_cr = 0;
                 ring_put((char)c);
                 uart_putc((char)c);
             }
@@ -209,7 +244,7 @@ rx_thread(void *arg)
 
         if (waiting && ring_lines > 0) {
             waiting = 0;
-            reply_line(waiting_peer);
+            reply_line(waiting_peer, waiting_want);
         }
     }
 }
@@ -261,7 +296,7 @@ main(void)
         switch (req->fr_op) {
         case FS_OP_READ:
             if (ring_lines > 0) {
-                reply_line(peer);
+                reply_line(peer, req->fr_length);
                 continue;
             }
             /*
@@ -270,14 +305,28 @@ main(void)
              * and is the whole of what this milestone claims.
              */
             waiting_peer = peer;
+            waiting_want = req->fr_length;
             waiting = 1;
             continue;
 
-        case FS_OP_WRITE:
-            put((const char *)&msg.inline_data[sizeof(*req)],
-              req->fr_length);
+        case FS_OP_WRITE: {
+            /*
+             * Bounded by what arrived rather than by what the request
+             * claims. The length is a number a program chose, and the
+             * bytes behind it are only as many as the message carried.
+             */
+            uint32_t n = req->fr_length;
+            uint32_t have = msg.inline_len > sizeof(*req)
+              ? msg.inline_len - sizeof(*req) : 0;
+
+            if (n > have) {
+                n = have;
+            }
+            put((const char *)&msg.inline_data[sizeof(*req)], n);
             rep->fr_status = SYS_OK;
-            rep->fr_length = req->fr_length;
+            rep->fr_length = n;
+            break;
+        }
             break;
 
         case FS_OP_CLOSE:

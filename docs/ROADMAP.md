@@ -740,7 +740,7 @@ client that will never be answered waits for ever. Section 12.1
 describes a timeout on a rendezvous and the operation has no field for
 one; that is a gap, and M7 is where cancellation and timeouts arrive.
 
-Three things this settled. **The two threads share state, and section
+Four things this settled. **The two threads share state, and section
 19.3 now says what protects it.** A driver that only programs a device
 needs nothing shared, and a driver that carries data has to move bytes
 from the thread that receives them to the thread that answers for them.
@@ -754,6 +754,20 @@ attempt kept one line and dropped what followed, which works for a
 person typing and loses everything after the first line of a pipe. A
 ring makes a burst and a keystroke the same thing to a reader, which
 is what a scripted session and a person both need.
+
+**A line longer than one reply broke the boundary between lines**,
+which reviewing it found and no check would have. The reply carries
+forty-eight bytes; a sixty-byte line returned forty-eight and the line
+count was decremented anyway, so the remainder stayed in the ring with
+nothing recording that it was there. The next read was held, and then
+answered with the tail of the line before it while the line the reader
+was actually waiting for sat behind it. A line stays counted until its
+newline has gone, so a partial read is finished before the next line
+starts. Three smaller repairs went with it: a newline whose byte was
+dropped by a full ring no longer counts as a line, a read is bounded by
+the length the client asked for rather than by what fits, and a write
+is bounded by what the message carried rather than by the length it
+claims. And CR LF from a terminal is one line ending rather than two.
 
 **The protocol numbering was reconciled here rather than in stage 6,**
 because a console that serves reads and writes cannot wait for it.
