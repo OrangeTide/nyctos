@@ -37,7 +37,13 @@ static char line[LINE_BYTES];
 static char *word[SYS_MAX_ARGS];
 
 /*
- * Split a line into words in place. Everything else a shell does to a line
+ * Split a line into words in place, and refuse a line with more words
+ * than a command can carry. Silently merging the ninth word into the
+ * eighth is the worst of the three options: the line looks accepted,
+ * and echo hides it by joining its arguments with the spaces that were
+ * lost, while any other program receives one argument that is three.
+ *
+ * Everything else a shell does to a line
  * is quoting, expansion and substitution, and none of it exists here.
  */
 static int
@@ -45,12 +51,15 @@ split(char *s, char **out, int max)
 {
     int n = 0;
 
-    while (*s != '\0' && n < max) {
+    for (;;) {
         while (*s == ' ' || *s == '\t') {
             *s++ = '\0';
         }
         if (*s == '\0') {
             break;
+        }
+        if (n == max) {
+            return -1;      /* more words than a command can carry */
         }
         out[n++] = s;
         while (*s != '\0' && *s != ' ' && *s != '\t') {
@@ -118,16 +127,20 @@ run(int argc, char **argv, int32_t *status)
     }
 
     if (sys_object_completion(child, &done) != SYS_OK) {
+        (void)sys_handle_close(child);
         return SYS_ERR_NO_MEMORY;
     }
     if (sys_fence_wait(done, SYS_COMPLETION_EXITED,
       SYS_DEADLINE_NEVER) != SYS_OK) {
+        (void)sys_handle_close(done);
+        (void)sys_handle_close(child);
         return SYS_ERR_INTERRUPTED;
     }
     if (sys_proc_status(child, status, &state) != SYS_OK) {
+        (void)sys_handle_close(done);
+        (void)sys_handle_close(child);
         return SYS_ERR_STALE;
     }
-
     (void)sys_handle_close(done);
     (void)sys_handle_close(child);
 
@@ -152,7 +165,29 @@ main(void)
             return -1;
         }
 
+        /*
+         * A line that filled the buffer did not end. What is left of
+         * it arrives as further reads, and running those as commands
+         * is what this did before: one long line became six, five of
+         * them nonsense that the shell reported as if a person had
+         * typed them.
+         */
+        if (n == (int)sizeof(line) - 1) {
+            while (n == (int)sizeof(line) - 1) {
+                n = readline(line, sizeof(line));
+                if (n < 0) {
+                    return -1;
+                }
+            }
+            printf("sh: line too long\n");
+            continue;
+        }
+
         argc = split(line, word, SYS_MAX_ARGS);
+        if (argc < 0) {
+            printf("sh: too many arguments\n");
+            continue;
+        }
         if (argc == 0) {
             continue;
         }

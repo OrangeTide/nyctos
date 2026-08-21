@@ -869,7 +869,7 @@ not one byte printed, which is the same evidence `greet` gave in stage
 6 and matters more here: a shell is the program with the most reason to
 have an ambient way out, and it has none.
 
-Three things this settled. **Arguments needed the operation, the record
+Four things this settled. **Arguments needed the operation, the record
 and the runtime.** `echo` exists to need them, and they arrive the way
 section 20.4 says: the loader places them in the child's memory, which
 at this tier is the process object, and the library copies them out
@@ -888,6 +888,18 @@ inline when there is not, which is section 25.5 read as a rule about
 the request rather than about the server. That is also the first
 evidence for the claim that anything speaking these messages is a
 filesystem, since the console now is one.
+
+**One read is not one line**, which reviewing it found by typing a long
+one. A read carries at most what fits in a message, so a line longer
+than forty-eight bytes arrives in pieces, and `readline` returned the
+first piece as though it were a line. The shell ran it as a command and
+then ran each remaining piece as another: one line became six, five of
+them nonsense reported as if a person had typed them. `readline` reads
+until it sees the end of a line now, and the shell says so when one
+does not fit. The same run found that a ninth word was silently merged
+into the eighth, which `echo` hid by joining its arguments with the
+spaces that had been lost; a line with more words than a command can
+carry is refused.
 
 **A failed spawn must not keep the handles it was given.** The shell
 duplicates its console and its directory for every child, and a
