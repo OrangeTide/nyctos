@@ -394,7 +394,7 @@ op_proc_status(struct proc *p, struct sys_op *op)
  * a program acknowledging one it was never given.
  */
 static sys_err_t
-op_irq_ack(struct proc *p, struct sys_op *op)
+op_irq_unmask(struct proc *p, struct sys_op *op)
 {
     void *obj;
     sys_err_t err;
@@ -405,7 +405,7 @@ op_irq_ack(struct proc *p, struct sys_op *op)
         return err;
     }
 
-    return irq_ack(obj);
+    return irq_unmask(obj);
 }
 sys_err_t
 sys_op_exec(struct sys_op *op)
@@ -443,8 +443,8 @@ sys_op_exec(struct sys_op *op)
     case SYS_OP_OBJECT_COMPLETION:
         err = op_object_completion(p, op);
         break;
-    case SYS_OP_IRQ_ACK:
-        err = op_irq_ack(p, op);
+    case SYS_OP_IRQ_UNMASK:
+        err = op_irq_unmask(p, op);
         break;
     case SYS_OP_PROC_STATUS:
         err = op_proc_status(p, op);

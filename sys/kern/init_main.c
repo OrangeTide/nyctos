@@ -966,7 +966,7 @@ console_checks(void)
       handle_insert(ht, irq_object(irq), SYS_OBJ_IRQ, SYS_RIGHT_IRQ,
         &h_irq), SYS_OK);
     expect("acknowledging one that is not masked",
-      run(SYS_OP_IRQ_ACK, h_irq, NULL, 0), SYS_ERR_INVALID_ARG);
+      run(SYS_OP_IRQ_UNMASK, h_irq, NULL, 0), SYS_ERR_INVALID_ARG);
 
     expect("a wait handle for its timeline",
       handle_insert(ht, tl, SYS_OBJ_TIMELINE, SYS_RIGHT_WAIT, &h_tl),
@@ -991,12 +991,22 @@ console_checks(void)
         }
         seen = tl->tl_value;
 
-        while (got < 3 && (ch = uart_getc()) >= 0) {
-            line[got++] = (char)ch;
+        /*
+         * Drained to empty rather than to the count wanted. A byte
+         * left in the device keeps it asserting, so the
+         * acknowledgement below unmasks a source that interrupts
+         * again at once, and that mask stays on with nothing left
+         * waiting to take it off. Wait, drain to empty, unmask, in
+         * that order, is the shape a driver has to have.
+         */
+        while ((ch = uart_getc()) >= 0) {
+            if (got < 3) {
+                line[got++] = (char)ch;
+            }
         }
 
         expect("acknowledging the interrupt",
-          run(SYS_OP_IRQ_ACK, h_irq, NULL, 0), SYS_OK);
+          run(SYS_OP_IRQ_UNMASK, h_irq, NULL, 0), SYS_OK);
     }
 
     line[3] = '\0';

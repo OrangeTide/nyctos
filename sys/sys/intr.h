@@ -88,7 +88,10 @@ void md_timer_disarm(void);
 /*
  * Bind an interrupt to a timeline. Section 13.2 has this take a handle
  * carrying SYS_RIGHT_SIGNAL; it is kernel-internal here because there is
- * no opcode for it, which is a gap in the design rather than a decision.
+ * still no opcode for attaching, which section 13.2 calls an omission
+ * rather than a decision. Unmasking is an operation, because a driver
+ * has to reach it; attaching is what section 19.2 wants the launcher to
+ * do, and here the launcher is the kernel.
  */
 sys_err_t irq_attach(unsigned int irq, struct timeline *tl);
 
@@ -118,7 +121,7 @@ sys_err_t irq_attach_handler(unsigned int irq, void (*fn)(void));
 struct irq;
 
 struct irq *irq_object(unsigned int irq);
-sys_err_t irq_ack(struct irq *ir);
+sys_err_t irq_unmask(struct irq *ir);
 
 /* Called from the trap path with interrupts already disabled by hardware. */
 void irq_dispatch(void);

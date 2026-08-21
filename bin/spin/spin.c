@@ -20,7 +20,14 @@
 
 #include <os/sys.h>
 
-#define SPINS   2000000u
+/*
+ * Two million iterations took sixteen milliseconds on both boards under
+ * emulation, against a timer armed one millisecond out, so the interrupt
+ * lands with an order of magnitude to spare. Ten million keeps that
+ * margin on a host fast enough to make two million disappear, and costs
+ * eighty milliseconds of boot to do it.
+ */
+#define SPINS   10000000u
 
 int
 main(void)

@@ -123,7 +123,7 @@ irq_attach_handler(unsigned int irq, void (*fn)(void))
  * how many it has seen.
  */
 sys_err_t
-irq_ack(struct irq *ir)
+irq_unmask(struct irq *ir)
 {
     intr_state_t s;
 

@@ -545,9 +545,11 @@ console and is the whole of what it claims.
   which is only the timer, is not, because that handler does finish with its
   device.
 - An interrupt as an object a program can hold: `SYS_OBJ_IRQ` filled in,
-  and `SYS_OP_IRQ_ACK` to unmask one through a handle carrying
-  `SYS_RIGHT_IRQ`. Attaching stays kernel-internal, per section 19.2's
-  preference for the launcher attaching rather than the driver.
+  and `SYS_OP_IRQ_UNMASK` behind a handle carrying `SYS_RIGHT_IRQ`. The
+  name follows section 26, which already lists `sys_irq_unmask()` without
+  saying anywhere what it is for. Attaching stays kernel-internal, per
+  section 19.2's preference for the launcher attaching rather than the
+  driver, and section 13.2 still calls the missing opcode an omission.
 
 *Check.* The kernel waits on the UART receive timeline, reads what
 arrived, acknowledges the interrupt, and repeats until three characters

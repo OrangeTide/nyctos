@@ -481,6 +481,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Naming | Handle-relative only. No global namespace, no absolute paths, no ambient root. |
 | Namespace handoff | Named directory handles passed at spawn, consumed by libc like `envp`. |
 | Interrupts | Disabled in kernel on Tier 0; enabled on Tier 2. |
+| Interrupt handoff | The handler masks a source it cannot finish with; the driver drains and unmasks. |
 | Timers | Advance a timeline. No timer pulse. |
 | Timeouts | Absolute deadlines. Relative helpers live in libc. |
 | Exit and join | Exit advances a completion timeline; status read from the handle. |
@@ -1108,6 +1109,24 @@ that thread enables interrupts, and the nested handler overwrites the
 return state of the one still in progress. This is not a property of any
 particular controller: it follows from the handler being allowed to
 reschedule, and both ports had to learn it.
+
+**A handler cannot finish with a device it does not understand, so it
+silences the source instead.** A timer is finished with by reprogramming
+it, which is kernel code. A UART is finished with by reading the bytes
+out of it, which is driver logic and belongs in a process. The rule that
+resolves this is that an interrupt bound to a timeline is masked at the
+controller by the handler, before the advance, and stays masked until
+the driver calls `sys_irq_unmask()`. An interrupt bound to a kernel
+handler is not masked, because that handler does finish with its device.
+
+**The driver drains the device to empty before it unmasks.** A source
+with data still in it asserts again the moment it is unmasked, and the
+handler masks it again with nobody left waiting to take the mask off. A
+driver loop is therefore wait, drain to empty, unmask, in that order,
+and it is the order rather than the calls that is load-bearing.
+
+This is what `sys_irq_unmask()` is for, and it is the part of section 26
+the list already had without the reason being stated anywhere.
 
 The ISR runs no driver logic, takes no lock a thread can hold, and performs no allocation.
 
@@ -2771,6 +2790,13 @@ sys_err_t sys_pulse_send(sys_handle_t chan, const sys_pulse_t *pulse);
 sys_err_t sys_irq_attach(uint32_t irq, sys_handle_t timeline,
                          uint64_t increment, sys_handle_t *out_irq);
 sys_err_t sys_irq_detach(sys_handle_t irq);
+
+/* Unmask a source the handler masked. An interrupt bound to a timeline is
+ * masked at the controller before it is delivered, because the handler
+ * cannot finish with a device it does not understand; this is the driver
+ * saying it has drained the device and the source may assert again. Drain
+ * to empty first: unmasking with data still in the device interrupts
+ * again at once. Section 13.2. */
 sys_err_t sys_irq_unmask(sys_handle_t irq);
 
 /* ========================================================================== */
