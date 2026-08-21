@@ -1230,6 +1230,8 @@ interrupt at all. Without it, machine mode would need a trap handler
 whose only job is forwarding, which is the one piece of machine-mode
 code this port would otherwise have to keep. That it exists on this
 board was checked before the plan was written rather than after.
+
+**3. The kernel's own address space.** Translation on, with the kernel
 running through it.
 
 - Page tables built for the kernel: its image, the frames it allocates,
