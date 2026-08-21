@@ -54,6 +54,7 @@ struct pool *program_pool(void);
 
 void object_init(void);
 void object_report(void);
+void object_report_usage(void);
 void object_check(void);
 
 #endif /* _SYS_OBJECT_H_ */

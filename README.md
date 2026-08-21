@@ -20,36 +20,64 @@ context at its own priority, with no worker pool anywhere. It is kept
 deliberately separable, because it is novel enough to be worth being wrong
 about.
 
-**Roughly half the kernel exists.** `docs/design.md` describes the intended
-system and says which half that is. Nothing in it has been measured. The
-gap between what is described and what runs is deliberate rather than
-hidden, and it narrows one stage at a time.
+**Roughly half the kernel exists, and there is enough userland to talk
+to it.** `docs/design.md` describes the intended system and says which
+half that is. Two figures have been obtained and both are footprints
+rather than speeds; nothing has been measured for time. The gap between
+what is described and what runs is deliberate rather than hidden, and it
+narrows one stage at a time.
 
 ## Status
 
-**Milestone 1 is done.** A client process, handed a single connection when
-it is created, walks that connection to a file and reads the file from a
-server running as a different process. Nothing on that path is inside the
-kernel except the message passing.
+**Milestone 3 is done: there is a shell.** It reads a line from a console
+driver that is an ordinary process, starts what the line names, waits on
+its completion timeline, and reports the status.
+
+```
+$ echo one two three
+one two three
+$ cat motd
+served from outside the kernel
+$ cat nothing
+cat: nothing: no such file
+[3]
+```
+
+`cat` reads through a filesystem server and prints through a console
+service, and both speak the protocol of section 25. That is the first
+evidence for the claim that a filesystem here is a protocol rather than a
+layer: the console is one.
 
 Underneath it: static object pools, threads and the context switch, a
 strict-priority scheduler with priority inheritance, per-process handle
-tables with rights, the operation entry point, timelines, interrupts,
-timers with absolute deadlines, and process creation with explicit handle
-inheritance. All of it runs on AArch64 and RISC-V64 from one source, with
-output identical apart from the banner.
+tables with rights, the operation entry point, timelines, interrupts on a
+controller per board, timers with absolute deadlines, programs loaded from
+a boot archive into user mode, exit and join over completion timelines,
+spawn and thread creation as operations a program can call, and a C
+library whose input and output reach a connection the process was handed
+rather than a hole in the capability model. All of it runs on AArch64 and
+RISC-V64 from one source.
+
+`make check` feeds a recorded session to the machine twice, once paced
+like a person typing and once as a burst like a pipe, and compares the
+transcript against a recorded one. The transcript is identical on both
+architectures.
 
 What does not exist: the MMU and everything resting on it, driver cohorts,
-multicore, per-process namespaces, and the submission engine. No user code
-has run, so the trap is still unexercised from the outside.
+multicore, per-process namespaces, the submission engine, and everything
+to do with death. Nothing is reaped, nothing is cancelled, and a
+rendezvous carries no deadline, so a server that stops answering hangs its
+client rather than failing it.
 
-Nothing has been measured. The one figure obtained is a footprint rather
-than a speed: kernel object memory is 319936 bytes, of which 274432 is
-thread stacks and 34560 is process handle tables. Ninety-six per cent of
-it is two arrays sized by two constants, which is section 8 of the design
-holding and also saying the defaults are wrong for a small target.
+Two figures have been obtained, and both are footprints rather than
+speeds. Kernel object memory is 365248 bytes, almost all of it thread
+stacks and process handle tables sized by two constants, which is section
+8 of the design holding and also saying the defaults are wrong for a small
+target. And having no wait-set costs this system one thread, the console's
+second, at eight and a half kilobytes with both its stacks; a system with
+N devices that must stay responsive while serving pays N of them.
 
-`docs/ROADMAP.md` says what the milestone answered, what it cost, and what
+`docs/ROADMAP.md` says what each milestone answered, what it cost, and what
 it left untested.
 
 ## Why it is shaped this way
@@ -271,27 +299,46 @@ make ARCH=riscv64 run     # riscv64
 ```
 
 Both run QEMU with `-nographic`, so console output appears directly in your
-terminal. Expected output:
+terminal. The boot checks run, and then the shell:
 
 ```
-Nyctos/aarch64 kernel booting
-pools: invariants ok
-pools:
-  proc: 16 slots, 8 bytes each, 384 bytes total
-  thread: 64 slots, 8 bytes each, 1536 bytes total
-  channel: 32 slots, 8 bytes each, 768 bytes total
-  grant: 64 slots, 8 bytes each, 1536 bytes total
-  timeline: 64 slots, 8 bytes each, 1536 bytes total
-  timer: 32 slots, 8 bytes each, 768 bytes total
-  program: 8 slots, 8 bytes each, 192 bytes total
-  kernel object memory: 6720 bytes
-stage 1 complete
+$ echo one two three
+one two three
+$ cat motd
+served from outside the kernel
+$ exit
 ```
 
-The kernel then powers the machine off, so QEMU exits on its own. A panic
-does the same, having printed why. On riscv64 the exit status distinguishes
-them, because the SiFive test finisher carries a code; PSCI `SYSTEM_OFF` on
-aarch64 does not, so there the console is the only signal.
+`exit` leaves the shell, after which the kernel powers the machine off and
+QEMU exits on its own. A panic does the same, having printed why. On
+riscv64 the exit status distinguishes them, because the SiFive test
+finisher carries a code; PSCI `SYSTEM_OFF` on aarch64 does not, so there
+the console is the only signal.
+
+Two of the boot checks want input before the shell does: the console
+service reads two lines and `greet` reads one, so a session starts by
+typing three lines of anything.
+
+## Running the recorded session
+
+```sh
+make check                  # aarch64
+make ARCH=riscv64 check     # riscv64
+```
+
+`make check` feeds [share/check/session.txt](share/check/session.txt) to
+the machine twice and takes about half a minute. Once paced at two seconds
+a line, which is how a person types, and the transcript from the shell's
+banner onward is compared against
+[share/check/expected.txt](share/check/expected.txt). Then once as a
+burst, which is how a pipe delivers a whole session before anything has
+asked for any of it, where what is checked is that the machine reaches the
+end without a panic.
+
+Both are run because they catch different things. A console that lets a
+completed line block whatever is typed behind it passes the paced session
+and hangs the burst one; a receive buffer too small for a burst fails
+both.
 
 ## Memory map notes
 
@@ -301,8 +348,11 @@ aarch64 does not, so there the console is the only signal.
 | riscv64 | `0x80000000` | QEMU `virt` RAM base; with `-bios none` the reset vector jumps straight here | 16550A @ `0x10000000` |
 
 `USER_LOAD_ADDR` in [share/mk/nyc.own.mk](share/mk/nyc.own.mk) must agree
-with the userland linker script in `share/ld/`. Nothing loads userland yet,
-so the two only have to agree again when the first process is spawned.
+with the userland linker script in `share/ld/`. Every program that can
+be live at the same time as another also needs its own slot above that
+base, assigned by hand in the program's own Makefile, because there is
+no MMU and a second copy of an image would be loaded over the first.
+Section 15.2's loader is what removes the restriction.
 
 ## Coding style
 

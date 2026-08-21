@@ -484,6 +484,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Interrupt handoff | The handler masks a source it cannot finish with; the driver drains and unmasks. |
 | Spawn priority | A child may not outrank its parent. `SYS_PRIO_INHERIT` asks for the caller's own. |
 | Spawn and images | One live process per image while loading is a copy to a fixed address. |
+| Read replies | Into the buffer the client supplied, inline when it supplied none. The request decides, not the server. |
 | Timers | Advance a timeline. No timer pulse. |
 | Timeouts | Absolute deadlines. Relative helpers live in libc. |
 | Exit and join | Exit advances a completion timeline; status read from the handle. |

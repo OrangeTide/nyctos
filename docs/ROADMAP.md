@@ -10,8 +10,8 @@ This document says what exists, what is being built, and in what order.
 `design.md` says what the system is meant to be. `PROPOSALS.md` holds ideas
 that are not being built.
 
-Milestones 1 and 2 are done. What each settled is recorded in sections 4
-and 5 below, and section 4 of `design.md` carries the design decisions
+Milestones 1, 2 and 3 are done. What each settled is recorded in sections
+4, 5 and 6 below, and section 4 of `design.md` carries the design decisions
 they forced; everything not yet reached by one of them is still a guess.
 
 **There are no dates here.** There is no evidence on which to base one. Each
@@ -53,6 +53,13 @@ initialises its object pools, reports them, and powers the machine off.
   sender priority, and priority inheritance along a bounded chain.
   Connections, handle transfer by move, process spawn with explicit
   handle inheritance, and a filesystem server. Stage 8.
+- Programs, loaded from a boot archive and running in user mode, with
+  the startup record of section 20.4 and the trap edge under them.
+  Stage 9.
+- A shell and the machinery it needs: exit and join over completion
+  timelines, spawn and thread creation as operations, an interrupt
+  controller on each board, a console driver, and a C library that
+  reaches it through a handle. Milestone 3, in eight stages of its own.
 
 **Milestone 1 is done.** A client process, handed one connection at spawn,
 walks it to a file, reads the file, and prints it. The file is served by a
@@ -101,23 +108,48 @@ consequence of `SYS_MAX_THREADS` and `SYS_KSTACK_SIZE` and of nothing a
 program can do. It does say the defaults are guesses, and that sixty-four
 threads at four kilobytes is not a Tier 0 configuration.
 
-This shares its build system and its architecture support with the design,
-and little else. There is no IPC and no MMU. Only the
-real-time band of section 11.2 exists: the proportional tree below the
-floor is unbuilt, so the floor sits at zero and the whole priority range is
-real-time. Section 11.2 names that as the degenerate case, and it is. The object pools exist but the objects themselves are still empty
-structures, filled in by the stage that gives each type its behaviour.
+**Milestone 3 is done.** There is a shell. It reads a line from a console
+driver that is an ordinary process, starts what the line names, waits on
+its completion timeline, and reports the status:
 
-**The banner demo is gone.** `/bin/motd`, the host tool that built its RAM
-disk, the in-kernel VFS and file table, and the loader that ran it have all
-been deleted. They were how the tree proved a system call worked before
-there was anything else, and the vertical slice replaces that path rather
-than extending it. Nothing in the kernel contradicts the design now.
+```
+$ echo one two three
+one two three
+$ cat motd
+served from outside the kernel
+$ cat nothing
+cat: nothing: no such file
+[3]
+```
 
-The C library and the userland linker scripts stay. Nothing links against
-them yet, and they are kept building so that they do not rot before the
-stage that spawns the first process needs them.
+`cat` reads through the same filesystem server milestone 1 built, and
+prints through a console service that speaks the same protocol, which is
+the first evidence for section 25's claim that a filesystem is a protocol
+rather than a layer: the console is one.
 
+Underneath it: exit advancing a completion timeline and a joiner reading
+the status (10.4), spawn and thread creation as operations, an interrupt
+controller on each board with the UART routed to it, user mode taking
+interrupts for the first time, a console driver with two threads and the
+line discipline in it, and a C library whose `read` and `write` reach a
+connection the process was handed rather than a hole in the capability
+model.
+
+`make check` feeds a recorded session to the machine twice, once paced
+like a person typing and once as a burst like a pipe, and compares the
+transcript. It runs on both architectures and the transcript is identical
+between them.
+
+What does not exist: the MMU and everything resting on it, driver cohorts,
+multicore, per-process namespaces, the submission engine, and anything at
+all to do with death. Nothing is reaped, nothing is cancelled, and a
+rendezvous carries no deadline, so a server that stops answering hangs its
+client rather than failing it.
+
+The one figure this milestone owed is what having no wait-set costs. It is
+one thread, the console's second, at eight and a half kilobytes with both
+its stacks. A system with N devices that must stay responsive while
+serving pays N of them, which is linear and, at this size, cheap.
 ---
 
 ## 2. How This Plan Is Organised
@@ -956,62 +988,85 @@ cannot be run twice the same way.
 **Met, on both architectures.** `make check` is the second half and
 takes half a minute.
 
-*Would falsify.* **Whether one thread per event source is affordable.** A shell
-and a console service both want to wait on several things at once, and section
-19.3 forces two threads and no shared state where one would have done. This is
-the first real pressure on the decision to have no wait-set, and the first
-honest evidence for or against the trigger written into `PROPOSALS.md`. The
-evidence has to be a number rather than an impression: threads in the running
-system, and bytes of stack under them, reported the way M2 reported the
-connection pool. A thread costs 4320 bytes of kernel object memory before it
-has a user stack, and 4096 of that is the kernel stack of section 8.
+*Would falsify.* Both are now answered.
 
-**Whether an interrupt that the handler cannot finish with breaks section
-13.2.** The rule that an ISR advances a timeline and returns was written
-against a timer, which the kernel does finish with. A UART is the first
-device where finishing means reading data, and the answer this milestone
-gives is that the handler silences the source instead. If masking and
-acknowledging turns out to need per-device knowledge in the kernel after
-all, then section 13.2 is understating what an interrupt costs, and the
-driver model of section 19 is what pays.
+**Whether one thread per event source is affordable.** It is, at this size,
+and the milestone can say what it cost rather than that it felt acceptable.
+The decision to have no wait-set cost this system exactly one thread: the
+console's, which waits on the interrupt while the other waits on the
+channel. Every other thread in the running system has a reason of its own.
+That one thread is 4352 bytes of kernel object memory, 4096 of which is the
+kernel stack of section 8, and 4096 more of user stack in the driver's own
+`.bss`, so eight and a half kilobytes for the whole of what the decision
+costs here.
 
-*Watch for.* **The check has to be able to fail, and interactive input is
-the easiest place yet to write one that cannot.** A session fed from a pipe
-arrives faster than a person types and with no gaps, so a driver that drops
-input while no reader is waiting passes the interactive demonstration and
-fails the scripted one, or the reverse. Decide which behaviour is correct,
-write it down, and then break the driver and watch the check fail.
+The projection is what matters, and it is linear rather than alarming: a
+system with N devices that must stay responsive while serving pays N such
+threads. The shell will pay one more the day it wants to notice a keystroke
+while a child runs, which it does not yet. Nothing in this milestone came
+close to the stacks being unaffordable, so the trigger in `PROPOSALS.md`
+stays untripped, and the entry there stands unchanged.
+
+The whole run reports 36 of 64 threads and 21 of 32 processes at their high
+water, with 147456 bytes of kernel stack under those threads. That number
+is mostly the boot checks rather than the system: nothing is reaped before
+M7, so every program any check ever started still holds a slot at the end.
+The system that is actually running when the shell exits is the console at
+two threads, the filesystem at one, the shell at one, and the kernel's boot
+thread.
+
+**Whether an interrupt the handler cannot finish with breaks section 13.2.**
+It does not, and the fix needed no device knowledge in the kernel. A handler
+that cannot finish with a device masks the source at the controller instead,
+and the driver unmasks it when it has drained the device. The kernel knows
+which interrupt to mask and nothing else about the UART; `md_irq_mask` is
+one register write on each port. Section 13.2 and section 26 now carry the
+rule and the obligation that goes with it, which is that a driver drains to
+empty before it unmasks.
+
+*What it cost.* Five operations, an interrupt controller per port, a
+console driver, a shell, three utilities and a formatter. Kernel object
+memory went from 325568 bytes to 365248, and all but 256 of that increase
+is the process pool doubling because a boot that spawns seventeen times ran
+out of sixteen slots.
+
+*What it left untested.* A second reader of the console, which the driver
+would answer by displacing the first. A client that dies inside a
+rendezvous, which nothing here can produce. Anything at all about
+recovering from a driver that stops answering: the machine hangs, because a
+rendezvous carries no deadline, and section 12.1 describes a timeout the
+operation has no field for. All three are M7's.
+
+*Watch for.* Every one of these happened, which is why they are kept.
+
+**The check has to be able to fail, and interactive input is the easiest
+place yet to write one that cannot.** It was. Breaking the recorded
+transcript on purpose did not break the check, because the transcript was
+full of carriage returns and the edit matched nothing.
 
 **An interrupt that nothing quiets is a machine that stops responding, not
-a machine that panics.** It is the failure mode with the least information
-attached in the whole milestone, and stage 2 is where it will happen. A
-handler that is entered again before its first invocation returns has
-overwritten the state it would have returned through, so there is nothing
-to print afterwards.
+a machine that panics.** It was, in stage 2, exactly as predicted: the
+machine wedged in the handler before printing anything.
 
-**Two writers to one UART.** The kernel's polled console and the driver's
-transmit path both reach the same device registers, and interleaving them
-produces output that looks like a bug in whatever printed second. This is
-the cost of section 22.4 being permanent, and it is paid with a rule rather
-than with a lock.
+**Two writers to one UART.** Settled with a rule in section 22.4 rather
+than a lock, and the driver was the one that had to change, since the
+kernel had always written a carriage return before a line feed and the
+driver had not.
 
 **A shell blocks on two things in sequence and must never block on both.**
-Reading a line and joining a child are separate waits, and the blocking
-invariant of section 5 is satisfied only as long as they stay separate. The
-first shell that wants to notice a keystroke while a child runs is the one
-that needs a second thread, and noticing that is part of the answer this
-milestone owes.
+It does, and it never wanted to.
 
-**Every process is watched or the machine halts.** Stage 1 made an
-unclaimed exit fatal, which is right while the kernel spawns everything and
-wrong the moment a shell spawns a child and gets bored. The shell joins
-every child it starts, and the day it does not, that is the rule it meets.
+**Every process is watched or the machine halts.** The rule got better
+rather than being met: holding a handle to a process is what claims its
+exit now, rather than a flag the kernel set on its own behalf.
 
-*Size.* Medium to large. Mostly userland, but five new operations, an
-interrupt controller per port, and user mode taking interrupts for the first
-time are not userland at all, and the original estimate of medium predated
-all of it.
+*Size.* Medium to large, and spent. Eight stages, of which the two that
+were not userland at all, the interrupt controllers and user mode taking
+interrupts, were the ones the plan moved earliest and the ones that cost
+least in the end.
 
+**Done.** Section 6 says what it answered, what it cost, and what it left
+untested.
 ### M4. The MMU
 
 **Tier 2: the memory contract enforced rather than trusted.**

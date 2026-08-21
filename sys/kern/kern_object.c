@@ -167,3 +167,25 @@ object_check(void)
 
     cnputs("pools: invariants ok\n");
 }
+
+/*
+ * What the run actually used, as opposed to what it was configured for.
+ *
+ * Milestone 3 exists partly to answer whether one thread per event source
+ * is affordable, and section 8's answer to every question like it is a
+ * number rather than an impression. The high-water mark is the number: it
+ * says how many of each object were live at once, which is what a build
+ * has to size for, and nothing here is reaped before M7 so it is also the
+ * total ever created.
+ */
+void
+object_report_usage(void)
+{
+    const struct pool *threads = thread_pool();
+    const struct pool *procs = proc_pool();
+
+    cnprintf("used at most: %u of %u threads, %u of %u processes\n",
+      threads->highwater, threads->count, procs->highwater, procs->count);
+    cnprintf("  kernel stacks under those threads: %u bytes\n",
+      (unsigned int)(threads->highwater * SYS_KSTACK_SIZE));
+}

@@ -1943,6 +1943,7 @@ kernel_main(void)
     cnputs("a shell, which is what all of it was for\n");
     shell_checks(h_console, h_fs_root);
 
+    object_report_usage();
     cnputs("stage 9 complete\n");
     machine_halt(0);
 }
