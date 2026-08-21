@@ -843,7 +843,7 @@ child_join(struct child *c)
       sizeof(sargs)) != SYS_OK) {
         panic("join %s: no status", c->c_proc->p_name);
     }
-    if (sargs.out_state != SYS_STATUS_EXITED) {
+    if (sargs.out_state != SYS_STATE_EXITED) {
         panic("join %s: released by a completion that had not happened",
           c->c_proc->p_name);
     }
@@ -894,7 +894,7 @@ completion_checks(void)
     memset(&sargs, 0, sizeof(sargs));
     expect("the status of a process still running",
       run(SYS_OP_PROC_STATUS, c.c_handle, &sargs, sizeof(sargs)), SYS_OK);
-    if (sargs.out_state != SYS_STATUS_LIVE) {
+    if (sargs.out_state != SYS_STATE_RUNNING) {
         panic("completion: a running process reported itself exited");
     }
 

@@ -671,17 +671,29 @@ The kernel's own process has many threads, so the first kernel thread
 to exit ends it, and the machine halts on an exit nobody was waiting
 for within the first few checks.
 
-Two things this settled. **A check that goes through the library cannot
+Three things this settled. **A check that goes through the library cannot
 test what the library fixes up.** The misaligned stack this refuses was
 first checked by calling `sys_thread_create` with a misaligned array,
 which succeeded, because aligning the region it is handed is part of
 what the wrapper does. The check builds a descriptor and submits it
 instead, which is the operation and not the convenience over it.
 
-And **a thread costs 4320 bytes of kernel object memory before it has a
+**A thread costs 4320 bytes of kernel object memory before it has a
 user stack**, 4096 of which is the kernel stack of section 8. That is
 the first real number for the question this milestone exists to answer,
 and the program's own stacks are 4096 bytes each on top of it.
+
+And **the state a status call reports had been invented twice**, which
+reviewing it found. Section 26 has named `SYS_STATE_READY`,
+`SYS_STATE_RUNNING`, `SYS_STATE_BLOCKED` and `SYS_STATE_EXITED` all
+along; stage 1 added `SYS_STATUS_LIVE` and `SYS_STATUS_EXITED` beside
+them, and the second of those had a different value from the constant
+it shared most of a name with, so a program written against the
+document would have read a live thread as an exited one. This is the
+third time the same shape of mistake has cost something: the V7 stubs
+in M2, the interrupt acknowledgement in stage 2, and now this. A thread
+reports which of the three live states it is in rather than a flag,
+since the states exist and the kernel knows them.
 
 **5. The console.** One process, two threads, holding the UART.
 

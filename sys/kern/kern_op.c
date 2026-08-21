@@ -384,7 +384,13 @@ op_proc_status(struct proc *p, struct sys_op *op)
     target = obj;
 
     args->out_code = target->p_exited ? target->p_exit_code : 0;
-    args->out_state = target->p_exited ? SYS_STATUS_EXITED : SYS_STATUS_LIVE;
+    /*
+     * A process is running or it has finished. The three live states
+     * belong to a thread, and a process with several threads is in all
+     * of them at once.
+     */
+    args->out_state = target->p_exited ? SYS_STATE_EXITED
+      : SYS_STATE_RUNNING;
 
     return SYS_OK;
 }
@@ -517,8 +523,21 @@ op_thread_status(struct proc *p, struct sys_op *op)
     t = obj;
 
     args->out_code = t->t_state == THREAD_DEAD ? t->t_exit_code : 0;
-    args->out_state = t->t_state == THREAD_DEAD ? SYS_STATUS_EXITED
-      : SYS_STATUS_LIVE;
+
+    switch (t->t_state) {
+    case THREAD_RUNNING:
+        args->out_state = SYS_STATE_RUNNING;
+        break;
+    case THREAD_BLOCKED:
+        args->out_state = SYS_STATE_BLOCKED;
+        break;
+    case THREAD_DEAD:
+        args->out_state = SYS_STATE_EXITED;
+        break;
+    default:
+        args->out_state = SYS_STATE_READY;
+        break;
+    }
 
     return SYS_OK;
 }

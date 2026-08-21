@@ -300,9 +300,11 @@ sys_thread_create(void (*fn)(void *), void *arg, void *stack, size_t size,
     }
 
     /*
-     * The pair lives at the top of the new stack, and the stack pointer
-     * starts below it. Nothing else can hold it: there is no allocator in
-     * this library, and a static would make two threads share one.
+     * The pair lives at the top of the new stack and the stack pointer
+     * starts at it, which is safe because both ports push below the
+     * stack pointer and neither writes above it. Nothing else can hold
+     * the pair: there is no allocator in this library, and a static
+     * would make two threads share one.
      */
     top = ((uintptr_t)stack + size) & ~(uintptr_t)15;
     top -= sizeof(*start);

@@ -425,15 +425,18 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
  * its own kernel stack. It drops to user mode at the entry the creator
  * named, on the stack the creator supplied, and does not come back.
  *
- * The three values travel in the thread object rather than as arguments
- * because md_thread_init carries one word to the trampoline and this needs
- * three. The thread is the obvious place to put them: they are what it is.
+ * The three values travel in the thread object rather than as an
+ * argument, and the thread reads them off itself rather than being
+ * handed them: md_thread_init carries one word to a trampoline, this
+ * needs three, and the thread is where they belong anyway because they
+ * are what it is.
  */
 static void
 proc_thread_start(void *arg)
 {
-    struct thread *t = arg;
+    struct thread *t = thread_current();
 
+    (void)arg;
     enter_user(t->t_uentry, (void *)t->t_uarg, t->t_ustack);
 }
 
@@ -470,13 +473,6 @@ proc_thread_create(struct proc *p, uintptr_t entry, uintptr_t uarg,
     t->t_uentry = entry;
     t->t_uarg = uarg;
     t->t_ustack = stack;
-
-    /*
-     * The trampoline needs the thread it is running as, and md_thread_init
-     * has already written the argument into the saved frame, so it is
-     * rewritten here rather than passed above.
-     */
-    md_thread_init(t, proc_thread_start, t);
 
     err = handle_insert(&p->p_handles, t, SYS_OBJ_THREAD,
       SYS_RIGHT_WAIT | SYS_RIGHT_STAT, &h);

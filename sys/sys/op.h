@@ -334,9 +334,18 @@ typedef struct sys_op_exit_args {
  */
 #define SYS_COMPLETION_EXITED    1
 
-/* The state a status call reports, per section 10.6. */
-#define SYS_STATUS_LIVE          0
-#define SYS_STATUS_EXITED        1
+/*
+ * The state a status call reports, per section 10.6, with the names and
+ * the values section 26 already gives them. They were SYS_STATUS_LIVE
+ * and SYS_STATUS_EXITED here, invented alongside a specification that
+ * had already named them, and the second one had a different value from
+ * the constant it shared most of a name with. A program written against
+ * the document would have read a live thread as an exited one.
+ */
+#define SYS_STATE_READY          0
+#define SYS_STATE_RUNNING        1
+#define SYS_STATE_BLOCKED        2
+#define SYS_STATE_EXITED         3
 
 /*
  * Argument structure for SYS_OP_OBJECT_COMPLETION. target names the
@@ -349,7 +358,7 @@ typedef struct sys_op_completion_args {
 /* Argument structure for SYS_OP_PROC_STATUS. target names the process. */
 typedef struct sys_op_status_args {
     int32_t         out_code;       /* written by the kernel */
-    uint32_t        out_state;      /* written by the kernel: SYS_STATUS_* */
+    uint32_t        out_state;      /* written by the kernel: SYS_STATE_* */
 } sys_op_status_args_t;
 
 /*

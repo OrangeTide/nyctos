@@ -50,7 +50,7 @@ join(sys_handle_t child, int32_t *out_code)
     if (sys_proc_status(child, out_code, &state) != SYS_OK) {
         return ERR_STATUS;
     }
-    if (state != SYS_STATUS_EXITED) {
+    if (state != SYS_STATE_EXITED) {
         return ERR_STATUS;
     }
 

@@ -37,6 +37,7 @@ static unsigned char stack_b[STACK_BYTES] __attribute__((aligned(16)));
 #define ERR_STATUS      -3
 #define ERR_CODE        -4
 #define ERR_ALIGN       -5
+#define ERR_PRIO        -6
 
 /* What each of the two threads exits with, so neither can be mistaken for
  * the other or for a status nobody wrote. */
@@ -59,7 +60,7 @@ join_thread(sys_handle_t th, int32_t *out_code)
     if (sys_thread_status(th, out_code, &state) != SYS_OK) {
         return ERR_STATUS;
     }
-    if (state != SYS_STATUS_EXITED) {
+    if (state != SYS_STATE_EXITED) {
         return ERR_STATUS;
     }
 
@@ -158,6 +159,17 @@ main(void)
         DBG_PUTS("threads: a misaligned stack was accepted");
         return ERR_ALIGN;
     }
+    /*
+     * Above its own priority, which is the same rule spawn applies and
+     * for the same reason: a thread is time on the core, and a program
+     * cannot give itself more of it than it was given.
+     */
+    if (sys_thread_create(thread_a, NULL, stack_a, STACK_BYTES, 31, &th)
+      != SYS_ERR_PERM_DENIED) {
+        DBG_PUTS("threads: a thread above its own priority was accepted");
+        return ERR_PRIO;
+    }
+
     DBG_PUTS("threads: one thread waiting while another waits");
     if (sys_thread_create(thread_a, NULL, stack_a, STACK_BYTES,
       SYS_PRIO_INHERIT, &th) != SYS_OK) {
