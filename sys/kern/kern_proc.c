@@ -11,6 +11,18 @@
 #include <sys/thread.h>
 #include <sys/timeline.h>
 
+/* Copy a name into the process, truncating rather than running over. */
+static void
+proc_set_name(struct proc *p, const char *name)
+{
+    uint32_t i;
+
+    for (i = 0; i < SYS_IMAGE_NAME_MAX && name[i] != '\0'; i++) {
+        p->p_name[i] = name[i];
+    }
+    p->p_name[i] = '\0';
+}
+
 struct proc *
 proc_bootstrap(const char *name)
 {
@@ -22,8 +34,8 @@ proc_bootstrap(const char *name)
     }
 
     p->p_id = pool_id_of(proc_pool(), p);
-    p->p_name = name;
-    timeline_init(&p->p_completion, name);
+    proc_set_name(p, name);
+    timeline_init(&p->p_completion, p->p_name);
     p->p_nthreads = 0;
     handle_table_init(&p->p_handles);
 
@@ -43,12 +55,38 @@ proc_current(void)
 }
 
 /*
+ * Fill in a process object that has just come out of the pool. Split
+ * out because the operation of section 10.1 allocates and initialises
+ * in a different order from the kernel's own spawn: it has to be able
+ * to give the slot back.
+ */
+static void
+proc_init(struct proc *p, const char *name)
+{
+    p->p_id = pool_id_of(proc_pool(), p);
+    proc_set_name(p, name);
+    p->p_entry = 0;
+    timeline_init(&p->p_completion, p->p_name);
+    p->p_nthreads = 0;
+    p->p_exit_code = 0;
+    p->p_exited = false;
+    p->p_watched = false;
+    handle_table_init(&p->p_handles);
+
+    memset(&p->p_startup, 0, sizeof(p->p_startup));
+    memset(p->p_ns, 0, sizeof(p->p_ns));
+    p->p_startup.version = SYS_STARTUP_VERSION;
+    p->p_startup.ns_words = SYS_NS_WORDS;
+    p->p_startup.ns = (uintptr_t)p->p_ns;
+}
+
+/*
  * The part of spawning that does not care whether the child is a kernel
  * thread or a loaded program: a process, a handle table, and the startup
  * record of section 20.4 filled in from the parent's handles.
  */
 static struct proc *
-proc_create(const char *name, const struct proc_ns_spec *ns, uint32_t nns)
+proc_create(const char *name, const sys_ns_spec_t *ns, uint32_t nns)
 {
     struct handle_table *parent = &proc_current()->p_handles;
     struct proc *p;
@@ -63,21 +101,7 @@ proc_create(const char *name, const struct proc_ns_spec *ns, uint32_t nns)
         panic("spawn %s: process pool exhausted", name);
     }
 
-    p->p_id = pool_id_of(proc_pool(), p);
-    p->p_name = name;
-    p->p_entry = 0;
-    timeline_init(&p->p_completion, name);
-    p->p_nthreads = 0;
-    p->p_exit_code = 0;
-    p->p_exited = false;
-    p->p_watched = false;
-    handle_table_init(&p->p_handles);
-
-    memset(&p->p_startup, 0, sizeof(p->p_startup));
-    memset(p->p_ns, 0, sizeof(p->p_ns));
-    p->p_startup.version = SYS_STARTUP_VERSION;
-    p->p_startup.ns_words = SYS_NS_WORDS;
-    p->p_startup.ns = (uintptr_t)p->p_ns;
+    proc_init(p, name);
 
     /*
      * Moved rather than copied, per section 7.4. The parent gives up what
@@ -104,7 +128,7 @@ proc_create(const char *name, const struct proc_ns_spec *ns, uint32_t nns)
 
 struct proc *
 proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
-  const struct proc_ns_spec *ns, uint32_t nns)
+  const sys_ns_spec_t *ns, uint32_t nns)
 {
     struct proc *p = proc_create(name, ns, nns);
     struct thread *t;
@@ -146,7 +170,7 @@ proc_user_start(void *arg)
  */
 struct proc *
 proc_spawn_image(const char *image, uint8_t prio,
-  const struct proc_ns_spec *ns, uint32_t nns)
+  const sys_ns_spec_t *ns, uint32_t nns)
 {
     const struct boot_member *m = boot_lookup(image);
     struct proc *p;
@@ -167,10 +191,21 @@ proc_spawn_image(const char *image, uint8_t prio,
     return p;
 }
 
+/*
+ * Undertake to look at how this process finished. Taking its
+ * completion timeline says so, and so does holding a handle to it, and
+ * both go through here.
+ */
+void
+proc_watch(struct proc *p)
+{
+    p->p_watched = true;
+}
+
 struct timeline *
 proc_completion(struct proc *p)
 {
-    p->p_watched = true;
+    proc_watch(p);
 
     return &p->p_completion;
 }
@@ -212,4 +247,117 @@ proc_thread_exited(struct proc *p, int32_t code)
     if (timeline_signal(&p->p_completion, SYS_COMPLETION_EXITED) != SYS_OK) {
         panic("proc %s: completion advanced twice", p->p_name);
     }
+}
+
+/*
+ * Spawn on behalf of a program, per section 10.1 and section 20.4.
+ *
+ * The difference from proc_spawn_image is not what it builds but what it
+ * does when it cannot. A kernel caller assembling the system has nowhere
+ * to report a failure and nothing to do about one, so it panics. A caller
+ * that is a program gets an error and decides for itself, and it has to
+ * get that error with nothing half built behind it.
+ *
+ * The order below is the whole of how that is arranged. Everything that
+ * can fail happens before anything that cannot be undone: the arguments,
+ * the image, and every handle the caller named are checked first; then the
+ * two pool allocations and the parent's handle, each of which unwinds what
+ * came before it; and only then are the handles moved and the image
+ * copied, neither of which can fail once the checks above have passed.
+ */
+sys_err_t
+proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
+  const sys_ns_spec_t *ns, uint32_t nns, sys_handle_t *out_handle)
+{
+    const struct boot_member *m;
+    struct proc *p;
+    struct thread *t;
+    sys_handle_t h;
+    sys_err_t err;
+    uint32_t i;
+
+    if (nns > SYS_NS_MAX || (nns > 0 && ns == NULL)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    if (prio > SYS_PRIO_MAX) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    /*
+     * A child may not outrank its parent. Nothing in section 11 says who
+     * chooses a priority, and the answer that follows from the rest of the
+     * design is that authority flows downward: a program that could start
+     * something above itself would be granting time it was not given, and
+     * with no quantum anywhere a thread that does not block owns the core
+     * until it stops. The kernel spawning at boot is not this path.
+     */
+    if (prio > thread_current()->t_base_prio) {
+        return SYS_ERR_PERM_DENIED;
+    }
+
+    m = boot_lookup(image);
+    if (m == NULL) {
+        return SYS_ERR_NO_ENT;
+    }
+
+    /*
+     * Every handle checked before any of them moves. A caller that names
+     * one it does not hold, or one it may not transfer, is refused with
+     * its table exactly as it was.
+     */
+    for (i = 0; i < nns; i++) {
+        if (ns[i].id == SYS_NS_NONE) {
+            return SYS_ERR_INVALID_ARG;
+        }
+        err = handle_lookup(&parent->p_handles, ns[i].handle, SYS_OBJ_NONE,
+          SYS_RIGHT_TRANSFER, NULL);
+        if (err != SYS_OK) {
+            return err;
+        }
+    }
+
+    p = pool_alloc(proc_pool(), NULL);
+    if (p == NULL) {
+        return SYS_ERR_NO_MEMORY;
+    }
+    proc_init(p, image);
+
+    t = thread_alloc(p->p_name, prio, proc_user_start, &p->p_startup);
+    if (t == NULL) {
+        pool_free(proc_pool(), p->p_id);
+        return SYS_ERR_NO_MEMORY;
+    }
+
+    /*
+     * The parent's handle before the handover, because it is the last
+     * thing that can fail and unwinding a moved handle would mean putting
+     * authority back where it came from with no way to say whether that
+     * is where it started.
+     */
+    err = handle_insert(&parent->p_handles, p, SYS_OBJ_PROCESS,
+      SYS_RIGHT_WAIT | SYS_RIGHT_STAT, &h);
+    if (err != SYS_OK) {
+        thread_set_proc(t, NULL);
+        pool_free(thread_pool(), t->t_id);
+        pool_free(proc_pool(), p->p_id);
+        return err;
+    }
+
+    for (i = 0; i < nns; i++) {
+        if (handle_move(&parent->p_handles, &p->p_handles, ns[i].handle,
+          &p->p_ns[i * 2 + 1]) != SYS_OK) {
+            panic("spawn %s: handover failed after it was checked", image);
+        }
+        p->p_ns[i * 2] = (sys_handle_t)ns[i].id;
+    }
+
+    p->p_entry = boot_load(m);
+    thread_set_proc(t, p);
+    sched_ready(t);
+
+    if (out_handle != NULL) {
+        *out_handle = h;
+    }
+
+    return SYS_OK;
 }

@@ -407,6 +407,50 @@ op_irq_unmask(struct proc *p, struct sys_op *op)
 
     return irq_unmask(obj);
 }
+
+/*
+ * Create a process, per section 10.1, with the handles the caller names
+ * moved into it, per section 20.4.
+ *
+ * The name is copied out of the caller's structure and terminated here
+ * rather than trusted to be terminated there. Nothing else in this
+ * interface is a string, and the one that is arrives from a program.
+ */
+static sys_err_t
+op_proc_spawn(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_spawn_args *args;
+    char image[SYS_IMAGE_NAME_MAX + 1];
+    sys_handle_t h = SYS_HANDLE_INVALID;
+    uint32_t prio;
+    sys_err_t err;
+
+    args = (struct sys_op_spawn_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    prio = args->prio;
+    if (prio == SYS_PRIO_INHERIT) {
+        prio = thread_current()->t_base_prio;
+    }
+    if (prio > SYS_PRIO_MAX) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    memcpy(image, args->image, SYS_IMAGE_NAME_MAX);
+    image[SYS_IMAGE_NAME_MAX] = '\0';
+
+    err = proc_spawn_op(p, image, (uint8_t)prio,
+      (const sys_ns_spec_t *)args->ns, args->nns, &h);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    args->out_handle = h;
+
+    return SYS_OK;
+}
 sys_err_t
 sys_op_exec(struct sys_op *op)
 {
@@ -442,6 +486,9 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_OBJECT_COMPLETION:
         err = op_object_completion(p, op);
+        break;
+    case SYS_OP_PROC_SPAWN:
+        err = op_proc_spawn(p, op);
         break;
     case SYS_OP_IRQ_UNMASK:
         err = op_irq_unmask(p, op);

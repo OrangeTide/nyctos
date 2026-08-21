@@ -26,19 +26,17 @@
 
 #include <stdbool.h>
 
-/*
- * What the caller of proc_spawn() says a child should be given: an
- * identifier and a handle, per entry. The handle is moved rather than
- * copied, so this is a list of things the parent is giving up.
- */
-struct proc_ns_spec {
-    sys_ns_id_t     id;
-    sys_handle_t    handle;
-};
-
 struct proc {
     sys_id_t            p_id;
-    const char         *p_name;
+    /*
+     * Copied, not pointed at. The name a spawn operation carries lives
+     * in the caller'''s argument structure, which is a stack frame in a
+     * program, and the kernel says this name again when the process
+     * exits. A pointer would be dangling by then, which is what it was
+     * the first time this ran: the exit line printed sixteen bytes of
+     * whatever the frame had become.
+     */
+    char                p_name[SYS_IMAGE_NAME_MAX + 1];
     struct handle_table p_handles;
 
     /*
@@ -92,7 +90,7 @@ struct proc *proc_current(void);
  * process that can do nothing at all.
  */
 struct proc *proc_spawn(const char *name, uint8_t prio,
-  void (*entry)(void *), const struct proc_ns_spec *ns, uint32_t nns);
+  void (*entry)(void *), const sys_ns_spec_t *ns, uint32_t nns);
 
 /*
  * The same, for a program in the boot archive rather than a function in
@@ -100,7 +98,7 @@ struct proc *proc_spawn(const char *name, uint8_t prio,
  * thread is started that drops into it.
  */
 struct proc *proc_spawn_image(const char *image, uint8_t prio,
-  const struct proc_ns_spec *ns, uint32_t nns);
+  const sys_ns_spec_t *ns, uint32_t nns);
 
 /*
  * The completion timeline of section 10.4, and the record that someone
@@ -111,6 +109,16 @@ struct proc *proc_spawn_image(const char *image, uint8_t prio,
  *
  * It cannot fail. The timeline is part of the process, per section 8.
  */
+/*
+ * Spawn on behalf of a program. Everything that can fail happens before
+ * anything that cannot be undone, so a caller that gets an error back
+ * has a table and a set of pools exactly as they were.
+ */
+sys_err_t proc_spawn_op(struct proc *parent, const char *image,
+  uint8_t prio, const sys_ns_spec_t *ns, uint32_t nns,
+  sys_handle_t *out_handle);
+
+void proc_watch(struct proc *p);
 struct timeline *proc_completion(struct proc *p);
 
 /*

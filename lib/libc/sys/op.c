@@ -177,3 +177,86 @@ sys_debug_write(const void *buf, uint32_t len)
     return submit(SYS_OP_DEBUG_WRITE, SYS_HANDLE_INVALID, &args,
       sizeof(args));
 }
+
+sys_err_t
+sys_proc_spawn(const char *image, uint32_t prio, const sys_ns_spec_t *ns,
+  uint32_t nns, sys_handle_t *out_proc)
+{
+    sys_op_spawn_args_t args;
+    sys_err_t err;
+    uint32_t i;
+
+    memset(&args, 0, sizeof(args));
+
+    /*
+     * Copied rather than pointed at, and truncated here rather than in the
+     * kernel: the field is the interface, so a name too long to fit is the
+     * caller's problem and is refused as one.
+     */
+    for (i = 0; i < SYS_IMAGE_NAME_MAX && image[i] != '\0'; i++) {
+        args.image[i] = image[i];
+    }
+    if (i == SYS_IMAGE_NAME_MAX && image[i] != '\0') {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    args.prio = prio;
+    args.nns = nns;
+    args.ns = (uintptr_t)ns;
+
+    err = submit(SYS_OP_PROC_SPAWN, SYS_HANDLE_INVALID, &args,
+      sizeof(args));
+    if (out_proc != NULL) {
+        *out_proc = err == SYS_OK ? args.out_handle : SYS_HANDLE_INVALID;
+    }
+
+    return err;
+}
+
+sys_err_t
+sys_object_completion(sys_handle_t obj, sys_handle_t *out_timeline)
+{
+    sys_op_completion_args_t args;
+    sys_err_t err;
+
+    memset(&args, 0, sizeof(args));
+
+    err = submit(SYS_OP_OBJECT_COMPLETION, obj, &args, sizeof(args));
+    if (out_timeline != NULL) {
+        *out_timeline = err == SYS_OK ? args.out_handle
+          : SYS_HANDLE_INVALID;
+    }
+
+    return err;
+}
+
+sys_err_t
+sys_proc_status(sys_handle_t proc, int32_t *out_code, uint32_t *out_state)
+{
+    sys_op_status_args_t args;
+    sys_err_t err;
+
+    memset(&args, 0, sizeof(args));
+
+    err = submit(SYS_OP_PROC_STATUS, proc, &args, sizeof(args));
+    if (out_code != NULL) {
+        *out_code = args.out_code;
+    }
+    if (out_state != NULL) {
+        *out_state = args.out_state;
+    }
+
+    return err;
+}
+
+sys_err_t
+sys_fence_wait(sys_handle_t timeline, uint64_t value, uint64_t deadline)
+{
+    sys_op_fence_args_t args;
+
+    memset(&args, 0, sizeof(args));
+    args.value = value;
+    args.deadline = deadline;
+
+    return submit(SYS_OP_FENCE_WAIT, timeline, &args, sizeof(args));
+}

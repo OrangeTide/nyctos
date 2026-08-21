@@ -135,3 +135,11 @@ boot_report(void)
           (unsigned long)m[i].bm_size, (unsigned long)m[i].bm_load);
     }
 }
+
+/*
+ * The interface says how long an image name may be and the archive format
+ * says how long one is. They are the same number, and a build where they
+ * are not would truncate a name in one place and not the other.
+ */
+_Static_assert(SYS_IMAGE_NAME_MAX == BOOT_NAME_MAX,
+  "the spawn interface and the boot archive must agree on name length");

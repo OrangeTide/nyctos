@@ -577,8 +577,8 @@ watching the interrupt arrive anyway. It is set for the state to be
 intended rather than accidental, and the AArch64 side is where the
 actual change was.
 
-**3. Spawn as an operation.** What a shell needs, and no more of section
-24 than that.
+**3. Spawn as an operation.** *Built.* What a shell needs, and no more
+of section 24 than that.
 
 - `SYS_OP_PROC_SPAWN`: an image name, a priority, and a namespace array the
   caller assembles. It returns a handle to the child carrying the rights the
@@ -593,10 +593,29 @@ actual change was.
   programs live at once need two slots, and that is what keeps this
   milestone's shell to one child at a time. Section 15.2 removes it.
 
-*Check.* A program spawns a program, joins it, and reports its status,
-with both of them ordinary members of the boot archive. Spawning with a
-handle the caller does not hold is refused and the caller is still able to
-use the handles it does hold.
+*Check.* `spawner` starts `status`, joins it, and reports what it read,
+with both of them ordinary members of the boot archive and every
+operation on that path taken from user mode. It then makes four spawns
+that must fail, and spawns again: a handle it does not hold, a handle it
+holds and may not transfer, an image that is not in the archive, and a
+priority above its own. The status it exits with is the child's if all
+of them held and a negative code of its own if any did not, which is how
+a program reports a number before there is any formatting in libc.
+
+Removing the pre-validation panics with the handover failing after it
+was checked, which is the partly built child the ordering exists to
+prevent. Removing the priority rule ends with the spawner exiting -7 and
+the kernel naming it.
+
+Two things this settled. **A child may not outrank its parent**, which
+section 11 did not say and now does: priority is authority over the core
+and a program cannot hand out time it was not given. `SYS_PRIO_INHERIT`
+goes with it, because a program has no operation that tells it its own
+priority and the common case is starting something alongside itself.
+And **the process name has to be copied**, which running it found: the
+name in a spawn argument is a stack frame in a program, and the kernel
+says that name again when the process exits, so the first run printed
+sixteen bytes of whatever the frame had become.
 
 **4. Threads a program creates.** Nothing new is being decided here, only
 reached: section 10.2 already says the creator supplies the stack.

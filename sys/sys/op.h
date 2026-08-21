@@ -138,6 +138,18 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_IRQ_UNMASK        16
 
 /*
+ * Create a process from a member of the boot archive, per section 10.1,
+ * with the handles the caller names moved into it, per section 20.4.
+ *
+ * The image is named rather than handed over, and that is a deviation
+ * section 24.1 is explicit about: the kernel parses no image format and
+ * root walks the archive. What is missing is a process able to load one,
+ * which is the loader of section 15.2, so the walk stays inside the
+ * kernel until M4 and this operation is where the debt shows.
+ */
+#define SYS_OP_PROC_SPAWN        17
+
+/*
  * Ends the calling thread. It does not return, so it has no status to
  * write and no place to write one.
  */
@@ -166,7 +178,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             17
+#define SYS_OP_COUNT             18
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the
@@ -286,6 +298,15 @@ typedef struct sys_op_fence_args {
     uint64_t        deadline;
 } sys_op_fence_args_t;
 
+/*
+ * A deadline that never arrives, and one that has already passed. They
+ * are here rather than with the clock because a deadline is part of
+ * every blocking operation and a program has to be able to name one
+ * without knowing anything else about time.
+ */
+#define SYS_DEADLINE_NOW        ((uint64_t)0)
+#define SYS_DEADLINE_NEVER      (~(uint64_t)0)
+
 /* Argument structure for SYS_OP_THREAD_EXIT. target is unused. */
 typedef struct sys_op_exit_args {
     int32_t         code;
@@ -318,6 +339,39 @@ typedef struct sys_op_status_args {
     int32_t         out_code;       /* written by the kernel */
     uint32_t        out_state;      /* written by the kernel: SYS_STATUS_* */
 } sys_op_status_args_t;
+
+/*
+ * The longest name a boot archive member can have, which is what an image
+ * is named by until there is a filesystem to load one from. It matches
+ * BOOT_NAME_MAX, and the kernel asserts that it still does.
+ */
+#define SYS_IMAGE_NAME_MAX      16
+
+/*
+ * Ask for the priority the caller is already running at. A program does
+ * not know its own number and has no operation that would tell it, and
+ * the common case is a parent starting something alongside itself. Zero
+ * cannot mean this, because zero is a priority.
+ */
+#define SYS_PRIO_INHERIT        0xffffffffu
+
+/*
+ * Argument structure for SYS_OP_PROC_SPAWN. target is unused: there is
+ * nothing to hold a handle to until a loader exists.
+ *
+ * The name is inline rather than a pointer because it is short, bounded,
+ * and the only string in the interface. ns points at nns entries the
+ * caller assembled; every one of them is moved out of the caller's table,
+ * and a caller that names a handle it does not hold is refused before any
+ * of them move.
+ */
+typedef struct sys_op_spawn_args {
+    char            image[SYS_IMAGE_NAME_MAX];
+    uint32_t        prio;
+    uint32_t        nns;
+    uintptr_t       ns;             /* sys_ns_spec_t *, nns of them */
+    sys_handle_t    out_handle;     /* written by the kernel */
+} sys_op_spawn_args_t;
 
 /*
  * Argument structure for SYS_OP_DEBUG_WRITE. target is unused: this takes

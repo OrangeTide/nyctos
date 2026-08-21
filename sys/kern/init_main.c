@@ -1058,6 +1058,35 @@ user_interrupt_checks(void)
     cnprintf("    %lu interrupts taken while a program was running\n",
       md_user_irqs - before);
 }
+
+/*
+ * Spawn as an operation, per section 10.1: a program starting a program.
+ *
+ * Everything this exercises happens on the far side of the trap edge. The
+ * kernel starts one program and reads one status; what that program did
+ * with the four refusals it is also checking is reported by the status it
+ * exits with, which is the child's if all of them held and a negative code
+ * of its own if any did not.
+ *
+ * The status is seven rather than zero on purpose. Zero is what an
+ * unwritten field holds.
+ */
+static void
+spawn_checks(void)
+{
+    struct child c;
+    int32_t code;
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("spawner", 20, NULL, 0));
+    sched_undefer();
+
+    code = child_join(&c);
+    cnprintf("    spawner reported %d\n", code);
+    if (code != 7) {
+        panic("spawn: the spawner exited %d, expected the child's 7", code);
+    }
+}
 static void
 fs_server(void *arg)
 {
@@ -1216,7 +1245,7 @@ slice_checks(void)
 {
     struct proc *p = proc_current();
     struct sys_op_connect_args cargs;
-    struct proc_ns_spec ns[1];
+    sys_ns_spec_t ns[1];
     struct thread *srv;
     struct child c;
     sys_handle_t root;
@@ -1395,7 +1424,7 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
   bool expect_send_block)
 {
     struct pool *conns = connection_pool();
-    struct proc_ns_spec ns[1];
+    sys_ns_spec_t ns[1];
     struct proc *p;
     struct child c;
     int32_t code;
@@ -1481,7 +1510,7 @@ user_slice(void)
 {
     struct proc *self = proc_current();
     struct sys_op_connect_args cargs;
-    struct proc_ns_spec ns[1];
+    sys_ns_spec_t ns[1];
     struct channel *ch;
     sys_handle_t h_recv, root, root2;
     sys_err_t err;
@@ -1613,6 +1642,9 @@ kernel_main(void)
 
     cnputs("user mode: a program that can be interrupted\n");
     user_interrupt_checks();
+
+    cnputs("spawn: a program that starts a program\n");
+    spawn_checks();
 
     cnputs("the slice again, with both halves in user mode\n");
     user_slice();

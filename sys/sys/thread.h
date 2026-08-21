@@ -220,6 +220,14 @@ void thread_bootstrap(const char *name, uint8_t prio, struct proc *p);
  */
 void thread_set_proc(struct thread *t, struct proc *p);
 
+/*
+ * Build a thread. thread_alloc returns NULL when the pool is empty and
+ * thread_create panics, which is the difference between an operation a
+ * program invoked and a kernel caller assembling the system.
+ */
+struct thread *thread_alloc(const char *name, uint8_t prio,
+  void (*entry)(void *), void *arg);
+
 struct thread *thread_create(const char *name, uint8_t prio,
   void (*entry)(void *), void *arg);
 

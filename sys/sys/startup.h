@@ -75,6 +75,21 @@ typedef enum sys_ns_id {
 } sys_ns_id_t;
 
 /*
+ * One entry of what a parent hands a child: an identifier and the handle
+ * it names. The handle is moved rather than copied, per section 7.4, so
+ * an array of these is a list of what the parent is giving up.
+ *
+ * The table the child reads is flat words, and this is not that. A
+ * parent writes pairs and the kernel flattens them, because the array a
+ * caller builds is easier to get right when the two halves cannot drift
+ * apart in it.
+ */
+typedef struct sys_ns_spec {
+    sys_ns_id_t     id;
+    sys_handle_t    handle;
+} sys_ns_spec_t;
+
+/*
  * The record itself. argv and envp are here because section 20.4 says the
  * namespace arrives alongside them, and a record that has to grow a field
  * later is a record every loader has to be taught twice. They are zero

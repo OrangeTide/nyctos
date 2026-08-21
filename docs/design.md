@@ -482,6 +482,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Namespace handoff | Named directory handles passed at spawn, consumed by libc like `envp`. |
 | Interrupts | Disabled in kernel on Tier 0; enabled on Tier 2. |
 | Interrupt handoff | The handler masks a source it cannot finish with; the driver drains and unmasks. |
+| Spawn priority | A child may not outrank its parent. `SYS_PRIO_INHERIT` asks for the caller's own. |
 | Timers | Advance a timeline. No timer pulse. |
 | Timeouts | Absolute deadlines. Relative helpers live in libc. |
 | Exit and join | Exit advances a completion timeline; status read from the handle. |
@@ -810,6 +811,17 @@ Sections 9 and 12 say what makes a thread runnable. This section says which runn
 Priorities run from `0` (lowest) to `SYS_PRIO_MAX`. The default configuration provides 256 levels on Tier 2 and 32 on Tier 0, where a 32-bit ready bitmap makes the highest-priority lookup a single count-leading-zeros instruction.
 
 Within one priority level the policy is FIFO. Round-robin is available per-thread as an opt-in with an explicit quantum, because round-robin at the same priority introduces timing variance that analysis must account for and should be a decision rather than a default.
+
+**A process may not spawn a child that outranks it.** Nothing else in
+this section is a permission question, and this one is, because
+priority is authority over the core: with round-robin off by default a
+thread that does not block runs until it stops, so a program able to
+start something above itself would be handing out time nobody gave it.
+The rule is the same one section 7.4 applies to handles, which is that
+authority flows downward and attenuates. A caller that wants the
+priority it is already running at asks for `SYS_PRIO_INHERIT` rather
+than naming a number, because a program has no operation that tells it
+its own. The kernel starting the first processes is not this path.
 
 ### 11.2 The Dispatch Decision
 

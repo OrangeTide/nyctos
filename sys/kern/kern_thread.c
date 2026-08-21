@@ -194,8 +194,15 @@ thread_bootstrap(const char *name, uint8_t prio, struct proc *p)
     current = t;
 }
 
+/*
+ * The same, returning NULL rather than panicking when the pool is
+ * empty. A kernel caller building the system has nowhere to report
+ * that and nothing useful to do about it, but an operation a program
+ * invoked has both: it returns SYS_ERR_NO_MEMORY and the program
+ * decides.
+ */
 struct thread *
-thread_create(const char *name, uint8_t prio, void (*entry)(void *),
+thread_alloc(const char *name, uint8_t prio, void (*entry)(void *),
   void *arg)
 {
     struct thread *t;
@@ -204,7 +211,7 @@ thread_create(const char *name, uint8_t prio, void (*entry)(void *),
 
     t = pool_alloc(thread_pool(), NULL);
     if (t == NULL) {
-        panic("thread %s: pool exhausted", name);
+        return NULL;
     }
 
     t->t_id = pool_id_of(thread_pool(), t);
@@ -220,6 +227,19 @@ thread_create(const char *name, uint8_t prio, void (*entry)(void *),
     *t->t_guard = THREAD_GUARD;
 
     md_thread_init(t, entry, arg);
+
+    return t;
+}
+
+struct thread *
+thread_create(const char *name, uint8_t prio, void (*entry)(void *),
+  void *arg)
+{
+    struct thread *t = thread_alloc(name, prio, entry, arg);
+
+    if (t == NULL) {
+        panic("thread %s: pool exhausted", name);
+    }
 
     return t;
 }

@@ -4,6 +4,6 @@
 
 include $(TOPDIR)/share/mk/nyc.own.mk
 
-SUBDIR := fs_server fs_client fs_batch spin
+SUBDIR := fs_server fs_client fs_batch spin status spawner
 
 include $(TOPDIR)/share/mk/nyc.subdir.mk

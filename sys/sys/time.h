@@ -22,6 +22,7 @@
 #define _SYS_TIME_H_
 
 #include <sys/op.h>
+#include <sys/op.h>
 #include <sys/pool.h>
 
 #include <stdbool.h>
@@ -33,8 +34,8 @@ struct timeline;
 /* Absolute instants on the monotonic timebase, in hardware ticks. */
 typedef uint64_t sys_time_t;
 
-#define SYS_DEADLINE_NOW    ((sys_time_t)0)
-#define SYS_DEADLINE_NEVER  (~(sys_time_t)0)
+/* Named in sys/op.h, because a deadline is part of every blocking
+ * operation and a program names one without knowing about clocks. */
 
 struct timer {
     sys_id_t         tm_id;

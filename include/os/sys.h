@@ -63,6 +63,46 @@ sys_err_t sys_chan_connect(sys_handle_t chan, uint64_t cookie,
   uint32_t rights, sys_handle_t *out_conn);
 
 /*
+ * Create a process from a member of the boot archive, per section 10.1.
+ *
+ * Every handle in ns is moved out of the caller's table, per section 7.4,
+ * so this is a list of what the caller is giving up. A caller that names a
+ * handle it does not hold, or one it may not transfer, is refused with
+ * nothing moved and no process built.
+ *
+ * The child may not outrank the caller. Priority is authority over the
+ * core, and a program cannot hand out what it was not given.
+ *
+ * The handle returned carries SYS_RIGHT_WAIT and SYS_RIGHT_STAT, which is
+ * what joining and reading a status need and nothing else.
+ */
+sys_err_t sys_proc_spawn(const char *image, uint32_t prio,
+  const sys_ns_spec_t *ns, uint32_t nns, sys_handle_t *out_proc);
+
+/*
+ * The completion timeline of a thread or a process, per section 10.4.
+ * Waiting on it is joining, and it cannot fail for want of a pool slot
+ * because the timeline is part of the object.
+ */
+sys_err_t sys_object_completion(sys_handle_t obj,
+  sys_handle_t *out_timeline);
+
+/*
+ * The exit code, which a monotonic counter cannot carry, and the state
+ * that says whether the code means anything yet.
+ */
+sys_err_t sys_proc_status(sys_handle_t proc, int32_t *out_code,
+  uint32_t *out_state);
+
+/*
+ * Block until a timeline reaches value, or until the absolute deadline
+ * passes. SYS_DEADLINE_NEVER waits without one, and a deadline already
+ * passed is a poll.
+ */
+sys_err_t sys_fence_wait(sys_handle_t timeline, uint64_t value,
+  uint64_t deadline);
+
+/*
  * Ends the calling thread and does not return. Section 10.4 makes exit
  * advance a completion timeline a joiner reads; none of that exists yet,
  * so this stops the thread and records the status and nothing more.
