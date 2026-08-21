@@ -320,9 +320,11 @@ op_thread_exit(struct proc *p, struct sys_op *op)
  * completion could fake its own exit, and whatever supervises it would
  * reclaim it while it was still running.
  *
- * Holding a handle to the object is the whole of the authority required.
- * Anything that can name a process can already be told when it stops, and
- * a right for that would attenuate nothing a handle does not.
+ * SYS_RIGHT_WAIT is what this asks for, and spawn is what hands it out.
+ * A parent that passes a child on to something that should be able to
+ * hear about the exit but not to read its status duplicates the handle
+ * with one right and not the other, which is section 7.2 working
+ * normally rather than a rule about processes.
  */
 static sys_err_t
 op_object_completion(struct proc *p, struct sys_op *op)
@@ -337,12 +339,13 @@ op_object_completion(struct proc *p, struct sys_op *op)
         return SYS_ERR_INVALID_ARG;
     }
 
-    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_PROCESS, 0, &obj);
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_PROCESS,
+      SYS_RIGHT_WAIT, &obj);
     if (err == SYS_OK) {
         tl = proc_completion(obj);
     } else if (err == SYS_ERR_WRONG_TYPE) {
-        err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_THREAD, 0,
-          &obj);
+        err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_THREAD,
+          SYS_RIGHT_WAIT, &obj);
         if (err != SYS_OK) {
             return err;
         }
@@ -373,7 +376,8 @@ op_proc_status(struct proc *p, struct sys_op *op)
         return SYS_ERR_INVALID_ARG;
     }
 
-    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_PROCESS, 0, &obj);
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_PROCESS,
+      SYS_RIGHT_STAT, &obj);
     if (err != SYS_OK) {
         return err;
     }

@@ -82,14 +82,15 @@ sys_err_t sys_proc_spawn(const char *image, uint32_t prio,
 /*
  * The completion timeline of a thread or a process, per section 10.4.
  * Waiting on it is joining, and it cannot fail for want of a pool slot
- * because the timeline is part of the object.
+ * because the timeline is part of the object. Requires SYS_RIGHT_WAIT.
  */
 sys_err_t sys_object_completion(sys_handle_t obj,
   sys_handle_t *out_timeline);
 
 /*
  * The exit code, which a monotonic counter cannot carry, and the state
- * that says whether the code means anything yet.
+ * that says whether the code means anything yet. Requires
+ * SYS_RIGHT_STAT on the handle, which is what spawn hands out.
  */
 sys_err_t sys_proc_status(sys_handle_t proc, int32_t *out_code,
   uint32_t *out_state);

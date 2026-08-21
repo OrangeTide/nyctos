@@ -3,6 +3,7 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
+#include <sys/bootarch.h>
 #include <sys/handle.h>
 #include <sys/object.h>
 #include <sys/sched.h>
@@ -249,6 +250,37 @@ proc_thread_exited(struct proc *p, int32_t code)
     }
 }
 
+
+/*
+ * Is something still running at this address?
+ *
+ * There is one address per image and no MMU, so a process is where its
+ * member was linked to be. Scanning the pool is sixteen comparisons and
+ * needs no bookkeeping that could go stale; a process that has exited does
+ * not count, because nothing of it is still executing even though its slot
+ * is kept until M7 reaps it.
+ */
+static bool
+image_in_use(uintptr_t load)
+{
+    struct pool *pool = proc_pool();
+    uint32_t i;
+
+    for (i = 0; i < pool->count; i++) {
+        sys_id_t id = pool_id_at(pool, i);
+        const struct proc *q;
+
+        if (id == SYS_ID_INVALID) {
+            continue;
+        }
+        q = pool_lookup(pool, id);
+        if (q != NULL && q->p_entry == load && !q->p_exited) {
+            return true;
+        }
+    }
+
+    return false;
+}
 /*
  * Spawn on behalf of a program, per section 10.1 and section 20.4.
  *
@@ -269,6 +301,7 @@ sys_err_t
 proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
   const sys_ns_spec_t *ns, uint32_t nns, sys_handle_t *out_handle)
 {
+    sys_ns_spec_t spec[SYS_NS_MAX];
     const struct boot_member *m;
     struct proc *p;
     struct thread *t;
@@ -295,9 +328,34 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
         return SYS_ERR_PERM_DENIED;
     }
 
+    /*
+     * The array is copied before it is looked at, and everything below
+     * reads the copy. Section 23.2 has validation happen once before
+     * anything executes, and once means once: the caller's array is
+     * memory a program owns, so a check against it and a use of it are
+     * two reads of something that can change between them the moment a
+     * process has a second thread.
+     */
+    for (i = 0; i < nns; i++) {
+        spec[i] = ns[i];
+    }
+
     m = boot_lookup(image);
     if (m == NULL) {
         return SYS_ERR_NO_ENT;
+    }
+
+    /*
+     * One live process per image, because there is one address for it.
+     * Loading copies the member to the address it was linked for, so a
+     * second copy of a program that is still running writes over its
+     * text and its data with no way to notice. The failure that made
+     * this worth refusing is that it looks fine: two short programs
+     * that never overlap in time both finish normally. Section 15.2's
+     * loader is what removes the restriction rather than the check.
+     */
+    if (image_in_use(m->bm_load)) {
+        return SYS_ERR_WOULDBLOCK;
     }
 
     /*
@@ -306,11 +364,11 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
      * its table exactly as it was.
      */
     for (i = 0; i < nns; i++) {
-        if (ns[i].id == SYS_NS_NONE) {
+        if (spec[i].id == SYS_NS_NONE) {
             return SYS_ERR_INVALID_ARG;
         }
-        err = handle_lookup(&parent->p_handles, ns[i].handle, SYS_OBJ_NONE,
-          SYS_RIGHT_TRANSFER, NULL);
+        err = handle_lookup(&parent->p_handles, spec[i].handle,
+          SYS_OBJ_NONE, SYS_RIGHT_TRANSFER, NULL);
         if (err != SYS_OK) {
             return err;
         }
@@ -344,11 +402,11 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
     }
 
     for (i = 0; i < nns; i++) {
-        if (handle_move(&parent->p_handles, &p->p_handles, ns[i].handle,
+        if (handle_move(&parent->p_handles, &p->p_handles, spec[i].handle,
           &p->p_ns[i * 2 + 1]) != SYS_OK) {
             panic("spawn %s: handover failed after it was checked", image);
         }
-        p->p_ns[i * 2] = (sys_handle_t)ns[i].id;
+        p->p_ns[i * 2] = (sys_handle_t)spec[i].id;
     }
 
     p->p_entry = boot_load(m);

@@ -10,8 +10,8 @@
  * programs from the boot archive by calling into the loader directly, so
  * nothing outside the kernel had ever created a process, and the shell of
  * stage 7 is the first thing that has to. What this checks is not that a
- * child runs, which stage 1 of milestone 2 settled, but that the operation
- * refuses what it should refuse and leaves the caller intact when it does.
+ * child runs, which milestone 2 settled, but that the operation refuses
+ * what it should refuse and leaves the caller intact when it does.
  *
  * It reports by exiting: the child's status if everything held, and a
  * distinct negative code otherwise, with a line on the debug console
@@ -30,23 +30,16 @@
 #define ERR_TRANSFER    -5
 #define ERR_NOENT       -6
 #define ERR_PRIO        -7
-#define ERR_AGAIN       -8
+#define ERR_LIVE        -8
+#define ERR_AGAIN       -9
 
-/*
- * Start the named image alongside this program, wait for it to finish, and
- * return its status. The priority is the caller's own, which is what a
- * parent starting a helper wants and what a program can ask for without
- * knowing its own number.
- */
+/* Wait for a child to finish and read what it exited with. */
 static int
-run(const char *image, int32_t *out_code, sys_handle_t *out_proc)
+join(sys_handle_t child, int32_t *out_code)
 {
-    sys_handle_t child, done;
+    sys_handle_t done;
     uint32_t state;
 
-    if (sys_proc_spawn(image, SYS_PRIO_INHERIT, NULL, 0, &child) != SYS_OK) {
-        return ERR_SPAWN;
-    }
     if (sys_object_completion(child, &done) != SYS_OK) {
         return ERR_JOIN;
     }
@@ -62,6 +55,30 @@ run(const char *image, int32_t *out_code, sys_handle_t *out_proc)
     }
 
     (void)sys_handle_close(done);
+
+    return 0;
+}
+
+/*
+ * Start the named image alongside this program and wait for it. The
+ * priority is the caller's own, which is what a parent starting a helper
+ * wants and what a program can ask for without knowing its own number.
+ */
+static int
+run(const char *image, int32_t *out_code, sys_handle_t *out_proc)
+{
+    sys_handle_t child;
+    int err;
+
+    if (sys_proc_spawn(image, SYS_PRIO_INHERIT, NULL, 0, &child) != SYS_OK) {
+        return ERR_SPAWN;
+    }
+
+    err = join(child, out_code);
+    if (err != 0) {
+        return err;
+    }
+
     if (out_proc != NULL) {
         *out_proc = child;
     } else {
@@ -75,7 +92,7 @@ int
 main(void)
 {
     sys_ns_spec_t ns[1];
-    sys_handle_t child;
+    sys_handle_t child, busy;
     int32_t code = 0;
     int err;
 
@@ -127,11 +144,42 @@ main(void)
     }
 
     /*
-     * And again, which is what makes the four refusals above mean
-     * something. A spawn that failed halfway would have taken a slot, a
-     * handle or both with it.
+     * An image that is already running. There is one address per image and
+     * no MMU, so a second copy is loaded over the first while it runs. The
+     * child is spawned and not yet joined here, which is the only state in
+     * which the question can be asked: it is runnable and has not started,
+     * because it is at this program's own priority and equal priority does
+     * not preempt.
      */
-    DBG_PUTS("spawner: four refusals, then the same spawn again");
+    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, &busy) != SYS_OK) {
+        return ERR_SPAWN;
+    }
+    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, NULL)
+      != SYS_ERR_WOULDBLOCK) {
+        DBG_PUTS("spawner: a second copy of a live image was accepted");
+        return ERR_LIVE;
+    }
+    err = join(busy, &code);
+    if (err != 0) {
+        return err;
+    }
+    (void)sys_handle_close(busy);
+
+    /*
+     * The same image again, now that the first has exited, and the one
+     * from the start of this program. Five refusals mean nothing if a
+     * spawn that failed took a slot, a handle or an address with it.
+     */
+    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, &busy) != SYS_OK) {
+        DBG_PUTS("spawner: the address stayed busy after the child exited");
+        return ERR_LIVE;
+    }
+    err = join(busy, &code);
+    if (err != 0) {
+        return err;
+    }
+
+    DBG_PUTS("spawner: five refusals, then the same spawns again");
     err = run("status", &code, NULL);
     if (err != 0) {
         return ERR_AGAIN;

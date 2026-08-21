@@ -595,27 +595,44 @@ of section 24 than that.
 
 *Check.* `spawner` starts `status`, joins it, and reports what it read,
 with both of them ordinary members of the boot archive and every
-operation on that path taken from user mode. It then makes four spawns
-that must fail, and spawns again: a handle it does not hold, a handle it
-holds and may not transfer, an image that is not in the archive, and a
-priority above its own. The status it exits with is the child's if all
-of them held and a negative code of its own if any did not, which is how
-a program reports a number before there is any formatting in libc.
+operation on that path taken from user mode. It then makes five spawns
+that must fail, and then spawns again. A handle it does not hold, a handle
+it holds and may not transfer, an image that is not in the archive, a
+priority above its own, and an image that already has a live process.
+The status it exits with is the child's if all of them held and a
+negative code of its own if any did not, which is how a program reports a
+number before there is any formatting in libc.
 
 Removing the pre-validation panics with the handover failing after it
 was checked, which is the partly built child the ordering exists to
-prevent. Removing the priority rule ends with the spawner exiting -7 and
-the kernel naming it.
+prevent. Removing the priority rule ends with the spawner exiting -7, and
+removing the live-image refusal ends with it exiting -8, each with a line
+from the program saying which check it was.
 
-Two things this settled. **A child may not outrank its parent**, which
+Three things this settled. **A child may not outrank its parent**, which
 section 11 did not say and now does: priority is authority over the core
 and a program cannot hand out time it was not given. `SYS_PRIO_INHERIT`
 goes with it, because a program has no operation that tells it its own
 priority and the common case is starting something alongside itself.
-And **the process name has to be copied**, which running it found: the
+**The process name has to be copied**, which running it found: the
 name in a spawn argument is a stack frame in a program, and the kernel
 says that name again when the process exits, so the first run printed
 sixteen bytes of whatever the frame had become.
+
+And **one live process per image**, which reviewing it found rather
+than running it. Loading copies a member to the address it was linked
+for, so a second copy of a running program writes over its text and its
+data, and nothing notices. What makes it worth refusing rather than
+documenting is that it does not fail reliably: two short programs that
+never overlap in time both finish normally, which is what the first
+attempt at demonstrating it produced. Two smaller repairs went with it.
+The namespace array is copied before it is validated, because the
+caller's array is memory a program owns and section 23.2's "once" means
+the check and the use have to read the same thing; without the copy a
+second thread could change it between them, which stage 4 is about to
+make possible. And the rights the spawn hands out are enforced by the
+two operations that use them, which they were not: the handle carried
+SYS_RIGHT_WAIT and SYS_RIGHT_STAT and neither was ever checked.
 
 **4. Threads a program creates.** Nothing new is being decided here, only
 reached: section 10.2 already says the creator supplies the stack.

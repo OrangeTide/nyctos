@@ -483,6 +483,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Interrupts | Disabled in kernel on Tier 0; enabled on Tier 2. |
 | Interrupt handoff | The handler masks a source it cannot finish with; the driver drains and unmasks. |
 | Spawn priority | A child may not outrank its parent. `SYS_PRIO_INHERIT` asks for the caller's own. |
+| Spawn and images | One live process per image while loading is a copy to a fixed address. |
 | Timers | Advance a timeline. No timer pulse. |
 | Timeouts | Absolute deadlines. Relative helpers live in libc. |
 | Exit and join | Exit advances a completion timeline; status read from the handle. |
@@ -1288,6 +1289,17 @@ This is the right position for a real-time system independently of the simplific
 There is no MMU and therefore no demand paging. **Text and rodata execute in place from flash**, and only writable data is copied to RAM at load. This is standard practice on parts that have far more flash than RAM, and Tier 0 already mandates position-independent code, so the requirement costs nothing extra.
 
 A **RAM loader** is available as a compile-time feature for images that must run from RAM, whether for speed or because they arrive at runtime rather than living in flash.
+
+**A RAM loader that copies to a fixed address permits one live process
+per image, and has to say so.** The address a member is linked for is
+the address it is copied to, so starting a second copy of a program
+that is still running writes over its text and its data. Nothing
+detects that afterwards, and it is not reliably visible when it
+happens: two short programs that never overlap in time both finish
+normally. The operation that starts a process therefore refuses an
+image that already has a live process, and what removes the
+restriction is a loader that relocates or a tier that maps, not a
+better check.
 
 The two paths differ in teardown, which is the part worth specifying. An XIP process owns no text memory, so its teardown reclaims only its data segment, stacks, and kernel objects. A RAM-loaded process holds a region owned by the **loader service**, which must reclaim it. The loader therefore waits on the process's completion timeline from section 10.4 and releases the region when it advances. Reclaim is a userspace responsibility, and the mechanism it uses is the one already specified for supervision.
 
