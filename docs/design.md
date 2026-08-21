@@ -476,6 +476,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Paging scope | Shared library text. No copy-on-write, no swap. |
 | Loading | XIP from flash. Optional compile-time RAM loader. |
 | Kernel memory | Static per-tier object pools. No kernel heap. Permanent. |
+| Frames | A bitmap allocator bounded by the memory map, for page tables and process memory. The one allocator that is not a pool. |
 | Identifier layout | One machine word: index low, generation high, split sized to the pools per word size. |
 | Mount table | In the C library, not the kernel. |
 | Naming | Handle-relative only. No global namespace, no absolute paths, no ambient root. |
@@ -630,6 +631,8 @@ The property being bought is that **kernel memory consumption is a property of t
 Two things improve. `SYS_ERR_NO_MEMORY` moves from being reachable on nearly every syscall to being a configuration error visible at integration time, removing a large class of hard-to-test error paths. And on Tier 0, where total RAM may be a few kilobytes, a kernel that cannot grow is the only kind worth having.
 
 Because Tier 2 is also statically configured, this is the permanent model rather than an interim one. Untyped memory and retype are not on the roadmap. The cost is that pool sizing is a real integration task and a system that exhausts a pool must be reconfigured and rebuilt, which is the normal way of working for the systems this targets. Section 22 exists partly so that pool utilization can be observed and sized honestly.
+
+**Page tables and process memory come from a frame allocator, not from a pool, and that is the one exception.** A pool holds a fixed count of a fixed type, and a page table is neither: how many a system needs depends on how its address spaces are shaped, and the same frames become process memory and whatever a pager hands out. What keeps this inside the argument rather than outside it is where the bound comes from. A pool's size is a number somebody chose and may have chosen badly; the frame allocator's is the memory the machine has, which is a fact about the board rather than a guess about the workload. Exhaustion is still a configuration error, still reported, and still not something a caller waits on.
 
 **Objects owned by another object do not draw from a pool.** A completion timeline (section 10.4) is part of its thread or process rather than an entry in the timeline pool, and a channel's pulse queue is part of the channel. The rule matters because the alternative is worse in both directions: charging them to the general pool means every sane-looking configuration silently under-provisions by `max_threads + max_processes`, while allocating them lazily means `sys_object_completion()` can fail with `SYS_ERR_NO_MEMORY` and supervision becomes unreliable exactly when the system is under pressure. Embedding makes the accounting exact and the call infallible.
 

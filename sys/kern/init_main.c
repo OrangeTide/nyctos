@@ -11,6 +11,7 @@
 #include <sys/intr.h>
 #include <sys/object.h>
 #include <sys/op.h>
+#include <sys/page.h>
 #include <sys/proc.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
@@ -872,6 +873,83 @@ exiter(void *arg)
     thread_exit(7);
 }
 
+
+/*
+ * The frame allocator of section 8's extension, and the memory map the
+ * port claims.
+ *
+ * The last frame is written and read back, which is the only part of this
+ * that is about the machine rather than about the code. A port states its
+ * memory rather than discovering it, per section 27, and a statement can
+ * be wrong: a machine started with less memory than the constant says
+ * would otherwise be found out by a page table landing in nothing, a long
+ * way from the line that was mistaken.
+ */
+static void
+page_checks(void)
+{
+    uintptr_t a, b, c;
+    volatile uint64_t *top;
+    uint32_t before;
+
+    page_report();
+
+    before = page_used();
+
+    a = page_alloc();
+    b = page_alloc();
+    if (a == 0 || b == 0) {
+        panic("frames: the map is empty at boot");
+    }
+    if ((a & PAGE_MASK) != 0 || (b & PAGE_MASK) != 0) {
+        panic("frames: %p or %p is not page-aligned", (void *)a, (void *)b);
+    }
+    if (a == b) {
+        panic("frames: the same frame twice");
+    }
+    cnprintf("    two frames: %p and %p\n", (void *)a, (void *)b);
+
+    /*
+     * Zeroed, because the first use of a frame is a page table and a page
+     * table with anything in it is a page table containing somebody
+     * else's memory. Written and freed, so the check that follows is
+     * against a frame that is known not to be blank.
+     */
+    if (*(volatile uint64_t *)a != 0) {
+        panic("frames: %p came back with something in it", (void *)a);
+    }
+    *(volatile uint64_t *)a = 0x5eedfacefeedfaceULL;
+
+    page_free(a);
+    c = page_alloc();
+    if (c != a) {
+        panic("frames: a released frame was not the next one out");
+    }
+    if (*(volatile uint64_t *)c != 0) {
+        panic("frames: %p was handed out with the last owner's bytes in it",
+          (void *)c);
+    }
+    expect("a frame released and taken again", SYS_OK, SYS_OK);
+
+    page_free(c);
+    page_free(b);
+    if (page_used() != before) {
+        panic("frames: %u leaked", page_used() - before);
+    }
+
+    /*
+     * The far end of what the port claims. Section 27 lets a port state
+     * its memory map, and this is the line where a wrong statement stops
+     * being a comment and starts being a fault.
+     */
+    top = (volatile uint64_t *)(uintptr_t)(page_last());
+    *top = 0x0123456789abcdefULL;
+    if (*top != 0x0123456789abcdefULL) {
+        panic("frames: the last frame the port claims is not memory");
+    }
+    cnprintf("    the last frame the port claims, %p, is memory\n",
+      (void *)top);
+}
 /*
  * Exit, the completion timeline, and join, per section 10.4.
  *
@@ -1859,7 +1937,8 @@ kernel_main(void)
 {
     struct proc *kproc;
 
-    cnputs("Nyctos/" ARCH_NAME " kernel booting\n");
+    cnprintf("Nyctos/" ARCH_NAME " tier %u kernel booting\n",
+      (unsigned int)SYS_TIER);
 #if SYS_DEBUG_CONSOLE
     /*
      * Section 22.4 requires that a build carrying the debug console say
@@ -1871,9 +1950,28 @@ kernel_main(void)
       SYS_DEBUG_CONSOLE_INIT ? "live" : "dormant");
 #endif
 
+#if SYS_TIER == 2
+    /*
+     * A tier this image says it is and is not. The switch exists from
+     * the first stage of milestone 4 so that Tier 0 is built and
+     * checked while Tier 2 is assembled, and an image that claimed
+     * enforcement it does not have would be worse than one that
+     * refuses to run.
+     */
+    panic("tier 2: nothing is mapped yet; the MMU arrives in stage 3");
+#endif
+
     object_init();
     object_check();
     object_report();
+
+    {
+        uintptr_t base, hold;
+        size_t len, hold_len;
+
+        md_memory_map(&base, &len, &hold, &hold_len);
+        page_init(base, len, hold, hold_len);
+    }
 
     irq_init();
     md_intr_init();
@@ -1897,6 +1995,9 @@ kernel_main(void)
 
     cnputs("debug console: the run-time gate of section 22.4\n");
     debug_console_checks();
+
+    cnputs("frames: the memory the port says it has\n");
+    page_checks();
 
     cnputs("handles: authority, rights and staleness\n");
     handle_checks();

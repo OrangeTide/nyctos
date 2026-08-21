@@ -1133,8 +1133,8 @@ tree, and the thesis check is as early as the machinery allows rather than
 at the end, because a milestone should reach the thing it exists to
 answer before it spends time on the thing it merely needs.
 
-**1. A page allocator, and a tier to build for.** Frames, and the switch
-that says which tier an image is.
+**1. A page allocator, and a tier to build for.** *Built.* Frames, and
+the switch that says which tier an image is.
 
 - A bitmap allocator over the memory the port hands across, with
   allocation, release and a zeroing allocation, since a page table with
@@ -1146,11 +1146,33 @@ that says which tier an image is.
   this departs from section 8 and the departure is worth stating in the
   section rather than in a commit message.
 
-*Check.* The allocator's own invariants: everything it hands out is
-page-aligned, inside the map and not already out; a release makes exactly
-one frame available again; exhaustion is an error rather than a wrap. And
-a Tier 0 image still passes `make check` on both architectures, which is
-the property every later stage is measured against.
+*Check.* The allocator's invariants: what it hands out is page-aligned,
+inside the map, distinct, and zeroed. A frame released is the next one
+out. And the last frame the port claims is written and read back, which
+is the only part about the machine rather than the code: section 27
+lets a port state its memory rather than discover it, and a statement
+can be wrong. Both boards report 32768 frames of 128 MiB, and the last
+one is memory.
+
+A Tier 0 image still passes `make check` on both architectures, which
+is what every later stage is measured against. A Tier 2 image builds,
+boots, announces its tier and panics naming the stage that will make
+it true, because an image claiming enforcement it does not have would
+be worse than one that refuses to run.
+
+Two things this settled. **The check was written against the
+implementation rather than the contract**, and the implementation was
+not worth defending. A rotating cursor made a released frame not the
+next one out, so the only property worth checking was observable only
+at exhaustion. The cursor is gone: the allocator takes the lowest free
+frame, which section 7.3 refuses for handles and for a reason that
+does not apply here, since a frame number is not a name a program
+sees.
+
+**Section 8 has an exception now, and says so.** The frame allocator is
+the only allocator here that is not a pool. What keeps it inside the
+argument is where its bound comes from: a pool's size is a number
+somebody chose, and this one's is the memory the machine has.
 
 **2. RISC-V in supervisor mode, with the MMU still off.** The port change,
 alone, changing nothing above it.

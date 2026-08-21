@@ -51,6 +51,19 @@ void boot_report(void);
 long syscall_handler(struct sys_op *op, unsigned long count);
 void trap_fatal(unsigned long cause, unsigned long pc) __attribute__((noreturn));
 
+/*
+ * The memory the machine has, which a port states rather than
+ * discovers. Section 27 blesses that for a pinned target: discovering
+ * a constant is not an improvement on stating one, and the stage that
+ * reads a device tree changes this function and nothing above it.
+ *
+ * The kernel image, the boot archive inside it and the boot stack are
+ * the region held back, which is everything from the load address to
+ * the end of the linker script's layout.
+ */
+void md_memory_map(uintptr_t *base, size_t *len, uintptr_t *hold,
+  size_t *hold_len);
+
 /* sys/arch/<arch>/machdep.S */
 void enter_user(unsigned long entry, void *arg, unsigned long sp)
   __attribute__((noreturn));

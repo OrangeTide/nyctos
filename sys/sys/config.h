@@ -33,6 +33,23 @@
  * so far of what reaping buys, since a system that returned slots
  * would need about four.
  */
+/*
+ * Which protection tier this image is built for, per section 6. The
+ * build supplies it; the default is here so that a translation unit
+ * compiled without the flag is Tier 0 rather than undefined.
+ *
+ * Tier 0 is flat memory that trusts the contract of section 6.1 and
+ * Tier 2 is an MMU that enforces it. Nothing else in the interface
+ * differs, which is the claim milestone 4 exists to test.
+ */
+#ifndef SYS_TIER
+#define SYS_TIER                0
+#endif
+
+#if SYS_TIER != 0 && SYS_TIER != 2
+#error "SYS_TIER must be 0 or 2; see section 6"
+#endif
+
 #define SYS_MAX_PROCESSES         32
 #define SYS_MAX_THREADS           64
 #define SYS_MAX_CHANNELS          32
@@ -40,6 +57,14 @@
 #define SYS_MAX_TIMELINES         64
 #define SYS_MAX_TIMERS            32
 #define SYS_MAX_PROGRAMS           8
+
+/*
+ * Frames the bitmap of sys/page.h can cover, which is a ceiling on the
+ * memory a port may hand over rather than an amount reserved: the
+ * bitmap is one bit each, so this costs four kilobytes for half a
+ * gigabyte. A machine with more says so at boot and uses this much.
+ */
+#define SYS_MAX_FRAMES        131072
 
 /* Per-process, not a global pool. Present here because it is one of the
  * limits the system page publishes. The handle table arrives in stage 4. */

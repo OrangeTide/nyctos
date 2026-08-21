@@ -10,6 +10,17 @@
 
 ARCH ?= aarch64
 
+# Which protection tier this image is built for. Section 6: Tier 0 is
+# flat memory that trusts the contract, Tier 2 is an MMU that enforces
+# it. The same source builds both, which is the claim the whole design
+# rests on, so both are built and both are checked.
+TIER ?= 0
+
+VALID_TIERS := 0 2
+ifeq ($(filter $(TIER),$(VALID_TIERS)),)
+$(error Unknown TIER '$(TIER)'; expected one of: $(VALID_TIERS))
+endif
+
 VALID_ARCHS := aarch64 riscv64
 ifeq ($(filter $(ARCH),$(VALID_ARCHS)),)
 $(error Unknown ARCH '$(ARCH)'; expected one of: $(VALID_ARCHS))
@@ -58,7 +69,7 @@ MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mgeneral-regs-only \
 # struct fields into one 64-bit store that is only 4-byte aligned, which
 # faults at boot. Userland runs with no memory protection behind it and
 # has the same constraint. RISC-V gets the flag for the same reason.
-KERN_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align
+KERN_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align -DSYS_TIER=$(TIER)
 USER_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align
 USER_LOAD_ADDR  := 0x40200000
 QEMU            := qemu-system-aarch64
@@ -69,7 +80,8 @@ ifeq ($(ARCH),riscv64)
 TARGET_TRIPLE   := riscv64-none-elf
 MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mcmodel=medany \
                    -DARCH_NAME=\"riscv64\"
-KERN_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64gc -mabi=lp64d -mstrict-align
+KERN_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64gc -mabi=lp64d \
+                   -mstrict-align -DSYS_TIER=$(TIER)
 USER_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64imac -mabi=lp64 -mstrict-align
 USER_LOAD_ADDR  := 0x80200000
 QEMU            := qemu-system-riscv64
@@ -79,7 +91,10 @@ endif
 # Every build product for this architecture lives under its own directory,
 # keyed by target triplet, so architectures never collide. The tree below
 # OBJTOP mirrors the source tree.
-OBJTOP := $(TOPDIR)/_out/$(TARGET_TRIPLE)
+# The tier is in the path for the same reason the architecture is: the
+# two images share no object files, and a build that switched tiers
+# without noticing would link half of each.
+OBJTOP := $(TOPDIR)/_out/$(TARGET_TRIPLE)-tier$(TIER)
 
 # Staging area for things one component builds and another consumes,
 # playing the role of /usr/lib on an installed system.
