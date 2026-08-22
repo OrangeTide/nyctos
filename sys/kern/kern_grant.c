@@ -86,3 +86,39 @@ grant_map(struct grant *g, struct proc *p, uint32_t rights,
 
     return SYS_OK;
 }
+
+/*
+ * Take a grant back out of a process, per section 7: the handle is the
+ * authority and a mapping that outlived one would be authority that
+ * outlived it too.
+ *
+ * The region reverts to what every other address space has for it rather
+ * than being removed. A grant covers memory the kernel maps as well, and
+ * clearing the entry would take the console away from the kernel in that
+ * process's space, which the kernel finds out about the next time it
+ * prints. What goes is the bit that lets user mode in.
+ */
+void
+grant_unmap(struct grant *g, struct proc *p)
+{
+#if SYS_TIER == 2
+    uint32_t flags = VM_READ | VM_WRITE;
+
+    if (p == NULL) {
+        return;
+    }
+    if (g->g_device) {
+        flags |= VM_DEVICE;
+    }
+
+    if (md_map(proc_as(p), g->g_base, g->g_base, g->g_len, flags) !=
+      SYS_OK) {
+        panic("grant %s: cannot be taken back from %s", g->g_name,
+          p->p_name);
+    }
+    md_tlb_flush_all();
+#else
+    (void)g;
+    (void)p;
+#endif
+}

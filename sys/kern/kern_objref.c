@@ -15,6 +15,7 @@
  * and does not grow a case per object type.
  */
 
+#include <sys/grant.h>
 #include <sys/handle.h>
 #include <sys/proc.h>
 #include <sys/systm.h>
@@ -44,9 +45,27 @@ handle_object_retain(uint32_t type, void *obj, uint32_t rights)
 }
 
 void
-handle_object_release(uint32_t type, void *obj, uint32_t rights)
+handle_object_release(const struct handle_table *ht, uint32_t type,
+  void *obj, uint32_t rights)
 {
     if (type == SYS_OBJ_TIMELINE && (rights & SYS_RIGHT_SIGNAL) != 0) {
         timeline_drop_signaler(obj);
+    }
+
+    /*
+     * A grant that was mapped stops being mapped. Section 7 has the
+     * handle be the authority, and a region that stayed reachable after
+     * the handle went would be a driver keeping its device by dropping
+     * the thing that said it could have it.
+     *
+     * The mapping is taken back rather than removed: the region reverts
+     * to what every other address space has for it, which is the
+     * kernel's own mapping without the bit that lets user mode in. It is
+     * done for a handle that was never mapped too, because nothing
+     * records which of them was, and putting back what was already there
+     * costs an entry written twice.
+     */
+    if (type == SYS_OBJ_GRANT && (rights & SYS_RIGHT_MAP) != 0) {
+        grant_unmap(obj, ht->ht_proc);
     }
 }

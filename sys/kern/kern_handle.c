@@ -12,10 +12,11 @@
 #include <sys/systm.h>
 
 void
-handle_table_init(struct handle_table *ht)
+handle_table_init(struct handle_table *ht, struct proc *owner)
 {
     uint32_t i;
 
+    ht->ht_proc = owner;
     ht->ht_free = SYS_POOL_NIL;
     ht->ht_used = 0;
 
@@ -185,7 +186,7 @@ handle_close(struct handle_table *ht, sys_handle_t h)
      * thread might see of this table has to be finished first, rather than
      * merely unreachable because no live handle names the slot.
      */
-    handle_object_release(type, obj, rights);
+    handle_object_release(ht, type, obj, rights);
 
     return SYS_OK;
 }

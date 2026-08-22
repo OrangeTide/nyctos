@@ -85,15 +85,24 @@ table_at(uintptr_t pa)
     return (uint64_t *)pa;
 }
 
+/*
+ * The table one level down from this entry, made if it is not there.
+ *
+ * A leaf at this level covers a megapage or a gigapage, and is split
+ * into the table it stands for: the same memory, the same flags,
+ * described one page at a time. Splitting is what lets anything refine a
+ * mapping the identity map made out of megapages, which is every grant
+ * over ordinary memory and every page a pager will supply.
+ *
+ * Returns NULL when there is no frame for the table.
+ */
 static uint64_t *
-descend(uint64_t *table, uint32_t index)
+descend(uint64_t *table, uint32_t index, unsigned int level)
 {
     uintptr_t pa;
+    uint64_t *next;
 
-    if ((table[index] & PTE_V) != 0) {
-        if (PTE_LEAF(table[index])) {
-            panic("pmap: descending into a leaf at index %u", index);
-        }
+    if ((table[index] & PTE_V) != 0 && !PTE_LEAF(table[index])) {
         return table_at((uintptr_t)PTE_ADDR(table[index]));
     }
 
@@ -101,9 +110,23 @@ descend(uint64_t *table, uint32_t index)
     if (pa == 0) {
         return NULL;
     }
+    next = table_at(pa);
+
+    if ((table[index] & PTE_V) != 0) {
+        uint64_t leaf = table[index];
+        uintptr_t out = (uintptr_t)PTE_ADDR(leaf);
+        uint64_t flags = leaf & 0x3ffULL;
+        size_t step = LEVEL_SIZE(level + 1);
+        uint32_t i;
+
+        for (i = 0; i < ENTRIES; i++) {
+            next[i] = PTE_PPN(out + (uintptr_t)i * step) | flags;
+        }
+    }
+
     table[index] = PTE_PPN(pa) | PTE_V;
 
-    return table_at(pa);
+    return next;
 }
 
 sys_err_t
@@ -131,7 +154,7 @@ md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
     }
 
     while (len > 0) {
-        uint64_t *l1 = descend(l0, (uint32_t)INDEX(va, 0));
+        uint64_t *l1 = descend(l0, (uint32_t)INDEX(va, 0), 0);
         size_t step;
 
         if (l1 == NULL) {
@@ -144,7 +167,7 @@ md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
             l1[INDEX(va, 1)] = PTE_PPN(pa) | leaf_attrs(flags);
             step = LEVEL_SIZE(1);
         } else {
-            uint64_t *l2 = descend(l1, (uint32_t)INDEX(va, 1));
+            uint64_t *l2 = descend(l1, (uint32_t)INDEX(va, 1), 1);
 
             if (l2 == NULL) {
                 return SYS_ERR_NO_MEMORY;

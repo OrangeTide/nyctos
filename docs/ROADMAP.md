@@ -1776,6 +1776,60 @@ is a byte wide, and reading the wrong one consumes an input byte or
 acknowledges an interrupt. The tier with nothing to enforce is the tier
 where the demonstration costs something and shows nothing.
 
+
+*Reviewing it found one defect in the model and one limit that would
+have stopped the next stage.*
+
+**A grant's authority outlived its handle.** Section 7 makes the handle
+the authority, and mapping a grant left the region reachable for good: a
+driver could close the handle to its own device and keep writing to it.
+Nothing exercised it, because the only grant was one the driver never
+gives up, but a program can call `sys_handle_close` on anything it
+holds.
+
+Closing a grant handle now takes the mapping back, and takes it back
+rather than removing it: the region reverts to what every other address
+space has, which is the kernel's own mapping without the bit that lets
+user mode in. Removing it would be worse than leaving it. A grant covers
+memory the kernel maps too, so clearing the entry would take the console
+away from the kernel in that process's space, which the kernel finds out
+about the next time it prints.
+
+Demonstrating it needed a grant that is not a device. A register cannot
+be read twice without meaning something and which register is safe
+differs by board, which is why the stage's own check would not read one.
+A page of ordinary memory is the same object with none of that: the
+kernel allocates one, describes it, hands it over, and `granted` writes
+a word into memory it did not have, closes the handle, and reads the
+same address again. At Tier 0 it reads it. At Tier 2 it dies there, and
+the kernel confirms the word it wrote by reading the frame through its
+physical address, so the check cannot pass on a program that touched
+nothing.
+
+**A mapping made of blocks could not be refined.** The stage found half
+of this and fixed the wrong half. The console's registers were mapped as
+two megabytes because that was the size the identity map liked, and a
+grant over one page of it panicked descending into a block; making the
+device regions the size of the devices fixed that case and hid the rule.
+The rule is that all of ordinary memory is mapped in blocks too, so a
+grant over a page of RAM panicked in exactly the same place, and so
+would every page a pager supplies in stage 8.
+
+The port splits a block into the table it stands for now: the same
+memory, the same attributes, one page at a time. Turning the split off
+does not merely refuse the grant, it faults the kernel on the next
+access to the page, which is what the block was describing for everyone
+else in that space.
+
+*What remains.* Nothing records which process mapped which grant, so
+closing a handle puts the region back whether or not this process ever
+mapped it, and two grants over overlapping regions would undo each
+other. Both need a per-process record of what a grant did, which is the
+same bookkeeping address-space teardown needs and belongs with it. And
+the process pool is at thirty of thirty-two at Tier 2, because nothing
+is reaped and every check that spawns something spends one for the rest
+of the run.
+
 **8. Faults as messages, and text that arrives when it is touched.**
 Section 15.3 and the pager chain of 15.4.
 

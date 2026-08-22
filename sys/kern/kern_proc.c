@@ -41,7 +41,7 @@ proc_bootstrap(const char *name)
     proc_set_name(p, name);
     timeline_init(&p->p_completion, p->p_name);
     p->p_nthreads = 0;
-    handle_table_init(&p->p_handles);
+    handle_table_init(&p->p_handles, p);
 
     return p;
 }
@@ -75,7 +75,7 @@ proc_init(struct proc *p, const char *name)
     p->p_exit_code = 0;
     p->p_exited = false;
     p->p_watched = false;
-    handle_table_init(&p->p_handles);
+    handle_table_init(&p->p_handles, p);
 
     memset(&p->p_startup, 0, sizeof(p->p_startup));
     memset(p->p_ns, 0, sizeof(p->p_ns));

@@ -2520,6 +2520,103 @@ device_checks(void)
 #endif
 }
 
+
+/*
+ * A grant over ordinary memory, given and then taken away.
+ *
+ * The console driver above holds a grant over a device, which is what
+ * section 19.2 is about, and a device is an awkward thing to make an
+ * argument with: a register cannot be read twice without meaning
+ * something, and which register is safe differs by board. A page of RAM
+ * is the same object with none of that. The kernel allocates one,
+ * describes it, and hands it over.
+ *
+ * What this settles is the part the driver cannot show. That a grant is
+ * authority a process did not have and now does. That the handle is the
+ * authority, so closing it takes the memory back. And that both tiers
+ * agree on the first and differ on the second, which is where they
+ * always differ.
+ */
+static void
+grant_checks(void)
+{
+    struct proc *self = proc_current();
+    struct sys_op_status_args sargs;
+    struct handle_table *ht = &self->p_handles;
+    sys_ns_spec_t ns[1];
+    struct grant *g;
+    sys_handle_t h, hg;
+    struct child c;
+    uintptr_t pa;
+    void *obj;
+    sys_err_t err;
+    int32_t code;
+
+    pa = page_alloc();
+    if (pa == 0) {
+        panic("grant: no page to give away");
+    }
+
+    g = grant_create("a-page", pa, PAGE_SIZE, false);
+    if (g == NULL) {
+        panic("grant: no grant to describe it with");
+    }
+    err = handle_insert(ht, g, SYS_OBJ_GRANT,
+      SYS_RIGHT_MAP | SYS_RIGHT_READ | SYS_RIGHT_WRITE |
+      SYS_RIGHT_TRANSFER, &hg);
+    expect("a grant over a page of memory", err, SYS_OK);
+
+    ns[0].id = SYS_NS_DEVICE;
+    ns[0].handle = hg;
+
+    sched_defer();
+    if (proc_spawn_op(self, "granted", PRIO_BOOT - 1, ns, 1, NULL, 0,
+      &h) != SYS_OK) {
+        panic("grant: could not start the program");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("grant: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    code = child_join(&c, 1000);
+
+    /*
+     * The word it wrote, read through the physical address, which is
+     * the kernel's own view of the same page. Without this the check
+     * would pass on a program that never touched anything.
+     */
+    if (*(volatile uint32_t *)pa != 0x5eed1234u) {
+        panic("grant: the page holds 0x%x, not what it was given for",
+          (unsigned int)*(volatile uint32_t *)pa);
+    }
+
+    memset(&sargs, 0, sizeof(sargs));
+    if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) != SYS_OK) {
+        panic("grant: no status for it");
+    }
+
+#if SYS_TIER == 2
+    if (sargs.out_fault != SYS_FAULT_ACCESS ||
+      sargs.out_fault_addr != pa) {
+        panic("grant: closing the handle left the page reachable, "
+          "kind %u code %d", (unsigned int)sargs.out_fault, code);
+    }
+    cnprintf("    %-38s %s at 0x%lx\n", "and the page after closing it",
+      fault_name(sargs.out_fault), (unsigned long)sargs.out_fault_addr);
+#else
+    if (sargs.out_fault != SYS_FAULT_NONE || code != 0) {
+        panic("grant: it died of %u reading its own page, at this tier",
+          (unsigned int)sargs.out_fault);
+    }
+    cnprintf("    %-38s %s\n", "and the page after closing it",
+      "still there, because nothing says no");
+#endif
+
+    handle_close(ht, h);
+}
+
 /* The console and the directory the shell is handed, kept from the
  * checks that created them. Root will hold both when there is a root;
  * until then the kernel is what assembles the system. */
@@ -2735,6 +2832,7 @@ kernel_main(void)
     cnputs("the console: a driver process, and a line typed at it\n");
     console_service();
     device_checks();
+    grant_checks();
 
     cnputs("the slice again, with both halves in user mode\n");
     user_slice();

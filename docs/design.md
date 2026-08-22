@@ -495,7 +495,8 @@ Four constraints shape everything that follows, and they are stated here because
 | Buffer access | The message's flags are the access the receiver is given, and become the permissions on its mapping. |
 | Grants | A handle over a physical region. Nothing can mint one: what assembles the system makes them and hands them out. |
 | Grant addresses | A holder maps a grant and is told where it landed, which is the physical address. Rights on the handle become the permissions. |
-| Device regions | Mapped at page granularity, because a block is what a grant cannot refine. |
+| Device regions | Mapped as the size they are, not the size the identity map likes. |
+| Block splitting | A mapping made of blocks is split into pages when something refines it, rather than refused. |
 | Timers | Advance a timeline. No timer pulse. |
 | Timeouts | Absolute deadlines. Relative helpers live in libc. |
 | Exit and join | Exit advances a completion timeline; status read from the handle. |
@@ -1605,6 +1606,8 @@ A driver receives everything it needs in its spawn call and acquires nothing aft
 **What the holder is told is the physical address.** Every other mapping in this system is the identity, the regions a grant covers are device registers outside every program's window, and a holder that had to be told a different number would be a holder that had to ask. A system that placed grants elsewhere would change this function and nothing above it.
 
 **The rights on the handle are the permissions on the mapping.** A grant carrying `SYS_RIGHT_READ` alone becomes memory that cannot be written, and `SYS_RIGHT_MAP` is what permits the mapping at all. This is the same rule as the buffer flags of section 6.1 stated for the longer-lived form, and it is why a grant needs no permission field of its own.
+
+**A mapping made of blocks can be refined.** The identity map describes ordinary memory in the largest units the hardware has, which is what makes it cost a handful of frames rather than thousands. A grant covers one page of that, and so will every page a pager supplies, so the port splits a block into the table it stands for when something maps inside it: the same memory, the same attributes, one page at a time. The alternative is deciding in advance which memory might one day be interesting, and mapping that part in pages, which is a decision nobody is in a position to make.
 
 **An interrupt handle, already attached to a timeline.** The parent calls `sys_irq_attach()` and passes the timeline handle to the child, or passes the interrupt handle and lets the child attach. The first is preferable: it keeps the authority to attach an interrupt in the launcher rather than in the driver, and a driver that cannot attach interrupts cannot attach somebody else's.
 

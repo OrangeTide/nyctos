@@ -110,28 +110,56 @@ table_at(uintptr_t pa)
 
 /*
  * The table one level down from this entry, made if it is not there.
- * Returns NULL when there is no frame for it, which is the only failure
- * this walk has.
+ *
+ * A block that covers the range is split into the table it stands for:
+ * the same memory, the same attributes, described one page at a time.
+ * Splitting is what lets anything refine a mapping the identity map made
+ * out of blocks, which is every grant over ordinary memory and every
+ * page a pager will supply. Without it the kernel could only ever change
+ * a mapping it had made in pages to begin with, which means deciding in
+ * advance which memory might one day be interesting.
+ *
+ * Returns NULL when there is no frame for the table, which is the only
+ * failure this walk has.
  */
 static uint64_t *
-descend(uint64_t *table, uint32_t index)
+descend(uint64_t *table, uint32_t index, unsigned int level)
 {
     uintptr_t pa;
+    uint64_t *next;
 
     if ((table[index] & 0x3u) == DESC_TABLE) {
         return table_at(table[index] & 0x0000fffffffff000ULL);
-    }
-    if (table[index] != 0) {
-        panic("pmap: descending into a block at index %u", index);
     }
 
     pa = page_alloc();
     if (pa == 0) {
         return NULL;
     }
+    next = table_at(pa);
+
+    if ((table[index] & 0x3u) == DESC_BLOCK) {
+        uint64_t block = table[index];
+        uintptr_t out = (uintptr_t)(block & 0x0000fffffffff000ULL);
+        uint64_t attrs = block & ~0x0000fffffffff000ULL;
+        size_t step = LEVEL_SIZE(level + 1);
+        uint32_t i;
+
+        /*
+         * A block descriptor and a page descriptor differ in the low two
+         * bits and in nothing else that matters here, so the attributes
+         * carry across unchanged and only the output address moves.
+         */
+        attrs = (attrs & ~(uint64_t)0x3u) |
+          (level + 1 == 3 ? DESC_PAGE : DESC_BLOCK);
+        for (i = 0; i < ENTRIES; i++) {
+            next[i] = (uint64_t)(out + (uintptr_t)i * step) | attrs;
+        }
+    }
+
     table[index] = (uint64_t)pa | DESC_TABLE;
 
-    return table_at(pa);
+    return next;
 }
 
 sys_err_t
@@ -159,7 +187,7 @@ md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
     }
 
     while (len > 0) {
-        uint64_t *l2 = descend(l1, (uint32_t)INDEX(va, 1));
+        uint64_t *l2 = descend(l1, (uint32_t)INDEX(va, 1), 1);
         size_t step;
 
         if (l2 == NULL) {
@@ -177,7 +205,7 @@ md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
             l2[INDEX(va, 2)] = (uint64_t)pa | leaf_attrs(flags, true);
             step = LEVEL_SIZE(2);
         } else {
-            uint64_t *l3 = descend(l2, (uint32_t)INDEX(va, 2));
+            uint64_t *l3 = descend(l2, (uint32_t)INDEX(va, 2), 2);
 
             if (l3 == NULL) {
                 return SYS_ERR_NO_MEMORY;

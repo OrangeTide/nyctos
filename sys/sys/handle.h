@@ -30,6 +30,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct proc;
+
 struct handle_slot {
     void       *h_object;
     sys_id_t    h_gen;
@@ -40,6 +42,15 @@ struct handle_slot {
 };
 
 struct handle_table {
+    /*
+     * Whose table this is. A handle going away can mean something to
+     * the object it named, and for a grant what it means is that a
+     * mapping in this process has to go with it: authority is the
+     * handle, and a mapping that outlived one would be authority
+     * that outlived it too.
+     */
+    struct proc       *ht_proc;
+
     struct handle_slot ht_slots[SYS_MAX_HANDLES_PER_PROC];
     uint32_t           ht_free;
     uint32_t           ht_used;
@@ -51,9 +62,10 @@ struct handle_table {
  * last signal-righted handle enters the error state, per section 9.3.
  */
 void handle_object_retain(uint32_t type, void *obj, uint32_t rights);
-void handle_object_release(uint32_t type, void *obj, uint32_t rights);
+void handle_object_release(const struct handle_table *ht, uint32_t type,
+  void *obj, uint32_t rights);
 
-void handle_table_init(struct handle_table *ht);
+void handle_table_init(struct handle_table *ht, struct proc *owner);
 
 /*
  * Put an object in the table and return a handle naming it. The kernel

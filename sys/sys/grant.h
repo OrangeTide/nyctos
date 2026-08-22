@@ -87,4 +87,11 @@ struct grant *grant_create(const char *name, uintptr_t base, size_t len,
 sys_err_t grant_map(struct grant *g, struct proc *p, uint32_t rights,
   uintptr_t *out_base, uintptr_t *out_len);
 
+/*
+ * Take it back out again, when the handle that carried it goes. The
+ * region reverts to the mapping every other address space has for it,
+ * which is the kernel's own without user access.
+ */
+void grant_unmap(struct grant *g, struct proc *p);
+
 #endif /* _SYS_GRANT_H_ */
