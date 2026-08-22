@@ -60,8 +60,12 @@ sys_err_t md_as_create(struct addrspace *as);
 /*
  * Map len bytes of virtual addresses onto physical ones. Both addresses
  * and the length must be page-aligned; the port chooses whatever page or
- * block size the range allows, which is invisible above here except in how
- * many frames it consumes.
+ * block size the range allows, which is invisible above here except in
+ * how many frames it consumes.
+ *
+ * It performs no TLB maintenance, because a mapping is usually one of
+ * several and the caller knows when it has finished. A caller that maps
+ * into a space something is already running in flushes afterwards.
  */
 sys_err_t md_map(struct addrspace *as, uintptr_t va, uintptr_t pa,
   size_t len, uint32_t flags);

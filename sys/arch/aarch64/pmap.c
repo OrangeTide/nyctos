@@ -235,6 +235,18 @@ md_as_activate(const struct addrspace *as)
     __asm__ volatile ("msr ttbr0_el1, %0" :: "r" ((uint64_t)as->as_root));
     __asm__ volatile ("isb");
 
+    /*
+     * The instruction cache may hold lines fetched with translation
+     * off. They are lines of the same instructions at the same
+     * addresses, because the map is identity, so this is belt and
+     * braces rather than a fix for anything observed. It is cheap and
+     * it is the kind of thing that is impossible to debug later: a
+     * stale instruction line survives every print anyone adds.
+     */
+    __asm__ volatile ("ic iallu");
+    __asm__ volatile ("dsb ish");
+    __asm__ volatile ("isb");
+
     md_tlb_flush_all();
 
     /*

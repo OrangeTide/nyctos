@@ -1298,6 +1298,16 @@ about the tables.
 A fourth was found by the session running to the end and faulting on
 the instruction that switches the machine off, because the register
 that does it is the one device nobody uses until then.
+
+*And one thing this stage was not expected to show.* Reviewing it
+asked whether the permissions are real or only written down, by having
+a program read the kernel's first instruction. At Tier 0 it reads
+`d53800a0` and carries on. At Tier 2, the same program from the same
+source takes a permission fault at the address it touched. That is
+section 2.1's claim in miniature, two stages before the plan expected
+any evidence of it, and the only reason it is not a check yet is that
+a fault still stops the machine rather than the thread. Stage 5 is
+where it becomes one.
 **4. An address space per process, and a loader that fills it.** The stage
 that makes a process a process.
 

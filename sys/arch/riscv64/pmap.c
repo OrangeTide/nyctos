@@ -226,6 +226,14 @@ md_as_activate(const struct addrspace *as)
      */
     __asm__ volatile ("csrw satp, %0" :: "r" (satp) : "memory");
     __asm__ volatile ("sfence.vma" ::: "memory");
+
+    /*
+     * The same belt and braces as the other port: instructions
+     * fetched with translation off are the same instructions at the
+     * same addresses, because the map is identity, and a stale one
+     * would survive every print anyone added while looking for it.
+     */
+    __asm__ volatile ("fence.i" ::: "memory");
 }
 
 void

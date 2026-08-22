@@ -63,10 +63,11 @@ vm_kernel_init(void)
      * everyone, and the machine faulted on the instruction after
      * the one that enabled translation, for exactly that reason.
      *
-     * Below the image, spare memory that frames come from.
+     * Below the image, spare memory that frames come from. The kernel
+     * reads and writes it and nobody executes it.
      */
     if (text > base && md_map(&kernel_as, base, base, text - base,
-      VM_READ | VM_WRITE | VM_USER | VM_EXEC) != SYS_OK) {
+      VM_READ | VM_WRITE) != SYS_OK) {
         panic("vm: could not map the memory below the kernel");
     }
 
