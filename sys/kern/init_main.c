@@ -19,6 +19,7 @@
 #include <sys/time.h>
 #include <sys/timeline.h>
 #include <sys/trace.h>
+#include <sys/vm.h>
 
 #include <stdbool.h>
 
@@ -1966,16 +1967,6 @@ kernel_main(void)
       SYS_DEBUG_CONSOLE_INIT ? "live" : "dormant");
 #endif
 
-#if SYS_TIER == 2
-    /*
-     * A tier this image says it is and is not. The switch exists from
-     * the first stage of milestone 4 so that Tier 0 is built and
-     * checked while Tier 2 is assembled, and an image that claimed
-     * enforcement it does not have would be worse than one that
-     * refuses to run.
-     */
-    panic("tier 2: nothing is mapped yet; the MMU arrives in stage 3");
-#endif
 
     object_init();
     object_check();
@@ -1989,6 +1980,17 @@ kernel_main(void)
         page_init(base, len, hold, hold_len);
         boot_reserve();
     }
+
+#if SYS_TIER == 2
+    /*
+     * Translation as soon as there are frames to build tables from
+     * and before anything else allocates any, because everything
+     * after this line runs through the tables it builds. A page table
+     * comes from somewhere, which is the ordering that matters: the
+     * frame allocator is up one line above this.
+     */
+    vm_kernel_init();
+#endif
 
     irq_init();
     md_intr_init();

@@ -70,6 +70,12 @@ void trap_fatal(unsigned long cause, unsigned long pc) __attribute__((noreturn))
 /* The privilege level this kernel runs at, for the boot log. */
 const char *md_mode(void);
 
+/*
+ * The kernel image, split at the boundary between what it executes and
+ * what it writes. See sys/arch/<arch>/mem_md.c.
+ */
+void md_kernel_image(uintptr_t *text, uintptr_t *rx_end, uintptr_t *end);
+
 void md_memory_map(uintptr_t *base, size_t *len, uintptr_t *hold,
   size_t *hold_len);
 

@@ -1245,8 +1245,8 @@ whose only job is forwarding, which is the one piece of machine-mode
 code this port would otherwise have to keep. That it exists on this
 board was checked before the plan was written rather than after.
 
-**3. The kernel's own address space.** Translation on, with the kernel
-running through it.
+**3. The kernel's own address space.** *Built.* Translation on, with the
+kernel running through it.
 
 - Page tables built for the kernel: its image, the frames it allocates,
   and the device registers it uses for the console and the controllers.
@@ -1257,12 +1257,47 @@ running through it.
 - TLB maintenance in the port layer, per section 27: invalidate a range,
   invalidate an address space, and the barriers each needs around it.
 
-*Check.* The whole of M3 passes with the kernel translated, on both
-architectures. Removing the mapping for a device the kernel writes to
-faults where it is used rather than at boot, which is what tells the
-difference between tables that are right and tables that happen not to
-have been consulted yet.
+*Check.* All four configurations pass `make check`: two architectures
+by two tiers. The Tier 2 transcript is identical to the Tier 0 one,
+which is the claim of section 2.1 holding for the first time on an
+enforced tier, even though nothing is enforced yet.
 
+Nothing is protected at this stage, deliberately. Memory is mapped at
+the address it already had, the kernel's writable half is reachable
+from user mode because a program's startup record is still inside it,
+and the console's registers are reachable from user mode because its
+driver holds them as a compiled-in address. Stage 4 takes the first
+away and stage 7 the second. Passing through this state deliberately
+separates "the tables are right" from "the permissions are right",
+and each is a different way to be wrong.
+
+Three things this settled, all found by the machine stopping with
+nothing printed. **A page user mode can write is a page the kernel
+will not execute**, on AArch64, whatever the execute-never bits say.
+The first version of this stage mapped all of memory as everything to
+everyone, and the instruction after the one that enabled translation
+took a permission fault. The map is four ranges now, split at the
+boundary between what the kernel executes and what it writes, which
+the linker scripts had to be taught to mark.
+
+**Supervisor mode may not touch a user page unless it says so.** On
+RISC-V the kernel's own stack is inside the range marked for user
+mode, so without `SUM` the kernel faulted on its stack, then faulted
+saving the frame for that fault, and so on. It is a permission the
+kernel gives itself and not a check it skips: what says an address
+belongs to the caller is section 23.2's validation, which is stage 4.
+
+**A level of page table arithmetic written the wrong way round looks
+exactly like everything else that goes wrong here.** The Sv39 root
+index was a level too high, which put every mapping in root entry
+zero. All three of these produced the same symptom, a machine that
+stops before it can say anything, and all three were found the same
+way: by asking QEMU for its exception trace rather than by reasoning
+about the tables.
+
+A fourth was found by the session running to the end and faulting on
+the instruction that switches the machine off, because the register
+that does it is the one device nobody uses until then.
 **4. An address space per process, and a loader that fills it.** The stage
 that makes a process a process.
 

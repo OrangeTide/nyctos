@@ -47,3 +47,25 @@ md_mode(void)
 {
     return "supervisor";
 }
+
+/*
+ * The half of the kernel image that is executed, which a Tier 2 map gives
+ * different permissions from the half that is written.
+ *
+ * They cannot share a mapping. AArch64 refuses to execute at EL1 from any
+ * page user mode can write, which is a rule the hardware applies whatever
+ * the execute-never bits say, and it is the right rule: a kernel that
+ * executes memory a program can edit is not a kernel. RISC-V has no such
+ * rule and gets the same split anyway, because one map is easier to reason
+ * about than two.
+ */
+extern char _erodata[];
+extern char _kernel_end[];
+
+void
+md_kernel_image(uintptr_t *text, uintptr_t *rx_end, uintptr_t *end)
+{
+    *text = (uintptr_t)_start;
+    *rx_end = (uintptr_t)_erodata;
+    *end = (uintptr_t)_kernel_end;
+}

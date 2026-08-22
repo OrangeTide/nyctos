@@ -14,6 +14,7 @@ SRCS := arch/$(ARCH)/boot.S \
         arch/$(ARCH)/intr.c \
         arch/$(ARCH)/machdep.S \
         arch/$(ARCH)/mem_md.c \
+        arch/$(ARCH)/pmap.c \
         arch/$(ARCH)/swtch.S \
         arch/$(ARCH)/thread_md.c \
         arch/$(ARCH)/uart.c \
@@ -34,6 +35,7 @@ SRCS := arch/$(ARCH)/boot.S \
         kern/kern_time.c \
         kern/subr_mem.c \
         kern/subr_page.c \
+        kern/subr_vm.c \
         kern/subr_bootarch.c \
         kern/subr_trace.c \
         kern/subr_pool.c \
