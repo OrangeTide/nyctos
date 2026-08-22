@@ -35,7 +35,7 @@ vectors:
     VECTOR_ENTRY el0_sync
     VECTOR_ENTRY el0_irq
     VECTOR_ENTRY el1_fatal
-    VECTOR_ENTRY el1_fatal
+    VECTOR_ENTRY el0_serror
 
     /* Lower EL, AArch32. */
     VECTOR_ENTRY el1_fatal
@@ -113,11 +113,27 @@ el0_sync:
     add     sp, sp, #192
     eret
 
+/*
+ * A synchronous exception from a program that is not a system call.
+ * trap_user ends the thread and does not come back, so the frame this
+ * was entered with is never restored and nothing is saved for it.
+ */
 el0_fatal:
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mrs     x2, far_el1
-    bl      trap_fatal
+    bl      trap_user
+
+/*
+ * An SError while a program was running. It has no frame because it
+ * needs none: an external abort is a report that the memory is not
+ * trustworthy, per section 16.1, and the thread it names is ending.
+ */
+el0_serror:
+    mrs     x0, esr_el1
+    mrs     x1, elr_el1
+    mrs     x2, far_el1
+    bl      trap_user
 
 el1_fatal:
     mrs     x0, esr_el1

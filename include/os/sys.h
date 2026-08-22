@@ -103,6 +103,19 @@ sys_err_t sys_proc_status(sys_handle_t proc, int32_t *out_code,
   uint32_t *out_state);
 
 /*
+ * What ended a process, when the hardware ended it, per section 16.2.
+ * The kind is SYS_FAULT_NONE for a process that exited by choice, which
+ * is every process that was not stopped by the machine it ran on.
+ */
+typedef struct sys_fault {
+    uint32_t    kind;       /* SYS_FAULT_* */
+    uintptr_t   addr;
+    uintptr_t   pc;
+} sys_fault_t;
+
+sys_err_t sys_proc_fault(sys_handle_t proc, sys_fault_t *out);
+
+/*
  * Block until a timeline reaches value, or until the absolute deadline
  * passes. SYS_DEADLINE_NEVER waits without one, and a deadline already
  * passed is a poll.

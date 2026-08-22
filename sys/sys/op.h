@@ -355,6 +355,36 @@ typedef struct sys_op_exit_args {
 #define SYS_STATE_EXITED         3
 
 /*
+ * The fault kinds of section 16.1. Every synchronous exception a port can
+ * raise while a thread is running maps to one of these, because a kind
+ * that is not in the list has nowhere to go.
+ *
+ * SYS_FAULT_PAGE is here and is not yet raised by either port. It is the
+ * one recoverable kind, and what makes it recoverable is a pager, which
+ * is stage 8 of this milestone. Until then a reference to an address the
+ * tables do not describe is SYS_FAULT_ACCESS, because nothing exists that
+ * could supply the page: reporting it as recoverable would be reporting a
+ * mechanism the system does not have.
+ */
+#define SYS_FAULT_NONE          0   /* it did not fault */
+#define SYS_FAULT_PAGE          1
+#define SYS_FAULT_ACCESS        2
+#define SYS_FAULT_ALIGN         3
+#define SYS_FAULT_INSTRUCTION   4
+#define SYS_FAULT_ARITH         5
+#define SYS_FAULT_DEBUG         6
+#define SYS_FAULT_EXTERNAL      7
+
+/*
+ * The exit code of a thread the kernel ended for a fault. A fault is an
+ * exit with a reason, per section 16.2, so it travels the path an exit
+ * travels and needs a code to travel with; the reason itself is in the
+ * fault fields beside it. It is a value no program returns, because a
+ * program returns what it chose and this is what was chosen for it.
+ */
+#define SYS_EXIT_FAULT          (-16)
+
+/*
  * Argument structure for SYS_OP_OBJECT_COMPLETION. target names the
  * thread or the process whose completion is wanted.
  */
@@ -362,10 +392,27 @@ typedef struct sys_op_completion_args {
     sys_handle_t    out_handle;     /* written by the kernel */
 } sys_op_completion_args_t;
 
-/* Argument structure for SYS_OP_PROC_STATUS. target names the process. */
+/*
+ * Argument structure for SYS_OP_PROC_STATUS and SYS_OP_THREAD_STATUS.
+ * target names the process or the thread.
+ *
+ * The fault fields are section 16.2's: a thread the kernel ended for a
+ * fault has exited, so the state says EXITED and the code says
+ * SYS_EXIT_FAULT, and these say which fault, where, and what instruction.
+ * They are SYS_FAULT_NONE and zero for everything else, which includes a
+ * thread that is still running.
+ *
+ * A process reports the fault of the thread whose exit finished it, which
+ * with one thread per process is the program's own. Section 16.2 leaves
+ * open which thread speaks for a process with several, and so does this.
+ */
 typedef struct sys_op_status_args {
     int32_t         out_code;       /* written by the kernel */
     uint32_t        out_state;      /* written by the kernel: SYS_STATE_* */
+    uint32_t        out_fault;      /* written by the kernel: SYS_FAULT_* */
+    uint32_t        out_reserved;
+    uintptr_t       out_fault_addr; /* written by the kernel */
+    uintptr_t       out_fault_pc;   /* written by the kernel */
 } sys_op_status_args_t;
 
 /*

@@ -65,6 +65,22 @@ void trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
   __attribute__((noreturn));
 
 /*
+ * A synchronous exception taken while a program was running. It ends
+ * that thread, per section 16.2, and does not return; the kernel is not
+ * involved beyond deciding what kind of fault it was and saying so.
+ */
+void trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
+  __attribute__((noreturn));
+
+/*
+ * Which kind of section 16.1 an exception is, and whether the address
+ * the port reported means anything. Every exception a port can raise
+ * maps to a kind; see sys/arch/<arch>/fault_md.c.
+ */
+uint32_t md_fault_kind(unsigned long cause);
+bool md_fault_has_addr(unsigned long cause);
+
+/*
  * The memory the machine has, which a port states rather than
  * discovers. Section 27 blesses that for a pinned target: discovering
  * a constant is not an improvement on stating one, and the stage that

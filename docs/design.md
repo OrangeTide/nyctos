@@ -473,6 +473,8 @@ Four constraints shape everything that follows, and they are stated here because
 | Handle transfer | Inline for small counts, count plus pointer for large. Move. |
 | Pulses | Retained, distinct from fences. Reserved slots for system pulses. |
 | Page faults | Fault IPC sent by the faulting thread to its pager. Tier 2, read-only. |
+| Fault death | A fault ends the thread, on the path an exit takes, with the kind, the address and the instruction in its status. |
+| Fault reporting | Whoever holds the process reports it. The kernel narrates nothing, and an unwatched death halts the machine named. |
 | Paging scope | Shared library text. No copy-on-write, no swap. |
 | Loading | XIP from flash. Optional compile-time RAM loader. |
 | Kernel memory | Static per-tier object pools. No kernel heap. Permanent. |
@@ -1375,6 +1377,11 @@ A fault is a synchronous exception raised by the hardware while a thread is exec
 "Recoverable" here means recoverable *by the mechanism this document provides*. `SYS_FAULT_PAGE` has a pager that can supply the missing grant and a defined retry. The others have no such mechanism, which is a statement about the kernel rather than about the fault: a handler may still resolve one, but it must do so by changing the thread's state rather than by asking the kernel to retry.
 
 **`SYS_FAULT_EXTERNAL` may be imprecise.** On most parts an external abort can be reported after the instruction that caused it has retired, so the reported program counter is not the one to blame and the thread's registers are not a coherent snapshot of anything. It is enumerated separately for exactly this reason: a handler must treat it as a report that the address space is no longer trustworthy, not as a fault it can analyse. This is the one kind for which resumption is not merely unsupported but meaningless.
+
+
+**`SYS_FAULT_PAGE` is in the list and no port raises it.** Nothing separates a reference to an address the tables do not describe from one they describe as absent, because nothing is ever absent: every page a process has is mapped when the process is built. A translation fault is therefore reported as `SYS_FAULT_ACCESS`, which is the honest answer while the recoverable column has no mechanism behind it. The kind becomes reachable when a pager exists to make it recoverable, and the port mappings name the rows that will change.
+
+**`SYS_FAULT_ARITH` cannot be raised on RISC-V.** Integer division by zero produces a defined value there rather than an exception, and floating point traps are not enabled. It is a row that says so rather than a row that is missing, which is the difference between a mapping that has been thought about and one that has a default.
 
 **Stack overflow is not a kind.** It arrives as `SYS_FAULT_ACCESS` against the guard region below the stack, per section 10.2. There is no separate kind because the kernel does not know which region is a stack: it was given a region by the creator and nothing more. A handler that wants to distinguish overflow from any other access fault compares the faulting address against the stack bounds it chose.
 

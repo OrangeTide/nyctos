@@ -140,6 +140,42 @@ thread_exit(int32_t code)
     panic("thread %s: scheduled again after exiting", current->t_name);
 }
 
+void
+thread_fault(uint32_t kind, uintptr_t addr, uintptr_t pc)
+{
+    /*
+     * Recorded before the exit, because the exit is what releases a
+     * joiner and a joiner released by it reads these.
+     */
+    current->t_fault = kind;
+    current->t_fault_addr = addr;
+    current->t_fault_pc = pc;
+
+    thread_exit(SYS_EXIT_FAULT);
+}
+
+/*
+ * The name of a fault kind, for a message a person reads. Every kind of
+ * section 16.1 is here, including the one no port raises yet, so that a
+ * kind arriving from a mapping that has been extended prints as itself
+ * rather than as a number.
+ */
+const char *
+fault_name(uint32_t kind)
+{
+    switch (kind) {
+    case SYS_FAULT_NONE:        return "none";
+    case SYS_FAULT_PAGE:        return "page";
+    case SYS_FAULT_ACCESS:      return "access";
+    case SYS_FAULT_ALIGN:       return "alignment";
+    case SYS_FAULT_INSTRUCTION: return "instruction";
+    case SYS_FAULT_ARITH:       return "arithmetic";
+    case SYS_FAULT_DEBUG:       return "debug";
+    case SYS_FAULT_EXTERNAL:    return "external abort";
+    default:                    return "?";
+    }
+}
+
 /*
  * Attach a thread to a process, keeping the count of live threads in
  * step. A process finishes when its last thread does, per section

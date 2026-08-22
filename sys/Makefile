@@ -10,6 +10,7 @@ include $(TOPDIR)/share/mk/nyc.own.mk
 
 SRCS := arch/$(ARCH)/boot.S \
         arch/$(ARCH)/exception.S \
+        arch/$(ARCH)/fault_md.c \
         arch/$(ARCH)/halt.c \
         arch/$(ARCH)/intr.c \
         arch/$(ARCH)/machdep.S \
@@ -69,7 +70,8 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
     $(OBJTOP)/bin/sh/sh.bin \
     $(OBJTOP)/bin/echo/echo.bin \
     $(OBJTOP)/bin/cat/cat.bin \
-    $(OBJTOP)/bin/trespass/trespass.bin
+    $(OBJTOP)/bin/trespass/trespass.bin \
+    $(OBJTOP)/bin/touch_addr/touch_addr.bin
 	@mkdir -p $(@D)
 	$(MKBOOTARCH) $@ \
 	    fs_server=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 0 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_server/fs_server.bin \
@@ -84,6 +86,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
 	    sh=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 9 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/sh/sh.bin \
 	    echo=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 10 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/echo/echo.bin \
 	    cat=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 11 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/cat/cat.bin \
-	    trespass=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 12 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/trespass/trespass.bin
+	    trespass=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 12 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/trespass/trespass.bin \
+	    touch_addr=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 13 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/touch_addr/touch_addr.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)

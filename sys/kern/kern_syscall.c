@@ -50,17 +50,43 @@ syscall_handler(struct sys_op *op, unsigned long count)
 void
 trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
 {
-    /*
-     * Once processes exist, an unhandled trap terminates the faulting
-     * process and the system carries on; that is what section 16 of
-     * design.md means by fatal by default. There is nothing but the kernel
-     * to fault right now, so every trap is a kernel bug.
-     */
-    {
-        struct thread *t = thread_current();
+    struct thread *t = thread_current();
 
-        panic("unhandled trap in %s: cause=0x%lx pc=0x%lx addr=0x%lx "
-          "space=0x%lx", t != NULL ? t->t_name : "?", cause, pc, addr,
-          md_current_space());
-    }
+    /*
+     * A synchronous exception the kernel took itself. Section 16.2 is
+     * about a thread running a program: it dies and the system carries
+     * on, which trap_user does. There is nobody to report this one to
+     * and nothing sensible to do with a kernel whose own instruction
+     * did not run, so it stops the machine and says everything it
+     * knows.
+     */
+    panic("unhandled trap in %s: %s, cause=0x%lx pc=0x%lx addr=0x%lx "
+      "space=0x%lx", t != NULL ? t->t_name : "?",
+      fault_name(md_fault_kind(cause)), cause, pc, addr,
+      md_current_space());
+}
+
+/*
+ * A program faulted.
+ *
+ * Section 16.2: the thread dies, the system carries on, and what killed
+ * it is in its status for whoever is watching. Everything that makes
+ * that work was built by exit: the completion timeline advances, a
+ * joiner is released, donated priority unwinds. A fault is an exit whose
+ * code the thread did not choose, which is why this is four lines rather
+ * than a mechanism.
+ *
+ * The kernel says nothing here. Whoever holds the process is the one
+ * that reports this, because the report needs a name for the program and
+ * a place to put it; and a program nobody holds does not go quiet, it
+ * halts the machine with the fault named, per the unwatched exit of
+ * section 24.3's placeholder.
+ */
+void
+trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
+{
+    uint32_t kind = md_fault_kind(cause);
+    uintptr_t where = md_fault_has_addr(cause) ? (uintptr_t)addr : 0;
+
+    thread_fault(kind, where, (uintptr_t)pc);
 }

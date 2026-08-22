@@ -1446,8 +1446,8 @@ during the spawn checks, in a build that had a known fault elsewhere; it
 did not recur in fourteen boots of the fixed build and nothing more is
 claimed about it than that.
 
-**5. Faults, and death by default.** What the hardware raises, and what
-happens to the thread that raised it.
+**5. Faults, and death by default.** *Built.* What the hardware raises,
+and what happens to the thread that raised it.
 
 - Every exception each port can raise mapped to one of section 16.1's
   kinds, with the rows that cannot happen saying so rather than being
@@ -1463,6 +1463,64 @@ happens to the thread that raised it.
 touched it, while the shell that started it carries on and reports it.
 The same program at Tier 0 does not fault at all, which is section 6.1's
 whole argument visible in two runs of one image.
+
+The address is the kernel's first instruction rather than null, which is
+the same claim made better. Null is unmapped at Tier 2 and is also
+nothing at Tier 0, where the bus would answer for it and the program
+might die anyway; the kernel's first instruction is memory that
+definitely exists and definitely is not the program's. So the two runs
+differ for the reason the stage is about, and not because one address
+happens to be special.
+
+`touch_addr` takes the address on its command line and returns the word
+it read. At Tier 0 it reads `0xd53800a0` on one port and `0x20297` on
+the other, which is each kernel's first instruction, and exits with it.
+At Tier 2 the same image at the same instruction dies of an access fault
+at that address, and the check confirms the reported instruction is
+inside the program rather than inside the kernel that reported it.
+Stage 3's review saw the first half of this and could not check it,
+because a fault stopped the machine then.
+
+From a shell, which is where a person sees it:
+
+```
+$ touch_addr 40080000                         (Tier 0)
+touch_addr: 0xd53800a0 at 0x40080000
+[-717750112]
+
+$ touch_addr 40080000                         (Tier 2)
+sh: touch_addr: access fault at 0x40080000, pc 0x40f000f4
+[-16]
+```
+
+**The kernel says nothing when a program faults.** The first version
+printed a line, which read well until the shell printed one too. Whoever
+holds the process is what reports a death, because reporting needs a
+name for the program and somewhere to put it, and a death nobody holds
+already halts the machine with the fault named. That leaves exactly one
+report per fault and no case where there is none.
+
+**A fault is an exit, and that is all the mechanism there is.** The
+completion timeline advances, a joiner is released, donated priority
+unwinds, the process finishes when its last thread does. `thread_fault`
+records three fields and calls `thread_exit`. Section 16.2 says exit and
+fault share a path; sharing it turned out to mean writing nothing.
+
+*What the mapping settled.* Both ports enumerate every exception their
+hardware defines rather than the ones that arrive, because a row that is
+absent is a fault that lands on whatever the default happens to be.
+Three rows are there to say they cannot happen: `SYS_FAULT_PAGE`, which
+no port raises because nothing is ever absent from a table until there
+is a pager to make one so; `SYS_FAULT_ARITH` on RISC-V, where division
+by zero has a defined result and no floating point traps are enabled;
+and the ecall-from-supervisor code, which cannot arrive because the
+machine-mode window closed at boot and nothing is above the kernel.
+
+*Left for later, deliberately.* The handler of section 16.3 is not here:
+a process may not nominate a fault channel, and every fault is fatal.
+That is the opt-in half of the section and it needs the pager shape of
+15.3, which is stage 8. `SYS_FAULT_EXTERNAL` is mapped on both ports and
+cannot be provoked on either board, so the row is written and untested.
 
 **6. The move contract, enforced.** The thesis, and the earliest point the
 machinery allows it.

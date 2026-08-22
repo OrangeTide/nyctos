@@ -1,0 +1,157 @@
+/*
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ *
+ * PUBLIC DOMAIN (CC0-1.0)
+ */
+
+/*
+ * Every synchronous exception this port can raise, mapped to a kind of
+ * section 16.1.
+ *
+ * The mapping is exhaustive on purpose, including the codes that cannot
+ * arrive in this system: a row saying "this cannot happen here" survives
+ * someone enabling the feature that would make it happen, and a row that
+ * is simply absent is a fault that arrives as whatever the default turns
+ * out to be.
+ *
+ * scause holds the exception code with its top bit clear. Its companion
+ * stval holds the address for the faults that have one, and zero for the
+ * rest, which the architecture specifies rather than leaves to the part.
+ */
+
+#include <sys/op.h>
+#include <sys/systm.h>
+
+#define CAUSE_INSN_MISALIGNED   0
+#define CAUSE_INSN_ACCESS       1
+#define CAUSE_ILLEGAL_INSN      2
+#define CAUSE_BREAKPOINT        3
+#define CAUSE_LOAD_MISALIGNED   4
+#define CAUSE_LOAD_ACCESS       5
+#define CAUSE_STORE_MISALIGNED  6
+#define CAUSE_STORE_ACCESS      7
+#define CAUSE_ECALL_U           8
+#define CAUSE_ECALL_S           9
+#define CAUSE_ECALL_M           11
+#define CAUSE_INSN_PAGE         12
+#define CAUSE_LOAD_PAGE         13
+#define CAUSE_STORE_PAGE        15
+#define CAUSE_SW_CHECK          18
+#define CAUSE_HW_ERROR          19
+
+uint32_t
+md_fault_kind(unsigned long cause)
+{
+    switch (cause) {
+    case CAUSE_INSN_MISALIGNED:
+    case CAUSE_LOAD_MISALIGNED:
+    case CAUSE_STORE_MISALIGNED:
+        /*
+         * The kernel and its programs are built with strict alignment,
+         * so this arrives from a program that constructed an address
+         * rather than from a compiler that assumed a fixup.
+         */
+        return SYS_FAULT_ALIGN;
+
+    case CAUSE_INSN_ACCESS:
+    case CAUSE_LOAD_ACCESS:
+    case CAUSE_STORE_ACCESS:
+        /*
+         * A physical access that did not complete: no memory at the
+         * address, or PMP refusing it. The PMP here is wide open, so in
+         * this system it means the bus had nothing there.
+         */
+        return SYS_FAULT_ACCESS;
+
+    case CAUSE_INSN_PAGE:
+    case CAUSE_LOAD_PAGE:
+    case CAUSE_STORE_PAGE:
+        /*
+         * Translation said no: either no valid entry, or one without the
+         * permission the access needed. This is the row that becomes
+         * SYS_FAULT_PAGE when there is a pager to make it recoverable,
+         * which is stage 8. Until then nothing can supply the page, and
+         * reporting it as recoverable would name a mechanism that does
+         * not exist.
+         *
+         * Sv39 gives no bit that separates "no entry" from "wrong
+         * permission" in scause, so this port could not tell the two
+         * apart even when it needs to; the pager will read the tables.
+         */
+        return SYS_FAULT_ACCESS;
+
+    case CAUSE_ILLEGAL_INSN:
+        return SYS_FAULT_INSTRUCTION;
+
+    case CAUSE_BREAKPOINT:
+        return SYS_FAULT_DEBUG;
+
+    case CAUSE_ECALL_U:
+        /*
+         * A system call, which the trap path takes before it gets here.
+         * Reaching this means the entry path let one through.
+         */
+        return SYS_FAULT_INSTRUCTION;
+
+    case CAUSE_ECALL_S:
+    case CAUSE_ECALL_M:
+        /*
+         * The kernel calling a level above itself. There is nothing
+         * above it: the machine-mode window closed at boot and no
+         * hypervisor is present, so this cannot arrive from a program
+         * and cannot arrive from the kernel either.
+         */
+        return SYS_FAULT_INSTRUCTION;
+
+    case CAUSE_SW_CHECK:
+    case CAUSE_HW_ERROR:
+        /*
+         * A landing-pad or shadow-stack check, and a hardware error
+         * report. Neither extension is enabled here, and the second is a
+         * statement that the memory is untrustworthy rather than that
+         * the thread was wrong, which is what SYS_FAULT_EXTERNAL means.
+         */
+        return cause == CAUSE_HW_ERROR ? SYS_FAULT_EXTERNAL
+          : SYS_FAULT_INSTRUCTION;
+
+    default:
+        /*
+         * A code the architecture reserves, or one added after this was
+         * written. Nothing true can be said about it beyond that the
+         * instruction did not run.
+         *
+         * There is no arithmetic row on this port. RISC-V integer
+         * division by zero produces a defined value rather than an
+         * exception, so SYS_FAULT_ARITH cannot be raised here at all
+         * until floating point traps are enabled, and this kernel does
+         * not enable them.
+         */
+        return SYS_FAULT_INSTRUCTION;
+    }
+}
+
+/*
+ * Whether stval holds an address worth reporting. The architecture sets
+ * it for the aborts and the misalignments and zeroes it for the rest, so
+ * this says the same thing twice; it says it here so that a caller does
+ * not have to know which faults those are.
+ */
+bool
+md_fault_has_addr(unsigned long cause)
+{
+    switch (cause) {
+    case CAUSE_INSN_MISALIGNED:
+    case CAUSE_LOAD_MISALIGNED:
+    case CAUSE_STORE_MISALIGNED:
+    case CAUSE_INSN_ACCESS:
+    case CAUSE_LOAD_ACCESS:
+    case CAUSE_STORE_ACCESS:
+    case CAUSE_INSN_PAGE:
+    case CAUSE_LOAD_PAGE:
+    case CAUSE_STORE_PAGE:
+    case CAUSE_BREAKPOINT:
+        return true;
+    default:
+        return false;
+    }
+}

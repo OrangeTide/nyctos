@@ -82,6 +82,17 @@ struct proc {
     struct timeline     p_completion;
     uint32_t            p_nthreads;
 
+
+    /*
+     * What ended the thread whose exit finished this process, if the
+     * hardware did, per section 16.2. A supervisor holding a process
+     * handle reads the fault here rather than having to have held a
+     * thread handle it never saw.
+     */
+    uint32_t            p_fault;
+    uintptr_t           p_fault_addr;
+    uintptr_t           p_fault_pc;
+
     /* Where a user program starts, and how it finished. */
     uintptr_t           p_entry;
     int32_t             p_exit_code;

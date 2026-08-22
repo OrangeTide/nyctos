@@ -222,6 +222,17 @@ struct thread {
     uintptr_t           t_uarg;
     uintptr_t           t_ustack;
 
+
+    /*
+     * What ended this thread, if the hardware did, per section 16.2. The
+     * kind is SYS_FAULT_NONE for a thread that exited by asking to, which
+     * is what makes the two tellable apart by a joiner that reads the
+     * status rather than by one that knows what the program was doing.
+     */
+    uint32_t            t_fault;
+    uintptr_t           t_fault_addr;
+    uintptr_t           t_fault_pc;
+
     struct timeline     t_completion;
     int32_t             t_exit_code;
 
@@ -289,6 +300,19 @@ struct proc;
  * status readable through a handle held afterwards.
  */
 void thread_exit(int32_t code) __attribute__((noreturn));
+
+/*
+ * End the running thread because the hardware raised something, per
+ * section 16.2. It is thread_exit with a reason attached: the same
+ * timeline advances, the same joiner is released, the same donated
+ * priority unwinds. A fault is an exit whose code the thread did not
+ * choose.
+ */
+void thread_fault(uint32_t kind, uintptr_t addr, uintptr_t pc)
+  __attribute__((noreturn));
+
+/* The name of a fault kind, for a message a person reads. */
+const char *fault_name(uint32_t kind);
 
 /* Release a thread whose deadline passed while it was still blocked. */
 void thread_wake_timeout(struct thread *t);

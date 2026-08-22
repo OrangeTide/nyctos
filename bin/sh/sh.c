@@ -91,6 +91,25 @@ share(sys_handle_t h)
     return copy;
 }
 
+/*
+ * The name of a fault kind. Section 16.1's list, in the words a person
+ * reading a shell reads.
+ */
+static const char *
+fault_name(uint32_t kind)
+{
+    switch (kind) {
+    case SYS_FAULT_PAGE:        return "page";
+    case SYS_FAULT_ACCESS:      return "access";
+    case SYS_FAULT_ALIGN:       return "alignment";
+    case SYS_FAULT_INSTRUCTION: return "instruction";
+    case SYS_FAULT_ARITH:       return "arithmetic";
+    case SYS_FAULT_DEBUG:       return "debug";
+    case SYS_FAULT_EXTERNAL:    return "external abort";
+    default:                    return "unknown";
+    }
+}
+
 static sys_err_t
 run(int argc, char **argv, int32_t *status)
 {
@@ -140,6 +159,24 @@ run(int argc, char **argv, int32_t *status)
         (void)sys_handle_close(done);
         (void)sys_handle_close(child);
         return SYS_ERR_STALE;
+    }
+
+    /*
+     * A program the machine stopped, per section 16.2. The status alone
+     * says a number a program never returns, which is true and useless;
+     * what a person needs is which fault, where, and on what
+     * instruction. Printed here rather than left to the caller because
+     * the caller has the number and this has the reason.
+     */
+    {
+        sys_fault_t fault;
+
+        if (sys_proc_fault(child, &fault) == SYS_OK &&
+          fault.kind != SYS_FAULT_NONE) {
+            printf("sh: %s: %s fault at 0x%x, pc 0x%x\n", argv[0],
+              fault_name(fault.kind), (unsigned int)fault.addr,
+              (unsigned int)fault.pc);
+        }
     }
     (void)sys_handle_close(done);
     (void)sys_handle_close(child);

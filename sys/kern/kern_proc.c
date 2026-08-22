@@ -442,6 +442,13 @@ proc_completion(struct proc *p)
 void
 proc_thread_exited(struct proc *p, int32_t code)
 {
+    /*
+     * The thread is the caller: exit runs on the thread that is
+     * exiting, which is what lets this take the fault from it without
+     * being handed it through every layer between.
+     */
+    const struct thread *t = thread_current();
+
     if (p->p_nthreads == 0) {
         panic("proc %s: a thread exited from a process with none", p->p_name);
     }
@@ -451,6 +458,11 @@ proc_thread_exited(struct proc *p, int32_t code)
 
     p->p_exit_code = code;
     p->p_exited = true;
+    if (t != NULL) {
+        p->p_fault = t->t_fault;
+        p->p_fault_addr = t->t_fault_addr;
+        p->p_fault_pc = t->t_fault_pc;
+    }
 
     /*
      * An exit nobody was waiting for stops the system, named. This is the
@@ -460,6 +472,12 @@ proc_thread_exited(struct proc *p, int32_t code)
      * this. Section 24.3 is where a parent makes the decision properly.
      */
     if (!p->p_watched) {
+        if (p->p_fault != SYS_FAULT_NONE) {
+            panic("%s took a %s fault at 0x%lx, pc 0x%lx, and nothing "
+              "was waiting for it", p->p_name, fault_name(p->p_fault),
+              (unsigned long)p->p_fault_addr,
+              (unsigned long)p->p_fault_pc);
+        }
         panic("%s exited with status %d and nothing was waiting for it",
           p->p_name, code);
     }

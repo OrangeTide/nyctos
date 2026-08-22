@@ -2124,6 +2124,127 @@ kernel_buffer_checks(sys_handle_t root)
     handle_close(&proc_current()->p_handles, file);
 }
 
+
+/*
+ * A program that touches memory that is not its own, and what happens
+ * to it.
+ *
+ * The same image, the same instruction, the same address, on two tiers.
+ * At Tier 0 the load succeeds and the program prints the word it found,
+ * because there is one address space and nothing between a program and
+ * the kernel's first instruction. At Tier 2 the hardware refuses, the
+ * thread ends with the kind, the address and the instruction in its
+ * status, and everything else goes on running.
+ *
+ * This is section 6.1's argument in two runs of one program, and it is
+ * what stage 3 saw and could not check: a fault stopped the machine
+ * then, so the difference could be observed and not survived.
+ */
+static void
+fault_checks(void)
+{
+    struct sys_op_status_args sargs;
+    struct handle_table *ht = &proc_current()->p_handles;
+    const char *argv[2];
+    char addr[19];
+    sys_handle_t h;
+    struct child c;
+    uintptr_t kernel, rx_end, kend;
+    void *obj;
+    size_t n;
+    int i;
+
+    /*
+     * The kernel's first instruction. Nothing about it matters except
+     * that it is not the program's: it is the address the review of
+     * stage 3 used, and the same one the mapping made read-only. The
+     * other two ends of the image are taken because the port writes all
+     * three and has nowhere to put one it is not given.
+     */
+    md_kernel_image(&kernel, &rx_end, &kend);
+    (void)rx_end;
+    (void)kend;
+
+    n = 0;
+    for (i = 60; i >= 0; i -= 4) {
+        unsigned int d = (unsigned int)((kernel >> i) & 0xf);
+
+        if (n == 0 && d == 0 && i != 0) {
+            continue;
+        }
+        addr[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+    }
+    addr[n] = '\0';
+
+    argv[0] = "touch_addr";
+    argv[1] = addr;
+
+    sched_defer();
+    if (proc_spawn_op(proc_current(), "touch_addr", PRIO_BOOT - 1, NULL, 0,
+      argv, 2, &h) != SYS_OK) {
+        panic("fault: could not start the program");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("fault: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    (void)child_join(&c, 1000);
+
+    memset(&sargs, 0, sizeof(sargs));
+    if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) !=
+      SYS_OK) {
+        panic("fault: no status for it");
+    }
+
+#if SYS_TIER == 2
+    if (sargs.out_fault != SYS_FAULT_ACCESS) {
+        panic("fault: it read 0x%lx and lived, kind %u",
+          (unsigned long)kernel, (unsigned int)sargs.out_fault);
+    }
+    if (sargs.out_fault_addr != kernel) {
+        panic("fault: reported 0x%lx, touched 0x%lx",
+          (unsigned long)sargs.out_fault_addr, (unsigned long)kernel);
+    }
+    /*
+     * The instruction is the program's own, which is the part that makes
+     * the report worth having: an address without the instruction that
+     * reached it says where but not who.
+     */
+    if (!proc_owns(c.c_proc, sargs.out_fault_pc, 1)) {
+        panic("fault: pc 0x%lx is not in the program",
+          (unsigned long)sargs.out_fault_pc);
+    }
+    cnprintf("    %-38s %s at 0x%lx\n", "reading the kernel, it died of",
+      fault_name(sargs.out_fault), (unsigned long)sargs.out_fault_addr);
+    cnprintf("    %-38s 0x%lx\n", "on its own instruction at",
+      (unsigned long)sargs.out_fault_pc);
+#else
+    if (sargs.out_fault != SYS_FAULT_NONE) {
+        panic("fault: it died of %u reading 0x%lx, at this tier",
+          (unsigned int)sargs.out_fault, (unsigned long)kernel);
+    }
+
+    /*
+     * It read the kernel, and this is what was there. Comparing the
+     * status with the same word read from here is what makes this a
+     * check rather than an observation that a program exited: an exit
+     * code of zero would have been produced by a program that never ran
+     * the load at all.
+     */
+    if (sargs.out_code != (int32_t)(*(volatile const uint32_t *)kernel)) {
+        panic("fault: it read 0x%x where the kernel has 0x%x",
+          (unsigned int)sargs.out_code,
+          (unsigned int)(*(volatile const uint32_t *)kernel));
+    }
+    cnprintf("    %-38s 0x%x\n", "reading the kernel, it got back",
+      (unsigned int)sargs.out_code);
+#endif
+
+    handle_close(ht, h);
+}
+
 /* The console and the directory the shell is handed, kept from the
  * checks that created them. Root will hold both when there is a root;
  * until then the kernel is what assembles the system. */
@@ -2324,6 +2445,9 @@ kernel_main(void)
 
     cnputs("spawn: a program that starts a program\n");
     spawn_checks();
+
+    cnputs("faults: what the hardware raises, and who dies of it\n");
+    fault_checks();
 
     cnputs("isolation: two processes from one image\n");
     two_copies_checks();

@@ -392,6 +392,16 @@ op_proc_status(struct proc *p, struct sys_op *op)
     args->out_state = target->p_exited ? SYS_STATE_EXITED
       : SYS_STATE_RUNNING;
 
+    /*
+     * Section 16.2: a fault is an exit with a reason, and this is
+     * where the reason is read. A process that ended any other way
+     * reports SYS_FAULT_NONE, which is what its fields already hold.
+     */
+    args->out_fault = target->p_fault;
+    args->out_reserved = 0;
+    args->out_fault_addr = target->p_fault_addr;
+    args->out_fault_pc = target->p_fault_pc;
+
     return SYS_OK;
 }
 
@@ -524,6 +534,11 @@ op_thread_status(struct proc *p, struct sys_op *op)
     t = obj;
 
     args->out_code = t->t_state == THREAD_DEAD ? t->t_exit_code : 0;
+
+    args->out_fault = t->t_fault;
+    args->out_reserved = 0;
+    args->out_fault_addr = t->t_fault_addr;
+    args->out_fault_pc = t->t_fault_pc;
 
     switch (t->t_state) {
     case THREAD_RUNNING:

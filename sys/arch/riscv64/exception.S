@@ -173,10 +173,24 @@ trap_interrupt:
     call    irq_dispatch
     j       trap_restore
 
+/*
+ * A synchronous trap that is not a system call.
+ *
+ * SPP in the saved sstatus says which mode it came from. A program
+ * loses its thread and the machine carries on, per section 16.2; the
+ * kernel taking one is a kernel bug and stops the machine. Neither
+ * call returns, so the frame is never restored.
+ */
 trap_bad:
     csrr    a0, scause
     csrr    a1, sepc
     csrr    a2, stval
+    ld      t1, 136(sp)
+    srli    t1, t1, 8               /* sstatus.SPP */
+    andi    t1, t1, 1
+    bnez    t1, 1f
+    call    trap_user
+1:
     call    trap_fatal
 
 .section .data
