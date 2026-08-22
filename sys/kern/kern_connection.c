@@ -30,3 +30,18 @@ connection_destroy(struct connection *cn)
 {
     (void)pool_free(connection_pool(), cn->cn_id);
 }
+
+/*
+ * The process that serves this connection. A connection names a channel
+ * and a channel has an owner, so the pager chain of section 15.4 is a
+ * walk through two indirections and no new field.
+ */
+struct proc *
+connection_owner(const struct connection *cn)
+{
+    if (cn == NULL || cn->cn_channel == NULL) {
+        return NULL;
+    }
+
+    return cn->cn_channel->c_owner;
+}

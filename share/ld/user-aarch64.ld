@@ -26,6 +26,19 @@ SECTIONS
         *(.rodata*)
     }
 
+    /*
+     * Everything writable starts on a page boundary, so that no page
+     * of this image is both text and data. Section 15.1 has writable
+     * memory copied eagerly and read-only memory paged in on demand,
+     * and a page holding some of each cannot be either: the loader
+     * would leave it out and the first write to it would fault
+     * against a page a pager is only allowed to supply read-only.
+     *
+     * It costs padding at the end of the image, up to a page per
+     * program, in exchange for a boundary the loader can see.
+     */
+    . = ALIGN(4096);
+
     .data : {
         *(.data*)
     }

@@ -50,8 +50,19 @@
 #error "SYS_TIER must be 0 or 2; see section 6"
 #endif
 
-#define SYS_MAX_PROCESSES         32
-#define SYS_MAX_THREADS           64
+/*
+ * How many of each there can be.
+ *
+ * These are sized by the boot check sequence rather than by a workload,
+ * and that is worth saying rather than leaving to be discovered. Nothing
+ * is reaped until M7: a process that has exited keeps its slot so that
+ * its status stays readable, so a run that starts forty programs one
+ * after another needs forty slots even though two are ever alive. What
+ * makes these numbers a property of a system instead of a property of
+ * its tests is reclamation, and that is M7.
+ */
+#define SYS_MAX_PROCESSES         48
+#define SYS_MAX_THREADS           80
 #define SYS_MAX_CHANNELS          32
 #define SYS_MAX_GRANTS            64
 #define SYS_MAX_TIMELINES         64

@@ -23,16 +23,40 @@ SECTIONS
     }
 
     .rodata : {
+        /*
+         * The small sections too. RISC-V gives short-reach addressing
+         * its own sections, and a script that names only the ordinary
+         * ones leaves them as orphans the linker places wherever it
+         * likes. Read-only ones belong with rodata; the writable
+         * ones belong below, and .sbss belongs inside the range
+         * whatever zeroes bss walks. It was outside it.
+         */
+        *(.srodata*)
         *(.rodata*)
     }
 
+    /*
+     * Everything writable starts on a page boundary, so that no page
+     * of this image is both text and data. Section 15.1 has writable
+     * memory copied eagerly and read-only memory paged in on demand,
+     * and a page holding some of each cannot be either: the loader
+     * would leave it out and the first write to it would fault
+     * against a page a pager is only allowed to supply read-only.
+     *
+     * It costs padding at the end of the image, up to a page per
+     * program, in exchange for a boundary the loader can see.
+     */
+    . = ALIGN(4096);
+
     .data : {
         *(.data*)
+        *(.sdata*)
     }
 
     /* Not part of the flat binary: crt1 zeroes it at startup. */
     .bss (NOLOAD) : {
         _bss_start = .;
+        *(.sbss*)
         *(.bss*)
         *(COMMON)
         _bss_end = .;

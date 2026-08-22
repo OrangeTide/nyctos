@@ -3,6 +3,7 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
+#include <sys/bootarch.h>
 #include <sys/channel.h>
 #include <sys/config.h>
 #include <sys/connection.h>
@@ -41,6 +42,7 @@ errname(sys_err_t e)
     case SYS_ERR_WOULDBLOCK:    return "WOULDBLOCK";
     case SYS_ERR_NO_ENT:        return "NO_ENT";
     case SYS_ERR_FAULT:         return "FAULT";
+    case SYS_ERR_DEADLOCK:      return "DEADLOCK";
     default:                    return "?";
     }
 }
@@ -1118,7 +1120,7 @@ user_interrupt_checks(void)
     }
 
     sched_defer();
-    child_watch(&c, proc_spawn_image("spin", 20, NULL, 0));
+    child_watch(&c, proc_spawn_image("spin", 20, NULL, 0, NULL, 0));
     sched_undefer();
     (void)child_join(&c, 1000);
 
@@ -1150,7 +1152,7 @@ spawn_checks(void)
     int32_t code;
 
     sched_defer();
-    child_watch(&c, proc_spawn_image("spawner", 20, NULL, 0));
+    child_watch(&c, proc_spawn_image("spawner", 20, NULL, 0, NULL, 0));
     sched_undefer();
 
     code = child_join(&c, 1000);
@@ -1177,7 +1179,7 @@ thread_checks(void)
     int32_t code;
 
     sched_defer();
-    child_watch(&c, proc_spawn_image("threads", 20, NULL, 0));
+    child_watch(&c, proc_spawn_image("threads", 20, NULL, 0, NULL, 0));
     sched_undefer();
 
     code = child_join(&c, 1000);
@@ -1234,7 +1236,7 @@ greet_checks(sys_handle_t conn)
     ns[0].handle = dup.out_handle;
 
     sched_defer();
-    child_watch(&c, proc_spawn_image("greet", 20, ns, 1));
+    child_watch(&c, proc_spawn_image("greet", 20, ns, 1, NULL, 0));
     sched_undefer();
 
     code = child_join(&c, 60000);
@@ -1284,7 +1286,7 @@ shell_checks(sys_handle_t console, sys_handle_t root)
     ns[1].handle = dup.out_handle;
 
     sched_defer();
-    child_watch(&c, proc_spawn_image("sh", 20, ns, 2));
+    child_watch(&c, proc_spawn_image("sh", 20, ns, 2, NULL, 0));
     sched_undefer();
 
     /*
@@ -1447,7 +1449,7 @@ console_service(void)
     trace_reset();
     trace_enable(true);
 
-    (void)proc_spawn_image("console", 15, ns, 4);
+    (void)proc_spawn_image("console", 15, ns, 4, NULL, 0);
 
     console_write(conn, "\r\nline one: ", 12);
     (void)console_read(conn, line, sizeof(line));
@@ -1835,7 +1837,7 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
      * and halts the system for an exit nobody had claimed.
      */
     sched_defer();
-    p = proc_spawn_image(image, 20, ns, 1);
+    p = proc_spawn_image(image, 20, ns, 1, NULL, 0);
     child_watch(&c, p);
     sched_undefer();
 
@@ -1910,7 +1912,7 @@ trespass_checks(sys_handle_t root)
     ns[0].handle = root;
 
     sched_defer();
-    child_watch(&c, proc_spawn_image("trespass", 20, ns, 1));
+    child_watch(&c, proc_spawn_image("trespass", 20, ns, 1, NULL, 0));
     sched_undefer();
 
     code = child_join(&c, 1000);
@@ -2342,7 +2344,7 @@ move_checks(void)
     ns[1].handle = h_gate;
 
     sched_defer();
-    child_watch(&c, proc_spawn_image("grabber", 20, ns, 2));
+    child_watch(&c, proc_spawn_image("grabber", 20, ns, 2, NULL, 0));
     sched_undefer();
 
     /*
@@ -2617,6 +2619,332 @@ grant_checks(void)
     handle_close(ht, h);
 }
 
+
+/*
+ * A page fault as a message, and a program whose text arrives one page
+ * at a time.
+ *
+ * This thread is the root pager of section 15.4: it has no pager of its
+ * own and is memory-locked, which is what a terminator is. It knows the
+ * boot archive because the kernel is the loader, so what it supplies is
+ * the image bytes for the page that was asked about.
+ *
+ * The program adds up its own image and returns the sum. That is what
+ * makes this a check rather than an observation: the same sum computed
+ * from the archive here has to match, so a pager that answered with
+ * blank pages would fail even though the program ran to the end.
+ */
+
+/* A hex address as a string, for a command line that carries one. */
+static void
+hex_into(char *out, uintptr_t v)
+{
+    size_t n = 0;
+    int i;
+
+    for (i = 60; i >= 0; i -= 4) {
+        unsigned int d = (unsigned int)((v >> i) & 0xf);
+
+        if (n == 0 && d == 0 && i != 0) {
+            continue;
+        }
+        out[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+    }
+    out[n] = '\0';
+}
+
+
+/*
+ * A thread between the pager and the program it serves, so that the
+ * priority the pager runs at is a fact about scheduling rather than a
+ * field somebody set.
+ *
+ * Section 15.3's claim is that a fault is serviced at the faulting
+ * thread's priority, because the thread donates to its pager exactly as
+ * a client donates to a server. The pager's own priority is below this
+ * thread's. If the donation did not happen, this thread would be the
+ * highest runnable thing whenever the program blocked on a fault, and
+ * the pager would not run until it finished.
+ */
+static struct thread *paging_spinner_t;
+static uint64_t paging_spin_turns;
+
+static void
+paging_spinner(void *arg)
+{
+    uint64_t until = time_now() + time_from_ms(100);
+
+    (void)arg;
+
+    while (time_now() < until) {
+        paging_spin_turns++;
+    }
+
+    thread_exit(0);
+}
+
+static struct channel *ch_pager;
+static sys_handle_t h_pager_recv;
+static uint32_t pager_pages;
+static uint8_t pager_prio_seen;
+static bool pager_served_over_spinner;
+
+static void
+root_pager(void *arg)
+{
+    struct sys_op_recv_args rx;
+    struct sys_op_reply_args tx;
+
+    (void)arg;
+
+    for (;;) {
+        const struct sys_fault_msg *fm;
+        const struct boot_member *m;
+        struct thread *client;
+        struct proc *cp;
+        struct grant *g;
+        uintptr_t pa, off;
+        sys_handle_t h;
+        size_t n;
+
+        memset(&rx, 0, sizeof(rx));
+        if (run(SYS_OP_IPC_RECV, h_pager_recv, &rx, sizeof(rx)) != SYS_OK) {
+            panic("pager: the receive failed");
+        }
+
+        fm = (const struct sys_fault_msg *)rx.message.inline_data;
+        client = thread_by_id(rx.peer);
+        cp = client != NULL ? client->t_proc : NULL;
+        m = cp != NULL ? boot_lookup(cp->p_name) : NULL;
+        if (m == NULL) {
+            panic("pager: a fault from something with no image");
+        }
+
+        off = fm->addr - (uintptr_t)m->bm_load;
+        n = m->bm_size > off ? m->bm_size - off : 0;
+        if (n > PAGE_SIZE) {
+            n = PAGE_SIZE;
+        }
+
+        /*
+         * A frame with the image bytes in it. Zeroed first, because the
+         * last page of an image is short and what follows it in the page
+         * is not part of the program.
+         */
+        pa = page_alloc();
+        if (pa == 0) {
+            panic("pager: no frame for %s", cp->p_name);
+        }
+        if (n > 0) {
+            memcpy((void *)pa, boot_payload(m) + off, n);
+        }
+
+        g = grant_create("a-text-page", pa, PAGE_SIZE, false);
+        if (g == NULL) {
+            panic("pager: no grant for %s", cp->p_name);
+        }
+        if (handle_insert(&proc_current()->p_handles, g, SYS_OBJ_GRANT,
+          SYS_RIGHT_READ | SYS_RIGHT_EXEC | SYS_RIGHT_TRANSFER,
+          &h) != SYS_OK) {
+            panic("pager: no handle for the page");
+        }
+
+        pager_pages++;
+        pager_prio_seen = thread_current()->t_prio;
+        if (paging_spinner_t != NULL &&
+          paging_spinner_t->t_state == THREAD_READY) {
+            pager_served_over_spinner = true;
+        }
+
+        memset(&tx, 0, sizeof(tx));
+        tx.peer = rx.peer;
+        tx.reply.handle = h;
+        if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
+            panic("pager: the reply failed");
+        }
+    }
+}
+
+
+/*
+ * The program, started with a pager, and what it cost.
+ */
+static void
+paging_checks(void)
+{
+    struct proc *self = proc_current();
+    struct sys_op_connect_args cargs;
+    const struct boot_member *m;
+    sys_ns_spec_t ns[1];
+    struct thread *t;
+    struct child c;
+    const char *argv[3];
+    char abase[19], alen[19];
+    uint32_t want = 0;
+    uint32_t i;
+    sys_handle_t h;
+    int32_t code;
+    sys_err_t err;
+
+    m = boot_lookup("paged");
+    if (m == NULL) {
+        panic("paging: no such image");
+    }
+
+    ch_pager = channel_create("pager", self);
+    if (ch_pager == NULL) {
+        panic("paging: no channel");
+    }
+    err = handle_insert(&self->p_handles, ch_pager, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_pager_recv);
+    expect("a channel for the root pager", err, SYS_OK);
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = 0;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to it, for the program",
+      run(SYS_OP_CHAN_CONNECT, h_pager_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+
+    /*
+     * The pager runs below the program, deliberately. Section 15.3's
+     * claim is that a fault is serviced at the faulting thread's
+     * priority because the thread donates to its pager, and a pager that
+     * already outranked its client would prove nothing.
+     */
+    t = thread_create("pager", 5, root_pager, NULL);
+    sched_ready(t);
+
+    hex_into(abase, (uintptr_t)m->bm_load);
+    hex_into(alen, m->bm_size);
+    argv[0] = "paged";
+    argv[1] = abase;
+    argv[2] = alen;
+
+    for (i = 0; i < m->bm_size; i++) {
+        want += boot_payload(m)[i];
+    }
+    want &= 0x7fffffffu;
+
+    ns[0].id = SYS_NS_PAGER;
+    ns[0].handle = cargs.out_handle;
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("paged", 20, ns, 1, argv, 3));
+
+    /*
+     * Readied inside the deferral, after the program, so that
+     * neither runs until both exist. Started before it, this
+     * outranks the boot thread and runs to its end before the
+     * program is spawned at all, which is a spinner that proves
+     * nothing.
+     */
+    paging_spinner_t = thread_create("middle", 10, paging_spinner, NULL);
+    sched_ready(paging_spinner_t);
+    sched_undefer();
+
+    code = child_join(&c, 2000);
+
+    if ((uint32_t)code != want) {
+        panic("paging: it added its image to 0x%x, not 0x%x, after "
+          "%u pages, %s fault at 0x%lx pc 0x%lx",
+          (unsigned int)code, (unsigned int)want,
+          (unsigned int)pager_pages, fault_name(c.c_proc->p_fault),
+          (unsigned long)c.c_proc->p_fault_addr,
+          (unsigned long)c.c_proc->p_fault_pc);
+    }
+#if SYS_TIER == 2
+    if (pager_pages == 0) {
+        panic("paging: it ran without a page arriving");
+    }
+    if (pager_prio_seen != 20) {
+        panic("paging: the pager served at %u, not at the priority of "
+          "the thread that faulted", (unsigned int)pager_prio_seen);
+    }
+    if (!pager_served_over_spinner) {
+        panic("paging: nothing lower was runnable, so the priority "
+          "proves nothing");
+    }
+    cnprintf("    %-38s %u\n", "pages its text arrived in",
+      (unsigned int)pager_pages);
+    cnprintf("    %-38s %u, base 5\n", "serviced at the faulting priority",
+      (unsigned int)pager_prio_seen);
+#else
+    /*
+     * Section 15.3 is Tier 2 only, and this is what that means from the
+     * outside: the same program, given the same pager, runs without ever
+     * asking it for anything, because a flat address space has nothing
+     * absent to fault on. It still adds up to the same number.
+     */
+    if (pager_pages != 0) {
+        panic("paging: %u pages arrived on a tier with no paging",
+          (unsigned int)pager_pages);
+    }
+    cnprintf("    %-38s %s\n", "pages its text arrived in",
+      "none, it was already there");
+#endif
+    cnprintf("    %-38s 0x%x\n", "and the image adds up to",
+      (unsigned int)want);
+
+    /*
+     * And a pager that does not terminate, per section 15.4 rule 1.
+     *
+     * The channel is owned by an ordinary program, which has no pager of
+     * its own and is not memory-locked, so a chain ending there ends at
+     * something that can fault. That is a deadlock with the timing not
+     * yet arranged: the classic shape is a storage driver that faults on
+     * its own text and has to reach the device it is driving.
+     *
+     * Refused before anything moves, which is why the caller is told
+     * rather than the child left half-built.
+     */
+    {
+        struct sys_op_connect_args bad;
+        struct child bc;
+        struct channel *bch;
+        sys_handle_t bh, bproc;
+        void *obj;
+
+        sched_defer();
+        if (proc_spawn_op(self, "status", PRIO_BOOT - 1, NULL, 0, NULL, 0,
+          &bproc) != SYS_OK) {
+            panic("paging: could not start an ordinary program");
+        }
+        if (handle_lookup(&self->p_handles, bproc, SYS_OBJ_PROCESS, 0,
+          &obj) != SYS_OK) {
+            panic("paging: the spawn returned no process");
+        }
+        child_watch(&bc, obj);
+        sched_undefer();
+        (void)child_join(&bc, 1000);
+
+        bch = channel_create("not-a-pager", obj);
+        if (bch == NULL) {
+            panic("paging: no channel");
+        }
+        if (handle_insert(&self->p_handles, bch, SYS_OBJ_CHANNEL,
+          SYS_RIGHT_RECV, &bh) != SYS_OK) {
+            panic("paging: no handle for it");
+        }
+        memset(&bad, 0, sizeof(bad));
+        bad.cookie = 0;
+        bad.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+        expect("a connection to a pager that can fault",
+          run(SYS_OP_CHAN_CONNECT, bh, &bad, sizeof(bad)), SYS_OK);
+
+        ns[0].id = SYS_NS_PAGER;
+        ns[0].handle = bad.out_handle;
+        expect("and a program given it, refused",
+          proc_spawn_op(self, "spin", PRIO_BOOT - 1, ns, 1, NULL, 0,
+            &bproc), SYS_ERR_DEADLOCK);
+
+        handle_close(&self->p_handles, bad.out_handle);
+        handle_close(&self->p_handles, bh);
+    }
+
+    (void)h;
+}
+
 /* The console and the directory the shell is handed, kept from the
  * checks that created them. Root will hold both when there is a root;
  * until then the kernel is what assembles the system. */
@@ -2700,7 +3028,7 @@ user_slice(void)
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = h_recv;
     cnputs("    loading fs_server, which receives on that channel\n");
-    (void)proc_spawn_image("fs_server", 15, ns, 1);
+    (void)proc_spawn_image("fs_server", 15, ns, 1, NULL, 0);
 
     /*
      * The same file, read two ways. Section 25.7 says one message should
@@ -2833,6 +3161,7 @@ kernel_main(void)
     console_service();
     device_checks();
     grant_checks();
+    paging_checks();
 
     cnputs("the slice again, with both halves in user mode\n");
     user_slice();

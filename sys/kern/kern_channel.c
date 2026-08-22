@@ -365,10 +365,20 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
              * buffer while the call is outstanding, which is the whole
              * of what Tier 2 is for.
              *
-             * The tables the page hung from stay, so the take-back
-             * needs no frame and cannot fail for want of one.
+             * Taken away rather than removed, which is how everything
+             * here takes memory away: the entry stays and loses the bit
+             * that lets user mode in. What that buys is a permission
+             * fault rather than a translation fault, and with a pager in
+             * the system the difference is the difference between a
+             * program touching memory it lent out and a page that is
+             * simply not there yet. One of those is a question for a
+             * pager and the other is a program with a bug.
              */
-            md_unmap(proc_as(client->t_proc), va, PAGE_SIZE);
+            if (md_map(proc_as(client->t_proc), va, pa, PAGE_SIZE,
+              VM_READ | VM_WRITE) != SYS_OK) {
+                panic("ipc: %s cannot have its own page taken away",
+                  client->t_name);
+            }
 
             client->t_lend_len += PAGE_SIZE;
         }

@@ -67,18 +67,20 @@ md_fault_kind(unsigned long cause)
     case CAUSE_LOAD_PAGE:
     case CAUSE_STORE_PAGE:
         /*
-         * Translation said no: either no valid entry, or one without the
-         * permission the access needed. This is the row that becomes
-         * SYS_FAULT_PAGE when there is a pager to make it recoverable,
-         * which is stage 8. Until then nothing can supply the page, and
-         * reporting it as recoverable would name a mechanism that does
-         * not exist.
+         * Translation said no. Sv39 gives no bit that separates "no
+         * entry" from "wrong permission" in scause, so this port
+         * cannot tell the two apart and answers with the one a pager
+         * can do something about: section 15.3 has the pager read
+         * the tables, which is where the difference is written down.
          *
-         * Sv39 gives no bit that separates "no entry" from "wrong
-         * permission" in scause, so this port could not tell the two
-         * apart even when it needs to; the pager will read the tables.
+         * A page the kernel has taken away is a permission fault by
+         * construction on the other port and is this code here, so
+         * the two agree on what happens and not on what it is
+         * called. What settles it either way is the kernel asking
+         * whether the faulting process has a pager and whether the
+         * address is one it could be given.
          */
-        return SYS_FAULT_ACCESS;
+        return SYS_FAULT_PAGE;
 
     case CAUSE_ILLEGAL_INSN:
         return SYS_FAULT_INSTRUCTION;
@@ -187,9 +189,9 @@ md_fault_check(void)
     expect(CAUSE_INSN_ACCESS, SYS_FAULT_ACCESS, "fetch access");
     expect(CAUSE_LOAD_ACCESS, SYS_FAULT_ACCESS, "load access");
     expect(CAUSE_STORE_ACCESS, SYS_FAULT_ACCESS, "store access");
-    expect(CAUSE_INSN_PAGE, SYS_FAULT_ACCESS, "fetch page");
-    expect(CAUSE_LOAD_PAGE, SYS_FAULT_ACCESS, "load page");
-    expect(CAUSE_STORE_PAGE, SYS_FAULT_ACCESS, "store page");
+    expect(CAUSE_INSN_PAGE, SYS_FAULT_PAGE, "fetch page");
+    expect(CAUSE_LOAD_PAGE, SYS_FAULT_PAGE, "load page");
+    expect(CAUSE_STORE_PAGE, SYS_FAULT_PAGE, "store page");
     expect(CAUSE_ILLEGAL_INSN, SYS_FAULT_INSTRUCTION, "illegal instruction");
     expect(CAUSE_BREAKPOINT, SYS_FAULT_DEBUG, "breakpoint");
     expect(CAUSE_HW_ERROR, SYS_FAULT_EXTERNAL, "hardware error");
@@ -212,5 +214,27 @@ md_fault_check(void)
             panic("fault map: scause %lu is arithmetic, which this port "
               "cannot raise", cause);
         }
+    }
+}
+
+/*
+ * What the instruction was doing to the address, for a pager deciding
+ * what to supply. The cause says it outright on this port, which is one
+ * of the places Sv39 is more forthcoming than the other architecture.
+ */
+uint32_t
+md_fault_access(unsigned long cause)
+{
+    switch (cause) {
+    case CAUSE_INSN_PAGE:
+    case CAUSE_INSN_ACCESS:
+    case CAUSE_INSN_MISALIGNED:
+        return SYS_RIGHT_EXEC;
+    case CAUSE_STORE_PAGE:
+    case CAUSE_STORE_ACCESS:
+    case CAUSE_STORE_MISALIGNED:
+        return SYS_RIGHT_WRITE;
+    default:
+        return SYS_RIGHT_READ;
     }
 }

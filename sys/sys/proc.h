@@ -19,6 +19,7 @@
 #ifndef _SYS_PROC_H_
 #define _SYS_PROC_H_
 
+#include <sys/connection.h>
 #include <sys/handle.h>
 #include <sys/pool.h>
 #include <sys/startup.h>
@@ -93,6 +94,29 @@ struct proc {
     uintptr_t           p_fault_addr;
     uintptr_t           p_fault_pc;
 
+
+    /*
+     * The pager this process faults to, per section 15.3, and what it
+     * has cost. The connection is resolved at spawn from the handle the
+     * namespace carried, because the kernel is what sends the fault and
+     * a handle means something only in the table that holds it.
+     *
+     * NULL is the ordinary case and means a fault is fatal: there is
+     * nobody to ask, which is what section 16.2 assumes about every
+     * process that is not on a paging path.
+     */
+    struct connection  *p_pager;
+    uint64_t            p_faults;
+
+    /*
+     * Memory-locked, per section 15.4 rule 2. Everything on a paging
+     * path is locked, and rule 3 makes a fault in one fatal rather than
+     * recoverable: it is a configuration mistake, and a system that
+     * deadlocks in the field is worse than one that stops at
+     * integration.
+     */
+    bool                p_locked;
+
     /* Where a user program starts, and how it finished. */
     uintptr_t           p_entry;
     int32_t             p_exit_code;
@@ -132,7 +156,8 @@ struct proc *proc_spawn(const char *name, uint8_t prio,
  * thread is started that drops into it.
  */
 struct proc *proc_spawn_image(const char *image, uint8_t prio,
-  const sys_ns_spec_t *ns, uint32_t nns);
+  const sys_ns_spec_t *ns, uint32_t nns, const char *const *argv,
+  uint32_t argc);
 
 /*
  * The completion timeline of section 10.4, and the record that someone

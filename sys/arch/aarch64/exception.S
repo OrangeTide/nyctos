@@ -93,6 +93,7 @@ el0_sync:
      * needs two of them as scratch after they have been restored, which
      * hands the program its own elr and spsr back in place of x9 and x10.
      */
+el0_return:
     ldr     x9, [sp, #184]
     msr     sp_el0, x9
     ldp     x9, x10, [sp, #168]
@@ -123,6 +124,15 @@ el0_fatal:
     mrs     x1, elr_el1
     mrs     x2, far_el1
     bl      trap_user
+
+    /*
+     * It came back, which means the pager answered and the
+     * instruction is to be tried again. The frame this was entered
+     * with is still on the stack, so the restore is the same one a
+     * system call uses and the return address is the faulting
+     * instruction rather than the one after it.
+     */
+    b       el0_return
 
 /*
  * An SError while a program was running. It has no frame because it

@@ -190,6 +190,13 @@ trap_bad:
     andi    t1, t1, 1
     bnez    t1, 1f
     call    trap_user
+
+    /*
+     * It came back, which means the pager answered and the
+     * instruction is to be tried again. sepc is not advanced: what
+     * this returns to is the instruction that faulted.
+     */
+    j       trap_restore
 1:
     call    trap_fatal
 

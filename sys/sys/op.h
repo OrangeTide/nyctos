@@ -449,6 +449,18 @@ typedef struct sys_op_grant_args {
 } sys_op_grant_args_t;
 
 /*
+ * A page fault, as the message the faulting thread sends. Section 15.3:
+ * the address it touched and what it was doing there, in the inline
+ * payload, because a fault is small and a grant is what comes back.
+ */
+typedef struct sys_fault_msg {
+    uintptr_t       addr;       /* the address, page-aligned */
+    uintptr_t       pc;         /* the instruction that touched it */
+    uint32_t        access;     /* SYS_RIGHT_READ, WRITE or EXEC */
+    uint32_t        _pad;
+} sys_fault_msg_t;
+
+/*
  * The longest name a boot archive member can have, which is what an image
  * is named by until there is a filesystem to load one from. It matches
  * BOOT_NAME_MAX, and the kernel asserts that it still does.

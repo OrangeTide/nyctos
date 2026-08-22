@@ -72,13 +72,21 @@ abort_kind(unsigned long esr)
         return SYS_FAULT_ACCESS;
     case 0x04:
         /*
-         * Translation fault: no descriptor for the address. This is the
-         * row that becomes SYS_FAULT_PAGE when there is a pager to make
-         * it recoverable, which is stage 8. Until then nothing can
-         * supply the page and calling it recoverable would be a claim
-         * about a mechanism that does not exist.
+         * Translation fault: no descriptor for the address. This is
+         * the recoverable kind, because a pager can supply what is
+         * not there and section 15.3 says how. Whether one exists
+         * for the faulting process is the kernel's question and not
+         * this port's: what the hardware said is that nothing
+         * describes the address.
+         *
+         * A page that has been taken away rather than never mapped
+         * is a permission fault instead, because that is how the
+         * kernel takes one away: the entry stays and loses the bit
+         * that lets user mode in. The difference matters here, since
+         * one of them is a question for a pager and the other is a
+         * program touching memory it lent out.
          */
-        return SYS_FAULT_ACCESS;
+        return SYS_FAULT_PAGE;
     case 0x08:
         return SYS_FAULT_ACCESS;    /* access flag fault */
     case 0x0c:
@@ -256,7 +264,7 @@ md_fault_check(void)
 
         for (level = 0; level < 4; level++) {
             expect(base | (0x00u + level), SYS_FAULT_ACCESS, "address size");
-            expect(base | (0x04u + level), SYS_FAULT_ACCESS, "translation");
+            expect(base | (0x04u + level), SYS_FAULT_PAGE, "translation");
             expect(base | (0x08u + level), SYS_FAULT_ACCESS, "access flag");
             expect(base | (0x0cu + level), SYS_FAULT_ACCESS, "permission");
             expect(base | (0x14u + level), SYS_FAULT_EXTERNAL,
@@ -294,5 +302,26 @@ md_fault_check(void)
                 panic("fault map: esr 0x%lx is not a fault", esr | fsc);
             }
         }
+    }
+}
+
+/*
+ * What the instruction was doing to the address, for a pager deciding
+ * what to supply. An instruction abort is a fetch; a data abort says in
+ * its ISS whether it was a write.
+ */
+uint32_t
+md_fault_access(unsigned long cause)
+{
+    switch (ESR_EC(cause)) {
+    case EC_INSN_ABORT_LOW:
+    case EC_INSN_ABORT_CUR:
+        return SYS_RIGHT_EXEC;
+    case EC_DATA_ABORT_LOW:
+    case EC_DATA_ABORT_CUR:
+        return (cause & (1UL << 6)) != 0 ? SYS_RIGHT_WRITE
+          : SYS_RIGHT_READ;
+    default:
+        return SYS_RIGHT_READ;
     }
 }

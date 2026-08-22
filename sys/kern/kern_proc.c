@@ -15,6 +15,14 @@
 
 #include <stdint.h>
 
+/* Resolve and validate a pager, per section 15.3 and 15.4 rule 1. */
+static sys_err_t proc_set_pager(struct proc *p, sys_handle_t h);
+static sys_err_t pager_chain_check(struct proc *server);
+
+/* Copy a command line into the process that will run it. */
+static sys_err_t proc_set_args(struct proc *p, const struct proc *from,
+  const char *const *argv, uint32_t argc);
+
 /* Copy a name into the process, truncating rather than running over. */
 static void
 proc_set_name(struct proc *p, const char *name)
@@ -42,6 +50,14 @@ proc_bootstrap(const char *name)
     timeline_init(&p->p_completion, p->p_name);
     p->p_nthreads = 0;
     handle_table_init(&p->p_handles, p);
+
+    /*
+     * Section 15.4 rule 1: the chain ends here. The kernel's own
+     * process has no pager and never faults recoverably, which is
+     * what a terminator is, and rule 2 has everything on a paging
+     * path locked.
+     */
+    p->p_locked = true;
 
     return p;
 }
@@ -125,6 +141,16 @@ proc_create(const char *name, const sys_ns_spec_t *ns, uint32_t nns)
             panic("spawn %s: could not hand over handle %u", name, i);
         }
         p->p_ns[i * 2] = (sys_handle_t)ns[i].id;
+
+        /*
+         * A pager is a handle like any other and is also the one the
+         * kernel has to keep hold of, per section 15.3. Resolved after
+         * the move, because it is resolved in the child's table.
+         */
+        if (ns[i].id == SYS_NS_PAGER &&
+          proc_set_pager(p, p->p_ns[i * 2 + 1]) != SYS_OK) {
+            panic("spawn %s: its pager does not terminate", name);
+        }
     }
 
     return p;
@@ -234,9 +260,29 @@ proc_load(struct proc *p, const struct boot_member *m)
     sys_err_t err;
 
     while (done < SYS_USER_SLOT_BYTES) {
-        uintptr_t pa = page_alloc();
+        uintptr_t pa;
         size_t n = m->bm_size > done ? m->bm_size - done : 0;
 
+        /*
+         * A page of the image, in a process that has a pager, is left
+         * for the pager to supply. Section 15.1: what demand paging is
+         * for is read-only text, and what is inside the image is text
+         * and rodata; everything writable a program has is beyond the
+         * end of the image, which is its zeroed data and its stack, and
+         * that is mapped here as it always was.
+         *
+         * A program with initialised writable data would break this,
+         * because the loader cannot see where its text ends: the archive
+         * carries a size and not a layout. Section 15.1 says writable
+         * segments are copied eagerly, and teaching the archive to carry
+         * the boundary is what would let this obey it.
+         */
+        if (n > 0 && p->p_pager != NULL) {
+            done += PAGE_SIZE;
+            continue;
+        }
+
+        pa = page_alloc();
         if (pa == 0) {
             return SYS_ERR_NO_MEMORY;
         }
@@ -308,7 +354,8 @@ proc_user_start(void *arg)
  */
 struct proc *
 proc_spawn_image(const char *image, uint8_t prio,
-  const sys_ns_spec_t *ns, uint32_t nns)
+  const sys_ns_spec_t *ns, uint32_t nns, const char *const *argv,
+  uint32_t argc)
 {
     const struct boot_member *m = boot_lookup(image);
     struct proc *p;
@@ -318,6 +365,16 @@ proc_spawn_image(const char *image, uint8_t prio,
         panic("spawn %s: no such member in the boot archive", image);
     }
     p = proc_create(image, ns, nns);
+
+    /*
+     * The command line, if there is one. The kernel spawning at boot
+     * is the loader of section 20.4 as much as the operation a
+     * program calls is, and a program started here that wants
+     * arguments has nowhere else to get them.
+     */
+    if (argc > 0 && proc_set_args(p, NULL, argv, argc) != SYS_OK) {
+        panic("spawn %s: it cannot have that command line", image);
+    }
 
 #if SYS_TIER == 2
     if (vm_as_create(&p->p_as) != SYS_OK) {
@@ -538,6 +595,61 @@ proc_thread_exited(struct proc *p, int32_t code)
     }
 }
 
+/*
+ * Whether a pager chain terminates, per section 15.4 rule 1.
+ *
+ * The chain is the processes that serve one another's faults, and it has
+ * to end at one that cannot fault: memory-locked, with no pager of its
+ * own. A chain that ends anywhere else is a deadlock waiting for the
+ * right timing, and the classic shape is a storage driver that faults on
+ * its own text and has to reach the device it is itself driving.
+ *
+ * Walking it is cheap, because it is a chain of processes and there are
+ * only so many of those, and a walk longer than the pool is a cycle.
+ */
+static sys_err_t
+pager_chain_check(struct proc *server)
+{
+    uint32_t hops;
+
+    for (hops = 0; server != NULL && hops <= SYS_MAX_PROCESSES; hops++) {
+        if (server->p_pager == NULL) {
+            return server->p_locked ? SYS_OK : SYS_ERR_DEADLOCK;
+        }
+        server = connection_owner(server->p_pager);
+    }
+
+    return SYS_ERR_DEADLOCK;
+}
+
+/*
+ * Resolve the pager a namespace named, per section 15.3.
+ *
+ * The handle has already moved into the child, which is where a handle
+ * belongs; what the kernel keeps is the object, because the kernel is
+ * what sends a fault message and it does not send it from a table.
+ */
+static sys_err_t
+proc_set_pager(struct proc *p, sys_handle_t h)
+{
+    void *obj;
+    sys_err_t err;
+
+    if (handle_lookup(&p->p_handles, h, SYS_OBJ_CONNECTION, SYS_RIGHT_SEND,
+      &obj) != SYS_OK) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    err = pager_chain_check(connection_owner(obj));
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    p->p_pager = obj;
+
+    return SYS_OK;
+}
+
 
 
 /*
@@ -752,6 +864,24 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
         if (err != SYS_OK) {
             return err;
         }
+
+        /*
+         * A pager is checked here rather than after the move, because
+         * section 15.4 rule 1 is a reason to refuse the spawn and a
+         * refusal has to happen while there is nothing to undo.
+         */
+        if (spec[i].id == SYS_NS_PAGER) {
+            void *cn;
+
+            if (handle_lookup(&parent->p_handles, spec[i].handle,
+              SYS_OBJ_CONNECTION, SYS_RIGHT_SEND, &cn) != SYS_OK) {
+                return SYS_ERR_INVALID_ARG;
+            }
+            err = pager_chain_check(connection_owner(cn));
+            if (err != SYS_OK) {
+                return err;
+            }
+        }
     }
 
     p = pool_alloc(proc_pool(), NULL);
@@ -787,6 +917,16 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
             panic("spawn %s: handover failed after it was checked", image);
         }
         p->p_ns[i * 2] = (sys_handle_t)spec[i].id;
+
+        /*
+         * The chain was checked before anything moved, so what is
+         * left here is resolving the connection in the table it now
+         * lives in. Section 15.3 has the kernel hold the object,
+         * because the kernel is what sends a fault message.
+         */
+        if (spec[i].id == SYS_NS_PAGER) {
+            (void)proc_set_pager(p, p->p_ns[i * 2 + 1]);
+        }
     }
 
     /*

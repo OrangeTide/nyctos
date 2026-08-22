@@ -473,6 +473,8 @@ Four constraints shape everything that follows, and they are stated here because
 | Handle transfer | Inline for small counts, count plus pointer for large. Move. |
 | Pulses | Retained, distinct from fences. Reserved slots for system pulses. |
 | Page faults | Fault IPC sent by the faulting thread to its pager. Tier 2, read-only. |
+| Pager inheritance | A channel handle placed at spawn under a well-known name. The kernel keeps the object, because the kernel is what sends the message. |
+| Demand-paged text | A process with a pager has its image left out of the loader and paged in; everything writable is mapped eagerly, and the linker aligns the boundary. |
 | Fault death | A fault ends the thread, on the path an exit takes, with the kind, the address and the instruction in its status. |
 | Fault reporting | Whoever holds the process reports it. The kernel narrates nothing, and an unwatched death halts the machine named. |
 | Paging scope | Shared library text. No copy-on-write, no swap. |
@@ -1342,6 +1344,11 @@ On a page fault the kernel synthesizes a message that appears to have been **sen
 #figure(include "fig/pagefault.typ", caption: [A page fault is a message the faulting thread sends to its pager.])
 ```
 
+
+**What a page is, and where it lands.** The reply carries a grant, and the grant is mapped at the address that faulted rather than at the address the grant covers. That is the one place a grant is not mapped at its own address, and the reason is that a grant says which memory while a fault says where: the page a pager hands over is its own, and the hole it fills is the faulting process's.
+
+**A pager supplies read-only pages, so a write fault is not a question for one.** Section 15.1 says so and this is where it bites: the loader leaves out the pages of the image and maps everything writable eagerly, which requires the boundary between them to be a page boundary. The linker aligns it. A program with initialised writable data would still break this, because the archive carries a size and not a layout, and the loader cannot see where the writable part begins.
+
 Modelling the fault as a message the faulting thread *sends*, rather than as an upcall delivered *into* a pager, is what allows **the rest of this document to apply unchanged.** Reply-by-thread-id works because the faulting thread is an ordinary blocked sender. The blocking invariant holds because it is blocked on exactly one object. Handle transfer delivers the grant. Cancellation reaches it like any other blocked thread.
 
 Most importantly, **priority inheritance applies without modification.** A high-priority thread's page fault is serviced at high priority, because the faulting thread donates to its pager exactly as any client donates to any server. In a real-time system this property is worth a great deal, and here it is a consequence of the formulation rather than a mechanism that had to be added.
@@ -1384,7 +1391,9 @@ A fault is a synchronous exception raised by the hardware while a thread is exec
 
 **`SYS_FAULT_EXTERNAL` may be imprecise.** On most parts an external abort can be reported after the instruction that caused it has retired, so the reported program counter is not the one to blame and the thread's registers are not a coherent snapshot of anything. It is enumerated separately for exactly this reason: a handler must treat it as a report that the address space is no longer trustworthy, not as a fault it can analyse. This is the one kind for which resumption is not merely unsupported but meaningless.
 
-**`SYS_FAULT_PAGE` is in the list and no port raises it.** Nothing separates a reference to an address the tables do not describe from one they describe as absent, because nothing is ever absent: every page a process has is mapped when the process is built. A translation fault is therefore reported as `SYS_FAULT_ACCESS`, which is the honest answer while the recoverable column has no mechanism behind it. The kind becomes reachable when a pager exists to make it recoverable, and the port mappings name the rows that will change.
+**`SYS_FAULT_PAGE` is what a translation fault is, and the kernel decides whether it is recoverable.** A port answers with the kind the hardware described: an address nothing describes is a page fault. Whether anything can be done about it is a question about the faulting process rather than about the instruction, so the kernel refines the answer before the thread is told. An address the tables resolve was present and refused, which is a permission problem and `SYS_FAULT_ACCESS`; an address with no pager behind it has no mechanism to recover it and ends the thread exactly as any other kind does.
+
+That refinement is also what keeps the two ports agreeing. One of them separates absent from refused in its cause register and the other does not, and neither difference is worth pushing into a port when the tables hold the answer and the kernel can read them.
 
 **`SYS_FAULT_ARITH` cannot be raised on RISC-V.** Integer division by zero produces a defined value there rather than an exception, and floating point traps are not enabled. It is a row that says so rather than a row that is missing, which is the difference between a mapping that has been thought about and one that has a default.
 

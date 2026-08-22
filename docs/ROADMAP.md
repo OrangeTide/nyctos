@@ -1831,7 +1831,7 @@ is reaped and every check that spawns something spends one for the rest
 of the run.
 
 **8. Faults as messages, and text that arrives when it is touched.**
-Section 15.3 and the pager chain of 15.4.
+*Built.* Section 15.3 and the pager chain of 15.4.
 
 - A pager as a channel handle, inherited at spawn, and a fault that is a
   message the faulting thread sends. The reply carries a grant and the
@@ -1849,6 +1849,71 @@ high-priority thread's fault is serviced at its priority while a
 low-priority thread is runnable, which is the property that would
 otherwise be an assertion. And a memory-locked process that faults halts
 the machine, named, rather than deadlocking.
+
+`paged` adds up the bytes of its own image and returns the sum. Its text
+arrives in five pages, one fault at a time, and the sum matches the one
+computed here from the archive, so a pager that answered with blank
+pages would fail even though the program ran to the end. The same
+program on the same tier with the same pager runs without a single fault
+at Tier 0, because a flat address space has nothing absent in it, and
+adds up to the same number.
+
+**Priority inheritance needed nothing added, and the check had to show
+that rather than say it.** The pager runs at 5 and the program at 20,
+with a thread at 10 runnable throughout. The pager records the priority
+it is running at while it serves and it is 20, and it records that the
+middle thread was queued at the time, so the number is a fact about
+scheduling and not a field somebody set. Removing the donation does not
+merely change that number: the system stops earlier, in a check three
+stages older.
+
+**A fault is the only thing in this kernel that returns from a trap.**
+Everything else that reaches the fault path ends a thread and never
+comes back, which is why neither port had a way to resume one: the
+AArch64 entry built a frame and branched to a handler that could not
+return into it. Both ports now return to the instruction that faulted,
+with sepc and elr untouched, which is the retry section 15.3 describes
+and is three lines of assembly on each side.
+
+**A page arrives at the address that faulted, not at the address the
+grant covers.** That is the one place in this system where a grant is
+not mapped at its own address, and it is the difference between what a
+grant says and what a fault says: the page is the pager's and the hole
+is the faulting process's.
+
+*Three things this stage found that were not its own.*
+
+**The two ports disagreed about what a page fault is.** One of them
+separates an address nothing describes from one described without the
+right permission; the other has a single cause code and says so. Pushing
+the difference into the ports would have meant one of them reading page
+tables, so the kernel does it instead, once, for both: an address the
+tables resolve was present, so the fault was about the access. That is
+also what keeps a pager from being asked about memory a program lent out
+or was never given.
+
+**The move contract took a page away by removing it.** With nothing
+absent in the system that was indistinguishable from taking it away by
+any other means. It is not now: a removed page is a question for a
+pager, so a lent buffer is taken away the way a revoked grant is, by
+leaving the entry and dropping the bit that lets user mode in.
+
+**RISC-V small sections were in no output section at all.** The linker
+scripts named `.bss` and `.data` and not `.sbss` and `.sdata`, which
+RISC-V uses for anything reachable from the global pointer, so the
+linker placed them as orphans wherever it liked. In the kernel that put
+four hundred bytes of state outside the range that zeroes `.bss`, which
+has never bitten because a cold machine hands over zeroed memory. In a
+program it put `.bss` in the middle of the text, which is what the first
+demand-paged run faulted on. Both scripts name them now.
+
+*What is not here.* `sys_mem_lock()` is not an operation: a process is
+locked by whatever builds it, because the right that would guard the
+call belongs to a root task that does not exist. Rule 3 is enforced and
+is demonstrated by hand rather than by a check, because what it does is
+halt the machine: locking the demand-paged program and letting it start
+stops the system with `paged is memory-locked and faulted at
+0x41200000`, which is the rule saying what it is for.
 
 *Done when* the M3 system runs on Tier 2 from the same source, and a program
 that touches a granted buffer between send and reply faults on Tier 2 and does

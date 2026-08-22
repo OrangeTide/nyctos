@@ -69,8 +69,13 @@ void trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
  * that thread, per section 16.2, and does not return; the kernel is not
  * involved beyond deciding what kind of fault it was and saying so.
  */
-void trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
-  __attribute__((noreturn));
+/*
+ * Ask a thread's pager for the page it faulted on, per section 15.3.
+ * True when the page is there and the instruction can be tried again.
+ */
+bool pager_fault(uintptr_t addr, uintptr_t pc, uint32_t access);
+
+void trap_user(unsigned long cause, unsigned long pc, unsigned long addr);
 
 /*
  * Which kind of section 16.1 an exception is, and whether the address
@@ -79,6 +84,9 @@ void trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
  */
 uint32_t md_fault_kind(unsigned long cause);
 bool md_fault_has_addr(unsigned long cause);
+
+/* What the instruction was doing to the address: read, write or fetch. */
+uint32_t md_fault_access(unsigned long cause);
 
 /*
  * The port checking its own mapping against the encodings, one at a

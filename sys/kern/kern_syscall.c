@@ -30,8 +30,10 @@
 
 #include <sys/op.h>
 #include <sys/systm.h>
+#include <sys/page.h>
 #include <sys/proc.h>
 #include <sys/thread.h>
+#include <sys/vm.h>
 
 long
 syscall_handler(struct sys_op *op, unsigned long count)
@@ -85,26 +87,60 @@ trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
 }
 
 /*
- * A program faulted.
+ * A synchronous exception taken while a program was running.
  *
- * Section 16.2: the thread dies, the system carries on, and what killed
- * it is in its status for whoever is watching. Everything that makes
- * that work was built by exit: the completion timeline advances, a
- * joiner is released, donated priority unwinds. A fault is an exit whose
- * code the thread did not choose, which is why this is four lines rather
- * than a mechanism.
- *
- * The kernel says nothing here. Whoever holds the process is the one
- * that reports this, because the report needs a name for the program and
- * a place to put it; and a program nobody holds does not go quiet, it
- * halts the machine with the fault named, per the unwatched exit of
- * section 24.3's placeholder.
+ * A page fault its pager can answer is the one case that comes back
+ * here: section 15.3 sends it as a message, the reply carries the page,
+ * and the instruction is tried again. Everything else ends the thread,
+ * per section 16.2, and does not return.
  */
 void
 trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
 {
     uint32_t kind = md_fault_kind(cause);
     uintptr_t where = md_fault_has_addr(cause) ? (uintptr_t)addr : 0;
+
+#if SYS_TIER == 2
+    /*
+     * A page fault the tables can answer is not a page fault.
+     *
+     * One port distinguishes an address nothing describes from one
+     * described without the permission the access needed; the other has
+     * a single cause code for both, and says so. Neither difference is
+     * worth pushing into the ports, because the tables hold the answer
+     * and the kernel can read them: an address that resolves was there,
+     * so what the hardware objected to was the access rather than the
+     * absence.
+     *
+     * This is what keeps a pager from being asked about memory that is
+     * present and refused, which is a program touching what it lent out
+     * or what it was never given.
+     */
+    if (kind == SYS_FAULT_PAGE) {
+        struct thread *t = thread_current();
+        uintptr_t pa;
+
+        if (t != NULL && md_lookup(proc_as(t->t_proc),
+          where & ~(uintptr_t)PAGE_MASK, &pa) == SYS_OK) {
+            kind = SYS_FAULT_ACCESS;
+        }
+    }
+
+    /*
+     * And if it is still a page fault, ask the pager. This is the only
+     * path in the kernel that returns from a fault: the page is there
+     * now and the instruction the thread stopped on is tried again.
+     *
+     * What the access was is what the port said the instruction was
+     * doing, and section 15.1 has a pager supply read-only pages only,
+     * so a fault that wanted to write is refused rather than asked
+     * about.
+     */
+    if (kind == SYS_FAULT_PAGE &&
+      pager_fault(where, (uintptr_t)pc, md_fault_access(cause))) {
+        return;
+    }
+#endif
 
     thread_fault(kind, where, (uintptr_t)pc);
 }

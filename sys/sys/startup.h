@@ -76,6 +76,14 @@ typedef enum sys_ns_id {
      * none, which is the whole of the difference between them.
      */
     SYS_NS_DEVICE   = 5,
+
+    /*
+     * The pager this process faults to, per section 15.3. A process
+     * given none cannot be paged and dies of a fault instead, which
+     * is what every process in this system did before there was a
+     * pager to give.
+     */
+    SYS_NS_PAGER    = 6,
     SYS_NS_SYSTEM_MAX = 0x0fff,
     SYS_NS_PRIVATE    = 0x1000,
 } sys_ns_id_t;

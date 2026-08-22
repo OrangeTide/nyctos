@@ -28,6 +28,7 @@ SRCS := arch/$(ARCH)/boot.S \
         kern/kern_intr.c \
         kern/kern_object.c \
         kern/kern_op.c \
+        kern/kern_pager.c \
         kern/kern_objref.c \
         kern/kern_proc.c \
         kern/kern_timeline.c \
@@ -74,7 +75,8 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
     $(OBJTOP)/bin/trespass/trespass.bin \
     $(OBJTOP)/bin/touch_addr/touch_addr.bin \
     $(OBJTOP)/bin/grabber/grabber.bin \
-    $(OBJTOP)/bin/granted/granted.bin
+    $(OBJTOP)/bin/granted/granted.bin \
+    $(OBJTOP)/bin/paged/paged.bin
 	@mkdir -p $(@D)
 	$(MKBOOTARCH) $@ \
 	    fs_server=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 0 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_server/fs_server.bin \
@@ -92,6 +94,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
 	    trespass=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 12 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/trespass/trespass.bin \
 	    touch_addr=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 13 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/touch_addr/touch_addr.bin \
 	    grabber=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 14 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/grabber/grabber.bin \
-	    granted=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 15 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/granted/granted.bin
+	    granted=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 15 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/granted/granted.bin \
+	    paged=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 16 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/paged/paged.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)

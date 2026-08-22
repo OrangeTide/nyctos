@@ -21,6 +21,15 @@ SECTIONS
     }
 
     .rodata : {
+        /*
+         * The small sections too. RISC-V gives short-reach addressing
+         * its own sections, and a script that names only the ordinary
+         * ones leaves them as orphans the linker places wherever it
+         * likes. Read-only ones belong with rodata; the writable
+         * ones belong below, and .sbss belongs inside the range
+         * whatever zeroes bss walks. It was outside it.
+         */
+        *(.srodata*)
         *(.rodata*)
     }
 
@@ -35,10 +44,12 @@ SECTIONS
 
     .data : {
         *(.data*)
+        *(.sdata*)
     }
 
     .bss (NOLOAD) : {
         _bss_start = .;
+        *(.sbss*)
         *(.bss*)
         *(COMMON)
         _bss_end = .;

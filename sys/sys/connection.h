@@ -43,6 +43,13 @@ struct connection {
 };
 
 struct connection *connection_create(struct channel *ch, uint64_t cookie);
+
+/*
+ * The process that serves this connection, which is the one that owns
+ * the channel behind it. Section 15.4 walks the pager chain through
+ * this: a pager is a process, and what names one here is a connection.
+ */
+struct proc *connection_owner(const struct connection *cn);
 void connection_destroy(struct connection *cn);
 
 #endif /* _SYS_CONNECTION_H_ */
