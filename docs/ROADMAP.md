@@ -1215,7 +1215,7 @@ byte as the machine-mode kernel did. That is the whole claim of the
 stage: the same system in a weaker mode. The AArch64 image is untouched
 and passes too.
 
-Two things this settled. **The mode a kernel runs in is invisible until
+Three things this settled. **The mode a kernel runs in is invisible until
 something touches a register the mode does not have.** Two instructions
 were left behind, both writes to `mstatus`, and each showed up as an
 illegal instruction at a program counter a long way from the decision
@@ -1223,6 +1223,20 @@ that caused it: one in the thread trampoline, enabling interrupts for a
 thread that had never run, and one in `enter_user`. The boot log says
 which mode the kernel is in now, because a build that quietly went back
 would otherwise look identical.
+
+**Machine mode had nowhere to put a trap, and neither did the invariant
+the trap path depends on.** Nothing expects a machine-mode trap after
+the handover, because everything delegatable is delegated and no
+machine interrupt is ever enabled, but the boot window before it is a
+different matter: `menvcfg` is the newest register this port writes,
+and a part without it traps to an `mtvec` nobody set, which is address
+zero. The machine stops with nothing printed, which is how this was
+found and what the check now shows. There is a machine-mode handler:
+it writes a line through the polled UART of section 27 a byte at a
+time, because a formatter is more than it is entitled to assume, and
+then stops. And `sscratch` is zeroed explicitly rather than trusted to
+arrive that way, since the whole kernel-versus-user distinction on this
+port is that register being zero in the kernel.
 
 **Sstc is what makes this affordable.** With `stimecmp`, supervisor
 mode programs its own timer and machine mode is not involved in a timer

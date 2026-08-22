@@ -35,6 +35,28 @@ zero_done:
     la      sp, _stack_top
 
     /*
+     * Somewhere for a machine-mode trap to land. Nothing here expects
+     * one: everything delegatable is delegated below, no machine
+     * interrupt is ever enabled, and the kernel never returns to this
+     * mode. What it catches is this window. An instruction the part
+     * does not have, and menvcfg below is the candidate, traps to
+     * mtvec, and an mtvec nobody set is address zero: the machine
+     * stops with nothing printed, which is how this was found.
+     */
+    la      t0, machine_fatal
+    csrw    mtvec, t0
+
+    /*
+     * The invariant the trap path reads: sscratch holds a parked
+     * kernel stack pointer while a thread is in user mode and zero
+     * while it is in the kernel. Zero here rather than trusting the
+     * reset value, because a warm restart or a firmware that used it
+     * would otherwise send the first kernel trap to a stack made of
+     * whatever was left behind.
+     */
+    csrw    sscratch, zero
+
+    /*
      * Everything the hardware will let supervisor mode have. Writing all
      * ones is deliberate: the bits that cannot be delegated, which are the
      * machine-mode interrupts and the machine-mode environment call, are
@@ -102,3 +124,34 @@ supervisor_start:
 hang:
     wfi
     j       hang
+
+/*
+ * A machine-mode trap, which is a trap nothing expected.
+ *
+ * It cannot use the kernel's panic path: that runs in supervisor mode and
+ * this is not it. What it can do is the one thing section 27 promises is
+ * always available, which is the polled UART, and then stop. The message
+ * is written a byte at a time from here because a formatter is more than
+ * this is entitled to assume.
+ */
+.balign 4
+machine_fatal:
+    la      t0, machine_fatal_msg
+1:
+    lbu     t1, 0(t0)
+    beqz    t1, 2f
+    li      t2, 0x10000000          /* the 16550's transmit register */
+3:
+    lbu     t3, 5(t2)               /* line status */
+    andi    t3, t3, 0x20            /* transmit holding register empty */
+    beqz    t3, 3b
+    sb      t1, 0(t2)
+    addi    t0, t0, 1
+    j       1b
+2:
+    wfi
+    j       2b
+
+.section .rodata
+machine_fatal_msg:
+    .asciz "\r\npanic: a machine-mode trap in the boot window; see boot.S\r\n"
