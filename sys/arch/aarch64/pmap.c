@@ -207,22 +207,19 @@ md_map_devices(struct addrspace *as)
     }
 
     /*
-     * The PL011, which is a megabyte further up and was left out of
-     * the first version of this. Nothing said so: the kernel enabled
-     * translation and the next thing it did was print, which faulted,
-     * and the fault printed through the same device. A machine that
-     * stops with nothing on the console is what an unmapped console
-     * looks like.
+     * The PL011, one page, which is what it is. It was two megabytes
+     * because that was the size the identity map liked, and a block is
+     * exactly what a grant cannot refine: section 19.2 has a driver
+     * given this page with user access in its own space, and a mapping
+     * the size of a block would have to be split to allow it.
      *
-     * User mode can reach it, which is a deviation with a stage
-     * against it. The console driver holds its registers as an
-     * address compiled into it, per section 19.2's grant that does
-     * not exist yet, and an address space the driver did not ask for
-     * does not contain its UART: it faults on the first register it
-     * touches. Stage 7 hands it a grant and this flag goes.
+     * Not reachable from user mode. It was, for three stages, because
+     * the driver held the address as a constant and would have faulted
+     * on the first register it touched; it holds a grant now, and this
+     * is the deviation those stages were carrying.
      */
-    return md_map(as, 0x09000000UL, 0x09000000UL, 0x00200000UL,
-      VM_READ | VM_WRITE | VM_DEVICE | VM_USER);
+    return md_map(as, 0x09000000UL, 0x09000000UL, 0x1000UL,
+      VM_READ | VM_WRITE | VM_DEVICE);
 }
 
 void

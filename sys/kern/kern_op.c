@@ -23,6 +23,7 @@
 #include <sys/channel.h>
 #include <sys/config.h>
 #include <sys/connection.h>
+#include <sys/grant.h>
 #include <sys/handle.h>
 #include <sys/intr.h>
 #include <sys/op.h>
@@ -561,6 +562,38 @@ op_thread_status(struct proc *p, struct sys_op *op)
 
     return SYS_OK;
 }
+
+/*
+ * Map a grant into the caller, per section 19.2. The rights on the
+ * handle are both the permission to do this and the permission the
+ * mapping ends up with, which is the whole of what a right on a grant
+ * means.
+ */
+static sys_err_t
+op_grant_map(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_grant_args *args;
+    uint32_t rights;
+    void *obj;
+    sys_err_t err;
+
+    args = (struct sys_op_grant_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_GRANT,
+      SYS_RIGHT_MAP, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    if (handle_rights(&p->p_handles, op->target, &rights) != SYS_OK) {
+        return SYS_ERR_STALE;
+    }
+
+    return grant_map(obj, p, rights, &args->out_base, &args->out_len);
+}
 sys_err_t
 sys_op_exec(struct sys_op *op)
 {
@@ -620,6 +653,9 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_THREAD_STATUS:
         err = op_thread_status(p, op);
+        break;
+    case SYS_OP_GRANT_MAP:
+        err = op_grant_map(p, op);
         break;
     case SYS_OP_PROC_SPAWN:
         err = op_proc_spawn(p, op);

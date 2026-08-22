@@ -24,15 +24,11 @@
 #include <sys/pool.h>
 #include <sys/channel.h>
 #include <sys/connection.h>
+#include <sys/grant.h>
 #include <sys/proc.h>
 #include <sys/thread.h>
 #include <sys/time.h>
 #include <sys/timeline.h>
-
-/* Milestone 4: the backing region and the tier's mapping state. */
-struct grant {
-    sys_id_t g_id;
-};
 
 /* Milestone 9: a validated entry array, executed many times. */
 struct program {

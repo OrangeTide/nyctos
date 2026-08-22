@@ -74,6 +74,14 @@ sys_err_t handle_insert(struct handle_table *ht, void *obj, uint32_t type,
 sys_err_t handle_lookup(const struct handle_table *ht, sys_handle_t h,
   uint32_t type, uint32_t need_rights, void **out_obj);
 
+
+/*
+ * The rights a live handle carries, for the caller that has to act on
+ * them rather than merely be permitted by them. See kern_handle.c.
+ */
+sys_err_t handle_rights(const struct handle_table *ht, sys_handle_t h,
+  uint32_t *out_rights);
+
 sys_err_t handle_close(struct handle_table *ht, sys_handle_t h);
 
 /*

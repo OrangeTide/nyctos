@@ -3,21 +3,40 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
-/* The 16550 on QEMU's virt board. See uart.h for what this is allowed to
- * touch and why the address is compiled in. */
+/* The 16550 on QEMU's virt board. See uart.h for where the address comes
+ * from and why the driver no longer knows one. */
 
 #include "uart.h"
 
-#define UART0_BASE 0x10000000UL
+#define UART_SPAN  0x1000UL
 
-#define UART0_RBR  (*(volatile unsigned char *)(UART0_BASE + 0x00))
-#define UART0_THR  (*(volatile unsigned char *)(UART0_BASE + 0x00))
-#define UART0_IER  (*(volatile unsigned char *)(UART0_BASE + 0x01))
-#define UART0_LSR  (*(volatile unsigned char *)(UART0_BASE + 0x05))
+#define UART0_RBR  (*(volatile unsigned char *)(base + 0x00))
+#define UART0_THR  (*(volatile unsigned char *)(base + 0x00))
+#define UART0_IER  (*(volatile unsigned char *)(base + 0x01))
+#define UART0_LSR  (*(volatile unsigned char *)(base + 0x05))
 
 #define IER_RX     (1U << 0)    /* received data available */
 #define LSR_DR     (1U << 0)    /* data ready */
 #define LSR_THRE   (1U << 5)    /* transmit holding register empty */
+
+/*
+ * Where the registers are, as the grant said. Zero until the driver has
+ * been given them, which is a state that lasts for a few instructions at
+ * startup and never comes back.
+ */
+static uintptr_t base;
+
+int
+uart_attach(uintptr_t at, uintptr_t len)
+{
+    if (at == 0 || len < UART_SPAN) {
+        return -1;
+    }
+
+    base = at;
+
+    return 0;
+}
 
 void
 uart_rx_enable(void)

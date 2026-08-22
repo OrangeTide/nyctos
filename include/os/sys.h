@@ -166,6 +166,18 @@ sys_err_t sys_thread_status(sys_handle_t thread, int32_t *out_code,
 sys_err_t sys_thread_fault(sys_handle_t thread, sys_fault_t *out);
 
 /*
+ * Put a grant's region where this process can reach it, and say where.
+ * Section 19.2: this is how a driver learns where its registers are,
+ * having been handed authority over them rather than an address.
+ *
+ * The handle must carry SYS_RIGHT_MAP. What the memory permits once it
+ * is there comes from the other rights on the same handle, so a grant
+ * given read-only is memory that cannot be written.
+ */
+sys_err_t sys_grant_map(sys_handle_t grant, uintptr_t *out_base,
+  uintptr_t *out_len);
+
+/*
  * Ends the calling thread and does not return. Section 10.4 makes exit
  * advance a completion timeline a joiner reads; none of that exists yet,
  * so this stops the thread and records the status and nothing more.

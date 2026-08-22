@@ -162,6 +162,21 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_THREAD_STATUS     19
 
 /*
+ * Put a grant's region where the caller can reach it, and say where that
+ * is. target names the grant and carries SYS_RIGHT_MAP; the access the
+ * mapping permits comes from the other rights on the same handle, so a
+ * grant given with SYS_RIGHT_READ alone becomes memory that cannot be
+ * written.
+ *
+ * Section 19.2: this is how a driver learns where its registers are. It
+ * is asked for rather than done at spawn because a holder that never
+ * maps a grant should not pay for it, and because the address belongs in
+ * the answer to a question rather than in a table a program has to know
+ * the shape of.
+ */
+#define SYS_OP_GRANT_MAP         20
+
+/*
  * Ends the calling thread. It does not return, so it has no status to
  * write and no place to write one.
  */
@@ -190,7 +205,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             20
+#define SYS_OP_COUNT             21
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the
@@ -419,6 +434,19 @@ typedef struct sys_op_status_args {
     uintptr_t       out_fault_addr; /* written by the kernel */
     uintptr_t       out_fault_pc;   /* written by the kernel */
 } sys_op_status_args_t;
+
+/*
+ * Argument structure for SYS_OP_GRANT_MAP. target names the grant.
+ *
+ * The length comes back as well as the base because a holder is told
+ * what it was given rather than told to assume: a driver that knows its
+ * register block is four kilobytes and is handed one page has a bug that
+ * says so here rather than a fault later.
+ */
+typedef struct sys_op_grant_args {
+    uintptr_t       out_base;       /* written by the kernel */
+    uintptr_t       out_len;        /* written by the kernel */
+} sys_op_grant_args_t;
 
 /*
  * The longest name a boot archive member can have, which is what an image

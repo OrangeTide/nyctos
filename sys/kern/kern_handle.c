@@ -115,6 +115,30 @@ handle_lookup(const struct handle_table *ht, sys_handle_t h, uint32_t type,
 }
 
 /*
+ * The rights a live handle carries.
+ *
+ * Almost every caller wants handle_lookup, which asks whether a handle
+ * permits something and answers yes or no. This is for the one shape
+ * that is different: a grant, where the rights are not only the
+ * permission to map but the permission the mapping ends up with, so the
+ * caller has to read them rather than assert them.
+ */
+sys_err_t
+handle_rights(const struct handle_table *ht, sys_handle_t h,
+  uint32_t *out_rights)
+{
+    uint32_t index = slot_index(ht, h);
+
+    if (index == SYS_POOL_NIL) {
+        return SYS_ERR_STALE;
+    }
+
+    *out_rights = ht->ht_slots[index].h_rights;
+
+    return SYS_OK;
+}
+
+/*
  * The generation advances on close rather than on allocation, so every
  * handle value handed out for this slot goes stale at the moment the
  * authority is given up.

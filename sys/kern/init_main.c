@@ -7,6 +7,7 @@
 #include <sys/config.h>
 #include <sys/connection.h>
 #include <sys/fs.h>
+#include <sys/grant.h>
 #include <sys/handle.h>
 #include <sys/intr.h>
 #include <sys/object.h>
@@ -1372,9 +1373,11 @@ console_service(void)
 {
     struct proc *self = proc_current();
     struct sys_op_connect_args cargs;
-    sys_ns_spec_t ns[3];
+    sys_ns_spec_t ns[4];
     struct channel *ch;
-    sys_handle_t h_recv, conn;
+    sys_handle_t h_recv, conn, h_dev;
+    struct grant *g_uart;
+    uintptr_t regs, span;
     char line[SYS_IPC_INLINE_BYTES];
     sys_err_t err;
 
@@ -1401,11 +1404,29 @@ console_service(void)
     h_console = conn;
 
     /*
-     * Three handles: what it serves on, and the two halves of the
-     * interrupt. The last two are private identifiers because an
-     * interrupt is not something that means the same in every process,
-     * which is what section 20.4 reserves the range above
-     * SYS_NS_PRIVATE for.
+     * And a grant over the registers, per section 19.2. The authority to
+     * make one is here rather than in the driver: what assembles the
+     * system reads the platform description and turns it into spawn
+     * calls, and this kernel is what assembles the system. The driver
+     * holds no address of its own, so a copy of it started without this
+     * reaches nothing.
+     */
+    md_console_regs(&regs, &span);
+    g_uart = grant_create("console-regs", regs, span, true);
+    if (g_uart == NULL) {
+        panic("console: no grant for its registers");
+    }
+    err = handle_insert(&self->p_handles, g_uart, SYS_OBJ_GRANT,
+      SYS_RIGHT_MAP | SYS_RIGHT_READ | SYS_RIGHT_WRITE |
+      SYS_RIGHT_TRANSFER, &h_dev);
+    expect("a grant over the console's registers", err, SYS_OK);
+
+    /*
+     * Four handles: what it serves on, the two halves of the
+     * interrupt, and the device it drives. The interrupt pair are
+     * private identifiers because an interrupt is not something that
+     * means the same in every process, which is what section 20.4
+     * reserves the range above SYS_NS_PRIVATE for.
      */
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = h_recv;
@@ -1413,6 +1434,8 @@ console_service(void)
     ns[1].handle = h_uart_irq;
     ns[2].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 1);
     ns[2].handle = h_uart_fence;
+    ns[3].id = SYS_NS_DEVICE;
+    ns[3].handle = h_dev;
 
     /*
      * Tracing starts before the spawn and not after it. The driver
@@ -1424,7 +1447,7 @@ console_service(void)
     trace_reset();
     trace_enable(true);
 
-    (void)proc_spawn_image("console", 15, ns, 3);
+    (void)proc_spawn_image("console", 15, ns, 4);
 
     console_write(conn, "\r\nline one: ", 12);
     (void)console_read(conn, line, sizeof(line));
@@ -2378,6 +2401,125 @@ move_checks(void)
     handle_close(&self->p_handles, h_recv);
 }
 
+
+/*
+ * A device is not reachable without the grant that covers it.
+ *
+ * Two halves, and the driver above is the first: it holds no address of
+ * its own, asks the kernel where its grant is, and the console works. If
+ * a grant were merely decorative that half would pass anyway, because
+ * the registers were mapped into every process for three stages.
+ *
+ * The second half is a program reading the console's register page
+ * without holding anything, and it runs at Tier 2 only. Not because
+ * Tier 0 would pass, but because at Tier 0 it would succeed, and
+ * succeeding means a program reading a live serial port's registers to
+ * make a point about permission. Which register is safe to read differs
+ * by board, one of them is a byte wide, and reading the wrong one
+ * consumes an input byte or acknowledges an interrupt. The tier with
+ * nothing to enforce is the tier where the demonstration costs
+ * something and shows nothing.
+ *
+ * The third thing is the driver started without its grant, because the
+ * failure that replaces is worse than a fault: a console that comes up,
+ * serves requests and writes to nothing.
+ */
+static void
+device_checks(void)
+{
+    uintptr_t regs, span;
+
+    md_console_regs(&regs, &span);
+
+#if SYS_TIER == 2
+    {
+        struct sys_op_status_args sargs;
+        struct handle_table *ht = &proc_current()->p_handles;
+        const char *argv[2];
+        char addr[19];
+        uintptr_t at = regs + span - 4;
+        sys_handle_t h;
+        struct child c;
+        void *obj;
+        size_t n;
+        int i;
+
+        n = 0;
+        for (i = 60; i >= 0; i -= 4) {
+            unsigned int d = (unsigned int)((at >> i) & 0xf);
+
+            if (n == 0 && d == 0 && i != 0) {
+                continue;
+            }
+            addr[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+        }
+        addr[n] = '\0';
+
+        argv[0] = "touch_addr";
+        argv[1] = addr;
+
+        sched_defer();
+        if (proc_spawn_op(proc_current(), "touch_addr", PRIO_BOOT - 1,
+          NULL, 0, argv, 2, &h) != SYS_OK) {
+            panic("device: could not start the program");
+        }
+        if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+            panic("device: the spawn returned no process");
+        }
+        child_watch(&c, obj);
+        sched_undefer();
+
+        (void)child_join(&c, 1000);
+
+        memset(&sargs, 0, sizeof(sargs));
+        if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) != SYS_OK) {
+            panic("device: no status for it");
+        }
+        if (sargs.out_fault != SYS_FAULT_ACCESS ||
+          sargs.out_fault_addr != at) {
+            panic("device: a program read 0x%lx without a grant, kind %u",
+              (unsigned long)at, (unsigned int)sargs.out_fault);
+        }
+        cnprintf("    %-38s %s at 0x%lx\n", "a register without a grant",
+          fault_name(sargs.out_fault),
+          (unsigned long)sargs.out_fault_addr);
+        handle_close(ht, h);
+
+        /*
+         * And the driver itself, started with nothing. It stops at the
+         * lookup rather than reaching for an address, which is the
+         * change this stage made to it.
+         *
+         * Only at this tier, because starting a second copy of a live
+         * image is only possible here. At Tier 0 the same request is
+         * refused for a different reason and would test the refusal.
+         */
+        sched_defer();
+        if (proc_spawn_op(proc_current(), "console", PRIO_BOOT - 1, NULL,
+          0, NULL, 0, &h) != SYS_OK) {
+            panic("device: could not start a second driver");
+        }
+        if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+            panic("device: the second spawn returned no process");
+        }
+        child_watch(&c, obj);
+        sched_undefer();
+
+        if (child_join(&c, 1000) != -4) {
+            panic("device: a driver with no grant did not say so");
+        }
+        cnprintf("    %-38s %s\n", "a driver started without one",
+          "stopped, and said which");
+        handle_close(ht, h);
+    }
+#else
+    cnprintf("    %-38s 0x%lx\n", "the registers a grant covers",
+      (unsigned long)regs);
+    cnprintf("    %-38s %s\n", "and what stops a program reaching them",
+      "nothing, at this tier");
+#endif
+}
+
 /* The console and the directory the shell is handed, kept from the
  * checks that created them. Root will hold both when there is a root;
  * until then the kernel is what assembles the system. */
@@ -2592,6 +2734,7 @@ kernel_main(void)
 
     cnputs("the console: a driver process, and a line typed at it\n");
     console_service();
+    device_checks();
 
     cnputs("the slice again, with both halves in user mode\n");
     user_slice();

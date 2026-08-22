@@ -78,3 +78,16 @@ md_current_space(void)
 
     return ttbr;
 }
+
+/*
+ * The console's registers, for whoever hands them to a driver. The
+ * kernel knows the address because it panics through the same device;
+ * section 19.2 has a driver told rather than compiled with it, and this
+ * is the telling.
+ */
+void
+md_console_regs(uintptr_t *base, size_t *len)
+{
+    *base = 0x09000000UL;
+    *len = 0x1000UL;
+}

@@ -98,6 +98,10 @@ void md_fault_check(void);
  * the end of the linker script's layout.
  */
 /* The privilege level this kernel runs at, for the boot log. */
+
+/* Where the console this kernel panics through has its registers. */
+void md_console_regs(uintptr_t *base, size_t *len);
+
 const char *md_mode(void);
 
 /* The address space the hardware is translating through. */

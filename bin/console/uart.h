@@ -6,17 +6,24 @@
 /*
  * The device, as this driver sees it.
  *
- * Section 19.2 gives a driver a grant covering its registers. There is no
- * grant object until milestone 4, and Tier 0 has no address space to grant
- * against, so what the driver has instead is the address compiled into it:
- * a region it may already reach, which is what section 6.1 says the weaker
- * tier means by permission. The authority that is a handle here is the
- * interrupt, and the register base is a deviation with a milestone against
- * it rather than a decision.
+ * Section 19.2 gives a driver a grant covering its registers, and that is
+ * now what it has: an address it was handed, at run time, by whatever
+ * started it. The driver holds no address of its own and cannot reach a
+ * device nobody gave it, which at Tier 2 is enforced and at Tier 0 is the
+ * same statement without a mechanism behind it.
+ *
+ * uart_attach is called once, before anything else here, with the base of
+ * the region the grant covers. Everything below is an offset from it.
  */
 
 #ifndef _CONSOLE_UART_H_
 #define _CONSOLE_UART_H_
+
+#include <stdint.h>
+
+/* The registers this driver was given. Called once, before any of the
+ * rest, and the length is checked against what the device needs. */
+int uart_attach(uintptr_t base, uintptr_t len);
 
 /* Let the device raise an interrupt when a byte arrives. */
 void uart_rx_enable(void);

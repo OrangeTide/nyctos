@@ -298,6 +298,32 @@ sys_thread_fault(sys_handle_t thread, sys_fault_t *out)
     return err;
 }
 
+/*
+ * Where a grant's region is, and how much of it there is, per section
+ * 19.2. The handle has to carry SYS_RIGHT_MAP; what the memory then
+ * permits is the other rights on the same handle.
+ */
+sys_err_t
+sys_grant_map(sys_handle_t grant, uintptr_t *out_base, uintptr_t *out_len)
+{
+    sys_op_grant_args_t args;
+    sys_err_t err;
+
+    memset(&args, 0, sizeof(args));
+
+    err = submit(SYS_OP_GRANT_MAP, grant, &args, sizeof(args));
+    if (err == SYS_OK) {
+        if (out_base != NULL) {
+            *out_base = args.out_base;
+        }
+        if (out_len != NULL) {
+            *out_len = args.out_len;
+        }
+    }
+
+    return err;
+}
+
 sys_err_t
 sys_fence_wait(sys_handle_t timeline, uint64_t value, uint64_t deadline)
 {

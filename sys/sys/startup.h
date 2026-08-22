@@ -70,6 +70,12 @@ typedef enum sys_ns_id {
      * given one at spawn or is not a server. */
     SYS_NS_SERVICE  = 4,
 
+    /*
+     * The device a driver drives, as a grant over its registers per
+     * section 19.2. A driver holds one of these and a program holds
+     * none, which is the whole of the difference between them.
+     */
+    SYS_NS_DEVICE   = 5,
     SYS_NS_SYSTEM_MAX = 0x0fff,
     SYS_NS_PRIVATE    = 0x1000,
 } sys_ns_id_t;

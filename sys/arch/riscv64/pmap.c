@@ -167,20 +167,17 @@ md_map_devices(struct addrspace *as)
     sys_err_t err;
 
     /*
-     * The test finisher, which is how this board is switched off. It
-     * is one register in the first megabyte of the address space and
-     * it was the last thing left unmapped: the whole session ran and
-     * then faulted on the store that ends the machine, which is a
-     * good demonstration that a device nobody uses until the end is a
-     * device nobody notices is missing.
+     * The test finisher, one page, which is how this board is switched
+     * off. It is one register and was two megabytes, for the same reason
+     * everything else here was: the identity map liked the size.
      */
-    err = md_map(as, 0x00100000UL, 0x00100000UL, 0x00200000UL,
+    err = md_map(as, 0x00100000UL, 0x00100000UL, 0x1000UL,
       VM_READ | VM_WRITE | VM_DEVICE);
     if (err != SYS_OK) {
         return err;
     }
 
-    /* The PLIC, which is four megabytes of it, and the 16550 above it. */
+    /* The PLIC, which is four megabytes of it. */
     err = md_map(as, 0x0c000000UL, 0x0c000000UL, 0x00400000UL,
       VM_READ | VM_WRITE | VM_DEVICE);
     if (err != SYS_OK) {
@@ -188,13 +185,18 @@ md_map_devices(struct addrspace *as)
     }
 
     /*
-     * The 16550, reachable from user mode, which is a deviation with
-     * a stage against it: the console driver holds its registers as
-     * an address compiled into it, per section 19.2's grant that does
-     * not exist yet. Stage 7 hands it a grant and this flag goes.
+     * The 16550, one page. A block is exactly what a grant cannot
+     * refine: section 19.2 has a driver given this page with user access
+     * in its own space, and a mapping the size of a block would have to
+     * be split to allow it.
+     *
+     * Not reachable from user mode. It was, for three stages, because
+     * the driver held the address as a constant and would have faulted
+     * on the first register it touched; it holds a grant now, and this
+     * is the deviation those stages were carrying.
      */
-    return md_map(as, 0x10000000UL, 0x10000000UL, 0x00200000UL,
-      VM_READ | VM_WRITE | VM_DEVICE | VM_USER);
+    return md_map(as, 0x10000000UL, 0x10000000UL, 0x1000UL,
+      VM_READ | VM_WRITE | VM_DEVICE);
 }
 
 void

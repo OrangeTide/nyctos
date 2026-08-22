@@ -1707,8 +1707,8 @@ unrelated variable on the same page faults. Section 6.1 says this now: a
 sender with more than one thread puts its buffers on pages of their own,
 which is the one place a program has to know that pages exist.
 
-**7. Grants, and the driver that needs one.** Section 19.2, no longer
-deferrable.
+**7. Grants, and the driver that needs one.** *Built.* Section 19.2, no
+longer deferrable.
 
 - The grant object of section 7, covering a region with rights, handed
   over at spawn like any other handle.
@@ -1722,6 +1722,59 @@ deferrable.
 Starting the driver without its grant faults on the first register it
 touches, at the address of the register, rather than producing a console
 that quietly does nothing.
+
+All four configurations pass, which is the first half: the console driver
+holds no address of its own, asks where its grant is, and the shell
+session is what comes out. The second half is a program reading the
+register page while holding nothing, which dies of an access fault at
+that address; and a driver spawned with no grant at all, which stops at
+the lookup and says which handle it was missing.
+
+**Nothing can mint a grant.** There is no operation that turns a physical
+address into authority, because that operation is ambient authority over
+the machine: whoever could call it could reach any device. What
+assembles the system makes them, which here is the kernel at boot, and
+section 19.2's launcher is what that becomes when there is a root
+process.
+
+**A grant is asked for rather than delivered.** The handle arrives at
+spawn like every other; the address is the answer to a question the
+holder puts. A holder that never maps one pays nothing for holding it,
+which is section 18.4's lazy mapping without needing a fault to make it
+lazy, and the address belongs in an answer rather than in a table whose
+shape a program has to know.
+
+**A block is what a grant cannot refine.** The first attempt mapped the
+console's registers into the driver and panicked descending into a
+block: the kernel had mapped the same device as two megabytes because
+that was the size the identity map liked, and a grant covering one page
+of it has nowhere to write. The device regions are the size of the
+devices now, which is one page for each console and unchanged for the
+two interrupt controllers, and the cost is a table frame per address
+space for each region that was a block.
+
+**The deviation three stages carried is gone.** Since stage 3 the
+console's registers were mapped into every process with user access,
+because the driver held the address as a constant and would have faulted
+without it. Both ports said so in a comment naming this stage. They are
+kernel-only now, in every space but the driver's, where the grant is
+what puts them.
+
+**The rights on the handle are the permissions on the mapping.** A grant
+given `SYS_RIGHT_READ` alone is memory that cannot be written, and
+`SYS_RIGHT_MAP` is what permits mapping it at all. It needs no
+permission field of its own, which is the same arrangement the buffer
+flags of section 6.1 have for the shorter-lived form.
+
+*Two things this did not do.* A grant is mapped when it is asked for and
+never unmapped, because nothing closes a handle to one yet and nothing
+reclaims an address space at all. And the check at Tier 0 does not read
+the register: it would succeed, which is the point, but succeeding means
+a program reading a live serial port to make an argument about
+permission. Which register is safe to read differs by board, one of them
+is a byte wide, and reading the wrong one consumes an input byte or
+acknowledges an interrupt. The tier with nothing to enforce is the tier
+where the demonstration costs something and shows nothing.
 
 **8. Faults as messages, and text that arrives when it is touched.**
 Section 15.3 and the pager chain of 15.4.

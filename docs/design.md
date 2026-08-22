@@ -493,6 +493,9 @@ Four constraints shape everything that follows, and they are stated here because
 | Buffer descriptors | Checked more narrowly still: a buffer must be memory that can be mapped elsewhere, so a process with no image of its own may not send one. |
 | Buffer delivery | The pages leave the sender and enter the receiver at the address the sender named, and go back at the reply. Refused where that address is the receiver's own. |
 | Buffer access | The message's flags are the access the receiver is given, and become the permissions on its mapping. |
+| Grants | A handle over a physical region. Nothing can mint one: what assembles the system makes them and hands them out. |
+| Grant addresses | A holder maps a grant and is told where it landed, which is the physical address. Rights on the handle become the permissions. |
+| Device regions | Mapped at page granularity, because a block is what a grant cannot refine. |
 | Timers | Advance a timeline. No timer pulse. |
 | Timeouts | Absolute deadlines. Relative helpers live in libc. |
 | Exit and join | Exit advances a completion timeline; status read from the handle. |
@@ -1595,6 +1598,13 @@ This is a consequence of decisions already made rather than a goal pursued for i
 A driver receives everything it needs in its spawn call and acquires nothing afterwards. The list is short and complete.
 
 **A grant covering its device registers.** Memory-mapped device registers are memory, and the authority over them is a grant like any other, per section 15.1. On Tier 2 this is a mapping with device attributes; on Tier 0 it is a region the process may already address, and the grant is what makes the permission explicit rather than what creates it.
+
+
+**A grant is asked for rather than delivered.** The handle arrives at spawn like any other; where the region lands is the answer to a question the holder puts, `sys_grant_map()`, which returns the base and the length. Two reasons. A holder that never maps a grant pays nothing for holding it, which is what section 18.4 means by nothing being mapped that is not being used, without needing a fault to make it lazy. And the address belongs in an answer rather than in a table whose shape a program has to know: the startup record of section 20.4 carries handles, and a handle is what authority looks like here.
+
+**What the holder is told is the physical address.** Every other mapping in this system is the identity, the regions a grant covers are device registers outside every program's window, and a holder that had to be told a different number would be a holder that had to ask. A system that placed grants elsewhere would change this function and nothing above it.
+
+**The rights on the handle are the permissions on the mapping.** A grant carrying `SYS_RIGHT_READ` alone becomes memory that cannot be written, and `SYS_RIGHT_MAP` is what permits the mapping at all. This is the same rule as the buffer flags of section 6.1 stated for the longer-lived form, and it is why a grant needs no permission field of its own.
 
 **An interrupt handle, already attached to a timeline.** The parent calls `sys_irq_attach()` and passes the timeline handle to the child, or passes the interrupt handle and lets the child attach. The first is preferable: it keeps the authority to attach an interrupt in the launcher rather than in the driver, and a driver that cannot attach interrupts cannot attach somebody else's.
 

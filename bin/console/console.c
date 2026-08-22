@@ -160,14 +160,11 @@ reply_line(sys_thread_id_t peer, uint32_t want)
     if (want < max) {
         max = want;
     }
-
     rep->fr_length = take_line((char *)&reply.inline_data[sizeof(*rep)],
       max);
     reply.inline_len = sizeof(*rep) + rep->fr_length;
-
     (void)sys_msg_reply(peer, &reply);
 }
-
 /*
  * Blocked on the interrupt timeline, which is the whole of what section
  * 13.2 gives a driver: the handler advanced a counter and returned, and
@@ -179,16 +176,12 @@ rx_thread(void *arg)
 {
     uint64_t seen = 0;
     int after_cr = 0;
-
     (void)arg;
-
     uart_rx_enable();
-
     for (;;) {
         if (sys_fence_wait(h_fence, seen + 1, SYS_DEADLINE_NEVER) != SYS_OK) {
             return;
         }
-
         /*
          * One more than the last value asked for, rather than the value
          * the timeline actually reached, because there is no operation
@@ -198,14 +191,11 @@ rx_thread(void *arg)
          * to avoid them.
          */
         seen++;
-
         for (;;) {
             int c = uart_getc();
-
             if (c < 0) {
                 break;
             }
-
             if (c == '\r' || c == '\n') {
                 /*
                  * A terminal sends CR and a pipe sends LF, so both end
@@ -218,7 +208,6 @@ rx_thread(void *arg)
                     continue;
                 }
                 after_cr = (c == '\r');
-
                 put("\n", 1);
                 if (ring_put('\n')) {
                     ring_lines++;
@@ -232,7 +221,6 @@ rx_thread(void *arg)
                  */
                 if (ring_head != ring_tail) {
                     uint32_t prev = (ring_head + RING_BYTES - 1) % RING_BYTES;
-
                     if (ring[prev] != '\n') {
                         ring_head = prev;
                         put("\b \b", 3);
@@ -244,21 +232,18 @@ rx_thread(void *arg)
                 uart_putc((char)c);
             }
         }
-
         /*
          * Drained to empty, then unmasked, in that order: section 13.2
          * has the handler mask a source it cannot finish with, and this
          * is the driver saying it has finished with it.
          */
         (void)sys_irq_unmask(h_irq);
-
         if (waiting && ring_lines > 0) {
             waiting = 0;
             reply_line(waiting_peer, waiting_want);
         }
     }
 }
-
 /*
  * The request loop, per section 12.6. A read with nothing to return is not
  * refused and does not block this thread: the request is held, which is
@@ -274,6 +259,28 @@ main(void)
     uint64_t cookie;
     fs_request_t *req;
     fs_reply_t *rep;
+    sys_handle_t h_dev;
+    uintptr_t regs, span;
+
+    /*
+     * The registers first, per section 19.2. A driver is a program that
+     * holds a grant, and this is where it finds out what it holds: the
+     * address is not in this image, and a copy started without the grant
+     * stops here rather than reaching for something it was not given.
+     */
+    h_dev = ns_lookup(SYS_NS_DEVICE);
+    if (h_dev == SYS_HANDLE_INVALID) {
+        DBG_PUTS("console: spawned without its device");
+        return -4;
+    }
+    if (sys_grant_map(h_dev, &regs, &span) != SYS_OK) {
+        DBG_PUTS("console: the device grant would not map");
+        return -5;
+    }
+    if (uart_attach(regs, span) != 0) {
+        DBG_PUTS("console: the grant is not the device this drives");
+        return -6;
+    }
 
     h_chan = ns_lookup(SYS_NS_SERVICE);
     h_irq = ns_lookup((sys_ns_id_t)NS_IRQ);
