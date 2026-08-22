@@ -1915,6 +1915,67 @@ halt the machine: locking the demand-paged program and letting it start
 stops the system with `paged is memory-locked and faulted at
 0x41200000`, which is the rule saying what it is for.
 
+
+*Reviewing it found three defects, one of them much older than the
+stage and only visible because of it.*
+
+**A page a pager supplied was executable whether or not it was granted
+as such.** The mapping's permissions were assumed rather than read from
+the grant, so every page that arrived came back readable and
+executable. What a grant carries is what the mapping permits, everywhere
+else in this system, and there is no reason for this path to be the
+exception; the one subtraction is write, which section 15.1 does not
+allow a pager to supply whatever the grant says. Handing the demand-paged
+program its text without `SYS_RIGHT_EXEC` now kills it on the first
+instruction it fetches, and did not before.
+
+**A write fault was refused after the round trip rather than before it.**
+Section 15.1 says a pager supplies read-only pages, so a fault that
+wanted to write was never answerable, and asking anyway cost the pager a
+frame and a grant and left the faulting process holding a handle to a
+page nobody would map. Refused before the message now.
+
+**And a grant carrying the right to map itself is refused on this path.**
+A page supplied to a fault is mapped by the kernel at an address the
+pager did not choose, so a holder that could map it too would hold a
+handle meaning something different from what was done with it: closing
+it would take back the region at the grant's own address and leave the
+mapping at the faulting one.
+
+*The old one.* Under a loaded host with a dozen machines running at
+once, RISC-V Tier 2 stopped in the trap entry, building a frame across
+the boundary of the user window, at the same address every time. The
+kernel had taken a trap while `sscratch` held something that was not a
+parked kernel stack.
+
+`sscratch` is the whole of that port's kernel-versus-user distinction:
+zero while the kernel runs, and the thread's kernel stack while a program
+does. `enter_user` parks it and then leaves for user mode, and between
+those two instructions the kernel is running with it already parked. An
+interrupt landing in that window is taken as a kernel trap, and the entry
+path clears `sscratch` unconditionally, while the kernel return path put
+nothing back. The thread reached user mode with nothing parked, its next
+trap built a kernel frame on the user stack, and from there the machine
+was confusing one stack for another.
+
+It has been there since programs first ran, which is M3 stage 3, and
+nothing had made it likely enough to see. What stage 8 added was a
+demand-paged program taking five faults in its first microseconds, a spinner
+holding a middle priority, and a pager thread, which is enough more
+scheduling that a two-instruction window starts being hit. The fix is
+two instructions in the kernel return path, putting back what the entry
+took; for an ordinary kernel trap it writes the zero that was already
+there. Removing them and running fourteen machines at once reproduces
+the original stop, at the original address.
+
+*What this says about the check suite.* Nothing in it runs under load,
+so nothing in it would have found this. The four configurations pass on
+an idle machine and passed on an idle machine with the bug present. That
+is not an argument for adding a load test to the suite, which would be
+slow and flaky for reasons unrelated to correctness, but it is an
+argument for running one deliberately when a stage changes how often
+threads switch, and this stage did.
+
 *Done when* the M3 system runs on Tier 2 from the same source, and a program
 that touches a granted buffer between send and reply faults on Tier 2 and does
 not on Tier 0.

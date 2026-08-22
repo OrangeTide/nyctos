@@ -140,7 +140,24 @@ trap_restore:
     csrrw   sp, sscratch, sp
     sret
 
+/*
+ * Back to kernel mode.
+ *
+ * sscratch is put back rather than left as the entry found it. For an
+ * ordinary trap taken in the kernel it was zero and this writes zero,
+ * which costs an instruction and says the invariant out loud. For a trap
+ * taken in the window inside enter_user, between parking the kernel
+ * stack and the sret that leaves, it was the parked pointer, and losing
+ * it means the thread reaches user mode with nothing parked: its next
+ * trap builds a kernel frame on the user stack, and everything after
+ * that is a machine confusing one stack for another.
+ *
+ * That took a loaded host and six machines at once to see, which is
+ * what an interrupt landing in a two-instruction window looks like.
+ */
 trap_restore_kernel:
+    ld      t0, 144(sp)
+    csrw    sscratch, t0
     ld      t0, 8(sp)
     addi    sp, sp, 160
     sret

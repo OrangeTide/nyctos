@@ -47,6 +47,24 @@ errname(sys_err_t e)
     }
 }
 
+/* A hex address as a string, for a command line that carries one. */
+static void
+hex_into(char *out, uintptr_t v)
+{
+    size_t n = 0;
+    int i;
+
+    for (i = 60; i >= 0; i -= 4) {
+        unsigned int d = (unsigned int)((v >> i) & 0xf);
+
+        if (n == 0 && d == 0 && i != 0) {
+            continue;
+        }
+        out[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+    }
+    out[n] = '\0';
+}
+
 static void
 expect(const char *what, sys_err_t got, sys_err_t want)
 {
@@ -2176,8 +2194,6 @@ fault_checks(void)
     struct child c;
     uintptr_t kernel, rx_end, kend;
     void *obj;
-    size_t n;
-    int i;
 
     /*
      * The kernel's first instruction. Nothing about it matters except
@@ -2196,16 +2212,7 @@ fault_checks(void)
     (void)rx_end;
     (void)kend;
 
-    n = 0;
-    for (i = 60; i >= 0; i -= 4) {
-        unsigned int d = (unsigned int)((kernel >> i) & 0xf);
-
-        if (n == 0 && d == 0 && i != 0) {
-            continue;
-        }
-        addr[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
-    }
-    addr[n] = '\0';
+    hex_into(addr, kernel);
 
     argv[0] = "touch_addr";
     argv[1] = addr;
@@ -2443,19 +2450,8 @@ device_checks(void)
         sys_handle_t h;
         struct child c;
         void *obj;
-        size_t n;
-        int i;
 
-        n = 0;
-        for (i = 60; i >= 0; i -= 4) {
-            unsigned int d = (unsigned int)((at >> i) & 0xf);
-
-            if (n == 0 && d == 0 && i != 0) {
-                continue;
-            }
-            addr[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
-        }
-        addr[n] = '\0';
+        hex_into(addr, at);
 
         argv[0] = "touch_addr";
         argv[1] = addr;
@@ -2635,23 +2631,6 @@ grant_checks(void)
  * blank pages would fail even though the program ran to the end.
  */
 
-/* A hex address as a string, for a command line that carries one. */
-static void
-hex_into(char *out, uintptr_t v)
-{
-    size_t n = 0;
-    int i;
-
-    for (i = 60; i >= 0; i -= 4) {
-        unsigned int d = (unsigned int)((v >> i) & 0xf);
-
-        if (n == 0 && d == 0 && i != 0) {
-            continue;
-        }
-        out[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
-    }
-    out[n] = '\0';
-}
 
 
 /*
@@ -2857,6 +2836,19 @@ paging_checks(void)
     if (pager_pages == 0) {
         panic("paging: it ran without a page arriving");
     }
+    /*
+     * The kernel counted a fault for each one it sent and the pager
+     * counted a page for each one it answered. They are two counters
+     * kept by two pieces of code that do not read each other, and a
+     * disagreement means a fault that was answered without being
+     * asked or asked without being answered.
+     */
+    if (c.c_proc->p_faults != pager_pages) {
+        panic("paging: %u faults sent and %u pages supplied",
+          (unsigned int)c.c_proc->p_faults,
+          (unsigned int)pager_pages);
+    }
+
     if (pager_prio_seen != 20) {
         panic("paging: the pager served at %u, not at the priority of "
           "the thread that faulted", (unsigned int)pager_prio_seen);

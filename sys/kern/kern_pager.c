@@ -46,10 +46,11 @@
  * handle would leave a program a way to revoke its own text.
  */
 static sys_err_t
-pager_install(struct proc *p, uintptr_t va, sys_handle_t h, uint32_t access)
+pager_install(struct proc *p, uintptr_t va, sys_handle_t h)
 {
     struct grant *g;
     uint32_t flags = VM_READ | VM_USER;
+    uint32_t rights;
     void *obj;
     sys_err_t err;
 
@@ -57,20 +58,37 @@ pager_install(struct proc *p, uintptr_t va, sys_handle_t h, uint32_t access)
       &obj) != SYS_OK) {
         return SYS_ERR_INVALID_ARG;
     }
+    if (handle_rights(&p->p_handles, h, &rights) != SYS_OK) {
+        return SYS_ERR_STALE;
+    }
     g = obj;
     if (g->g_len < PAGE_SIZE || g->g_device) {
         return SYS_ERR_INVALID_ARG;
     }
 
     /*
-     * Section 15.1: a pager only ever supplies read-only pages, so a
-     * fault that wanted to write is not one a pager can answer. What
-     * comes back is readable and executable, which is what text is.
+     * A page supplied to a fault is mapped by the kernel, at an address
+     * the pager did not choose, so a holder that could map it itself
+     * would be holding a handle that means something different from
+     * what was done with it: closing it would take back the region at
+     * the grant's own address and leave the mapping at the faulting one.
+     * Refused rather than reconciled.
      */
-    if (access == SYS_RIGHT_WRITE) {
-        return SYS_ERR_PERM_DENIED;
+    if ((rights & SYS_RIGHT_MAP) != 0) {
+        return SYS_ERR_INVALID_ARG;
     }
-    flags |= VM_EXEC;
+
+    /*
+     * What the mapping permits is what the grant carries, as everywhere
+     * else, with one subtraction: section 15.1 has a pager supply
+     * read-only pages and nothing else, so a grant carrying write does
+     * not become a writable mapping on this path. Execute is the
+     * difference between a page of text and a page of anything else,
+     * and assuming it made every page a pager supplied executable.
+     */
+    if ((rights & SYS_RIGHT_EXEC) != 0) {
+        flags |= VM_EXEC;
+    }
 
     err = md_map(proc_as(p), va, g->g_base, PAGE_SIZE, flags);
     if (err != SYS_OK) {
@@ -111,6 +129,16 @@ pager_fault(uintptr_t addr, uintptr_t pc, uint32_t access)
           p->p_name, (unsigned long)addr, (unsigned long)pc);
     }
 
+    /*
+     * Section 15.1: a pager supplies read-only pages, so a fault that
+     * wanted to write is not one a pager can answer. Refused here rather
+     * than after the reply, because asking costs the pager a frame and a
+     * grant and the answer was never going to be usable.
+     */
+    if (access == SYS_RIGHT_WRITE) {
+        return false;
+    }
+
     page = addr & ~(uintptr_t)PAGE_MASK;
 
     memset(&req, 0, sizeof(req));
@@ -131,7 +159,7 @@ pager_fault(uintptr_t addr, uintptr_t pc, uint32_t access)
         return false;
     }
 
-    return pager_install(p, page, reply.handle, access) == SYS_OK;
+    return pager_install(p, page, reply.handle) == SYS_OK;
 }
 
 #endif /* SYS_TIER == 2 */
