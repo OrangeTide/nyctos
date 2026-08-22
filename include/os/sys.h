@@ -156,6 +156,9 @@ sys_err_t sys_irq_unmask(sys_handle_t irq);
 sys_err_t sys_thread_status(sys_handle_t thread, int32_t *out_code,
   uint32_t *out_state);
 
+/* What ended a thread, when the hardware ended it. See sys_proc_fault. */
+sys_err_t sys_thread_fault(sys_handle_t thread, sys_fault_t *out);
+
 /*
  * Ends the calling thread and does not return. Section 10.4 makes exit
  * advance a completion timeline a joiner reads; none of that exists yet,

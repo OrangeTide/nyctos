@@ -50,6 +50,18 @@
  */
 #define VM_DEVICE       (1u << 4)
 
+/*
+ * What a loaded program's own memory is mapped as. Its text, its data
+ * and its stack are one slot and nothing above the loader knows where
+ * one ends, so all of it is everything; teaching the archive to carry
+ * the boundaries is what would let a program's text be read-only.
+ *
+ * It is a name rather than a constant repeated because the loader is no
+ * longer the only thing that maps a program's page: a buffer that goes
+ * out to a receiver and comes back has to come back as what it was.
+ */
+#define VM_PROGRAM      (VM_READ | VM_WRITE | VM_EXEC | VM_USER)
+
 struct addrspace {
     uintptr_t   as_root;        /* physical address of the port's root table */
 };

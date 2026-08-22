@@ -279,6 +279,25 @@ sys_proc_fault(sys_handle_t proc, sys_fault_t *out)
     return err;
 }
 
+/* The same, for a thread. See sys_proc_fault. */
+sys_err_t
+sys_thread_fault(sys_handle_t thread, sys_fault_t *out)
+{
+    sys_op_status_args_t args;
+    sys_err_t err;
+
+    memset(&args, 0, sizeof(args));
+
+    err = submit(SYS_OP_THREAD_STATUS, thread, &args, sizeof(args));
+    if (err == SYS_OK && out != NULL) {
+        out->kind = args.out_fault;
+        out->addr = args.out_fault_addr;
+        out->pc = args.out_fault_pc;
+    }
+
+    return err;
+}
+
 sys_err_t
 sys_fence_wait(sys_handle_t timeline, uint64_t value, uint64_t deadline)
 {

@@ -254,7 +254,7 @@ proc_load(struct proc *p, const struct boot_member *m)
          * what would let this be three mappings instead of one.
          */
         err = md_map(&p->p_as, va + done, pa, PAGE_SIZE,
-          VM_READ | VM_WRITE | VM_EXEC | VM_USER);
+          VM_PROGRAM);
         if (err != SYS_OK) {
             return err;
         }

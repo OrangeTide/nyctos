@@ -1582,8 +1582,8 @@ thread's own status are written and cannot be read from another process,
 because nothing hands out a handle to somebody else's thread; the process
 status is what a supervisor reads and it is checked.
 
-**6. The move contract, enforced.** The thesis, and the earliest point the
-machinery allows it.
+**6. The move contract, enforced.** *Built.* The thesis, and the earliest
+point the machinery allows it.
 
 - A message buffer unmapped from the sender and mapped into the receiver
   for the duration of the call, and the reverse at the reply.
@@ -1598,6 +1598,58 @@ one source, with the fault carrying the address it touched. And every
 program written for Tier 0 in M1 through M3 runs unchanged at Tier 2,
 which is the other half of the same claim and the half that is easy to
 forget to check.
+
+Both halves hold. `grabber` reports 1 at Tier 2 and 0 at Tier 0 from one
+source, and the fault it reports carries the buffer's own address; all
+four configurations pass `make check`, which is the second half and is
+the one that would have failed if the enforcement had broken anything.
+
+**Nothing in the interface changed.** Not a field, not an error, not a
+call. The three lines that make the difference are an unmap in the
+hand-over and a lookup and a map in the take-back, and every program
+that ran before runs now. That is section 2.1's claim discharged, and it
+is worth saying plainly that it could have gone the other way: a system
+where enforcement needed a new call would be a system with two
+interfaces and a paragraph explaining why.
+
+**One thread cannot break the contract.** The thread that sent the
+message is blocked until the reply and has no instruction to execute in
+between, so the rule binds a process and not a thread, and breaking it
+takes a second thread running while the first waits. That is why every
+program written before threads existed keeps the contract by
+construction, and why demonstrating a violation needed a program written
+to do it.
+
+**The window has to be opened deliberately, or the check passes for the
+wrong reason.** The first version had the second thread race for the
+window and write as soon as it was scheduled; the write landed before
+the send about half the time, and a run where it lands early looks
+exactly like a run where the contract was kept. The second thread now
+waits on a timeline the server opens after taking the message. The
+server is the kernel's own boot thread for the same reason: the file
+server would have replied when it felt like it, and the window has to
+close after the write rather than before.
+
+**A signal readies a thread and does not run it.** Opening the gate made
+the second thread runnable and left this one holding the core, so the
+reply went out, the buffer came back, and the thread that was supposed
+to touch it ran afterwards and found its own memory where it left it.
+That version passed on both tiers and proved nothing, which is the exact
+failure the paragraph above describes, found twice in one stage by two
+different routes. A yield after the signal is enough and is exact: the
+server is the lowest priority thread in the system, so yielding runs the
+other one to its end.
+
+**Taking a page back does not need to remember where it came from.** The
+receiver's own tables say what its addresses name, and those tables are
+the thing being undone. Remembering instead would be a list per thread
+sized for the largest buffer anyone might ever send, in a system whose
+whole memory policy is that nothing is sized for what might happen.
+
+*What is still not enforced.* A grant, which is the other form memory
+crosses a boundary in and the one that outlives a call. Section 19.2's
+driver still holds its registers as an address compiled into it, mapped
+into every space because otherwise it could not run. That is stage 7.
 
 **7. Grants, and the driver that needs one.** Section 19.2, no longer
 deferrable.

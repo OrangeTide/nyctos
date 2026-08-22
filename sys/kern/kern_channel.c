@@ -145,30 +145,64 @@ msg_copy(struct sys_msg *dst, const struct sys_msg *src)
 }
 
 /*
- * Take a lent buffer back out of the space it was lent to, per section
- * 6.1: the reply is the end of the call and the point at which the
- * memory goes home.
+ * Take a lent buffer back out of the space it was lent to and put it
+ * back in the sender's, per section 6.1: the reply is the end of the
+ * call and the point at which the right returns.
+ *
+ * The pages are found by asking the receiver's tables what its addresses
+ * name, rather than by remembering them at the hand-over. A lend can be
+ * any number of pages and they need not be one run of physical memory,
+ * so remembering them would be a list per thread sized for the largest
+ * buffer anyone might send; the receiver's own tables already hold
+ * exactly this, and are the thing being undone.
  *
  * The record is on the client, which is the thread whose memory it is,
  * rather than on the receiver. A reply may come from any thread holding
  * the client's id, not only the one that received the message, and a
  * take-back keyed to the replying thread would find nothing to undo and
- * leave the pages mapped in a process that is no longer looking at them.
+ * leave the pages in a process that is no longer looking at them.
  *
- * A client whose server never replies keeps the lend. That is a server
- * that has stopped serving, and what to do about one is section 24.3's
- * question rather than this function's.
+ * A client whose server never replies does not get its memory back. That
+ * is a server that has stopped serving, and what to do about one is
+ * section 24.3's question rather than this function's.
  */
 static void
 msg_buf_take_back(struct thread *client)
 {
 #if SYS_TIER == 2
+    struct addrspace *from;
+    struct addrspace *to;
+    uintptr_t va;
+
     if (client->t_lend_len == 0) {
         return;
     }
 
-    md_unmap(proc_as(client->t_lend_to), client->t_lend_va,
-      client->t_lend_len);
+    from = proc_as(client->t_lend_to);
+    to = proc_as(client->t_proc);
+
+    for (va = client->t_lend_va;
+      va < client->t_lend_va + client->t_lend_len; va += PAGE_SIZE) {
+        uintptr_t pa;
+
+        if (md_lookup(from, va, &pa) != SYS_OK) {
+            panic("ipc: the page lent at 0x%lx is not in %s any more",
+              (unsigned long)va, client->t_lend_to->p_name);
+        }
+        md_unmap(from, va, PAGE_SIZE);
+        if (md_map(to, va, pa, PAGE_SIZE, VM_PROGRAM) != SYS_OK) {
+            /*
+             * The tables the page hung from were left in place when it
+             * was unmapped, so putting it back needs no frame and this
+             * cannot fail. If it does, the client is about to run with
+             * a hole where its memory was and there is nothing honest
+             * to return to it.
+             */
+            panic("ipc: %s cannot have its own page at 0x%lx back",
+              client->t_name, (unsigned long)va);
+        }
+    }
+
     md_tlb_flush_all();
 
     client->t_lend_va = 0;
@@ -222,10 +256,13 @@ buf_perms(uint32_t buf_flags)
  * address is what lets a server dereference it directly, which is what
  * the fs protocol does and what section 25.5 says it does.
  *
- * What this is not yet is a move. The sender keeps its own mapping, so
- * a sender with a second thread can still write the buffer while the
- * receiver reads it. Stage 6 takes the mapping away and that is when the
- * contract stops being a convention.
+ * It is a move and not a loan. The pages go out of the sender as they go
+ * into the receiver, so a sender that touches its own buffer between the
+ * send and the reply faults on it, which is section 6.1's rule with the
+ * hardware behind it. Tier 0 keeps the rule and cannot keep it: there is
+ * one address space, nothing to unmap, and a program that breaks the
+ * contract there is not corrected. That difference is the whole of what
+ * the two tiers are.
  */
 static sys_err_t
 msg_buf_hand_over(struct thread *server, struct thread *client,
@@ -308,6 +345,21 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
                 msg_buf_take_back(client);
                 return err;
             }
+
+            /*
+             * And out of the sender, which is what makes this a move
+             * rather than a loan. Section 6.1: the sender loses the
+             * right to the memory until the reply arrives, and until
+             * this line that was a rule nothing enforced on either
+             * tier. A sender with a second thread now faults on its own
+             * buffer while the call is outstanding, which is the whole
+             * of what Tier 2 is for.
+             *
+             * The tables the page hung from stay, so the take-back
+             * needs no frame and cannot fail for want of one.
+             */
+            md_unmap(proc_as(client->t_proc), va, PAGE_SIZE);
+
             client->t_lend_len += PAGE_SIZE;
         }
 

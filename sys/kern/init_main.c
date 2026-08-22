@@ -2251,6 +2251,133 @@ fault_checks(void)
     handle_close(ht, h);
 }
 
+
+/*
+ * The move contract, enforced or trusted, from one program.
+ *
+ * Section 6.1's rule is that a sender loses its buffer between send and
+ * reply. `grabber` breaks it with a second thread, which is the only way
+ * it can be broken: the thread that sent the message is blocked and has
+ * no instruction to execute in between.
+ *
+ * The kernel is the server here rather than the file server, because the
+ * window has to be opened deliberately. This thread receives the
+ * message, which is when the buffer leaves the program, then signals the
+ * timeline the second thread is waiting on. That thread outranks this
+ * one, so it runs before the signal returns: the write lands inside the
+ * window every time rather than whenever the timer happens to fall.
+ *
+ * What the program reports is what happened to that thread, and the two
+ * tiers answer differently from one source. This is the milestone's
+ * thesis, and the first check here whose expected result is not the same
+ * on both tiers.
+ */
+static void
+move_checks(void)
+{
+    struct proc *self = proc_current();
+    struct sys_op_connect_args cargs;
+    struct sys_op_recv_args rx;
+    struct sys_op_reply_args tx;
+    sys_ns_spec_t ns[2];
+    struct timeline *gate;
+    struct channel *ch;
+    sys_handle_t h_recv, h_gate;
+    struct child c;
+    int32_t code;
+    sys_err_t err;
+
+    ch = channel_create("move", self);
+    gate = timeline_create("move-gate");
+    if (ch == NULL || gate == NULL) {
+        panic("move: no channel or no timeline");
+    }
+
+    err = handle_insert(&self->p_handles, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_recv);
+    expect("a channel the kernel serves", err, SYS_OK);
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = 0;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to it, for the grabber",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+
+    /*
+     * The gate goes to the program with the right to wait and nothing
+     * else. Signalling stays here, which is what makes the window this
+     * thread's to open: a program that could signal its own gate could
+     * open it before the send.
+     */
+    err = handle_insert(&self->p_handles, gate, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &h_gate);
+    expect("a gate for its second thread to wait on", err, SYS_OK);
+
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = cargs.out_handle;
+    ns[1].id = SYS_NS_PRIVATE;
+    ns[1].handle = h_gate;
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("grabber", 20, ns, 2));
+    sched_undefer();
+
+    /*
+     * The program is above this thread, so by the time this line runs it
+     * has started its second thread, sent, and queued: there is a
+     * message waiting and nothing else left to run.
+     */
+    memset(&rx, 0, sizeof(rx));
+    if (run(SYS_OP_IPC_RECV, h_recv, &rx, sizeof(rx)) != SYS_OK) {
+        panic("move: the receive failed");
+    }
+
+    if (timeline_signal(gate, 1) != SYS_OK) {
+        panic("move: the gate would not open");
+    }
+
+    /*
+     * And let it run. Opening the gate makes the second thread
+     * runnable and nothing more: this thread keeps the core until it
+     * gives it up, and if it went straight on to reply the buffer
+     * would be back in the program before the thread that was
+     * supposed to touch it ever executed. That version of this check
+     * passed on both tiers and proved nothing.
+     *
+     * A yield is enough and is exact. This thread is the lowest
+     * priority in the system, so the yield runs the other thread to
+     * its end, whichever end that is.
+     */
+    sched_yield();
+
+    memset(&tx, 0, sizeof(tx));
+    tx.peer = rx.peer;
+    tx.reply.handle = SYS_HANDLE_INVALID;
+    if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
+        panic("move: the reply failed");
+    }
+
+    code = child_join(&c, 1000);
+
+#if SYS_TIER == 2
+    if (code != 1) {
+        panic("move: grabber reported %d, expected the write to fault",
+          code);
+    }
+    cnprintf("    %-38s %s\n", "a sender touching its own buffer",
+      "FAULTED");
+#else
+    if (code != 0) {
+        panic("move: grabber reported %d, expected the write to land",
+          code);
+    }
+    cnprintf("    %-38s %s\n", "a sender touching its own buffer",
+      "TRUSTED");
+#endif
+
+    handle_close(&self->p_handles, h_recv);
+}
+
 /* The console and the directory the shell is handed, kept from the
  * checks that created them. Root will hold both when there is a root;
  * until then the kernel is what assembles the system. */
@@ -2347,6 +2474,8 @@ user_slice(void)
     run_client("fs_batch", root2, sizeof(motd_text) - 1, false);
 
     trespass_checks(root3);
+
+    move_checks();
 }
 
 void

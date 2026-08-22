@@ -491,7 +491,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Message payloads | Staged in the kernel between the two processes. One copy each way, so neither end has to be mapped while the other runs. |
 | User addresses | Every address a program hands the kernel is checked against the caller's own image, once, before the operation runs, at every tier. |
 | Buffer descriptors | Checked more narrowly still: a buffer must be memory that can be mapped elsewhere, so a process with no image of its own may not send one. |
-| Buffer delivery | The pages are mapped into the receiver at the address the sender named, and taken back at the reply. Refused where that address is the receiver's own. |
+| Buffer delivery | The pages leave the sender and enter the receiver at the address the sender named, and go back at the reply. Refused where that address is the receiver's own. |
 | Buffer access | The message's flags are the access the receiver is given, and become the permissions on its mapping. |
 | Timers | Advance a timeline. No timer pulse. |
 | Timeouts | Absolute deadlines. Relative helpers live in libc. |
@@ -543,6 +543,8 @@ A single API across two protection models is only meaningful if it states what a
 > When memory is sent, the sender loses the right to read or write it until the corresponding reply is received. When the reply arrives, the right returns to the sender.
 
 The tiers differ only in *enforcement*, never in *semantics*. Tier 2 enforces by unmapping from the sender and mapping into the receiver. Tier 0 does not enforce at all; the memory remains reachable and a violating program will not fault.
+
+**One thread cannot break this rule, and that is not a weakness in the rule.** The thread that sent the message is blocked until the reply arrives and has no instruction to execute in between, so the rule binds a process rather than a thread: the buffer is the process's memory, and another of its threads is what can reach it while the call is outstanding. A single-threaded program keeps the contract by construction, which is why every program written before threads existed runs unchanged under enforcement.
 
 This generalizes into the design rule for the whole system. **Choose the contract that the stronger tier enforces in hardware and the weaker tier merely trusts.** A correct program then behaves identically on both, and the only thing Tier 0 loses is the ability to catch an incorrect one. A contract chosen the other way around, such as shared access with a convention against touching, is unenforceable everywhere and is therefore not a contract at all.
 
