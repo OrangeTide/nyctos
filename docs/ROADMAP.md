@@ -1651,6 +1651,62 @@ crosses a boundary in and the one that outlives a call. Section 19.2's
 driver still holds its registers as an address compiled into it, mapped
 into every space because otherwise it could not run. That is stage 7.
 
+
+*Reviewing it found two defects in the kernel and one in the program
+written for the stage.*
+
+**A buffer that granted no access was a page table.** The flags in a
+message say what the receiver may do with the memory, and nothing
+refused a message that said nothing. On AArch64 that became a page
+mapped read-only, which is more than was granted and no worse. On
+RISC-V the encoding for a leaf with no read, write or execute is the
+encoding for a pointer to the next level of the page table, so the
+hardware walked into a page whose contents the sender had chosen. What
+it did with what it found there was to kill the file server, which
+nothing was waiting for, which stopped the machine. A program could do
+that with four assignments and a send.
+
+Refused now, at both tiers, before anything is mapped. `trespass` sends
+one and is refused with `SYS_ERR_INVALID_ARG`; with the refusal removed
+the file server dies again, on the port where the encoding means
+something else.
+
+**A page already lent said the wrong thing.** Two threads of one process
+can each send a buffer, and if the buffers share a page the second send
+finds it gone. The error was `SYS_ERR_INVALID_ARG`, which came from the
+page table lookup failing and said nothing true: the argument is fine
+and the memory is not the sender's at that moment. It is `SYS_ERR_FAULT`
+now. This is reasoned rather than checked, because demonstrating it
+needs a program with two threads that send, and what it would prove is
+the number in an error rather than a behaviour.
+
+**And an invariant is written down where it will be needed.** A sender
+runs again only when a reply has given its buffer back, because a reply
+is the only thing that releases it: sends carry no deadline and
+cancellation does not exist. When cancellation does exist, a client
+released by it would run with a hole where its memory was, so the
+assertion sits at the point of waking and says so.
+
+*One defect was mine and not the kernel's, and it is worth recording
+because the machine found it.* `grabber` passed the top of its thread's
+stack where the library wanted the bottom, so the library computed a
+region past the end of the array and put the new thread's stack inside
+the message buffer. The move then took the buffer away with the stack in
+it, and the kernel faulted writing a status to a descriptor on a stack
+that was no longer there. The mistake is silent by construction: the
+library cannot tell a base from a top, and the array it ran past was
+whatever the linker put next. Nothing but enforcement would have found
+it, and it went unnoticed until the stack grew large enough to land
+somewhere that mattered. The comment on `sys_thread_create` now says
+which end it wants and what happens when it is given the other.
+
+*And one thing named rather than fixed.* Enforcement is by the page and
+the contract is by the buffer. A buffer sharing a page with anything
+else takes that too, so another thread of the sender touching an
+unrelated variable on the same page faults. Section 6.1 says this now: a
+sender with more than one thread puts its buffers on pages of their own,
+which is the one place a program has to know that pages exist.
+
 **7. Grants, and the driver that needs one.** Section 19.2, no longer
 deferrable.
 

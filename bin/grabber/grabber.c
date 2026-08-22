@@ -48,7 +48,8 @@
 
 static char buf[PAGE_BYTES] __attribute__((aligned(PAGE_BYTES)));
 
-static unsigned char stack[1024] __attribute__((aligned(16)));
+/* The same size the other threaded program uses; see bin/threads. */
+static unsigned char stack[4096] __attribute__((aligned(16)));
 
 static sys_handle_t gate;
 static volatile int wrote;
@@ -93,7 +94,7 @@ main(void)
      * matter now that it waits for the window rather than hunting for
      * it: it blocks on the timeline wherever it is scheduled.
      */
-    if (sys_thread_create(toucher, NULL, stack + sizeof(stack),
+    if (sys_thread_create(toucher, NULL, stack,
       sizeof(stack), SYS_PRIO_INHERIT, &second) != SYS_OK) {
         return 3;
     }

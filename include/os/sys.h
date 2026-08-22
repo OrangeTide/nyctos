@@ -127,9 +127,15 @@ sys_err_t sys_fence_wait(sys_handle_t timeline, uint64_t value,
  * Add a thread to this process, per section 10.2.
  *
  * The stack is the caller's, at any address it likes, because the kernel
- * allocates no user memory at any tier. stack names the region and size
- * its length; what the kernel is given is the highest address, aligned
- * down, since stacks grow down on both ports.
+ * allocates no user memory at any tier. stack is the *lowest* address of
+ * the region and size its length; what the kernel is given is the
+ * highest, aligned down, since stacks grow down on both ports.
+ *
+ * Passing the top and the length instead is the mistake this wording
+ * exists to prevent, and it is silent: the library computes stack plus
+ * size and writes a pair of words just below that, which is a whole
+ * region past the end of the array and lands on whatever the linker put
+ * there next.
  *
  * The function may return. The library puts it and its argument on the new
  * stack and starts the thread in a trampoline that calls it and then

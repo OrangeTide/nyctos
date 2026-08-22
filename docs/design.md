@@ -546,6 +546,8 @@ The tiers differ only in *enforcement*, never in *semantics*. Tier 2 enforces by
 
 **One thread cannot break this rule, and that is not a weakness in the rule.** The thread that sent the message is blocked until the reply arrives and has no instruction to execute in between, so the rule binds a process rather than a thread: the buffer is the process's memory, and another of its threads is what can reach it while the call is outstanding. A single-threaded program keeps the contract by construction, which is why every program written before threads existed runs unchanged under enforcement.
 
+**Enforcement is by the page and the contract is by the buffer, and the difference is the sender's to manage.** The hardware can take away a page and nothing smaller, so a buffer that shares a page with anything else takes that too: another thread of the sender reading an unrelated variable on the same page faults, correctly by the hardware's account and surprisingly by the program's. A single-threaded sender never notices, because it is not running. A sender with more than one thread puts a buffer on pages of its own, which is a rule about how to write such a program rather than a rule the interface can state, and is the one place where a program has to know that pages exist.
+
 This generalizes into the design rule for the whole system. **Choose the contract that the stronger tier enforces in hardware and the weaker tier merely trusts.** A correct program then behaves identically on both, and the only thing Tier 0 loses is the ability to catch an incorrect one. A contract chosen the other way around, such as shared access with a convention against touching, is unenforceable everywhere and is therefore not a contract at all.
 
 ```{=typst}

@@ -335,12 +335,22 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
 
         for (va = first; va <= last; va += PAGE_SIZE) {
             uintptr_t pa;
-            sys_err_t err = md_lookup(proc_as(client->t_proc), va, &pa);
+            sys_err_t err;
 
-            if (err == SYS_OK) {
-                err = md_map(to, va, pa, PAGE_SIZE,
-                  buf_perms(m->buf_flags));
+            /*
+             * Not mapped means not the sender's to send. The address
+             * is inside its slot, because validation said so, and a
+             * page of its slot that is not there is one it has
+             * already lent to somebody else: two threads sharing a
+             * page and each sending a buffer in it.
+             */
+            if (md_lookup(proc_as(client->t_proc), va, &pa) != SYS_OK) {
+                msg_buf_take_back(client);
+                return SYS_ERR_FAULT;
             }
+
+            err = md_map(to, va, pa, PAGE_SIZE, buf_perms(m->buf_flags));
+
             if (err != SYS_OK) {
                 msg_buf_take_back(client);
                 return err;
@@ -417,6 +427,20 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         return SYS_ERR_FAULT;
     }
 
+    /*
+     * A buffer has to name the access it grants. Section 6.1 has the
+     * flags say what the receiver may do with the memory, so a buffer
+     * that grants nothing is a description of nothing, and there is no
+     * mapping that means it: on one port it would become a page nobody
+     * may touch, and on the other the encoding for "no access" is the
+     * encoding for "this is a page table", which would have the hardware
+     * walk into a page whose contents the sender chose.
+     */
+    if (req->buf_len > 0 &&
+      (req->buf_flags & (SYS_BUF_READ | SYS_BUF_WRITE)) == 0) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
     s = md_intr_disable();
 
     self->t_cookie = cookie;
@@ -491,6 +515,20 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
     sched_block();
 
     err = self->t_waitres;
+
+    /*
+     * Nothing may still be lent out. A reply gives the buffer back
+     * before it releases this thread, and a reply is the only thing that
+     * releases it: a sender carries no deadline and cancellation does
+     * not exist yet. When it does, this is where it will be found, and
+     * the alternative to finding it is a program running again with a
+     * hole where its memory was.
+     */
+    if (self->t_lend_len != 0) {
+        panic("ipc: %s ran again with its buffer still lent out",
+          self->t_name);
+    }
+
 
     /*
      * The reply is in this thread's staging message, put there by

@@ -110,6 +110,30 @@ main(void)
     }
 
     /*
+     * A buffer that grants no access at all. Section 6.1 has the flags
+     * say what the receiver may do, so this describes nothing, and there
+     * is no mapping that means it: on one port it becomes a page nobody
+     * may touch, and on the other the encoding for "no access" is the
+     * encoding for "this is a page table". Before it was refused, this
+     * message killed the file server, because the hardware walked into a
+     * page whose contents this program had chosen.
+     */
+    memset(&message, 0, sizeof(message));
+    message.handle = SYS_HANDLE_INVALID;
+    message.inline_len = sizeof(*req);
+    message.buf = (uintptr_t)buf;
+    message.buf_len = sizeof(buf);
+    message.buf_flags = 0;
+    req = (fs_request_t *)message.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = 0;
+    req->fr_length = sizeof(buf);
+    if (sys_msg_send(file, &message, &reply) != SYS_ERR_INVALID_ARG) {
+        return 13;
+    }
+
+
+    /*
      * A descriptor array that is not ours. Section 23.2 step 2: this is
      * the first address the kernel dereferences on a program's word, so
      * it is the one that halts the machine when nothing checks it, and
