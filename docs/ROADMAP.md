@@ -1365,22 +1365,86 @@ and removing the check makes `trespass` exit 4 on both. What Tier 0
 still cannot check is anything inside the slot, and that is a real
 limit rather than a missing check.
 
-**A server that never gives a buffer back leaks an address space, and
-nothing would have noticed.** The take-back at the reply is asserted
-rather than assumed: a receiver that already holds one when the next
-request arrives halts the machine. Deleting the take-back trips it on
-the fs server's second request, which is the only reason the assertion
-is worth its two lines.
+**A buffer that is never given back leaks a hole in an address space,
+and nothing would have noticed.** The take-back at the reply is asserted
+rather than assumed: a client that still has one lent out when it sends
+again halts the machine. A client is blocked from its send until its
+reply and cannot ask twice, so a record still there is a reply that did
+not give the memory back. Deleting the take-back trips it on the file
+client's second request, which is the only reason the assertion is worth
+its two lines.
 
 *What this stage did not settle.* The sender keeps its own mapping while
 the receiver holds the buffer, so the move contract of section 6.1 is
 still a convention on both tiers rather than an enforcement on one. That
-is stage 6, and it is the milestone's thesis. A server that dies holding
-a lent buffer leaves it mapped, which is section 24.3's question and not
-this stage's. And the resource report at the end of the session is now
-compared against a file per tier: the session is identical on both,
-which is the claim, but Tier 2 runs two processes where Tier 0 refuses
-the second and the count says so.
+is stage 6, and it is the milestone's thesis.
+
+*Reviewing it found seven defects, six of them in what this stage
+wrote.*
+
+**A reply that failed on the way across arrived empty.** Staging the
+reply meant deciding when to copy it out, and the first version copied
+it only when the reply reported success. A handle that fails to move is
+a reply with an error in it and a payload the server still wrote, and
+before this stage the payload was written straight into the client and
+arrived regardless. Nothing in the system noticed the change: there was
+no check anywhere for a reply that half fails. There is one now, and it
+catches the old behaviour.
+
+**Kernel memory cannot be lent, and pretending it could made a program
+fault.** The hand-over skipped kernel addresses on the grounds that the
+kernel is in every address space already. It is, without the bit that
+lets user mode reach it, so the file server took a permission fault on
+the first byte it wrote into a buffer the kernel had passed it. The rule
+is now that a buffer must be inside the sender's own image, and a
+process the kernel built may not send one at all. Both tiers refuse,
+because a rule that holds only where the hardware happens to allow it is
+the kind of difference section 2.1 exists to keep out of the interface.
+Lending a program a page of kernel memory is section 19.2's grant, and a
+grant is a handle rather than an address.
+
+**Two copies of one image occupy the same addresses, which is the point
+of them.** A buffer sent from one to the other names a page the receiver
+already has, and mapping it at the address it came with would have
+replaced the receiver's own memory with the sender's and then unmapped
+it at the reply. Refused now, with the limit written into section 6.1
+next to the claim that made it: keeping the address is affordable
+because processes do not share ranges, and the same stage that made
+buffers cheap made two processes that do.
+
+**The access flags in a message were ignored.** Section 6.1 has them say
+what the receiver may do, and the mapping was read-write whatever they
+said. A client asking for a read-only buffer got a server that could
+write it. They are the permissions on the mapping now: with the flag
+changed to read-only, the file server takes a permission fault on the
+store, at the address the client named.
+
+**A reply may come from a thread that did not receive.** The record of
+what was lent was on the receiving thread, so a reply from any other
+thread of the same process would have found nothing to give back and
+left the pages mapped for good. It is on the client now, which is the
+thread whose memory it is and the one every reply names.
+
+**A refused send counted as a rendezvous.** The counter section 25.7
+compares round trips with was incremented on entry, so a send that never
+reached a receiver was measured as one that did.
+
+*And one that was not this stage's.* A `check` that compared the whole
+transcript compared the resource report with it, and the report is not
+the session: Tier 2 runs two processes where Tier 0 refuses the second.
+The session is one file for both tiers, which is the claim; the report
+is one file per tier, which keeps an exact count of what each run used.
+
+*Left alone, with reasons.* A spawn that fails after its address space
+exists leaks the frames in it, because nothing tears an address space
+down at all yet and building teardown for the failure path alone would
+be half of M7 done in the wrong place. It is reachable only by running
+out of frames, which is the condition it makes worse. A server that dies
+holding a lent buffer leaves it mapped, which is section 24.3's. And one
+unexplained fault was seen once, in a program executing a kernel address
+during the spawn checks, in a build that had a known fault elsewhere; it
+did not recur in fourteen boots of the fixed build and nothing more is
+claimed about it than that.
 
 **5. Faults, and death by default.** What the hardware raises, and what
 happens to the thread that raised it.
@@ -1916,7 +1980,6 @@ matters, because a facility present only in development builds is missing
 exactly when a production fault needs it, and then the image being
 debugged is not the image that broke. A GDB stub over the same UART is
 named in 22.4 as the next thing of this kind and is not built.
-
 
 ## 6. Bring-Up Order Within M1
 

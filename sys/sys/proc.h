@@ -158,6 +158,14 @@ void proc_watch(struct proc *p);
  * dereferencing whatever it is handed is the hole that tier of
  * protection is supposed to close.
  */
+/*
+ * Where a process's own memory is, or false if it has none of its own.
+ * A loaded program has the slot the loader gave it; a process the kernel
+ * built has no slot, because its memory is the kernel's and is mapped in
+ * every address space.
+ */
+bool proc_slot(const struct proc *p, uintptr_t *base, size_t *len);
+
 bool proc_owns(const struct proc *p, uintptr_t va, size_t len);
 
 #if SYS_TIER == 2

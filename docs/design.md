@@ -487,8 +487,9 @@ Four constraints shape everything that follows, and they are stated here because
 | Spawn and images | One live process per image while loading is a copy to a fixed address. Tier 2 loads into memory of its own and the rule goes. |
 | Read replies | Into the buffer the client supplied, inline when it supplied none. The request decides, not the server. |
 | Message payloads | Staged in the kernel between the two processes. One copy each way, so neither end has to be mapped while the other runs. |
-| Buffer descriptors | Checked against the caller's own memory before the operation runs, at every tier. A number is not a right. |
-| Buffer delivery | The pages are mapped into the receiver at the address the sender named, and taken back at the reply. |
+| Buffer descriptors | Checked against the sender's own image before the operation runs, at every tier. A number is not a right, and a process with no image of its own may not send one. |
+| Buffer delivery | The pages are mapped into the receiver at the address the sender named, and taken back at the reply. Refused where that address is the receiver's own. |
+| Buffer access | The message's flags are the access the receiver is given, and become the permissions on its mapping. |
 | Timers | Advance a timeline. No timer pulse. |
 | Timeouts | Absolute deadlines. Relative helpers live in libc. |
 | Exit and join | Exit advances a completion timeline; status read from the handle. |
@@ -553,7 +554,11 @@ This is what makes Tier 0 a useful development target rather than merely a const
 A Tier 0 debug build should include software checks for grant access outside the owning window, because that is the class of bug Tier 0 cannot catch and Tier 2 catches for free. No API in this document exposes a raw pointer that crosses a process boundary.
 
 
-**The address does not change across the boundary.** Tier 2 maps the pages into the receiver at the address the sender named rather than at one of its own choosing, so the number in the message means the same thing on both sides and on both tiers. A server dereferences what it was given. It is affordable because a process's memory occupies a range no other process's does, which is what the loader's slots become once each process has an address space of its own. Choosing a receiver address instead would work and would cost every server a translation step that Tier 0 does not have, which is a difference between the tiers in the interface rather than in the enforcement, and this document spends those only where the hardware forces it.
+**The address does not change across the boundary.** Tier 2 maps the pages into the receiver at the address the sender named rather than at one of its own choosing, so the number in the message means the same thing on both sides and on both tiers. A server dereferences what it was given. Choosing a receiver address instead would work and would cost every server a translation step that Tier 0 does not have, which is a difference between the tiers in the interface rather than in the enforcement, and this document spends those only where the hardware forces it.
+
+**What that costs is one case, and it is refused rather than mishandled.** Two processes from one image occupy the same addresses, which is the point of giving each an address space, and a buffer one of them sends to the other names a page the receiver already has of its own. Mapping it at the address it came with would replace the receiver's own memory with the sender's and then take it away again at the reply. The kernel refuses such a send with `SYS_ERR_FAULT`. Two copies of one image can talk, and they cannot pass buffers to each other until there is somewhere in a receiver to put a borrowed page that is not already spoken for.
+
+**Only memory a process was given can be lent.** The buffer field names memory inside the sender's own image, checked before the message is delivered. A process the kernel built has no such memory and may not send a buffer at all: kernel memory is in every address space already, so there is nothing to hand over, and it is in none of them reachable from user mode, so a receiver given the address would fault on the first byte. Lending a program a page of kernel memory is what the grant of section 19.2 is for, and a grant is a handle rather than an address.
 
 **The message itself is copied through the kernel, not read across.** A rendezvous has a sender and a receiver in two different memories, and with an address space each only one of them is mapped while either runs. So the header and the inline payload are staged in the kernel: copied out of the sender while the sender's memory is current, and copied into the receiver when the receiver runs. It costs one extra copy of a small message each way. Tier 0 does the same thing rather than keeping a shortcut that only one tier takes, on the same principle as everything else here: one path, checked by every run on either tier.
 

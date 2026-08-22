@@ -246,10 +246,17 @@ typedef struct sys_msg {
      *
      * The address is the sender's on the way in and the receiver's on the
      * way out, rewritten by the kernel at the rendezvous. The rewrite is
-     * the identity at Tier 0 because there is one address space, which is
-     * why this is a field and not a handle: nothing here crosses a
-     * boundary unchanged, so section 6.1's rule against a raw pointer
-     * doing so is kept without an object to name the memory.
+     * the identity on both tiers as things stand: Tier 0 has one address
+     * space, and Tier 2 maps the pages into the receiver at the address
+     * they came with, so that a server can dereference what it was
+     * handed. It stays a rewrite in the interface because the day a
+     * receiver needs a different address, every program that reads this
+     * field rather than remembering what it sent already works.
+     *
+     * The memory must be the sender's own image, and the flags are the
+     * access the receiver is being given rather than a description of
+     * what the sender has. A buffer that is neither is refused before
+     * the message is delivered.
      *
      * Only the forward path carries one. A server does not hand back a
      * buffer of its own memory, per the reply-path caveat in section 6.1,

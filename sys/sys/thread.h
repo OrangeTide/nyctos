@@ -161,16 +161,20 @@ struct thread {
      */
     struct sys_msg      t_stage;
 
-
     /*
-     * The range of a client's memory that is mapped into this thread's
-     * address space for the duration of a call, per section 6.1. Zero
-     * when this thread is not serving a request that carried a buffer,
-     * and at Tier 0 always, where a buffer needs no mapping because
-     * there is only one memory.
+     * The range of this thread's memory that is mapped into another
+     * process for the duration of a call, per section 6.1, and which
+     * process has it. Zero when this thread has no call outstanding that
+     * carried a buffer, and at Tier 0 always, where a buffer needs no
+     * mapping because there is only one memory.
+     *
+     * It is recorded here, on the thread whose memory it is, rather than
+     * on the receiver: any thread holding this one's id may reply, and
+     * the pages have to go home whichever of them does.
      */
     uintptr_t           t_lend_va;
     size_t              t_lend_len;
+    struct proc        *t_lend_to;
 
     struct sys_msg     *t_msg;          /* the request being carried */
     struct sys_msg     *t_reply;        /* where the reply is to be written */

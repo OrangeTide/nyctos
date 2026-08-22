@@ -1970,6 +1970,160 @@ two_copies_checks(void)
 #endif
 }
 
+
+/*
+ * A reply that fails on its way across, and a payload that arrives
+ * anyway.
+ *
+ * Section 7.4 has a handle travel by move, and a move can fail: the
+ * server may name a handle it does not hold. The reply still happened
+ * and the bytes in it are still what the server wrote, so both sides
+ * learn the transfer failed and the client gets what it was sent.
+ *
+ * This exists because the first version of the staged reply path
+ * delivered the payload only when the reply reported success, and
+ * nothing in the system noticed. A client asking for a file and being
+ * given an error with an empty message instead of the status the server
+ * wrote is the shape of the bug that would have followed.
+ */
+static struct channel *ch_half;
+static sys_handle_t h_half_recv;
+
+static void
+half_server(void *arg)
+{
+    struct sys_op_recv_args rx;
+    struct sys_op_reply_args tx;
+
+    (void)arg;
+
+    memset(&rx, 0, sizeof(rx));
+    if (run(SYS_OP_IPC_RECV, h_half_recv, &rx, sizeof(rx)) != SYS_OK) {
+        panic("half: the receive failed");
+    }
+
+    memset(&tx, 0, sizeof(tx));
+    tx.peer = rx.peer;
+    tx.reply.inline_len = 5;
+    memcpy(tx.reply.inline_data, "half", 5);
+
+    /* A handle this process does not hold, so the move cannot succeed. */
+    tx.reply.handle = (sys_handle_t)0x1234;
+
+    if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) == SYS_OK) {
+        panic("half: a handle nobody holds moved");
+    }
+
+    thread_exit(0);
+}
+
+static void
+reply_error_checks(void)
+{
+    struct proc *p = proc_current();
+    struct sys_op_send_args tx;
+    sys_handle_t send_h;
+    struct thread *t;
+    sys_err_t err;
+
+    ch_half = channel_create("half", p);
+    if (ch_half == NULL) {
+        panic("half: no channel");
+    }
+    err = handle_insert(&p->p_handles, ch_half, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_half_recv);
+    expect("a channel for a reply that half fails", err, SYS_OK);
+    err = handle_insert(&p->p_handles, ch_half, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND, &send_h);
+    expect("a send handle on it", err, SYS_OK);
+
+    t = thread_create("half-server", PRIO_BOOT - 1, half_server, NULL);
+    sched_ready(t);
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.inline_len = 1;
+    err = run(SYS_OP_IPC_SEND, send_h, &tx, sizeof(tx));
+    expect("a reply whose handle could not move", err, SYS_ERR_STALE);
+
+    if (tx.reply.inline_data[0] != 'h' ||
+      tx.reply.inline_data[3] != 'f') {
+        panic("ipc: the failed handle took the reply payload with it");
+    }
+    cnprintf("    %-38s %s\n", "and the payload arrived regardless",
+      (const char *)tx.reply.inline_data);
+
+    handle_close(&p->p_handles, send_h);
+}
+
+
+/*
+ * The kernel as a client of a program, with a buffer of its own.
+ *
+ * It is refused, and that is the answer rather than a gap. Kernel memory
+ * is in every address space already, so there is nothing to hand over,
+ * and it is in none of them reachable from user mode, so a program given
+ * the address would fault on it. What the kernel would need to lend a
+ * program a page is the grant of section 19.2, which is a handle rather
+ * than an address, and which stage 7 builds.
+ *
+ * Both tiers refuse. Tier 0 has one address space and the read would
+ * work, and letting it work there would put a difference between the
+ * tiers into the interface rather than into the enforcement.
+ *
+ * The first version of this stage skipped the hand-over for kernel
+ * memory instead of refusing it, on the grounds that the kernel is
+ * mapped everywhere. It is, without the bit that lets user mode touch
+ * it, and the file server faulted on the first byte it wrote.
+ */
+static void
+kernel_buffer_checks(sys_handle_t root)
+{
+    static char into[64];
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+    sys_handle_t file;
+    sys_err_t err;
+
+    /* Walk to the file, as any client would. This much works. */
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = sizeof(*req);
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "motd", sizeof("motd"));
+    err = run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx));
+    expect("the kernel walking to a file a program serves", err, SYS_OK);
+    file = tx.reply.handle;
+
+    /* The read does not, because the buffer is the kernel's. */
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = sizeof(*req);
+    tx.request.buf = (uintptr_t)into;
+    tx.request.buf_len = sizeof(into);
+    tx.request.buf_flags = SYS_BUF_WRITE;
+
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = 0;
+    req->fr_length = sizeof(into);
+
+    err = run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx));
+    expect("and reading it into kernel memory", err, SYS_ERR_FAULT);
+
+    if (into[0] != 0) {
+        panic("kernel buffer: refused and written to anyway");
+    }
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = sizeof(*req);
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_CLOSE;
+    (void)run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx));
+    handle_close(&proc_current()->p_handles, file);
+}
+
 /* The console and the directory the shell is handed, kept from the
  * checks that created them. Root will hold both when there is a root;
  * until then the kernel is what assembles the system. */
@@ -2060,6 +2214,8 @@ user_slice(void)
      * cost a third of the round trips and none of the connection pool; if
      * it does not, the section is deleted and section 12.7 with it.
      */
+    kernel_buffer_checks(h_fs_root);
+
     run_client("fs_client", root, sizeof(motd_text) - 1, true);
     run_client("fs_batch", root2, sizeof(motd_text) - 1, false);
 
@@ -2157,6 +2313,7 @@ kernel_main(void)
     cnputs("ipc: rendezvous, queue order and donation\n");
     ipc_checks();
     chain_checks();
+    reply_error_checks();
     high_priority_server_checks();
 
     cnputs("the slice: a file read from another process\n");

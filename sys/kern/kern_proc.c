@@ -350,46 +350,76 @@ proc_watch(struct proc *p)
 
 
 /*
- * Whether a range of addresses is memory this process owns, per section
- * 23.2: a descriptor a program hands the kernel names memory, and the
- * kernel checks that the program naming it is the program it belongs to
- * rather than reading whatever the number points at.
+ * Where a process's own memory is, or false if it has none of its own.
  *
- * What a loaded program owns is its slot. That is coarser than the truth,
- * because a slot is a megabyte and a program uses tens of kilobytes of
- * it, but it is the boundary the loader drew and the one Tier 2 enforces
- * with hardware: an address outside it is another program's memory or
- * nothing at all.
+ * A loaded program has a slot the loader gave it. A process the kernel
+ * built has no slot: its memory is the kernel's, mapped in every address
+ * space, and questions about which process owns it have no answer and do
+ * not need one.
  *
- * A process the kernel built has no slot and owns everything. It is the
- * kernel: an address it names is an address it could have reached by
- * dereferencing it directly, and refusing here would refuse the kernel
- * access to its own memory.
+ * The slot is coarser than the truth, because a slot is a megabyte and a
+ * program uses tens of kilobytes of it. It is the boundary the loader
+ * drew and the one Tier 2 enforces with hardware, which makes it the
+ * boundary worth asking about.
  */
 bool
-proc_owns(const struct proc *p, uintptr_t va, size_t len)
+proc_slot(const struct proc *p, uintptr_t *base, size_t *len)
 {
-    uintptr_t wbase, base;
+    uintptr_t wbase;
     size_t wlen;
 
-    if (len == 0) {
-        return true;
-    }
-    if (p == NULL) {
+    if (p == NULL || p->p_entry == 0) {
         return false;
     }
 
     boot_user_window(&wbase, &wlen);
-    base = p->p_entry;
-    if (base < wbase || base - wbase >= wlen) {
-        return true;
-    }
-
-    if (va < base || va - base >= SYS_USER_SLOT_BYTES) {
+    if (p->p_entry < wbase || p->p_entry - wbase >= wlen) {
         return false;
     }
 
-    return len <= SYS_USER_SLOT_BYTES - (va - base);
+    *base = p->p_entry;
+    *len = SYS_USER_SLOT_BYTES;
+
+    return true;
+}
+
+/*
+ * Whether a range of addresses is memory this process may hand to
+ * another, per section 23.2: a descriptor a program gives the kernel
+ * names memory, and the kernel checks that the process naming it is the
+ * one it belongs to rather than reading whatever the number points at.
+ *
+ * A process with no slot owns nothing here, and that is not a way of
+ * saying the kernel has no memory. It is that kernel memory cannot be
+ * lent: it is in every address space already, so there is nothing to
+ * map, and it is in none of them reachable from user mode, so a program
+ * given the address would fault on it. What the kernel would need to
+ * lend a program a page of its own is the grant of section 19.2, which
+ * is a handle and not an address.
+ *
+ * Refusing on both tiers is deliberate. Tier 0 has one address space and
+ * the lend would work, and a rule that holds only where the hardware
+ * happens to allow it is the kind of difference section 2.1 exists to
+ * keep out of the interface.
+ */
+bool
+proc_owns(const struct proc *p, uintptr_t va, size_t len)
+{
+    uintptr_t base;
+    size_t slot;
+
+    if (len == 0) {
+        return true;
+    }
+    if (!proc_slot(p, &base, &slot)) {
+        return false;
+    }
+
+    if (va < base || va - base >= slot) {
+        return false;
+    }
+
+    return len <= slot - (va - base);
 }
 
 struct timeline *
