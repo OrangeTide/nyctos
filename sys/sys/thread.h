@@ -142,6 +142,36 @@ struct thread {
      * nothing here is a queue.
      */
     struct thread      *t_snext;        /* sender or receiver list link */
+    /*
+     * The message this thread is carrying, in the kernel's own
+     * memory.
+     *
+     * A rendezvous copies between two processes, and with an address
+     * space each only one of them is addressable at a time: the
+     * sender's message cannot be read while the receiver runs, and
+     * the receiver's buffer cannot be written while the sender does.
+     * Staging it here gives every copy one end in memory that is
+     * mapped in every space and the other in whichever space is
+     * current.
+     *
+     * It costs a copy of the header and the inline payload each way,
+     * which is what a small message is. Tier 0 does the same thing
+     * for the same code rather than keeping a second path that only
+     * one tier takes.
+     */
+    struct sys_msg      t_stage;
+
+
+    /*
+     * The range of a client's memory that is mapped into this thread's
+     * address space for the duration of a call, per section 6.1. Zero
+     * when this thread is not serving a request that carried a buffer,
+     * and at Tier 0 always, where a buffer needs no mapping because
+     * there is only one memory.
+     */
+    uintptr_t           t_lend_va;
+    size_t              t_lend_len;
+
     struct sys_msg     *t_msg;          /* the request being carried */
     struct sys_msg     *t_reply;        /* where the reply is to be written */
     sys_thread_id_t     t_client;       /* the client this thread owes */

@@ -4,6 +4,7 @@
  */
 
 #include <sys/bootarch.h>
+#include <sys/page.h>
 #include <sys/handle.h>
 #include <sys/object.h>
 #include <sys/sched.h>
@@ -142,6 +143,140 @@ proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
     return p;
 }
 
+
+#if SYS_TIER == 2
+
+/*
+ * Copy the startup record, the namespace table and the command line into
+ * a page of the child's own memory, and fix the pointers to be addresses
+ * the child can use.
+ *
+ * The record is built in the process object first, because that is where
+ * spawn assembles it and because Tier 0 leaves it there. What this does is
+ * move it somewhere the child can reach, which at Tier 0 is unnecessary
+ * and at Tier 2 is the difference between a program that starts and one
+ * that faults on its first instruction reading a pointer it was handed.
+ */
+static void
+proc_place_startup(struct proc *p, uintptr_t page_pa, uintptr_t page_va)
+{
+    uint8_t *dst = (uint8_t *)page_pa;
+    sys_startup_t *rec = (sys_startup_t *)dst;
+    size_t off = sizeof(*rec);
+    sys_handle_t *ns;
+    uintptr_t *argv;
+    char *args;
+    uint32_t i;
+
+    *rec = p->p_startup;
+
+    ns = (sys_handle_t *)(dst + off);
+    memcpy(ns, p->p_ns, sizeof(p->p_ns));
+    rec->ns = page_va + off;
+    off += sizeof(p->p_ns);
+
+    argv = (uintptr_t *)(dst + off);
+    args = (char *)(dst + off + sizeof(p->p_argv));
+
+    memcpy(args, p->p_args, sizeof(p->p_args));
+
+    /*
+     * Each argument pointer is rewritten from where the kernel put the
+     * string to where the child will find it. They are offsets into the
+     * same copied block, so the arithmetic is one subtraction and one
+     * addition rather than a second pass over the strings.
+     */
+    for (i = 0; i < SYS_MAX_ARGS + 1; i++) {
+        if (p->p_argv[i] == 0) {
+            argv[i] = 0;
+            continue;
+        }
+        argv[i] = page_va + off + sizeof(p->p_argv) +
+          (p->p_argv[i] - (uintptr_t)p->p_args);
+    }
+    rec->argv = page_va + off;
+
+    p->p_startup_va = page_va;
+}
+
+#endif /* SYS_TIER == 2 */
+
+#if SYS_TIER == 2
+
+/*
+ * Load a program into an address space of its own.
+ *
+ * At Tier 0 an image is copied to the address it was linked for and runs
+ * there, which is why one image can have only one live process. Here the
+ * address it was linked for is a virtual one, the memory behind it is
+ * frames nobody else has, and two copies of one image are two processes
+ * that cannot see each other. That is the first thing this tier buys that
+ * the other cannot have at any price.
+ *
+ * The whole slot is allocated and mapped, which is a megabyte per process
+ * where the programs here need a few tens of kilobytes. What it costs is
+ * memory and what it buys is not having to know how much of the slot a
+ * program uses: the archive carries the size of the image and not the size
+ * of the memory it needs, and the difference is its zeroed data and its
+ * stack. A size in the archive would fix it, and so would the demand
+ * paging of stage 8, which is where the frames stop being spent in
+ * advance.
+ */
+static sys_err_t
+proc_load(struct proc *p, const struct boot_member *m)
+{
+    const uint8_t *src = boot_payload(m);
+    uintptr_t va = (uintptr_t)m->bm_load;
+    uintptr_t last = 0;
+    size_t done = 0;
+    sys_err_t err;
+
+    while (done < SYS_USER_SLOT_BYTES) {
+        uintptr_t pa = page_alloc();
+        size_t n = m->bm_size > done ? m->bm_size - done : 0;
+
+        if (pa == 0) {
+            return SYS_ERR_NO_MEMORY;
+        }
+        if (n > PAGE_SIZE) {
+            n = PAGE_SIZE;
+        }
+        if (n > 0) {
+            memcpy((void *)pa, src + done, n);
+        }
+
+        /*
+         * Writable and executable, because a program's text, its data and
+         * its stack are one slot and nothing here knows where one ends.
+         * The linker script does, and teaching the archive to carry it is
+         * what would let this be three mappings instead of one.
+         */
+        err = md_map(&p->p_as, va + done, pa, PAGE_SIZE,
+          VM_READ | VM_WRITE | VM_EXEC | VM_USER);
+        if (err != SYS_OK) {
+            return err;
+        }
+
+        last = pa;
+        done += PAGE_SIZE;
+    }
+
+    p->p_entry = (uintptr_t)m->bm_load;
+
+    /*
+     * The startup record goes in the last page of the slot, which is the
+     * one place in a program's memory that its own layout does not reach:
+     * the stack grows down from below it and the image ends a long way
+     * under that. Section 20.4 has the loader place the record in the
+     * child's memory, and this is a loader.
+     */
+    proc_place_startup(p, last, va + SYS_USER_SLOT_BYTES - PAGE_SIZE);
+
+    return SYS_OK;
+}
+
+#endif /* SYS_TIER == 2 */
+
 /*
  * The first thing a loaded program's thread runs, in kernel mode, on the
  * thread's own kernel stack. It drops to user mode and does not come back;
@@ -154,7 +289,7 @@ proc_user_start(void *arg)
     struct proc *p = proc_current();
 
     (void)arg;
-    enter_user(p->p_entry, &p->p_startup, 0);
+    enter_user(p->p_entry, (void *)p->p_startup_va, 0);
 }
 
 /*
@@ -182,7 +317,17 @@ proc_spawn_image(const char *image, uint8_t prio,
     }
     p = proc_create(image, ns, nns);
 
+#if SYS_TIER == 2
+    if (vm_as_create(&p->p_as) != SYS_OK) {
+        panic("spawn %s: no address space", image);
+    }
+    if (proc_load(p, m) != SYS_OK) {
+        panic("spawn %s: could not load it into its own memory", image);
+    }
+#else
     p->p_entry = boot_load(m);
+    p->p_startup_va = (uintptr_t)&p->p_startup;
+#endif
 
     t = thread_create(image, prio, proc_user_start, &p->p_startup);
     thread_set_proc(t, p);
@@ -201,6 +346,50 @@ void
 proc_watch(struct proc *p)
 {
     p->p_watched = true;
+}
+
+
+/*
+ * Whether a range of addresses is memory this process owns, per section
+ * 23.2: a descriptor a program hands the kernel names memory, and the
+ * kernel checks that the program naming it is the program it belongs to
+ * rather than reading whatever the number points at.
+ *
+ * What a loaded program owns is its slot. That is coarser than the truth,
+ * because a slot is a megabyte and a program uses tens of kilobytes of
+ * it, but it is the boundary the loader drew and the one Tier 2 enforces
+ * with hardware: an address outside it is another program's memory or
+ * nothing at all.
+ *
+ * A process the kernel built has no slot and owns everything. It is the
+ * kernel: an address it names is an address it could have reached by
+ * dereferencing it directly, and refusing here would refuse the kernel
+ * access to its own memory.
+ */
+bool
+proc_owns(const struct proc *p, uintptr_t va, size_t len)
+{
+    uintptr_t wbase, base;
+    size_t wlen;
+
+    if (len == 0) {
+        return true;
+    }
+    if (p == NULL) {
+        return false;
+    }
+
+    boot_user_window(&wbase, &wlen);
+    base = p->p_entry;
+    if (base < wbase || base - wbase >= wlen) {
+        return true;
+    }
+
+    if (va < base || va - base >= SYS_USER_SLOT_BYTES) {
+        return false;
+    }
+
+    return len <= SYS_USER_SLOT_BYTES - (va - base);
 }
 
 struct timeline *
@@ -298,6 +487,8 @@ proc_set_args(struct proc *p, const char *const *argv, uint32_t argc)
     return SYS_OK;
 }
 
+#if SYS_TIER == 0
+
 /*
  * Is something still running at this address?
  *
@@ -328,6 +519,9 @@ image_in_use(uintptr_t load)
 
     return false;
 }
+
+#endif /* SYS_TIER == 0 */
+
 /*
  * Spawn on behalf of a program, per section 10.1 and section 20.4.
  *
@@ -394,17 +588,25 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
     }
 
     /*
-     * One live process per image, because there is one address for it.
-     * Loading copies the member to the address it was linked for, so a
-     * second copy of a program that is still running writes over its
-     * text and its data with no way to notice. The failure that made
-     * this worth refusing is that it looks fine: two short programs
-     * that never overlap in time both finish normally. Section 15.2's
-     * loader is what removes the restriction rather than the check.
+     * One live process per image at Tier 0, because there is one address
+     * for it. Loading copies the member to the address it was linked for,
+     * so a second copy of a program that is still running writes over its
+     * text and its data with no way to notice. The failure that made this
+     * worth refusing is that it looks fine: two short programs that never
+     * overlap in time both finish normally.
+     *
+     * Tier 2 is where the restriction goes rather than where the check
+     * gets better. The address a program runs at is virtual there and the
+     * memory behind it is frames nobody else has, so two copies of one
+     * image are two processes that cannot reach each other. Section 15.2
+     * said a loader would end this, and an address space per process is
+     * what a loader needed.
      */
+#if SYS_TIER == 0
     if (image_in_use(m->bm_load)) {
         return SYS_ERR_WOULDBLOCK;
     }
+#endif
 
     /*
      * Every handle checked before any of them moves. A caller that names
@@ -471,7 +673,28 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
         return err;
     }
 
+#if SYS_TIER == 2
+    /*
+     * An operation cannot panic on a failure a program can provoke.
+     * Both of these run out of frames rather than out of anything the
+     * caller controls, but the caller is a program and section 8 has
+     * exhaustion be an error rather than a stop.
+     */
+    err = vm_as_create(&p->p_as);
+    if (err == SYS_OK) {
+        err = proc_load(p, m);
+    }
+    if (err != SYS_OK) {
+        handle_close(&parent->p_handles, h);
+        thread_set_proc(t, NULL);
+        pool_free(thread_pool(), t->t_id);
+        pool_free(proc_pool(), p->p_id);
+        return err;
+    }
+#else
     p->p_entry = boot_load(m);
+    p->p_startup_va = (uintptr_t)&p->p_startup;
+#endif
     thread_set_proc(t, p);
     sched_ready(t);
 
@@ -552,3 +775,24 @@ proc_thread_create(struct proc *p, uintptr_t entry, uintptr_t uarg,
 
     return SYS_OK;
 }
+
+#if SYS_TIER == 2
+
+/*
+ * The address space a thread of this process runs in.
+ *
+ * A process built by the loader has one of its own. The kernel's own
+ * process does not: its threads run in the kernel's space, which is the
+ * one every other space is a copy of.
+ */
+struct addrspace *
+proc_as(struct proc *p)
+{
+    if (p == NULL || p->p_as.as_root == 0) {
+        return vm_kernel();
+    }
+
+    return &p->p_as;
+}
+
+#endif /* SYS_TIER == 2 */

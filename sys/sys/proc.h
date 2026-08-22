@@ -23,6 +23,7 @@
 #include <sys/pool.h>
 #include <sys/startup.h>
 #include <sys/timeline.h>
+#include <sys/vm.h>
 
 #include <stdbool.h>
 
@@ -30,7 +31,7 @@ struct proc {
     sys_id_t            p_id;
     /*
      * Copied, not pointed at. The name a spawn operation carries lives
-     * in the caller'''s argument structure, which is a stack frame in a
+     * in the caller's argument structure, which is a stack frame in a
      * program, and the kernel says this name again when the process
      * exits. A pointer would be dangling by then, which is what it was
      * the first time this ran: the exit line printed sixteen bytes of
@@ -58,6 +59,17 @@ struct proc {
      */
     char                p_args[SYS_ARG_BYTES];
     uintptr_t           p_argv[SYS_MAX_ARGS + 1];
+
+#if SYS_TIER == 2
+    /*
+     * This process's address space, and where its startup record
+     * landed in it. Tier 0 has neither: there is one address space
+     * and the record lives in this object, which a program can read
+     * because nothing stops it.
+     */
+    struct addrspace    p_as;
+#endif
+    uintptr_t           p_startup_va;
 
     /*
      * The completion timeline of section 10.4, embedded rather than
@@ -138,6 +150,20 @@ sys_err_t proc_spawn_op(struct proc *parent, const char *image,
   const char *const *argv, uint32_t argc, sys_handle_t *out_handle);
 
 void proc_watch(struct proc *p);
+
+/*
+ * Whether a range of addresses is memory this process owns, per section
+ * 23.2. A buffer descriptor a program passes is checked against this
+ * before anything reads it: a number is not a right, and the kernel
+ * dereferencing whatever it is handed is the hole that tier of
+ * protection is supposed to close.
+ */
+bool proc_owns(const struct proc *p, uintptr_t va, size_t len);
+
+#if SYS_TIER == 2
+/* The address space this process's threads run in. */
+struct addrspace *proc_as(struct proc *p);
+#endif
 struct timeline *proc_completion(struct proc *p);
 
 /*

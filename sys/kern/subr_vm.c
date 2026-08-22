@@ -4,23 +4,25 @@
  */
 
 /*
- * The kernel's own address space.
+ * Address spaces: the kernel's, and one per process.
  *
- * What it contains is everything the kernel touches, mapped at the address
- * it already had: the memory the port handed over, and the registers the
- * kernel reaches directly. Identity, because the kernel is linked to run
- * where it is loaded and moving it to a high half is a relink of both
- * ports for no benefit this milestone can spend.
+ * Every space contains the same kernel, mapped at the address it is loaded
+ * at, and one of them additionally contains a program. Identity for the
+ * kernel, because it is linked to run where it is loaded and moving it to
+ * a high half is a relink of both ports for a benefit this milestone
+ * cannot spend.
  *
- * Nothing is protected yet, and that is this stage rather than an
- * oversight. The whole of memory is mapped so that user mode can reach it,
- * because a program's startup record still lives in a kernel structure and
- * its stack still lives inside the image it was loaded from. Stage 4 is
- * where a process gets a space of its own and those two facts stop being
- * true; until then translation is on and enforcement is not, which is a
- * state worth passing through deliberately: it separates "the tables are
- * right" from "the permissions are right", and each is a different way to
- * be wrong.
+ * The kernel is in every space rather than shared between them, which
+ * costs a handful of frames per process. Sharing it would mean sharing the
+ * tables that describe it, and that is only possible where kernel and user
+ * addresses fall in different top-level entries. They do not here: a
+ * program is linked inside the same gigabyte the kernel occupies, because
+ * at Tier 0 that address is physical memory and there is only one of it.
+ *
+ * What every space leaves out is the window loaded programs live in. In a
+ * process space that window holds that process's own memory; in the
+ * kernel's it holds nothing at all, because at Tier 2 nothing runs at
+ * those addresses except a program in its own space.
  */
 
 #include <sys/page.h>
@@ -30,6 +32,8 @@
 #if SYS_TIER == 2
 
 static struct addrspace kernel_as;
+static uintptr_t window_base;
+static size_t window_len;
 
 struct addrspace *
 vm_kernel(void)
@@ -38,75 +42,114 @@ vm_kernel(void)
 }
 
 void
-vm_kernel_init(void)
+vm_user_window(uintptr_t *base, size_t *len)
 {
-    uintptr_t base, hold, text, rx_end, kend;
-    uint32_t before;
+    *base = window_base;
+    *len = window_len;
+}
+
+/*
+ * Everything the kernel needs to reach, in whichever space it is running
+ * in: its own image, split where it stops executing and starts writing;
+ * the memory frames come from; and the registers it drives directly.
+ *
+ * AArch64 refuses to execute at EL1 from a page user mode can write, so
+ * the split is forced rather than tidy. The writable half is reachable
+ * from user mode at this stage only because a program's startup record is
+ * still inside it, and stage 4 is where that stops being true.
+ */
+static sys_err_t
+map_kernel_into(struct addrspace *as)
+{
+    uintptr_t base, hold, text, rx_end, kend, after;
     size_t len, hold_len;
-
-    before = page_used();
-
-    if (md_as_create(&kernel_as) != SYS_OK) {
-        panic("vm: no frame for the kernel's root table");
-    }
+    sys_err_t err;
 
     md_memory_map(&base, &len, &hold, &hold_len);
-
     md_kernel_image(&text, &rx_end, &kend);
 
-    /*
-     * Four ranges, and the shape of them is forced rather than
-     * chosen. AArch64 refuses to execute at EL1 from a page user
-     * mode can write, so what the kernel executes and what a
-     * program can reach cannot be the same mapping. The first
-     * attempt at this stage mapped all of memory as everything to
-     * everyone, and the machine faulted on the instruction after
-     * the one that enabled translation, for exactly that reason.
-     *
-     * Below the image, spare memory that frames come from. The kernel
-     * reads and writes it and nobody executes it.
-     */
-    if (text > base && md_map(&kernel_as, base, base, text - base,
-      VM_READ | VM_WRITE) != SYS_OK) {
-        panic("vm: could not map the memory below the kernel");
+    /* Below the image: spare memory that frames come from. */
+    if (text > base) {
+        err = md_map(as, base, base, text - base, VM_READ | VM_WRITE);
+        if (err != SYS_OK) {
+            return err;
+        }
     }
 
     /* What the kernel executes, which user mode cannot reach. */
-    if (md_map(&kernel_as, text, text, rx_end - text,
-      VM_READ | VM_WRITE | VM_EXEC) != SYS_OK) {
-        panic("vm: could not map the kernel's text");
+    /*
+     * Read and execute, and not write. The kernel has no reason to
+     * write its own instructions, and mapping them writable meant
+     * that something which did went unnoticed until the instructions
+     * themselves stopped decoding.
+     */
+    err = md_map(as, text, text, rx_end - text, VM_READ | VM_EXEC);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    /* What the kernel writes. */
+    err = md_map(as, rx_end, rx_end, kend - rx_end, VM_READ | VM_WRITE);
+    if (err != SYS_OK) {
+        return err;
     }
 
     /*
-     * What the kernel writes, which user mode can read because the
-     * startup record of section 20.4 is still inside it. That is
-     * the deviation this stage carries and stage 4 removes: the
-     * record belongs in the child's own memory and lives in a
-     * kernel structure until a child has memory of its own.
+     * Above the image, up to the window programs live in, and then
+     * everything above the window. The hole is what a process fills with
+     * memory of its own.
      */
-    if (md_map(&kernel_as, rx_end, rx_end, kend - rx_end,
-      VM_READ | VM_WRITE | VM_USER) != SYS_OK) {
-        panic("vm: could not map the kernel's data");
+    err = md_map(as, kend, kend, window_base - kend, VM_READ | VM_WRITE);
+    if (err != SYS_OK) {
+        return err;
     }
 
-    /*
-     * Everything above the image, which is where loaded programs
-     * are and where frames come from. Executable by user mode
-     * because a program's text is in it.
-     */
-    if (md_map(&kernel_as, kend, kend, base + len - kend,
-      VM_READ | VM_WRITE | VM_USER | VM_EXEC) != SYS_OK) {
-        panic("vm: could not map memory above the kernel");
+    after = window_base + window_len;
+    err = md_map(as, after, after, base + len - after, VM_READ | VM_WRITE);
+    if (err != SYS_OK) {
+        return err;
     }
 
-    if (md_map_devices(&kernel_as) != SYS_OK) {
-        panic("vm: could not map the registers the kernel uses");
+    return md_map_devices(as);
+}
+
+sys_err_t
+vm_as_create(struct addrspace *as)
+{
+    sys_err_t err = md_as_create(as);
+
+    if (err != SYS_OK) {
+        return err;
     }
 
-    md_as_activate(&kernel_as);
+    err = map_kernel_into(as);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    return SYS_OK;
+}
+
+void
+vm_kernel_init(void)
+{
+    uintptr_t base, hold;
+    size_t len, hold_len;
+    uint32_t before = page_used();
+
+    boot_user_window(&window_base, &window_len);
+    md_memory_map(&base, &len, &hold, &hold_len);
+
+    if (vm_as_create(&kernel_as) != SYS_OK) {
+        panic("vm: could not build the kernel's own address space");
+    }
+
+    md_mmu_enable(&kernel_as);
 
     cnprintf("vm: translation on, %zu MiB mapped, %u frames of tables\n",
       len / (1024 * 1024), page_used() - before);
+    cnprintf("  programs live in %p..%p, which no other space maps\n",
+      (void *)window_base, (void *)(window_base + window_len));
 }
 
 #endif /* SYS_TIER == 2 */

@@ -16,6 +16,3 @@ $ last
 $ exit
     sh exited with status 0
     the shell exited with status 0
-used at most: 36 of 64 threads, 21 of 32 processes
-  kernel stacks under those threads: 147456 bytes
-stage 9 complete

@@ -38,6 +38,16 @@ static uint32_t frame_count;
 static uint32_t frame_used;
 static uint32_t frame_highwater;
 
+/*
+ * What the port asked to be held back, kept so that handing one out
+ * can be refused rather than discovered. The kernel image is in it,
+ * and a frame inside the kernel image is memory the allocator will
+ * zero: the symptom is the kernel's own instructions turning into
+ * zeroes underneath it, some milliseconds later, wherever it happens
+ * to be executing.
+ */
+static uintptr_t hold_lo, hold_hi;
+
 static bool
 taken(uint32_t i)
 {
@@ -93,6 +103,9 @@ page_init(uintptr_t base, size_t len, uintptr_t hold, size_t hold_len)
      * it. Marking it allocated rather than excluding it from the map keeps
      * the arithmetic between a frame number and an address in one place.
      */
+    hold_lo = PAGE_ALIGN_DOWN(hold);
+    hold_hi = PAGE_ALIGN_UP(hold + hold_len);
+
     if (hold_len > 0) {
         uintptr_t h = PAGE_ALIGN_DOWN(hold);
         uintptr_t h_end = PAGE_ALIGN_UP(hold + hold_len);
@@ -138,6 +151,10 @@ page_alloc(void)
                 frame_highwater = frame_used;
             }
             pa = frame_base + (uintptr_t)i * PAGE_SIZE;
+            if (pa >= hold_lo && pa < hold_hi) {
+                panic("page: handing out %p, inside the kernel image",
+                  (void *)pa);
+            }
             md_intr_restore(s);
 
             memset((void *)pa, 0, PAGE_SIZE);
@@ -247,3 +264,4 @@ page_last(void)
 
     return frame_base + (uintptr_t)(frame_count - 1) * PAGE_SIZE;
 }
+

@@ -1308,8 +1308,9 @@ section 2.1's claim in miniature, two stages before the plan expected
 any evidence of it, and the only reason it is not a check yet is that
 a fault still stops the machine rather than the thread. Stage 5 is
 where it becomes one.
-**4. An address space per process, and a loader that fills it.** The stage
-that makes a process a process.
+
+**4. An address space per process, and a loader that fills it.** *Built.*
+The stage that makes a process a process.
 
 - A table per process, the kernel mapped in the half a program cannot
   reach, and a switch on dispatch with the maintenance that needs.
@@ -1328,6 +1329,58 @@ the caller does not own is refused rather than read, and a program that
 passes one is still running afterwards. And `make check` passes at Tier 2
 on both architectures, which is the milestone's first real claim: the M3
 system, unchanged, on an enforced tier.
+
+All four configurations pass. `trespass` names a buffer a megabyte away
+from its own memory and one that runs off the end of its slot, is
+refused both times with `SYS_ERR_FAULT`, and exits zero. Two processes
+from `status` are live at once at Tier 2 and the second is refused with
+`SYS_ERR_WOULDBLOCK` at Tier 0, from the same request.
+
+**A rendezvous copies between two memories and only one of them is
+mapped.** The message a sender parks is in the sender's memory and the
+buffer a receiver reads into is in the receiver's, and at Tier 2 the
+kernel is running in one address space at a time. Both ports faulted in
+the same place, the kernel touching a program's address from the
+kernel's own space. The message is staged in the thread object now:
+copied out of the sender while the sender is current, copied into the
+receiver when the receiver runs, and the same both ways for the reply.
+It costs one copy of a small message each way and Tier 0 pays it too,
+because a second path that only one tier takes is a path only one tier
+checks.
+
+**A buffer is not a message, and it does not fit in one.** The fs
+protocol has the server write the bytes into the client's buffer at the
+address the client named, which is a dereference of another process's
+address. The pages are mapped into the receiver at the address the
+sender gave, and taken back when it replies. Keeping the address is what
+lets a server dereference what it was handed, and it is affordable
+because each process's memory is a range no other process's is.
+
+**The check the weaker tier was said to give up is partly still there.**
+Section 23.2 says address validation vanishes at Tier 0 because there is
+no address space to ask about. But where a program's memory is is
+something the kernel knows without asking the hardware: the loader put
+it there. A buffer outside the caller's slot is refused on both tiers,
+and removing the check makes `trespass` exit 4 on both. What Tier 0
+still cannot check is anything inside the slot, and that is a real
+limit rather than a missing check.
+
+**A server that never gives a buffer back leaks an address space, and
+nothing would have noticed.** The take-back at the reply is asserted
+rather than assumed: a receiver that already holds one when the next
+request arrives halts the machine. Deleting the take-back trips it on
+the fs server's second request, which is the only reason the assertion
+is worth its two lines.
+
+*What this stage did not settle.* The sender keeps its own mapping while
+the receiver holds the buffer, so the move contract of section 6.1 is
+still a convention on both tiers rather than an enforcement on one. That
+is stage 6, and it is the milestone's thesis. A server that dies holding
+a lent buffer leaves it mapped, which is section 24.3's question and not
+this stage's. And the resource report at the end of the session is now
+compared against a file per tier: the session is identical on both,
+which is the claim, but Tier 2 runs two processes where Tier 0 refuses
+the second and the count says so.
 
 **5. Faults, and death by default.** What the hardware raises, and what
 happens to the thread that raised it.

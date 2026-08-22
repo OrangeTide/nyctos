@@ -74,6 +74,7 @@ uint32_t page_count(void);
 
 /* The last frame in the map, for a check that the port's claim is true. */
 uintptr_t page_last(void);
+
 uint32_t page_used(void);
 uint32_t page_highwater(void);
 

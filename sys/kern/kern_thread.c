@@ -18,8 +18,14 @@
 #include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
+#include <sys/vm.h>
 
 static struct thread *current;
+
+#if SYS_TIER == 2
+/* The space the hardware is currently translating through. */
+static uintptr_t current_as_root;
+#endif
 
 /* Written by the linker script, at the low end of the boot stack. */
 extern char _stack_bottom[];
@@ -255,6 +261,23 @@ thread_switch_to(struct thread *next)
     if (next->t_state == THREAD_UNUSED) {
         panic("thread: switch to an unbuilt thread");
     }
+
+#if SYS_TIER == 2
+    /*
+     * Into the incoming thread's address space, if it is not already
+     * the current one. Every space contains the same kernel, so the
+     * switch is safe from anywhere in the kernel: the instruction
+     * after it is at the same address with the same contents.
+     */
+    {
+        struct addrspace *as = proc_as(next->t_proc);
+
+        if (as->as_root != current_as_root) {
+            md_as_activate(as);
+            current_as_root = as->as_root;
+        }
+    }
+#endif
 
     check_guard(prev);
     check_guard(next);

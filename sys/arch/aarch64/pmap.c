@@ -228,6 +228,24 @@ md_map_devices(struct addrspace *as)
 void
 md_as_activate(const struct addrspace *as)
 {
+    /*
+     * A switch, not an enable. It writes the root register and
+     * discards what the hardware remembers, and it deliberately does
+     * not touch the registers that describe the format: changing
+     * those while translation is live is a different operation with
+     * different rules, and doing it on every context switch was how
+     * this port ended up raising an undefined instruction on a valid
+     * one.
+     */
+    __asm__ volatile ("msr ttbr0_el1, %0" :: "r" ((uint64_t)as->as_root));
+    __asm__ volatile ("isb");
+
+    md_tlb_flush_all();
+}
+
+void
+md_mmu_enable(const struct addrspace *as)
+{
     uint64_t sctlr;
 
     __asm__ volatile ("msr mair_el1, %0" :: "r" (MAIR_VALUE));
@@ -237,11 +255,9 @@ md_as_activate(const struct addrspace *as)
 
     /*
      * The instruction cache may hold lines fetched with translation
-     * off. They are lines of the same instructions at the same
-     * addresses, because the map is identity, so this is belt and
-     * braces rather than a fix for anything observed. It is cheap and
-     * it is the kind of thing that is impossible to debug later: a
-     * stale instruction line survives every print anyone adds.
+     * off. They are the same instructions at the same addresses,
+     * because the map is identity, so this is belt and braces; it is
+     * also the kind of thing that is impossible to debug later.
      */
     __asm__ volatile ("ic iallu");
     __asm__ volatile ("dsb ish");
@@ -250,10 +266,10 @@ md_as_activate(const struct addrspace *as)
     md_tlb_flush_all();
 
     /*
-     * The instruction after the one that turns translation on is fetched
-     * through the tables it just installed. Identity mapping is what makes
-     * that survivable: the address the pipeline is already working on
-     * means the same thing on both sides of this line.
+     * The instruction after the one that turns translation on is
+     * fetched through the tables it just installed. Identity mapping
+     * is what makes that survivable: the address the pipeline is
+     * already working on means the same thing on both sides.
      */
     __asm__ volatile ("mrs %0, sctlr_el1" : "=r" (sctlr));
     sctlr |= SCTLR_M | SCTLR_C | SCTLR_I;
@@ -270,4 +286,60 @@ md_tlb_flush_all(void)
     __asm__ volatile ("isb");
 }
 
+
+/*
+ * What a virtual address names, for a caller handing a page to another
+ * address space. Only a page-granule mapping answers: a block covers
+ * more than the caller asked about, and the ranges this is used on are
+ * program memory, which is mapped a page at a time.
+ */
+sys_err_t
+md_lookup(const struct addrspace *as, uintptr_t va, uintptr_t *out_pa)
+{
+    uint64_t *l1 = table_at(as->as_root);
+    uint64_t e;
+
+    e = l1[INDEX(va, 1)];
+    if ((e & 0x3u) != DESC_TABLE) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    e = table_at(e & 0x0000fffffffff000ULL)[INDEX(va, 2)];
+    if ((e & 0x3u) != DESC_TABLE) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    e = table_at(e & 0x0000fffffffff000ULL)[INDEX(va, 3)];
+    if ((e & 0x3u) != DESC_PAGE) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    *out_pa = (uintptr_t)(e & 0x0000fffffffff000ULL);
+
+    return SYS_OK;
+}
+
+/*
+ * Take a range of pages out of a space. The tables the pages hung from
+ * stay: they cost a frame each, and a range that is unmapped here is
+ * mapped again in the same place often enough that keeping them is the
+ * cheaper of the two mistakes.
+ */
+void
+md_unmap(struct addrspace *as, uintptr_t va, size_t len)
+{
+    uint64_t *l1 = table_at(as->as_root);
+
+    while (len > 0) {
+        uint64_t e = l1[INDEX(va, 1)];
+
+        if ((e & 0x3u) == DESC_TABLE) {
+            e = table_at(e & 0x0000fffffffff000ULL)[INDEX(va, 2)];
+            if ((e & 0x3u) == DESC_TABLE) {
+                table_at(e & 0x0000fffffffff000ULL)[INDEX(va, 3)] = 0;
+            }
+        }
+
+        va += PAGE_SIZE;
+        len -= PAGE_SIZE;
+    }
+}
 #endif /* SYS_TIER == 2 */

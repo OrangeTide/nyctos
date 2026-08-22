@@ -1,0 +1,3 @@
+used at most: 40 of 64 threads, 25 of 32 processes
+  kernel stacks under those threads: 163840 bytes
+stage 9 complete

@@ -163,28 +163,33 @@ void
 boot_reserve(void)
 {
     const struct boot_header *h = (const struct boot_header *)boot_archive;
-    const struct boot_member *m;
-    uint32_t i;
+    uintptr_t wbase, pa;
+    size_t wlen;
 
     if (h->bh_magic != BOOT_MAGIC) {
         return;
     }
 
-    m = (const struct boot_member *)(boot_archive + sizeof(*h));
-    for (i = 0; i < h->bh_count; i++) {
-        uintptr_t pa = PAGE_ALIGN_DOWN(m[i].bm_load);
-        uintptr_t end = pa + SYS_USER_SLOT_BYTES;
+    boot_user_window(&wbase, &wlen);
 
-        for (; pa < end; pa += PAGE_SIZE) {
-            if (!page_take(pa)) {
-                panic("boot: %s wants %p, which is already spoken for",
-                  m[i].bm_name, (void *)pa);
-            }
+    /*
+     * The whole window, not just the slots inside it. It is rounded up
+     * to a two megabyte boundary so that the kernel's map can leave a
+     * hole for it made of the same blocks as everything else, and the
+     * rounding adds frames that belong to no slot: free, and outside
+     * every identity map, which is the worst combination there is.
+     * The allocator would hand one out and the kernel would touch it
+     * at an address nothing translates.
+     */
+    for (pa = wbase; pa < wbase + wlen; pa += PAGE_SIZE) {
+        if (!page_take(pa)) {
+            panic("boot: %p is spoken for and the window needs it",
+              (void *)pa);
         }
     }
 
-    cnprintf("  %u slots of %u bytes held for loaded programs\n",
-      h->bh_count, (unsigned int)SYS_USER_SLOT_BYTES);
+    cnprintf("  %u slots in a %zu MiB window held for loaded programs\n",
+      h->bh_count, wlen / (1024 * 1024));
 }
 
 /* Where the first member is linked to run, for a caller checking that the
@@ -201,4 +206,73 @@ boot_first_load(void)
     m = (const struct boot_member *)(boot_archive + sizeof(*h));
 
     return (uintptr_t)m[0].bm_load;
+}
+
+/*
+ * The span of addresses loaded programs occupy.
+ *
+ * At Tier 0 these are physical addresses and the frame allocator holds
+ * them back, because a program runs where it was linked. At Tier 2 they
+ * are virtual addresses and every process has its own memory behind them,
+ * which is what makes two copies of one image possible there; the frames
+ * stay held back all the same, so that every frame the kernel allocates
+ * is one it can still reach by its own address.
+ *
+ * Rounded up to two megabytes because the kernel's map of everything else
+ * is made of two megabyte blocks, and a hole that does not line up with
+ * them would have to be cut out of one.
+ */
+void
+boot_user_window(uintptr_t *base, size_t *len)
+{
+    const struct boot_header *h = (const struct boot_header *)boot_archive;
+    const struct boot_member *m;
+    uintptr_t lo = 0, hi = 0;
+    uint32_t i;
+
+    *base = 0;
+    *len = 0;
+
+    if (h->bh_magic != BOOT_MAGIC || h->bh_count == 0) {
+        return;
+    }
+
+    m = (const struct boot_member *)(boot_archive + sizeof(*h));
+    lo = (uintptr_t)m[0].bm_load;
+    hi = lo;
+    for (i = 0; i < h->bh_count; i++) {
+        uintptr_t end = (uintptr_t)m[i].bm_load + SYS_USER_SLOT_BYTES;
+
+        if ((uintptr_t)m[i].bm_load < lo) {
+            lo = (uintptr_t)m[i].bm_load;
+        }
+        if (end > hi) {
+            hi = end;
+        }
+    }
+
+    lo &= ~((uintptr_t)0x200000 - 1);
+    hi = (hi + 0x200000 - 1) & ~((uintptr_t)0x200000 - 1);
+
+    *base = lo;
+    *len = hi - lo;
+}
+
+/*
+ * Where a member's bytes are, for a caller that copies them somewhere
+ * other than the address they were linked for. Tier 2 does exactly that:
+ * the address is virtual and the memory behind it is frames of that
+ * process's own.
+ */
+const uint8_t *
+boot_payload(const struct boot_member *m)
+{
+    const struct boot_header *h = (const struct boot_header *)boot_archive;
+
+    if (m->bm_offset + m->bm_size > h->bh_bytes) {
+        panic("boot: member '%s' runs past the end of the archive",
+          m->bm_name);
+    }
+
+    return (const uint8_t *)(boot_archive + m->bm_offset);
 }

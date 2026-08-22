@@ -70,8 +70,32 @@ sys_err_t md_as_create(struct addrspace *as);
 sys_err_t md_map(struct addrspace *as, uintptr_t va, uintptr_t pa,
   size_t len, uint32_t flags);
 
-/* Make this space the current one, with whatever maintenance that needs. */
+/*
+ * What a virtual address names in this space, or SYS_ERR_INVALID_ARG if
+ * it names nothing. A caller that has to hand one process's page to
+ * another has to ask this: the page tables are the only record of which
+ * frame is behind a program's address.
+ */
+sys_err_t md_lookup(const struct addrspace *as, uintptr_t va,
+  uintptr_t *out_pa);
+
+/*
+ * Take a range of pages out of a space. Like md_map it performs no TLB
+ * maintenance, and unlike md_map that matters: an entry that is gone
+ * from the table and still in the TLB is a mapping that is still there.
+ */
+void md_unmap(struct addrspace *as, uintptr_t va, size_t len);
+
+/*
+ * Make this space the current one, with whatever maintenance that needs.
+ * This is a switch and not an enable: it does not touch the registers that
+ * describe the table format, because changing those while translation is
+ * live is a different operation with different rules.
+ */
 void md_as_activate(const struct addrspace *as);
+
+/* Turn translation on for the first time, in this space. */
+void md_mmu_enable(const struct addrspace *as);
 
 /* Everything, for a change too broad to describe. */
 void md_tlb_flush_all(void);
@@ -90,6 +114,12 @@ sys_err_t md_map_devices(struct addrspace *as);
  * through them.
  */
 void vm_kernel_init(void);
+
+/* Build an address space with the kernel in it, ready for a program. */
+sys_err_t vm_as_create(struct addrspace *as);
+
+/* The window loaded programs occupy, which no space maps for the kernel. */
+void vm_user_window(uintptr_t *base, size_t *len);
 
 /* The kernel's space, for a caller that needs to map something into it. */
 struct addrspace *vm_kernel(void);

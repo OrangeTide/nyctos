@@ -145,25 +145,135 @@ msg_copy(struct sys_msg *dst, const struct sys_msg *src)
 }
 
 /*
+ * Take a lent buffer back out of the receiver's address space. Called
+ * when the receiver replies, which is the end of the call and the point
+ * at which section 6.1 says the memory goes home.
+ *
+ * A server that never replies keeps the mapping. That is a server that
+ * has stopped serving, and what to do about one is section 24.3's
+ * question rather than this function's.
+ */
+static void
+msg_buf_take_back(struct thread *server)
+{
+#if SYS_TIER == 2
+    struct addrspace *as;
+
+    if (server->t_lend_len == 0) {
+        return;
+    }
+
+    as = proc_as(server->t_proc);
+    if (as != NULL) {
+        md_unmap(as, server->t_lend_va, server->t_lend_len);
+        md_tlb_flush_all();
+    }
+
+    server->t_lend_va = 0;
+    server->t_lend_len = 0;
+#else
+    (void)server;
+#endif
+}
+
+/*
  * Hand a request's buffer to the receiver, per section 6.1.
  *
  * The address in the message is the sender's on the way in and the
  * receiver's on the way out. At Tier 0 that rewrite is the identity: one
  * address space, nothing to map, and a sender that breaks the contract by
- * touching the memory anyway will not fault. Tier 2 is where this unmaps
- * from the sender and maps into the receiver, and where the contract stops
- * being a convention.
+ * touching the memory anyway will not fault.
  *
- * It is a function rather than nothing so that the place exists and is
- * named. Section 15 is when it acquires a body.
+ * At Tier 2 the two are different memories, and this is what makes the
+ * receiver able to read a buffer at all: the pages behind the sender's
+ * address are mapped into the receiver's space at the same address, so
+ * the number in the message keeps meaning what it meant. Keeping the
+ * address is what lets a server dereference it directly, which is what
+ * the fs protocol does and what section 25.5 says it does.
+ *
+ * What this is not yet is a move. The sender keeps its own mapping, so
+ * a sender with a second thread can still write the buffer while the
+ * receiver reads it. Stage 6 takes the mapping away and that is when the
+ * contract stops being a convention.
+ *
+ * The lend is recorded on the receiving thread rather than on the
+ * message, because the message is a copy and the thing that has to be
+ * undone is a change to an address space.
  */
-static void
-msg_buf_hand_over(struct sys_msg *m)
+static sys_err_t
+msg_buf_hand_over(struct thread *server, struct thread *client,
+  struct sys_msg *m)
 {
     if (m->buf_len == 0) {
         m->buf = 0;
         m->buf_flags = 0;
+        return SYS_OK;
     }
+
+#if SYS_TIER == 2
+    {
+        struct addrspace *from = proc_as(client->t_proc);
+        struct addrspace *to = proc_as(server->t_proc);
+        uintptr_t first = m->buf & ~(uintptr_t)PAGE_MASK;
+        uintptr_t last = (m->buf + m->buf_len - 1) & ~(uintptr_t)PAGE_MASK;
+        uintptr_t va;
+
+        /*
+         * Nothing to do when the two run in the same memory, which is a
+         * server and a client in one process, and nothing to do when
+         * either is a kernel thread: the kernel is mapped in every space
+         * already and a kernel address means the same thing in all of
+         * them.
+         */
+        if (from == NULL || to == NULL || from == to) {
+            return SYS_OK;
+        }
+
+        /*
+         * Nothing may be lent to this thread already. A server
+         * that is serving a second request while the first is
+         * still holding a client's pages would lose the record of
+         * the first and leave it mapped for good, so the reply
+         * path having run is an invariant rather than a hope.
+         */
+        if (server->t_lend_len != 0) {
+            panic("ipc: %s still holds a buffer from an earlier call",
+              server->t_name);
+        }
+
+        server->t_lend_va = first;
+        server->t_lend_len = 0;
+
+        for (va = first; va <= last; va += PAGE_SIZE) {
+            uintptr_t pa;
+            sys_err_t err = md_lookup(from, va, &pa);
+
+            if (err == SYS_OK) {
+                err = md_map(to, va, pa, PAGE_SIZE,
+                  VM_READ | VM_WRITE | VM_USER);
+            }
+            if (err != SYS_OK) {
+                msg_buf_take_back(server);
+                return err;
+            }
+            server->t_lend_len += PAGE_SIZE;
+        }
+
+        /*
+         * The receiver may already be running in this space, and on the
+         * other path it is about to be. Either way the entries are new
+         * and nothing cached can contradict them, but a negative entry
+         * from an earlier fault on the same address can, and that is
+         * exactly the address a server is about to touch.
+         */
+        md_tlb_flush_all();
+    }
+#else
+    (void)server;
+    (void)client;
+#endif
+
+    return SYS_OK;
 }
 
 /*
@@ -182,11 +292,33 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
     intr_state_t s;
     sys_err_t err;
 
+    /*
+     * The buffer a caller describes has to be the caller's own memory.
+     * Section 23.2: what arrives from a program is a number, and a number
+     * that names another program's memory would be read on that program's
+     * behalf if nothing checked. This is a refusal, not a fault: the
+     * caller gets an error and goes on running.
+     *
+     * Both tiers check. Tier 2 would catch a bad address eventually, as a
+     * fault in whichever process dereferenced it, and a refusal here is
+     * an answer instead of a corpse.
+     */
+    if (req->buf_len > 0 &&
+      !proc_owns(self->t_proc, req->buf, req->buf_len)) {
+        return SYS_ERR_FAULT;
+    }
+
     s = md_intr_disable();
 
     channel_rendezvous++;
     self->t_cookie = cookie;
-    self->t_msg = (struct sys_msg *)req;
+    /*
+     * Into this thread's staging message while its own memory is
+     * the memory that is mapped. Everything after this reads the
+     * copy, which is reachable from every address space.
+     */
+    msg_copy(&self->t_stage, req);
+    self->t_msg = &self->t_stage;
     self->t_reply = reply;
     self->t_replied = false;
     self->t_waitres = SYS_ERR_INTERRUPTED;
@@ -198,8 +330,23 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
          * It takes the message and this thread stays blocked for the
          * reply, which is what makes the blocked sender the queue slot.
          */
-        msg_copy(server->t_msg, req);
-        msg_buf_hand_over(server->t_msg);
+        msg_copy(&server->t_stage, &self->t_stage);
+        err = msg_buf_hand_over(server, self, &server->t_stage);
+        if (err != SYS_OK) {
+            /*
+             * The receiver has not been touched yet, so putting it
+             * back on the list leaves the channel as it was and the
+             * caller learns that its own buffer could not be handed
+             * over. Doing this after the receiver had been readied
+             * would be a receiver woken with no message.
+             */
+            server->t_snext = ch->c_receivers;
+            ch->c_receivers = server;
+            self->t_msg = NULL;
+            self->t_reply = NULL;
+            md_intr_restore(s);
+            return err;
+        }
         server->t_client = thread_id(self);
         server->t_cookie = cookie;
         server->t_donor = self;
@@ -236,6 +383,16 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
     err = self->t_waitres;
 
+    /*
+     * The reply is in this thread's staging message, put there by
+     * whoever replied, and this thread is running again: its own
+     * memory is the memory that is mapped, so now it can be copied
+     * where the caller asked for it.
+     */
+    if (err == SYS_OK) {
+        msg_copy(reply, &self->t_stage);
+    }
+
     self->t_wait = THREAD_WAIT_NONE;
     self->t_msg = NULL;
     self->t_reply = NULL;
@@ -257,8 +414,24 @@ channel_recv(struct channel *ch, struct sys_msg *out,
 
     client = list_pop(&ch->c_senders);
     if (client != NULL) {
-        msg_copy(out, client->t_msg);
-        msg_buf_hand_over(out);
+        msg_copy(out, &client->t_stage);
+        if (msg_buf_hand_over(self, client, out) != SYS_OK) {
+            /*
+             * The buffer could not be put where this thread could
+             * reach it, so there is no message to serve. The client
+             * is told, rather than left blocked on a rendezvous that
+             * did not happen, and this thread goes on to wait like
+             * one that found nothing queued.
+             */
+            client->t_replied = true;
+            client->t_waitres = SYS_ERR_NO_MEMORY;
+            client->t_blocked_on = NULL;
+            client->t_wait = THREAD_WAIT_NONE;
+            sched_ready(client);
+            client = NULL;
+        }
+    }
+    if (client != NULL) {
         self->t_client = thread_id(client);
         self->t_cookie = client->t_cookie;
         self->t_donor = client;
@@ -281,7 +454,12 @@ channel_recv(struct channel *ch, struct sys_msg *out,
         return SYS_OK;
     }
 
-    self->t_msg = out;
+    /*
+     * Nothing records where the message will go: a sender writes
+     * this thread's staging message, and this thread copies it out
+     * when it runs again and its own memory is mapped.
+     */
+    self->t_msg = &self->t_stage;
     self->t_snext = ch->c_receivers;
     ch->c_receivers = self;
 
@@ -291,6 +469,15 @@ channel_recv(struct channel *ch, struct sys_msg *out,
     self->t_blocked_on = ch;
     self->t_unwait = channel_unwait_thread;
     sched_block();
+
+    /*
+     * A sender filled this thread's staging message while this
+     * thread was blocked. Copy it out now that this thread's memory
+     * is what is mapped.
+     */
+    if (self->t_waitres == SYS_OK) {
+        msg_copy(out, &self->t_stage);
+    }
 
     *out_peer = self->t_client;
     *out_cookie = self->t_cookie;
@@ -330,8 +517,10 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
      * presenting the old value afterwards is refused rather than reaching
      * the object.
      */
-    msg_copy(client->t_reply, reply);
-    client->t_reply->handle = SYS_ID_INVALID;
+    msg_buf_take_back(self);
+
+    msg_copy(&client->t_stage, reply);
+    client->t_stage.handle = SYS_ID_INVALID;
 
     /*
      * A reply carries no buffer. Section 6.1: a server that handed back
@@ -339,15 +528,15 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
      * it and so could never reclaim it, which is why a large reply writes
      * into the buffer the client supplied in the request instead.
      */
-    client->t_reply->buf = 0;
-    client->t_reply->buf_len = 0;
-    client->t_reply->buf_flags = 0;
+    client->t_stage.buf = 0;
+    client->t_stage.buf_len = 0;
+    client->t_stage.buf_flags = 0;
 
     err = SYS_OK;
     if (reply->handle != SYS_ID_INVALID) {
         err = handle_move(&self->t_proc->p_handles,
           &client->t_proc->p_handles, reply->handle,
-          &client->t_reply->handle);
+          &client->t_stage.handle);
     }
 
     /*

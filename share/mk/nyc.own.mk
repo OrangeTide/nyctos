@@ -78,7 +78,8 @@ MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mgeneral-regs-only \
 # has the same constraint. RISC-V gets the flag for the same reason.
 KERN_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align -DSYS_TIER=$(TIER) \
                    -DSYS_USER_SLOT_BYTES=$(USER_LOAD_STRIDE)
-USER_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align
+USER_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align \
+                   -DSYS_USER_SLOT_BYTES=$(USER_LOAD_STRIDE)
 USER_LOAD_ADDR  := 0x40200000
 QEMU            := qemu-system-aarch64
 QEMU_FLAGS      := -M virt -cpu cortex-a53 -nographic
@@ -91,7 +92,8 @@ MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mcmodel=medany \
 KERN_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64gc -mabi=lp64d \
                    -mstrict-align -DSYS_TIER=$(TIER) \
                    -DSYS_USER_SLOT_BYTES=$(USER_LOAD_STRIDE)
-USER_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64imac -mabi=lp64 -mstrict-align
+USER_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64imac -mabi=lp64 \
+                   -mstrict-align -DSYS_USER_SLOT_BYTES=$(USER_LOAD_STRIDE)
 USER_LOAD_ADDR  := 0x80200000
 QEMU            := qemu-system-riscv64
 QEMU_FLAGS      := -M virt -bios none -nographic

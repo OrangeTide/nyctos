@@ -37,6 +37,9 @@ errname(sys_err_t e)
     case SYS_ERR_OWNER_DEAD:    return "OWNER_DEAD";
     case SYS_ERR_INTERRUPTED:   return "INTERRUPTED";
     case SYS_ERR_TIMEOUT:       return "TIMEOUT";
+    case SYS_ERR_WOULDBLOCK:    return "WOULDBLOCK";
+    case SYS_ERR_NO_ENT:        return "NO_ENT";
+    case SYS_ERR_FAULT:         return "FAULT";
     default:                    return "?";
     }
 }
@@ -1867,6 +1870,106 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
  * The programs cannot print. There is no console for user code, so each
  * client reports what it read as its exit status and the kernel says so.
  */
+
+/*
+ * A program that names memory it does not own, and one image with two
+ * live processes. The two halves of what an address space per process
+ * buys, checked from the outside.
+ */
+static void
+trespass_checks(sys_handle_t root)
+{
+    sys_ns_spec_t ns[1];
+    struct child c;
+    int32_t code;
+
+    ns[0].id = SYS_NS_ROOT;
+    ns[0].handle = root;
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("trespass", 20, ns, 1));
+    sched_undefer();
+
+    code = child_join(&c, 1000);
+
+    /*
+     * Zero means it was refused and carried on. Any other value is the
+     * step it got to: the refusal it did not get, or the ordinary read
+     * that should have worked and did not.
+     */
+    if (code != 0) {
+        panic("trespass: exited %d, so the check it stopped at is the "
+          "one that failed", code);
+    }
+    cnprintf("    %-38s %s\n", "a buffer outside the caller's memory",
+      "REFUSED");
+}
+
+/*
+ * Two processes from one image.
+ *
+ * At Tier 0 a program runs at the address it was linked for, so a second
+ * copy would write over the first. The kernel refuses, and that refusal
+ * is the cost of having no translation. At Tier 2 the address is virtual
+ * and the memory behind it is frames nobody else has, so the same request
+ * succeeds. Nothing about the request differs between the two: the same
+ * source, the same archive, the same operation, and a different answer
+ * because the machine underneath can do a different thing.
+ *
+ * Both are spawned below this thread's priority so that neither runs
+ * until both exist. Otherwise the first would exit before the second was
+ * asked for and there would be nothing to refuse.
+ */
+static void
+two_copies_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    sys_handle_t h1 = SYS_HANDLE_INVALID, h2 = SYS_HANDLE_INVALID;
+    struct child c1, c2;
+    void *obj;
+    sys_err_t err;
+
+    err = proc_spawn_op(self, "status", PRIO_BOOT - 1, NULL, 0, NULL, 0,
+      &h1);
+    expect("one process from an image", err, SYS_OK);
+
+    err = proc_spawn_op(self, "status", PRIO_BOOT - 1, NULL, 0, NULL, 0,
+      &h2);
+#if SYS_TIER == 2
+    expect("a second, from the same image", err, SYS_OK);
+#else
+    expect("a second, from the same image, refused", err,
+      SYS_ERR_WOULDBLOCK);
+#endif
+
+    if (handle_lookup(ht, h1, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("two copies: the first spawn returned no process");
+    }
+    child_watch(&c1, obj);
+#if SYS_TIER == 2
+    if (handle_lookup(ht, h2, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("two copies: the second spawn returned no process");
+    }
+    child_watch(&c2, obj);
+#endif
+
+    if (child_join(&c1, 1000) != 7) {
+        panic("two copies: the first did not run to its own exit");
+    }
+    handle_close(ht, h1);
+#if SYS_TIER == 2
+    if (child_join(&c2, 1000) != 7) {
+        panic("two copies: the second did not run to its own exit");
+    }
+    handle_close(ht, h2);
+    cnprintf("    %-38s %s\n", "both ran, in memory of their own", "OK");
+#else
+    (void)c2;
+    cnprintf("    %-38s %s\n", "one address, so one of it", "OK");
+#endif
+}
+
 /* The console and the directory the shell is handed, kept from the
  * checks that created them. Root will hold both when there is a root;
  * until then the kernel is what assembles the system. */
@@ -1878,7 +1981,7 @@ user_slice(void)
     struct sys_op_connect_args cargs;
     sys_ns_spec_t ns[1];
     struct channel *ch;
-    sys_handle_t h_recv, root, root2;
+    sys_handle_t h_recv, root, root2, root3;
     sys_err_t err;
 
     boot_report();
@@ -1935,6 +2038,18 @@ user_slice(void)
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     h_fs_root = cargs.out_handle;
 
+    /*
+     * A fourth connection, for the program that describes a buffer it
+     * does not own. It gets an ordinary one because the check is that a
+     * bad descriptor is refused, not that a bad client is.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a fourth one, for the trespasser",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    root3 = cargs.out_handle;
+
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = h_recv;
     cnputs("    loading fs_server, which receives on that channel\n");
@@ -1947,6 +2062,8 @@ user_slice(void)
      */
     run_client("fs_client", root, sizeof(motd_text) - 1, true);
     run_client("fs_batch", root2, sizeof(motd_text) - 1, false);
+
+    trespass_checks(root3);
 }
 
 void
@@ -2050,6 +2167,9 @@ kernel_main(void)
 
     cnputs("spawn: a program that starts a program\n");
     spawn_checks();
+
+    cnputs("isolation: two processes from one image\n");
+    two_copies_checks();
 
     cnputs("threads: a program with more than one\n");
     thread_checks();

@@ -484,8 +484,11 @@ Four constraints shape everything that follows, and they are stated here because
 | Interrupts | Disabled in kernel on Tier 0; enabled on Tier 2. |
 | Interrupt handoff | The handler masks a source it cannot finish with; the driver drains and unmasks. |
 | Spawn priority | A child may not outrank its parent. `SYS_PRIO_INHERIT` asks for the caller's own. |
-| Spawn and images | One live process per image while loading is a copy to a fixed address. |
+| Spawn and images | One live process per image while loading is a copy to a fixed address. Tier 2 loads into memory of its own and the rule goes. |
 | Read replies | Into the buffer the client supplied, inline when it supplied none. The request decides, not the server. |
+| Message payloads | Staged in the kernel between the two processes. One copy each way, so neither end has to be mapped while the other runs. |
+| Buffer descriptors | Checked against the caller's own memory before the operation runs, at every tier. A number is not a right. |
+| Buffer delivery | The pages are mapped into the receiver at the address the sender named, and taken back at the reply. |
 | Timers | Advance a timeline. No timer pulse. |
 | Timeouts | Absolute deadlines. Relative helpers live in libc. |
 | Exit and join | Exit advances a completion timeline; status read from the handle. |
@@ -548,6 +551,11 @@ The figure shows a program breaking the rule rather than obeying it, because **a
 This is what makes Tier 0 a useful development target rather than merely a constrained one. The same source runs on both, so a contract violation can be found on hardware that enforces and then deployed to hardware that does not.
 
 A Tier 0 debug build should include software checks for grant access outside the owning window, because that is the class of bug Tier 0 cannot catch and Tier 2 catches for free. No API in this document exposes a raw pointer that crosses a process boundary.
+
+
+**The address does not change across the boundary.** Tier 2 maps the pages into the receiver at the address the sender named rather than at one of its own choosing, so the number in the message means the same thing on both sides and on both tiers. A server dereferences what it was given. It is affordable because a process's memory occupies a range no other process's does, which is what the loader's slots become once each process has an address space of its own. Choosing a receiver address instead would work and would cost every server a translation step that Tier 0 does not have, which is a difference between the tiers in the interface rather than in the enforcement, and this document spends those only where the hardware forces it.
+
+**The message itself is copied through the kernel, not read across.** A rendezvous has a sender and a receiver in two different memories, and with an address space each only one of them is mapped while either runs. So the header and the inline payload are staged in the kernel: copied out of the sender while the sender's memory is current, and copied into the receiver when the receiver runs. It costs one extra copy of a small message each way. Tier 0 does the same thing rather than keeping a shortcut that only one tier takes, on the same principle as everything else here: one path, checked by every run on either tier.
 
 **Reply-path caveat.** The move rule above governs the forward path. The reply path is asymmetric, because a server that mapped its own memory into a client could not tell when the client had finished reading it, and so could never safely reclaim it. Reply payloads larger than the inline area therefore use the buffer the *client* supplied in the original send, returning ownership to a party that already knows the lifetime. **A server does not hand back memory of its own.**
 
@@ -1305,6 +1313,8 @@ image that already has a live process, and what removes the
 restriction is a loader that relocates or a tier that maps, not a
 better check.
 
+That tier exists now. At Tier 2 the loader maps the image into an address space of its own, so the address a member is linked for is a virtual one and the memory behind it is frames nobody else has. Two copies of one image are two processes that cannot reach each other, the refusal is compiled out, and the same request that is refused on one tier is granted on the other. It is the first thing Tier 2 buys that Tier 0 cannot have at any price, and it is worth noting that what changed is the loader rather than the check.
+
 The two paths differ in teardown, which is the part worth specifying. An XIP process owns no text memory, so its teardown reclaims only its data segment, stacks, and kernel objects. A RAM-loaded process holds a region owned by the **loader service**, which must reclaim it. The loader therefore waits on the process's completion timeline from section 10.4 and releases the region when it advances. Reclaim is a userspace responsibility, and the mechanism it uses is the one already specified for supervision.
 
 ### 15.3 Faults Are Messages the Faulting Thread Sends
@@ -1864,6 +1874,12 @@ Three things follow, and they are worth stating because each is easy to assume t
 **A Tier 0 system's protection boundary is a convention.** A program that passes a bad pointer corrupts the kernel, and no amount of validation in the kernel changes that, because the validation has nothing to consult. Section 6 puts it in one line, that on Tier 0 handles enforce modularity and not security, and this is the sharpest form of what that line means.
 
 **What is still checked on Tier 0 is everything that does not need an address space.** The count against its bound, the opcode against the table, argument-structure lengths against what an operation requires, handles against the caller's table and its rights. All of these are questions about values the kernel holds, not about memory it does not own, and all of them are answered on both tiers identically. Only the address checks vanish.
+
+**One address check survives on Tier 0, because the kernel drew that boundary itself.** A loaded program occupies a slot the loader gave it, and where that slot is is something the kernel knows without asking the hardware anything. So the buffer field of section 12.4 is checked against the caller's own slot on both tiers, and a range that falls outside it is refused with `SYS_ERR_FAULT` before the message is delivered. This is not a cleverer version of the check that vanished. It is a different question: not "is this mapped for the caller", which needs an address space, but "is this the memory this process was given", which needs only the loader's own record.
+
+It is coarser than the Tier 2 check in two ways worth naming. A slot is larger than the memory a program uses, so an address inside its own slot and outside anything it has is accepted. And a process the kernel built has no slot and is not checked at all, because it is the kernel, and an address it names is one it could have dereferenced without asking.
+
+What it buys is the case that matters most on the tier that has no other way to notice: one program naming another program's memory and the kernel reading it on that program's behalf. The descriptor array of step 2 above is not covered by it, because that array is on the caller's stack and the slot check would accept it wherever it fell.
 
 **A port states which of these checks it performs**, per section 27, rather than leaving a reader to infer it from the tier. A port that performs fewer than its tier allows is a defect, and one that performs more is doing something the design does not describe.
 

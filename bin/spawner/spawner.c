@@ -92,7 +92,7 @@ int
 main(void)
 {
     sys_ns_spec_t ns[1];
-    sys_handle_t child, busy;
+    sys_handle_t child, busy, second;
     int32_t code = 0;
     int err;
 
@@ -144,19 +144,35 @@ main(void)
     }
 
     /*
-     * An image that is already running. There is one address per image and
-     * no MMU, so a second copy is loaded over the first while it runs. The
-     * child is spawned and not yet joined here, which is the only state in
-     * which the question can be asked: it is runnable and has not started,
-     * because it is at this program's own priority and equal priority does
-     * not preempt.
+     * An image that is already running.
+     *
+     * At Tier 0 there is one address per image, so a second copy would be
+     * loaded over the first while it runs, and the operation refuses. At
+     * Tier 2 the address is virtual and the second copy has memory of its
+     * own, so the same request is accepted. This program does not know
+     * which machine it is on and does not ask: it takes either answer and
+     * holds each to what it implies. A refusal must leave nothing behind,
+     * which the spawn after it checks, and an acceptance must be a
+     * process that runs to its own exit.
+     *
+     * The child is spawned and not yet joined here, which is the only
+     * state in which the question can be asked: it is runnable and has
+     * not started, because it is at this program's own priority and equal
+     * priority does not preempt.
      */
     if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, NULL, 0, &busy) != SYS_OK) {
         return ERR_SPAWN;
     }
-    if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, NULL, 0, NULL)
-      != SYS_ERR_WOULDBLOCK) {
-        DBG_PUTS("spawner: a second copy of a live image was accepted");
+    err = sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, NULL, 0,
+      &second);
+    if (err == SYS_OK) {
+        if (join(second, &code) != 0 || code != 0) {
+            DBG_PUTS("spawner: the second copy did not run");
+            return ERR_LIVE;
+        }
+        (void)sys_handle_close(second);
+    } else if (err != SYS_ERR_WOULDBLOCK) {
+        DBG_PUTS("spawner: a second copy of a live image failed oddly");
         return ERR_LIVE;
     }
     err = join(busy, &code);
@@ -167,7 +183,7 @@ main(void)
 
     /*
      * The same image again, now that the first has exited, and the one
-     * from the start of this program. Five refusals mean nothing if a
+     * from the start of this program. A refusal means nothing if a
      * spawn that failed took a slot, a handle or an address with it.
      */
     if (sys_proc_spawn("spin", SYS_PRIO_INHERIT, NULL, 0, NULL, 0, &busy) != SYS_OK) {
@@ -179,7 +195,7 @@ main(void)
         return err;
     }
 
-    DBG_PUTS("spawner: five refusals, then the same spawns again");
+    DBG_PUTS("spawner: every refusal made, then the same spawns again");
     err = run("status", &code, NULL);
     if (err != 0) {
         return ERR_AGAIN;

@@ -202,36 +202,30 @@ md_as_activate(const struct addrspace *as)
 {
     uint64_t satp = SATP_SV39 | ((uint64_t)as->as_root >> 12);
 
+    __asm__ volatile ("csrw satp, %0" :: "r" (satp) : "memory");
+    __asm__ volatile ("sfence.vma" ::: "memory");
+}
+
+void
+md_mmu_enable(const struct addrspace *as)
+{
     /*
      * Supervisor mode may not touch a page marked for user mode
-     * unless SUM says it may. The kernel has to: it reads an
-     * operation's arguments out of a program's memory, copies a
-     * message payload, and at this stage its own data is marked user
-     * because a program's startup record is inside it. Without this
-     * bit the kernel faults on its own stack, which is what happened:
-     * a load fault, then a store fault trying to save the frame for
-     * the first one, and so on until the machine stopped.
-     *
-     * It is a permission the kernel gives itself, not a check it
-     * skips. Section 23.2's validation is what says an address
-     * belongs to the caller, and stage 4 is where that arrives.
+     * unless SUM says it may, and the kernel has to: it reads an
+     * operation's arguments out of a program's memory and copies a
+     * message payload. It is a permission the kernel gives itself,
+     * not a check it skips; what says an address belongs to the
+     * caller is the validation of section 23.2.
      */
     __asm__ volatile ("csrs sstatus, %0" :: "r" (1UL << 18) : "memory");
 
-    /*
-     * The fence after the write is what makes the instruction after it
-     * fetch through the new tables rather than through whatever the
-     * hardware had cached about there being none. Identity mapping is what
-     * makes that survivable.
-     */
-    __asm__ volatile ("csrw satp, %0" :: "r" (satp) : "memory");
-    __asm__ volatile ("sfence.vma" ::: "memory");
+    md_as_activate(as);
 
     /*
-     * The same belt and braces as the other port: instructions
-     * fetched with translation off are the same instructions at the
-     * same addresses, because the map is identity, and a stale one
-     * would survive every print anyone added while looking for it.
+     * Instructions fetched with translation off are the same
+     * instructions at the same addresses, because the map is
+     * identity, and a stale one would survive every print anyone
+     * added while looking for it.
      */
     __asm__ volatile ("fence.i" ::: "memory");
 }
@@ -242,4 +236,60 @@ md_tlb_flush_all(void)
     __asm__ volatile ("sfence.vma" ::: "memory");
 }
 
+
+/*
+ * What a virtual address names, for a caller handing a page to another
+ * address space. Only a page-granule mapping answers: a megapage covers
+ * more than the caller asked about, and the ranges this is used on are
+ * program memory, which is mapped a page at a time.
+ */
+sys_err_t
+md_lookup(const struct addrspace *as, uintptr_t va, uintptr_t *out_pa)
+{
+    uint64_t *l0 = table_at(as->as_root);
+    uint64_t e;
+
+    e = l0[INDEX(va, 0)];
+    if ((e & PTE_V) == 0 || PTE_LEAF(e)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    e = table_at((uintptr_t)PTE_ADDR(e))[INDEX(va, 1)];
+    if ((e & PTE_V) == 0 || PTE_LEAF(e)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    e = table_at((uintptr_t)PTE_ADDR(e))[INDEX(va, 2)];
+    if ((e & PTE_V) == 0) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    *out_pa = (uintptr_t)PTE_ADDR(e);
+
+    return SYS_OK;
+}
+
+/*
+ * Take a range of pages out of a space. The tables the pages hung from
+ * stay: they cost a frame each, and a range that is unmapped here is
+ * mapped again in the same place often enough that keeping them is the
+ * cheaper of the two mistakes.
+ */
+void
+md_unmap(struct addrspace *as, uintptr_t va, size_t len)
+{
+    uint64_t *l0 = table_at(as->as_root);
+
+    while (len > 0) {
+        uint64_t e = l0[INDEX(va, 0)];
+
+        if ((e & PTE_V) != 0 && !PTE_LEAF(e)) {
+            e = table_at((uintptr_t)PTE_ADDR(e))[INDEX(va, 1)];
+            if ((e & PTE_V) != 0 && !PTE_LEAF(e)) {
+                table_at((uintptr_t)PTE_ADDR(e))[INDEX(va, 2)] = 0;
+            }
+        }
+
+        va += PAGE_SIZE;
+        len -= PAGE_SIZE;
+    }
+}
 #endif /* SYS_TIER == 2 */
