@@ -85,14 +85,27 @@ abort_kind(unsigned long esr)
         return SYS_FAULT_ACCESS;    /* permission fault */
     case 0x10:
         /*
-         * Synchronous external abort, on the access or on the table walk
-         * that served it. Section 16.1 keeps this apart from an access
-         * fault because it says the memory is untrustworthy rather than
-         * that the thread was wrong.
+         * Synchronous external abort on the access itself, and, in the
+         * same group, the tag check fault of a part with memory tagging.
+         * Neither can arrive from an ordinary access here and tagging is
+         * not enabled, so grouping them costs nothing and losing the
+         * external abort would cost the difference between a thread that
+         * was wrong and memory that is not trustworthy.
+         */
+        return SYS_FAULT_EXTERNAL;
+    case 0x14:
+        /*
+         * The same abort, taken on the translation table walk rather
+         * than on the access. It is a separate group in the encoding and
+         * was a separate line missing from the first version of this,
+         * which reported it as an access fault: a program blamed for a
+         * bus that failed under the kernel's own page tables.
          */
         return SYS_FAULT_EXTERNAL;
     case 0x18:
         return SYS_FAULT_EXTERNAL;  /* parity or ECC error */
+    case 0x1c:
+        return SYS_FAULT_EXTERNAL;  /* the same, on the table walk */
     default:
         break;
     }
@@ -201,5 +214,85 @@ md_fault_has_addr(unsigned long cause)
         return true;
     default:
         return false;
+    }
+}
+
+/*
+ * The mapping, checked against the encodings named one at a time.
+ *
+ * This is not the mapping restating itself. Above, the abort classes are
+ * grouped by masking off the level bits, which is compact and is exactly
+ * where the first version of this went wrong: two of the eight groups
+ * were absent, so a synchronous external abort taken on a table walk was
+ * reported as a program touching memory it should not have. Here every
+ * encoding is written out by name and level, so a group the mask misses
+ * is a row that disagrees.
+ *
+ * The sweep at the end is the weaker half and catches a different thing:
+ * that no encoding at all, defined or reserved, maps to "did not fault".
+ */
+static void
+expect(unsigned long esr, uint32_t want, const char *what)
+{
+    uint32_t got = md_fault_kind(esr);
+
+    if (got != want) {
+        panic("fault map: %s (esr 0x%lx) is %u, expected %u", what, esr,
+          (unsigned int)got, (unsigned int)want);
+    }
+}
+
+void
+md_fault_check(void)
+{
+    static const uint32_t aborts[] = {
+        EC_INSN_ABORT_LOW, EC_INSN_ABORT_CUR,
+        EC_DATA_ABORT_LOW, EC_DATA_ABORT_CUR,
+    };
+    unsigned int i, level, ec;
+
+    for (i = 0; i < sizeof(aborts) / sizeof(aborts[0]); i++) {
+        unsigned long base = (unsigned long)aborts[i] << 26;
+
+        for (level = 0; level < 4; level++) {
+            expect(base | (0x00u + level), SYS_FAULT_ACCESS, "address size");
+            expect(base | (0x04u + level), SYS_FAULT_ACCESS, "translation");
+            expect(base | (0x08u + level), SYS_FAULT_ACCESS, "access flag");
+            expect(base | (0x0cu + level), SYS_FAULT_ACCESS, "permission");
+            expect(base | (0x14u + level), SYS_FAULT_EXTERNAL,
+              "external abort on a walk");
+            expect(base | (0x1cu + level), SYS_FAULT_EXTERNAL,
+              "parity error on a walk");
+        }
+        expect(base | 0x10u, SYS_FAULT_EXTERNAL, "external abort");
+        expect(base | 0x18u, SYS_FAULT_EXTERNAL, "parity error");
+        expect(base | 0x21u, SYS_FAULT_ALIGN, "alignment");
+        expect(base | 0x30u, SYS_FAULT_EXTERNAL, "TLB conflict");
+    }
+
+    expect((unsigned long)EC_PC_ALIGN << 26, SYS_FAULT_ALIGN, "pc alignment");
+    expect((unsigned long)EC_SP_ALIGN << 26, SYS_FAULT_ALIGN, "sp alignment");
+    expect((unsigned long)EC_FP64 << 26, SYS_FAULT_ARITH, "floating point");
+    expect((unsigned long)EC_SERROR << 26, SYS_FAULT_EXTERNAL, "SError");
+    expect((unsigned long)EC_BREAKPOINT_LOW << 26, SYS_FAULT_DEBUG,
+      "breakpoint");
+    expect((unsigned long)EC_SW_STEP_LOW << 26, SYS_FAULT_DEBUG, "step");
+    expect((unsigned long)EC_WATCHPOINT_LOW << 26, SYS_FAULT_DEBUG,
+      "watchpoint");
+    expect((unsigned long)EC_BRK64 << 26, SYS_FAULT_DEBUG, "brk");
+    expect((unsigned long)EC_UNKNOWN << 26, SYS_FAULT_INSTRUCTION, "unknown");
+    expect((unsigned long)EC_ILLEGAL_STATE << 26, SYS_FAULT_INSTRUCTION,
+      "illegal state");
+
+    /* Nothing at all, defined or reserved, says the thread did not fault. */
+    for (ec = 0; ec < 64; ec++) {
+        unsigned long esr = (unsigned long)ec << 26;
+        unsigned int fsc;
+
+        for (fsc = 0; fsc < 64; fsc++) {
+            if (md_fault_kind(esr | fsc) == SYS_FAULT_NONE) {
+                panic("fault map: esr 0x%lx is not a fault", esr | fsc);
+            }
+        }
     }
 }

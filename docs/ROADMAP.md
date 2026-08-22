@@ -1522,6 +1522,66 @@ That is the opt-in half of the section and it needs the pager shape of
 15.3, which is stage 8. `SYS_FAULT_EXTERNAL` is mapped on both ports and
 cannot be provoked on either board, so the row is written and untested.
 
+
+*Reviewing it found two defects and one hole the stage exposed rather
+than made.*
+
+**A program could stop the machine with a number.** The kernel
+dereferences the descriptor array a program passes, the `arg_ptr` inside
+each descriptor, the namespace and argument vectors a spawn points at,
+and each string in the argument vector. None of them was checked.
+Section 23.2 has said since M1 that validation happens once before
+execution, and stage 4 built the buffer half of it and nothing else; what
+stage 5 added was the ability to see what happened, which is a panic
+naming the kernel's own instruction and a program's address.
+
+It is closed now, in the two places the descriptors pass through and in
+the three places a spawn follows a pointer. The string case needed more
+than a yes: the copier stopped after two hundred and fifty-six bytes,
+which bounds the damage rather than the read, so the kernel is told how
+far the caller's memory goes and stops there. `trespass` submits a
+descriptor array a megabyte away from its own memory and a descriptor of
+its own pointing at arguments that are not, is refused both times with
+`SYS_ERR_FAULT`, and exits zero. Removing either check reproduces the
+panic.
+
+The predicate this needs is not the one stage 4 built. What a program may
+*name* is its own image; what it may *lend* is narrower, because lending
+needs memory that can be mapped somewhere else, and a process the kernel
+built may name anything and lend nothing. Two questions, two functions,
+and the version with one of them had the kernel refusing to read its own
+memory.
+
+**Two of the eight abort groups were missing from the AArch64 mapping.**
+The classes are grouped by masking off the level bits, which is compact
+and is exactly how a group goes missing: a synchronous external abort
+taken on a translation table walk, and the parity error beside it, fell
+through to the default and were reported as access faults. A program
+blamed for a bus that failed under the kernel's own page tables.
+
+The mapping is a pure function of a cause register, so it can be checked
+without making the hardware raise anything, and now is: each port asks
+about every encoding by name and level at boot, and sweeps the whole
+cause space to confirm nothing maps to "did not fault". The sweep also
+confirms the row that says RISC-V cannot raise `SYS_FAULT_ARITH`. Putting
+the missing group back and running it reports exactly the line that was
+wrong. This is the check the stage should have had, because "exhaustive"
+was a claim about a file nobody could run.
+
+**And a claim in the interface that was not true.** `SYS_EXIT_FAULT` was
+described as a value no program returns. A program returns whatever it
+likes, and the one this stage added returns a word it read out of memory.
+What tells a fault from a choice is the fault kind beside the code, which
+is what the field is for.
+
+*Left alone, with reasons.* A fault in a thread that is not the last of
+its process is untested: section 16.2 says the process survives, and it
+does, but every process here has one thread. The path is the one a normal
+thread exit takes and `threads` exercises that. The fault fields on a
+thread's own status are written and cannot be read from another process,
+because nothing hands out a handle to somebody else's thread; the process
+status is what a supervisor reads and it is checked.
+
 **6. The move contract, enforced.** The thesis, and the earliest point the
 machinery allows it.
 

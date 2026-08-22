@@ -177,6 +177,18 @@ void proc_watch(struct proc *p);
  */
 bool proc_slot(const struct proc *p, uintptr_t *base, size_t *len);
 
+/*
+ * How many bytes from this address the caller can reach, and whether it
+ * can reach a whole range, per section 23.2 step 2. A process the kernel
+ * built reaches everything; a loaded program reaches its own image.
+ *
+ * This is a wider question than proc_owns: a program may name any of its
+ * own memory in a descriptor the kernel reads, and may hand only memory
+ * that can be mapped elsewhere to another process.
+ */
+size_t proc_reach_len(const struct proc *p, uintptr_t va);
+bool proc_reaches(const struct proc *p, uintptr_t va, size_t len);
+
 bool proc_owns(const struct proc *p, uintptr_t va, size_t len);
 
 #if SYS_TIER == 2

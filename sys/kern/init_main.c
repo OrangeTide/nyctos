@@ -2161,6 +2161,12 @@ fault_checks(void)
      * other two ends of the image are taken because the port writes all
      * three and has nowhere to put one it is not given.
      */
+    /*
+     * Before anything is made to fault: the mapping is a pure
+     * function and every row of it can be asked about here.
+     */
+    md_fault_check();
+
     md_kernel_image(&kernel, &rx_end, &kend);
     (void)rx_end;
     (void)kend;

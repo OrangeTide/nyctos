@@ -155,3 +155,62 @@ md_fault_has_addr(unsigned long cause)
         return false;
     }
 }
+
+/*
+ * The mapping, checked against the codes named one at a time.
+ *
+ * The other port groups its abort encodings by masking and lost two
+ * groups doing it; this one has no groups and lists every code, so what
+ * this catches is a code that moves rather than a group that is missed.
+ * The sweep at the end catches the same thing on both: that nothing,
+ * defined or reserved, maps to "did not fault".
+ */
+static void
+expect(unsigned long cause, uint32_t want, const char *what)
+{
+    uint32_t got = md_fault_kind(cause);
+
+    if (got != want) {
+        panic("fault map: %s (scause %lu) is %u, expected %u", what, cause,
+          (unsigned int)got, (unsigned int)want);
+    }
+}
+
+void
+md_fault_check(void)
+{
+    unsigned long cause;
+
+    expect(CAUSE_INSN_MISALIGNED, SYS_FAULT_ALIGN, "misaligned fetch");
+    expect(CAUSE_LOAD_MISALIGNED, SYS_FAULT_ALIGN, "misaligned load");
+    expect(CAUSE_STORE_MISALIGNED, SYS_FAULT_ALIGN, "misaligned store");
+    expect(CAUSE_INSN_ACCESS, SYS_FAULT_ACCESS, "fetch access");
+    expect(CAUSE_LOAD_ACCESS, SYS_FAULT_ACCESS, "load access");
+    expect(CAUSE_STORE_ACCESS, SYS_FAULT_ACCESS, "store access");
+    expect(CAUSE_INSN_PAGE, SYS_FAULT_ACCESS, "fetch page");
+    expect(CAUSE_LOAD_PAGE, SYS_FAULT_ACCESS, "load page");
+    expect(CAUSE_STORE_PAGE, SYS_FAULT_ACCESS, "store page");
+    expect(CAUSE_ILLEGAL_INSN, SYS_FAULT_INSTRUCTION, "illegal instruction");
+    expect(CAUSE_BREAKPOINT, SYS_FAULT_DEBUG, "breakpoint");
+    expect(CAUSE_HW_ERROR, SYS_FAULT_EXTERNAL, "hardware error");
+    expect(CAUSE_SW_CHECK, SYS_FAULT_INSTRUCTION, "software check");
+    expect(CAUSE_ECALL_S, SYS_FAULT_INSTRUCTION, "ecall from supervisor");
+
+    /*
+     * There is no arithmetic row on this port, and this is where that is
+     * a statement rather than an omission: no code maps to it, because
+     * integer division by zero has a defined result here and floating
+     * point traps are not enabled.
+     */
+    for (cause = 0; cause < 64; cause++) {
+        uint32_t kind = md_fault_kind(cause);
+
+        if (kind == SYS_FAULT_NONE) {
+            panic("fault map: scause %lu is not a fault", cause);
+        }
+        if (kind == SYS_FAULT_ARITH) {
+            panic("fault map: scause %lu is arithmetic, which this port "
+              "cannot raise", cause);
+        }
+    }
+}

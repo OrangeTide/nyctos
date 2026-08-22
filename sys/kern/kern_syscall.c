@@ -30,6 +30,7 @@
 
 #include <sys/op.h>
 #include <sys/systm.h>
+#include <sys/proc.h>
 #include <sys/thread.h>
 
 long
@@ -42,6 +43,23 @@ syscall_handler(struct sys_op *op, unsigned long count)
      */
     if (count != 1) {
         return SYS_ERR_INVALID_ARG;
+    }
+
+    /*
+     * Section 23.2 step 2: the descriptor array has to be memory the
+     * caller can reach, or the call returns SYS_ERR_FAULT having executed
+     * nothing. This is the first dereference of an address a program
+     * chose, and without the check it is the kernel faulting on a number
+     * a program made up.
+     *
+     * The array is writable as well as readable, because the kernel puts
+     * each entry's status back into it per section 17.6. One check covers
+     * both: what a program can reach in a descriptor is its own memory,
+     * and its own memory is writable.
+     */
+    if (!proc_reaches(proc_current(), (uintptr_t)op,
+      count * sizeof(*op))) {
+        return SYS_ERR_FAULT;
     }
 
     return sys_op_exec(op);

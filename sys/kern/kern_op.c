@@ -207,7 +207,6 @@ op_handle_dup(struct proc *p, struct sys_op *op)
     return SYS_OK;
 }
 
-
 /*
  * The debug console of section 22.4.
  *
@@ -257,8 +256,6 @@ op_debug_write(struct proc *p, struct sys_op *op)
 #if SYS_DEBUG_CONSOLE
     struct sys_op_debug_args *args;
 
-    (void)p;
-
     if (!debug_console_live) {
         return SYS_ERR_NOT_SUPPORTED;
     }
@@ -272,6 +269,15 @@ op_debug_write(struct proc *p, struct sys_op *op)
     }
     if (args->len > SYS_DEBUG_WRITE_MAX) {
         return SYS_ERR_INVALID_ARG;
+    }
+
+    /*
+     * And the bytes themselves, per section 23.2. The debug console
+     * takes no handle, so this pointer is the only thing it is given
+     * and the only thing there is to check.
+     */
+    if (!proc_reaches(p, args->buf, args->len)) {
+        return SYS_ERR_FAULT;
     }
 
     cnwrite((const char *)args->buf, args->len);
@@ -310,7 +316,6 @@ op_thread_exit(struct proc *p, struct sys_op *op)
 
     thread_exit(args->code);
 }
-
 
 /*
  * The completion timeline of a thread or a process, per section 10.4.
@@ -404,7 +409,6 @@ op_proc_status(struct proc *p, struct sys_op *op)
 
     return SYS_OK;
 }
-
 
 /*
  * A driver has drained its device, so the source may assert again.
@@ -573,6 +577,24 @@ sys_op_exec(struct sys_op *op)
     }
 
     p = proc_current();
+
+    /*
+     * Section 23.2 step 2 again, for the memory the descriptor points at
+     * rather than the descriptor itself. Every operation below reads its
+     * arguments through this pointer and most write results back through
+     * it, so one check here is the "once, before execution" the section
+     * asks for: the alternative is the same check written into thirty
+     * operations, twenty-nine of which would have it right.
+     *
+     * A null pointer with a length is a malformed descriptor rather than
+     * an unreachable one, and each operation already says so with
+     * SYS_ERR_INVALID_ARG. Letting it through to them keeps that answer.
+     */
+    if (op->arg_ptr != 0 &&
+      !proc_reaches(p, op->arg_ptr, op->arg_len)) {
+        op->status = SYS_ERR_FAULT;
+        return SYS_ERR_FAULT;
+    }
 
     switch (op->opcode) {
     case SYS_OP_NOP:

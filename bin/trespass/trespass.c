@@ -68,6 +68,7 @@ main(void)
     sys_msg_t reply;
     sys_handle_t dir, file;
     uintptr_t neighbour;
+    sys_op_t op;
 
     dir = ns_lookup(SYS_NS_ROOT);
     if (dir == SYS_HANDLE_INVALID) {
@@ -107,6 +108,31 @@ main(void)
       SYS_ERR_FAULT) {
         return 5;
     }
+
+    /*
+     * A descriptor array that is not ours. Section 23.2 step 2: this is
+     * the first address the kernel dereferences on a program's word, so
+     * it is the one that halts the machine when nothing checks it, and
+     * that is what it did.
+     */
+    if (sys_op_submit((sys_op_t *)neighbour, 1) != SYS_ERR_FAULT) {
+        return 6;
+    }
+
+    /*
+     * And a descriptor of ours pointing at arguments that are not. The
+     * kernel reads every operation's arguments through that pointer and
+     * writes most results back through it.
+     */
+    memset(&op, 0, sizeof(op));
+    op.opcode = SYS_OP_PROC_STATUS;
+    op.target = SYS_HANDLE_INVALID;
+    op.arg_ptr = neighbour;
+    op.arg_len = 64;
+    if (sys_op_submit(&op, 1) != SYS_ERR_FAULT || op.status != SYS_ERR_FAULT) {
+        return 7;
+    }
+
 
     return 0;
 }

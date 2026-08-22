@@ -81,6 +81,13 @@ uint32_t md_fault_kind(unsigned long cause);
 bool md_fault_has_addr(unsigned long cause);
 
 /*
+ * The port checking its own mapping against the encodings, one at a
+ * time. It is a pure function of a cause register, so every row can be
+ * asked about without the hardware being made to raise anything.
+ */
+void md_fault_check(void);
+
+/*
  * The memory the machine has, which a port states rather than
  * discovers. Section 27 blesses that for a pinned target: discovering
  * a constant is not an improvement on stating one, and the stage that

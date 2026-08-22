@@ -13,6 +13,8 @@
 #include <sys/thread.h>
 #include <sys/timeline.h>
 
+#include <stdint.h>
+
 /* Copy a name into the process, truncating rather than running over. */
 static void
 proc_set_name(struct proc *p, const char *name)
@@ -384,6 +386,55 @@ proc_slot(const struct proc *p, uintptr_t *base, size_t *len)
 }
 
 /*
+ * How many bytes from this address the process can reach, or zero if it
+ * cannot reach the address at all.
+ *
+ * This is the question of section 23.2 step 2, and it is not the same
+ * question as proc_owns below. A program may name any of its own memory
+ * in a descriptor; what it may hand to another process is narrower,
+ * because handing memory over needs memory that can be mapped somewhere
+ * else. The kernel reaches everything, since an address it names is one
+ * it could have dereferenced without asking.
+ *
+ * It answers with a length rather than a yes so that a caller reading a
+ * string can bound the walk. A command line with no terminator is the
+ * case that made this necessary: the copy stopped after two hundred and
+ * fifty-six bytes, which is a bound on the damage and not on the read.
+ */
+size_t
+proc_reach_len(const struct proc *p, uintptr_t va)
+{
+    uintptr_t base;
+    size_t slot;
+
+    if (!proc_slot(p, &base, &slot)) {
+        return SIZE_MAX;
+    }
+    if (va < base || va - base >= slot) {
+        return 0;
+    }
+
+    return slot - (va - base);
+}
+
+/*
+ * Whether a process can reach a whole range. Zero bytes is reachable
+ * anywhere, because an operation that names no memory names none.
+ */
+bool
+proc_reaches(const struct proc *p, uintptr_t va, size_t len)
+{
+    if (len == 0) {
+        return true;
+    }
+    if (va == 0) {
+        return false;
+    }
+
+    return proc_reach_len(p, va) >= len;
+}
+
+/*
  * Whether a range of addresses is memory this process may hand to
  * another, per section 23.2: a descriptor a program gives the kernel
  * names memory, and the kernel checks that the process naming it is the
@@ -500,7 +551,8 @@ proc_thread_exited(struct proc *p, int32_t code)
  * asked.
  */
 static sys_err_t
-proc_set_args(struct proc *p, const char *const *argv, uint32_t argc)
+proc_set_args(struct proc *p, const struct proc *from,
+  const char *const *argv, uint32_t argc)
 {
     uint32_t used = 0;
     uint32_t i;
@@ -511,16 +563,35 @@ proc_set_args(struct proc *p, const char *const *argv, uint32_t argc)
 
     for (i = 0; i < argc; i++) {
         const char *s = argv[i];
+        size_t reach;
         uint32_t n = 0;
 
         if (s == NULL) {
             return SYS_ERR_INVALID_ARG;
         }
-        while (s[n] != '\0') {
+
+        /*
+         * How far the caller's memory goes from here, per section 23.2.
+         * A string with no terminator would otherwise be read until the
+         * length bound below stopped it, which bounds the damage at two
+         * hundred and fifty-six bytes rather than preventing it: those
+         * bytes can be past the end of everything the caller has, and
+         * the kernel reading them is the kernel faulting on an address
+         * a program made up.
+         */
+        reach = proc_reach_len(from, (uintptr_t)s);
+        if (reach == 0) {
+            return SYS_ERR_FAULT;
+        }
+
+        while (n < reach && s[n] != '\0') {
             n++;
             if (used + n + 1 > SYS_ARG_BYTES) {
                 return SYS_ERR_INVALID_ARG;
             }
+        }
+        if (n == reach) {
+            return SYS_ERR_FAULT;
         }
 
         memcpy(&p->p_args[used], s, n + 1);
@@ -604,6 +675,17 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
     }
     if (prio > SYS_PRIO_MAX) {
         return SYS_ERR_INVALID_ARG;
+    }
+
+    /*
+     * Two more addresses a program chose, per section 23.2: the namespace
+     * array and the argument vector both live in the caller's memory and
+     * are read here. The descriptor check above them says nothing about
+     * either, because a pointer inside a structure is not the structure.
+     */
+    if (!proc_reaches(parent, (uintptr_t)ns, nns * sizeof(*ns)) ||
+      !proc_reaches(parent, (uintptr_t)argv, argc * sizeof(*argv))) {
+        return SYS_ERR_FAULT;
     }
 
     /*
@@ -712,7 +794,7 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
      * fit is the last thing that can fail and there is nothing after
      * it that could be undone.
      */
-    err = proc_set_args(p, argv, argc);
+    err = proc_set_args(p, parent, argv, argc);
     if (err != SYS_OK) {
         handle_close(&parent->p_handles, h);
         thread_set_proc(t, NULL);

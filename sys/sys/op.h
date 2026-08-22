@@ -379,8 +379,13 @@ typedef struct sys_op_exit_args {
  * The exit code of a thread the kernel ended for a fault. A fault is an
  * exit with a reason, per section 16.2, so it travels the path an exit
  * travels and needs a code to travel with; the reason itself is in the
- * fault fields beside it. It is a value no program returns, because a
- * program returns what it chose and this is what was chosen for it.
+ * fault fields beside it.
+ *
+ * It is not a value only the kernel produces. A program may return it,
+ * and one that reads a word out of memory and returns it can return
+ * anything at all. What tells the two apart is the fault kind, which is
+ * SYS_FAULT_NONE for every thread that chose its own code, and a reader
+ * that looks only at the number is asking the wrong field.
  */
 #define SYS_EXIT_FAULT          (-16)
 

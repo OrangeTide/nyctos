@@ -489,7 +489,8 @@ Four constraints shape everything that follows, and they are stated here because
 | Spawn and images | One live process per image while loading is a copy to a fixed address. Tier 2 loads into memory of its own and the rule goes. |
 | Read replies | Into the buffer the client supplied, inline when it supplied none. The request decides, not the server. |
 | Message payloads | Staged in the kernel between the two processes. One copy each way, so neither end has to be mapped while the other runs. |
-| Buffer descriptors | Checked against the sender's own image before the operation runs, at every tier. A number is not a right, and a process with no image of its own may not send one. |
+| User addresses | Every address a program hands the kernel is checked against the caller's own image, once, before the operation runs, at every tier. |
+| Buffer descriptors | Checked more narrowly still: a buffer must be memory that can be mapped elsewhere, so a process with no image of its own may not send one. |
 | Buffer delivery | The pages are mapped into the receiver at the address the sender named, and taken back at the reply. Refused where that address is the receiver's own. |
 | Buffer access | The message's flags are the access the receiver is given, and become the permissions on its mapping. |
 | Timers | Advance a timeline. No timer pulse. |
@@ -554,7 +555,6 @@ The figure shows a program breaking the rule rather than obeying it, because **a
 This is what makes Tier 0 a useful development target rather than merely a constrained one. The same source runs on both, so a contract violation can be found on hardware that enforces and then deployed to hardware that does not.
 
 A Tier 0 debug build should include software checks for grant access outside the owning window, because that is the class of bug Tier 0 cannot catch and Tier 2 catches for free. No API in this document exposes a raw pointer that crosses a process boundary.
-
 
 **The address does not change across the boundary.** Tier 2 maps the pages into the receiver at the address the sender named rather than at one of its own choosing, so the number in the message means the same thing on both sides and on both tiers. A server dereferences what it was given. Choosing a receiver address instead would work and would cost every server a translation step that Tier 0 does not have, which is a difference between the tiers in the interface rather than in the enforcement, and this document spends those only where the hardware forces it.
 
@@ -718,7 +718,6 @@ and that property is more load-bearing than this one: a value that was
 reached stays reached, whatever later became of the timeline. An
 implementation therefore checks the value before the error state, and the
 two orderings are distinguishable, so this is a rule rather than a detail.
-
 
 ### 9.4 There Is No Merge Operation
 
@@ -1207,7 +1206,6 @@ The cost is equally specific. **Every scheduling decision that changes the earli
 
 **The timer is a scheduling mechanism, not a clock.** Reading the current time does not involve it at all: uptime is read from the system page with no system call, per section 6.2, and the two are related only in that both derive from the same monotonic source. Nothing in section 14.5 can perturb either, which is what makes clock adjustment safe for real-time behaviour.
 
-
 ### 14.2 Timers Advance Timelines
 
 A timer binds a timeline and advances it at each deadline. There is no timer pulse.
@@ -1378,7 +1376,6 @@ A fault is a synchronous exception raised by the hardware while a thread is exec
 
 **`SYS_FAULT_EXTERNAL` may be imprecise.** On most parts an external abort can be reported after the instruction that caused it has retired, so the reported program counter is not the one to blame and the thread's registers are not a coherent snapshot of anything. It is enumerated separately for exactly this reason: a handler must treat it as a report that the address space is no longer trustworthy, not as a fault it can analyse. This is the one kind for which resumption is not merely unsupported but meaningless.
 
-
 **`SYS_FAULT_PAGE` is in the list and no port raises it.** Nothing separates a reference to an address the tables do not describe from one they describe as absent, because nothing is ever absent: every page a process has is mapped when the process is built. A translation fault is therefore reported as `SYS_FAULT_ACCESS`, which is the honest answer while the recoverable column has no mechanism behind it. The kind becomes reachable when a pager exists to make it recoverable, and the port mappings name the rows that will change.
 
 **`SYS_FAULT_ARITH` cannot be raised on RISC-V.** Integer division by zero produces a defined value there rather than an exception, and floating point traps are not enabled. It is a row that says so rather than a row that is missing, which is the difference between a mapping that has been thought about and one that has a default.
@@ -1528,8 +1525,6 @@ The shim matters more than it appears. It means `sys_msg_send()` is a one-entry 
 `sys_batch_exec` bounds `count` at `SYS_BATCH_MAX_ENTRIES` and rejects a larger submission with `SYS_ERR_INVALID_ARG` before executing any entry. **Preemption points sit at entry boundaries**, so submitting a batch never extends the kernel's non-preemptible section beyond the cost of one entry. On Tier 0 this is the primary determinant of interrupt latency.
 
 ---
-
-
 
 ## 18. Driver Cohorts
 
@@ -1842,7 +1837,6 @@ This is deliberately not the same spelling as `write()`. A program's real output
 
 **`SYS_DEBUG_WRITE_MAX` is interface rather than configuration, because callers split against it.** The copy runs in the kernel at the caller's priority, and on Tier 0 with interrupts disabled, so an unbounded write is an unbounded non-preemptible section and belongs to the interrupt latency of section 13.3. A caller with more to say makes more calls, and each is a preemption point.
 
-
 ## 23. The System Call Interface
 
 section 26 gives the C interface. This section gives the binding underneath it: how a call is made, how arguments and results travel, and what the kernel guarantees about registers and faults. Without it two implementations could agree on everything else in this part and still be unable to run the same binary.
@@ -1877,21 +1871,25 @@ The array must be writable because the kernel writes each entry's status field i
 
 On Tier 2 it is a question with an answer. The caller has an address space, the kernel can ask whether a range is mapped into it and with what permissions, and a descriptor array that is not returns `SYS_ERR_FAULT` before anything executes.
 
-**On Tier 0 there is no address space to ask about, so step 2 checks nothing.** Every process shares one flat address space and a pointer from a caller is a pointer to anywhere. A malformed or malicious descriptor pointer is not detected; it is dereferenced. The same is true of every `arg_ptr` a descriptor carries and of the buffer field of section 12.4.
+**On Tier 0 there is no address space to ask about, so step 2 cannot ask the hardware anything.** Every process shares one flat address space and a pointer from a caller is a pointer to anywhere. What the kernel can still ask is where the loader put the caller, which is the check described below; what it cannot ask is anything finer, so a pointer that is wrong within the caller's own image is dereferenced.
 
 This is not a gap to be closed later by a cleverer check. It is section 6.1's bargain stated for the system call path: **the contract is the one the stronger tier enforces in hardware and the weaker tier merely trusts**, and a correct program behaves identically on both. What Tier 0 loses is the ability to catch an incorrect one, and it loses it here exactly as it loses it for the memory contract.
 
 Three things follow, and they are worth stating because each is easy to assume the other way.
 
-**A Tier 0 system's protection boundary is a convention.** A program that passes a bad pointer corrupts the kernel, and no amount of validation in the kernel changes that, because the validation has nothing to consult. Section 6 puts it in one line, that on Tier 0 handles enforce modularity and not security, and this is the sharpest form of what that line means.
+**A Tier 0 system's protection boundary is still a convention.** A program that passes a pointer wrong within its own image corrupts whatever that address names, and no amount of validation in the kernel changes it, because the validation has nothing finer to consult. Section 6 puts it in one line, that on Tier 0 handles enforce modularity and not security, and this is the sharpest form of what that line means.
 
-**What is still checked on Tier 0 is everything that does not need an address space.** The count against its bound, the opcode against the table, argument-structure lengths against what an operation requires, handles against the caller's table and its rights. All of these are questions about values the kernel holds, not about memory it does not own, and all of them are answered on both tiers identically. Only the address checks vanish.
+**What is still checked on Tier 0 is everything that does not need an address space.** The count against its bound, the opcode against the table, argument-structure lengths against what an operation requires, handles against the caller's table and its rights. All of these are questions about values the kernel holds, not about memory it does not own, and all of them are answered on both tiers identically.
 
-**One address check survives on Tier 0, because the kernel drew that boundary itself.** A loaded program occupies a slot the loader gave it, and where that slot is is something the kernel knows without asking the hardware anything. So the buffer field of section 12.4 is checked against the caller's own slot on both tiers, and a range that falls outside it is refused with `SYS_ERR_FAULT` before the message is delivered. This is not a cleverer version of the check that vanished. It is a different question: not "is this mapped for the caller", which needs an address space, but "is this the memory this process was given", which needs only the loader's own record.
+**And one address check survives, because the kernel drew that boundary itself.** A loaded program occupies a slot the loader gave it, and where that slot is is something the kernel knows without asking the hardware anything. So every address a program hands the kernel is checked against the caller's own image on both tiers, and one that falls outside it is refused with `SYS_ERR_FAULT` before anything executes. This is not a cleverer version of the check that vanished. It is a different question: not "is this mapped for the caller", which needs an address space, but "is this the memory this process was given", which needs only the loader's own record.
 
-It is coarser than the Tier 2 check in two ways worth naming. A slot is larger than the memory a program uses, so an address inside its own slot and outside anything it has is accepted. And a process the kernel built has no slot and is not checked at all, because it is the kernel, and an address it names is one it could have dereferenced without asking.
+**What the check covers is every address that crosses the boundary, not only the descriptor array.** The array itself, the `arg_ptr` each descriptor carries, the namespace and argument vectors a spawn points at, each string in the argument vector, and the buffer field of section 12.4. A pointer inside a structure is not the structure, so validating the structure says nothing about what it points at, and each of these is a place the kernel dereferences a number a program chose.
 
-What it buys is the case that matters most on the tier that has no other way to notice: one program naming another program's memory and the kernel reading it on that program's behalf. The descriptor array of step 2 above is not covered by it, because that array is on the caller's stack and the slot check would accept it wherever it fell.
+A string is the awkward one, because its length is in the string. The kernel is told how far the caller's memory goes and stops there, which turns an unterminated command line from a read past the end of everything the caller has into `SYS_ERR_FAULT`. A bound on the copy is not the same as a bound on the read.
+
+It is coarser than a check the hardware would make, in two ways worth naming. A slot is larger than the memory a program uses, so an address inside its own slot and outside anything it has is accepted. And a process the kernel built has no slot, so it is not checked: it is the kernel, and an address it names is one it could have dereferenced without asking. That is the opposite of the answer the same process gets when it asks to *lend* memory, in section 6.1, and the two are different questions: what a process may name, and what it may hand to somebody else.
+
+What it buys is the case that matters most on the tier that has no other way to notice: one program naming another program's memory, and the kernel reading or writing it on that program's behalf. It also buys the case the kernel cannot survive at either tier, which is a program naming memory that is nobody's: before the check existed, a descriptor array pointing at an unmapped address was a fault taken by the kernel, in kernel mode, on a number a program made up, and the machine stopped.
 
 **A port states which of these checks it performs**, per section 27, rather than leaving a reader to infer it from the tier. A port that performs fewer than its tier allows is a defect, and one that performs more is doing something the design does not describe.
 
@@ -2003,7 +2001,6 @@ The ladder, from a child's failure upward:
 5. Reset the board.
 
 **Escalation terminates, and that is the embedded difference.** A multiuser system has no rung 5 and so has no reason to build the ladder. Here root is the last supervisor, and the natural implementation of rung 5 is that root stops petting the hardware watchdog. Root pets it only while the essential set is healthy, so the failure of the escalation path and the failure of root itself produce the same recovery.
-
 
 **Below the ladder there is a kernel rule, and it is not policy.** Root, and
 any process the configuration marks essential, must not terminate. If one
