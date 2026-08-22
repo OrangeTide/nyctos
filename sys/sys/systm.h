@@ -46,8 +46,14 @@ struct boot_member;
 const struct boot_member *boot_lookup(const char *name);
 uintptr_t boot_load(const struct boot_member *m);
 
+/* Where a member's bytes are, for a caller that copies them elsewhere. */
+const uint8_t *boot_payload(const struct boot_member *m);
+
 /* Hold back the memory the archive's programs are linked to run in. */
 void boot_reserve(void);
+
+/* The span of addresses loaded programs occupy; see subr_bootarch.c. */
+void boot_user_window(uintptr_t *base, size_t *len);
 
 /* Where the first member is linked to run. */
 uintptr_t boot_first_load(void);
@@ -55,7 +61,8 @@ void boot_report(void);
 
 /* sys/kern/kern_syscall.c */
 long syscall_handler(struct sys_op *op, unsigned long count);
-void trap_fatal(unsigned long cause, unsigned long pc) __attribute__((noreturn));
+void trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
+  __attribute__((noreturn));
 
 /*
  * The memory the machine has, which a port states rather than
@@ -69,6 +76,9 @@ void trap_fatal(unsigned long cause, unsigned long pc) __attribute__((noreturn))
  */
 /* The privilege level this kernel runs at, for the boot log. */
 const char *md_mode(void);
+
+/* The address space the hardware is translating through. */
+unsigned long md_current_space(void);
 
 /*
  * The kernel image, split at the boundary between what it executes and

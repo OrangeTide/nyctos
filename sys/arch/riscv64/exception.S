@@ -176,6 +176,7 @@ trap_interrupt:
 trap_bad:
     csrr    a0, scause
     csrr    a1, sepc
+    csrr    a2, stval
     call    trap_fatal
 
 .section .data

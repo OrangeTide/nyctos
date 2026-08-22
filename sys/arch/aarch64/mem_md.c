@@ -62,3 +62,19 @@ md_kernel_image(uintptr_t *text, uintptr_t *rx_end, uintptr_t *end)
     *rx_end = (uintptr_t)_erodata;
     *end = (uintptr_t)_kernel_end;
 }
+
+/*
+ * Which address space the hardware is translating through, for a fault
+ * report. A fault whose address is unmapped is a different bug from a
+ * fault taken in the wrong space, and the report cannot tell them apart
+ * without this.
+ */
+unsigned long
+md_current_space(void)
+{
+    unsigned long ttbr;
+
+    __asm__ volatile ("mrs %0, ttbr0_el1" : "=r" (ttbr));
+
+    return ttbr;
+}

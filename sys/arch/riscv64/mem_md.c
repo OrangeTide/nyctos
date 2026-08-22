@@ -69,3 +69,15 @@ md_kernel_image(uintptr_t *text, uintptr_t *rx_end, uintptr_t *end)
     *rx_end = (uintptr_t)_erodata;
     *end = (uintptr_t)_kernel_end;
 }
+
+/* Which address space the hardware is translating through; see the other
+ * port for why a fault report needs it. */
+unsigned long
+md_current_space(void)
+{
+    unsigned long satp;
+
+    __asm__ volatile ("csrr %0, satp" : "=r" (satp));
+
+    return satp;
+}

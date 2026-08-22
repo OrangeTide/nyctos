@@ -116,11 +116,13 @@ el0_sync:
 el0_fatal:
     mrs     x0, esr_el1
     mrs     x1, elr_el1
+    mrs     x2, far_el1
     bl      trap_fatal
 
 el1_fatal:
     mrs     x0, esr_el1
     mrs     x1, elr_el1
+    mrs     x2, far_el1
     bl      trap_fatal
 
 /*
@@ -160,6 +162,25 @@ el1_irq:
 
     bl      irq_dispatch
 
+    /*
+     * System registers first, general registers last, for the reason
+     * el0_sync gives: restoring elr and spsr needs two registers as
+     * scratch, and doing it after the general restore hands the
+     * interrupted code its own program counter in place of x9.
+     *
+     * That is what this did until milestone 4. Any kernel code using
+     * x9 or x10 across an interrupt resumed with a code address in
+     * them, and memset uses x9 as its destination: an interrupt
+     * during a long memset made it write into the kernel's own
+     * instructions, a few bytes below wherever it had been
+     * interrupted. Tier 0 hit it too rarely to notice; Tier 2 zeroes
+     * a megabyte of frames per spawn and hits it every time.
+     */
+    ldp     x9, x10, [sp, #168]
+    msr     elr_el1, x9
+    msr     spsr_el1, x10
+
+
     ldp     x0, x1, [sp, #0]
     ldp     x2, x3, [sp, #16]
     ldp     x4, x5, [sp, #32]
@@ -170,11 +191,8 @@ el1_irq:
     ldp     x14, x15, [sp, #112]
     ldp     x16, x17, [sp, #128]
     ldp     x18, x29, [sp, #144]
-
-    ldp     x9, x10, [sp, #168]
-    msr     elr_el1, x9
-    msr     spsr_el1, x10
     ldr     x30, [sp, #160]
+
     add     sp, sp, #192
     eret
 
@@ -225,10 +243,6 @@ el0_irq:
 
     ldr     x9, [sp, #184]
     msr     sp_el0, x9
-    ldp     x9, x10, [sp, #168]
-    msr     elr_el1, x9
-    msr     spsr_el1, x10
-
     ldp     x0, x1, [sp, #0]
     ldp     x2, x3, [sp, #16]
     ldp     x4, x5, [sp, #32]

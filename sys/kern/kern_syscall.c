@@ -30,6 +30,7 @@
 
 #include <sys/op.h>
 #include <sys/systm.h>
+#include <sys/thread.h>
 
 long
 syscall_handler(struct sys_op *op, unsigned long count)
@@ -47,7 +48,7 @@ syscall_handler(struct sys_op *op, unsigned long count)
 }
 
 void
-trap_fatal(unsigned long cause, unsigned long pc)
+trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
 {
     /*
      * Once processes exist, an unhandled trap terminates the faulting
@@ -55,5 +56,11 @@ trap_fatal(unsigned long cause, unsigned long pc)
      * design.md means by fatal by default. There is nothing but the kernel
      * to fault right now, so every trap is a kernel bug.
      */
-    panic("unhandled trap: cause=0x%lx pc=0x%lx", cause, pc);
+    {
+        struct thread *t = thread_current();
+
+        panic("unhandled trap in %s: cause=0x%lx pc=0x%lx addr=0x%lx "
+          "space=0x%lx", t != NULL ? t->t_name : "?", cause, pc, addr,
+          md_current_space());
+    }
 }
