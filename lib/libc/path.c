@@ -56,21 +56,31 @@ component(const char *p, size_t *len)
 
 /*
  * Reduce a path to canonical form: leading slash, single separators, no
- * `.`, and no `..` left in it.
+ * `.`, and no `..` left in it. The result is absolute whatever it was
+ * given, because everything here has already been made absolute by the
+ * caller.
  *
  * A `..` with nothing above it is the interesting case and it fails
  * rather than being dropped. Dropping it is the tempting mistake and it
  * manufactures authority out of a name: `/../..` would become `/`, which
  * is a path escaping the namespace it was written in and landing on
  * whatever is mounted at the top of it.
+ *
+ * The two ways to fail are not the same and do not answer the same way.
+ * A path that climbs above the top names nothing, which is an ordinary
+ * result in a system where a name is not authority. A path too long for
+ * this library's buffer is the caller asking for something the library
+ * cannot do, which is an error about the call rather than about the
+ * namespace, and a caller that cannot tell them apart will report the
+ * wrong one.
  */
-static int
+static sys_err_t
 reduce(const char *path, char *out, size_t out_len)
 {
     size_t used = 1;
 
     if (out_len < 2) {
-        return -1;
+        return SYS_ERR_INVALID_ARG;
     }
     out[0] = '/';
 
@@ -90,7 +100,7 @@ reduce(const char *path, char *out, size_t out_len)
         if (n == 2 && path[0] == '.' && path[1] == '.') {
             /* Back up over the last component, or fail at the top. */
             if (used == 1) {
-                return -1;
+                return SYS_ERR_NO_ENT;
             }
             used--;                     /* the separator before it */
             while (used > 1 && out[used - 1] != '/') {
@@ -105,12 +115,12 @@ reduce(const char *path, char *out, size_t out_len)
 
         if (used > 1) {
             if (used + 1 >= out_len) {
-                return -1;
+                return SYS_ERR_INVALID_ARG;
             }
             out[used++] = '/';
         }
         if (used + n >= out_len) {
-            return -1;
+            return SYS_ERR_INVALID_ARG;
         }
         memcpy(&out[used], path, n);
         used += n;
@@ -119,7 +129,7 @@ reduce(const char *path, char *out, size_t out_len)
 
     out[used] = '\0';
 
-    return 0;
+    return SYS_OK;
 }
 
 /*
@@ -166,8 +176,9 @@ ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
     unsigned int i, best = 0;
     size_t best_len = 0, best_at = 0;
     int found = 0;
+    sys_err_t err;
 
-    if (path == NULL || out_dir == NULL) {
+    if (path == NULL || out_dir == NULL || path[0] == '\0') {
         return SYS_ERR_INVALID_ARG;
     }
 
@@ -194,11 +205,12 @@ ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
         joined[n] = '/';
         memcpy(&joined[n + 1], path, strlen(path) + 1);
 
-        if (reduce(joined, canon, sizeof(canon)) != 0) {
-            return SYS_ERR_NO_ENT;
-        }
-    } else if (reduce(path, canon, sizeof(canon)) != 0) {
-        return SYS_ERR_NO_ENT;
+        err = reduce(joined, canon, sizeof(canon));
+    } else {
+        err = reduce(path, canon, sizeof(canon));
+    }
+    if (err != SYS_OK) {
+        return err;
     }
 
     for (i = 0; i < slots; i++) {
@@ -231,6 +243,15 @@ ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
         size_t n = strlen(&canon[best_at]);
 
         if (n + 1 > rest_len) {
+            /*
+             * Terminated even though it did not fit, because the
+             * handle is already written and a caller that checks
+             * one and not the other would send whatever was on its
+             * stack as a path.
+             */
+            if (rest_len > 0) {
+                rest[0] = '\0';
+            }
             return SYS_ERR_TRUNCATED;
         }
         memcpy(rest, &canon[best_at], n + 1);

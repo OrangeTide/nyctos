@@ -2237,6 +2237,35 @@ fallback: falling back to the shortest entry would reintroduce the
 ambient root section 20.3 removed, by the back door and under another
 name.
 
+
+*Reviewing it found three defects, all of them one answer standing for
+two questions.*
+
+**A path too long to hold answered as a path that names nothing.** The
+reduction failed the same way whether it ran out of buffer or climbed
+above the top, and those are not the same event: one is the caller asking
+for something this library cannot do, and the other is an ordinary result
+in a system where a name is not authority. A caller that cannot tell them
+apart reports the wrong one to whoever wrote the path. They are
+`SYS_ERR_INVALID_ARG` and `SYS_ERR_NO_ENT` now.
+
+**The empty path resolved to whatever was mounted highest.** Nothing in
+the reduction objected to a path with no components in it, so `""`
+canonicalised to `/` and reached the root. A name that names nothing
+should not reach something, and it is refused.
+
+**A remainder that did not fit left the caller holding a handle and an
+uninitialised buffer.** The handle is resolved before the remainder is
+copied, so a caller that checked one and not the other would send
+whatever was on its stack as a path. The buffer is terminated before the
+error returns.
+
+None of the three could have been found by the eighteen cases in the
+table, because all three are about what happens when a question has no
+good answer, and a table of paths and the handles they reach only asks
+questions that do. They are checked apart from it now, and each is
+reproduced by putting the defect back.
+
 *What this stage did not do.* Nothing opens anything. The resolver hands
 back a handle and a remainder, which is what a message to a server
 carries, and no program sends one yet.
