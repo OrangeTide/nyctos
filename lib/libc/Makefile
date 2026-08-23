@@ -9,6 +9,7 @@ LIB := c
 SRCS := arch/$(ARCH)/sys/syscall.S \
         startup.c \
         path.c \
+        file.c \
         sys/op.c \
         sys/console.c \
         sys/_exit.c \

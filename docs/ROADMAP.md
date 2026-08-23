@@ -2270,8 +2270,8 @@ reproduced by putting the defect back.
 back a handle and a remainder, which is what a message to a server
 carries, and no program sends one yet.
 
-**3. Open by path.** The utilities stop naming a single component against
-a single handle.
+**3. Open by path.** *Built.* The utilities stop naming a single
+component against a single handle.
 
 - An open in the library that resolves, walks and returns a handle.
 - `cat` and the shell using it, with the fs protocol unchanged: a walk
@@ -2281,6 +2281,39 @@ a single handle.
 *Check.* `cat /motd` prints the file. The recorded session changes here,
 which is the point: the same session on all four configurations, with
 paths in it.
+
+It does, and the session now reads `cat /motd` and `cat /nothing` on
+every configuration. Sending the whole path where the remainder belongs
+fails it: the server has never seen a leading slash and says there is no
+such file, which is the recorded session catching a library bug rather
+than a kernel one for the first time.
+
+**The protocol did not change and never had to.** A walk carries a
+handle and a relative name because a message to a server cannot carry
+anything else. What changed is where the name comes from, and the
+division is the one section 20 asks for: the resolver knows nothing about
+files and `file_open` knows nothing about namespaces.
+
+*The number the falsification clause asked for.* `cat` was a hundred and
+twenty-two lines and is seventy-three, of which the protocol is now none.
+Its binary went from 6911 bytes to 8070, so the resolver and the file
+layer together are about a kilobyte more than the hand-rolled walk they
+replaced. `status`, which names nothing, is 3837 bytes before and after:
+the library is an archive and a program that opens nothing links none of
+this.
+
+So the complexity did move into the library, and the honest summary is
+that it moved once rather than per program, and that the programs which
+do not want it do not carry it. Whether that is a good trade is a
+question about the next three stages, where a mount table starts having
+more than one thing in it.
+
+**Two answers a person will meet immediately.** `cat motd` fails, because
+the shell hands its children no working directory and section 20.3 has no
+root to fall back on. `cat /dev` fails, because a mount point names a
+directory the process already holds and there is nothing to walk to.
+Both are correct and neither is friendly, and the first is a composition
+decision the shell has not made yet rather than a resolver limitation.
 
 **4. Composition at spawn.** What a parent hands a child.
 

@@ -2,13 +2,13 @@ nyctos shell. exit leaves, last reports a status.
 $ echo one two three
 one two three
     echo exited with status 0
-$ cat motd
+$ cat /motd
 served from outside the kernel
     cat exited with status 0
 $ nosuch
 sh: nosuch: cannot run it
-$ cat nothing
-cat: nothing: no such file
+$ cat /nothing
+cat: /nothing: no such file
     cat exited with status 3
 [3]
 $ last

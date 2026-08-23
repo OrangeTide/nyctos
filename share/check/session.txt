@@ -2,8 +2,8 @@ hello
 world
 nyctos
 echo one two three
-cat motd
+cat /motd
 nosuch
-cat nothing
+cat /nothing
 last
 exit
