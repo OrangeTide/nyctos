@@ -119,14 +119,17 @@ __libc_startup(const sys_startup_t *startup)
     ns_words = n;
 
     /*
-     * The names beside the table. A loader that wrote a table and no
-     * names is one where nothing is mounted anywhere, which is a
-     * process that can hold handles and name none of them.
+     * The names beside the table, one slot per pair and no more than the
+     * table has pairs. Bounded by what the record says exists rather than
+     * by the size of this library's array: a loader that writes a shorter
+     * block is a loader this reads past the end of, and the record says
+     * how many entries there are in exactly one place.
      */
     if (startup->ns_names != 0) {
         const char *from = (const char *)startup->ns_names;
+        uint32_t bytes = (n / 2) * SYS_NS_NAME_MAX;
 
-        for (i = 0; i < SYS_NS_NAME_BYTES; i++) {
+        for (i = 0; i < bytes; i++) {
             ns_names[i] = from[i];
         }
     }

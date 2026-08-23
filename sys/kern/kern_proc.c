@@ -817,7 +817,6 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
   uint32_t argc, sys_handle_t *out_handle)
 {
     sys_ns_spec_t spec[SYS_NS_MAX];
-    char names[SYS_NS_NAME_BYTES];
     const struct boot_member *m;
     struct proc *p;
     struct thread *t;
@@ -927,15 +926,14 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
         }
 
         /*
-         * The name is copied here rather than after the move, for the
-         * reason the specification array is: a pointer into the
-         * caller's memory checked in one place and read in another
-         * is two reads of something a second thread can change.
+         * The name needs no copy of its own. It is inside the entry
+         * rather than pointed at from it, and the array of entries was
+         * copied above for exactly that reason, so all that is left is
+         * whether this one ends inside its slot. Checked before anything
+         * moves, like everything else here.
          */
-        err = proc_copy_ns_name(&names[i * SYS_NS_NAME_MAX],
-          spec[i].name);
-        if (err != SYS_OK) {
-            return err;
+        if (spec[i].name[SYS_NS_NAME_MAX - 1] != '\0') {
+            return SYS_ERR_INVALID_ARG;
         }
     }
 
@@ -972,8 +970,8 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
             panic("spawn %s: handover failed after it was checked", image);
         }
         p->p_ns[i * 2] = (sys_handle_t)spec[i].id;
-        memcpy(&p->p_ns_names[i * SYS_NS_NAME_MAX],
-          &names[i * SYS_NS_NAME_MAX], SYS_NS_NAME_MAX);
+        (void)proc_copy_ns_name(&p->p_ns_names[i * SYS_NS_NAME_MAX],
+          spec[i].name);
 
         /*
          * The chain was checked before anything moved, so what is

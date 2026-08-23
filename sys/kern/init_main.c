@@ -225,7 +225,6 @@ handle_checks(void)
     }
 }
 
-
 /*
  * The four waiters of the figure in section 9.1, which the text says
  * exhaust the cases an implementation must handle.
@@ -657,7 +656,6 @@ debug_console_checks(void)
 #endif
 }
 
-
 static void
 ipc_checks(void)
 {
@@ -710,7 +708,6 @@ ipc_checks(void)
         panic("ipc: the server never inherited a client priority");
     }
 }
-
 
 /*
  * A server that outranks its client, which is the case that found the
@@ -929,7 +926,6 @@ exiter(void *arg)
     (void)arg;
     thread_exit(7);
 }
-
 
 /*
  * The frame allocator of section 8's extension, and the memory map the
@@ -1240,7 +1236,6 @@ thread_checks(void)
     }
 }
 
-
 /*
  * The console and the directory the shell is handed, kept from the checks
  * that created them. Root will hold both when there is a root; until then
@@ -1328,6 +1323,7 @@ shell_checks(sys_handle_t console, sys_handle_t root)
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_CONSOLE;
     ns[0].handle = dup.out_handle;
+    strncpy_ns(ns[0].name, "/dev/console");
 
     memset(&dup, 0, sizeof(dup));
     dup.new_rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
@@ -1336,6 +1332,7 @@ shell_checks(sys_handle_t console, sys_handle_t root)
       run(SYS_OP_HANDLE_DUP, root, &dup, sizeof(dup)), SYS_OK);
     ns[1].id = SYS_NS_ROOT;
     ns[1].handle = dup.out_handle;
+    strncpy_ns(ns[1].name, "/");
 
     sched_defer();
     child_watch(&c, proc_spawn_image("sh", 20, ns, 2, NULL, 0));
@@ -2051,7 +2048,6 @@ two_copies_checks(void)
 #endif
 }
 
-
 /*
  * A reply that fails on its way across, and a payload that arrives
  * anyway.
@@ -2136,7 +2132,6 @@ reply_error_checks(void)
     handle_close(&p->p_handles, send_h);
 }
 
-
 /*
  * The kernel as a client of a program, with a buffer of its own.
  *
@@ -2204,7 +2199,6 @@ kernel_buffer_checks(sys_handle_t root)
     (void)run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx));
     handle_close(&proc_current()->p_handles, file);
 }
-
 
 /*
  * A program that touches memory that is not its own, and what happens
@@ -2320,7 +2314,6 @@ fault_checks(void)
 
     handle_close(ht, h);
 }
-
 
 /*
  * The move contract, enforced or trusted, from one program.
@@ -2449,7 +2442,6 @@ move_checks(void)
     handle_close(&self->p_handles, h_recv);
 }
 
-
 /*
  * A device is not reachable without the grant that covers it.
  *
@@ -2557,7 +2549,6 @@ device_checks(void)
 #endif
 }
 
-
 /*
  * A grant over ordinary memory, given and then taken away.
  *
@@ -2655,7 +2646,6 @@ grant_checks(void)
     handle_close(ht, h);
 }
 
-
 /*
  * A page fault as a message, and a program whose text arrives one page
  * at a time.
@@ -2670,8 +2660,6 @@ grant_checks(void)
  * from the archive here has to match, so a pager that answered with
  * blank pages would fail even though the program ran to the end.
  */
-
-
 
 /*
  * A thread between the pager and the program it serves, so that the
@@ -2783,7 +2771,6 @@ root_pager(void *arg)
         }
     }
 }
-
 
 /*
  * The program, started with a pager, and what it cost.
@@ -2978,7 +2965,6 @@ paging_checks(void)
     (void)h;
 }
 
-
 /*
  * What a process was given, with names on it.
  *
@@ -3059,6 +3045,7 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
       proc_spawn_op(self, "status", PRIO_BOOT - 1, ns, 1, NULL, 0, &h),
       SYS_ERR_INVALID_ARG);
     handle_close(ht, ns[0].handle);
+
     (void)obj;
 }
 
@@ -3180,7 +3167,6 @@ kernel_main(void)
     cnprintf("*** debug console compiled in and %s: section 22.4 ***\n",
       SYS_DEBUG_CONSOLE_INIT ? "live" : "dormant");
 #endif
-
 
     object_init();
     object_check();

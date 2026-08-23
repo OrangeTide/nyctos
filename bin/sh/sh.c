@@ -110,6 +110,44 @@ fault_name(uint32_t kind)
     }
 }
 
+/* A name into a namespace entry, which is a fixed slot. */
+static void
+strncpy_slot(char *dst, const char *src)
+{
+    unsigned int i;
+
+    for (i = 0; i + 1 < SYS_NS_NAME_MAX && src[i] != '\0'; i++) {
+        dst[i] = src[i];
+    }
+    dst[i] = '\0';
+}
+
+/*
+ * Pass a name on with the handle it belongs to. The shell holds its own
+ * namespace under names its parent chose, so what it gives a child is
+ * what it was given: it does not invent a mount point and does not drop
+ * one.
+ */
+static void
+name_entry(sys_ns_spec_t *e, sys_ns_id_t id)
+{
+    unsigned int slots = ns_slots();
+    unsigned int i;
+
+    for (i = 0; i < slots; i++) {
+        sys_ns_id_t got;
+
+        ns_slot(i, &got, NULL);
+        if (got != id) {
+            continue;
+        }
+        strncpy_slot(e->name, ns_name(i));
+        return;
+    }
+
+    e->name[0] = '\0';
+}
+
 static sys_err_t
 run(int argc, char **argv, int32_t *status)
 {
@@ -119,15 +157,25 @@ run(int argc, char **argv, int32_t *status)
     uint32_t state;
     sys_err_t err;
 
+    /*
+     * Named, because a child that is handed a directory and not told
+     * where it sits cannot write a path to anything in it. Section 20.4:
+     * the namespace is the set of handles a process was given with names
+     * attached, and attaching them is the parent's job. The shell passes
+     * on what it holds under the names it holds them under, which is
+     * NS_SHARE; choosing differently is what the later stages are for.
+     */
     memset(ns, 0, sizeof(ns));
     ns[nns].id = SYS_NS_CONSOLE;
     ns[nns].handle = share(ns_lookup(SYS_NS_CONSOLE));
     if (ns[nns].handle != SYS_HANDLE_INVALID) {
+        name_entry(&ns[nns], SYS_NS_CONSOLE);
         nns++;
     }
     ns[nns].id = SYS_NS_ROOT;
     ns[nns].handle = share(ns_lookup(SYS_NS_ROOT));
     if (ns[nns].handle != SYS_HANDLE_INVALID) {
+        name_entry(&ns[nns], SYS_NS_ROOT);
         nns++;
     }
 

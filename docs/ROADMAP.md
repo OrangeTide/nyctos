@@ -2131,13 +2131,21 @@ number.
 
 *Check.* A program prints the namespace it was launched with, names and
 all, and the shell hands its children a different one from its own. A
-program given no entries has an empty table, and the spawn that names a
-mount array it does not own is refused rather than read.
+program given no entries has an empty table, and a name that does not end
+inside its slot is refused rather than truncated.
 
 `namespace` prints what it holds and exits with the count of named
 entries. Given a root at `/` and a console at `/dev/console` it finds
 two; given nothing it finds none and says so. Both at both tiers, from
 one image.
+
+The shell half of that clause is checked by hand rather than by the
+suite, and the clause is narrower than it was: the shell passes on what
+it holds under the names it holds it under, which is `NS_SHARE`, and
+*different* is stage 4's word rather than this stage's. Running
+`namespace` from the shell prints `/dev/console` and `/`, which came from
+the kernel through the shell, on both ports. It is not in the recorded
+session because that session is stage 3's to change.
 
 **The name is inside the entry rather than pointed at from it, and that
 is the stage's one real decision.** The first version made it a `const
@@ -2151,6 +2159,34 @@ bytes inside the entry cannot point anywhere, and the check that survives
 is the one that is still possible to fail: a name with no terminator in
 its slot is refused rather than truncated, because half a mount point
 resolves to something other than what the parent meant.
+
+
+*Reviewing it found three defects, and one of them was in the record of
+the stage rather than in the stage.*
+
+**The roadmap claimed a check the stage had not made.** The clause was
+copied from the plan and half of it, that the shell hands its children a
+namespace, was not exercised anywhere: the shell passed handles with no
+names at all, because the field was new and it had not been taught to
+fill it. So the entry was true of the plan and false of the tree. The
+shell names what it passes now, which is two lines and is what a parent
+is for, and the clause says which half the suite checks and which was run
+by hand.
+
+**The library read a fixed block from a pointer the record gave it.** The
+names arrive as one slot per table entry, and the copy took the whole
+array's worth however many entries the record said there were. A loader
+that wrote a shorter block is one this reads past the end of, and the
+record says how many entries exist in exactly one place, so the copy is
+bounded by that now.
+
+**And a buffer that copied what was already private.** The operation
+copies the caller's entry array before validating it, precisely so a
+second thread cannot change what was checked, and the name is inside the
+entry: it was already safe by the time it was read. A second buffer for
+it was a hundred and twenty-eight bytes of kernel stack and a second
+thing to keep in step with the first. What is left is the check, which
+happens before anything moves like every other one here.
 
 *What this stage did not do.* Nothing resolves anything. A name is a
 string attached to a handle, `ns_lookup` still answers by role, and no
