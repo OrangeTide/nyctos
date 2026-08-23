@@ -31,14 +31,26 @@ main(int argc, char **argv)
     char buf[64];
     sys_handle_t file;
     uint64_t off = 0;
-    int total = 0;
+    sys_err_t err;
 
     if (argc < 2) {
         printf("usage: cat path\n");
         return 1;
     }
 
-    if (file_open(argv[1], &file) != SYS_OK) {
+    /*
+     * The two ways a path can fail to be a file are different and a
+     * person needs to be told which. A path that lands exactly on a
+     * mount point names a handle this process already holds and has
+     * nothing below it to read; a path that lands anywhere else and
+     * finds nothing names nothing at all.
+     */
+    err = file_open(argv[1], &file);
+    if (err == SYS_ERR_WRONG_TYPE) {
+        printf("cat: %s: that is a mount point\n", argv[1]);
+        return 2;
+    }
+    if (err != SYS_OK) {
         printf("cat: %s: no such file\n", argv[1]);
         return 3;
     }
@@ -56,18 +68,9 @@ main(int argc, char **argv)
 
         (void)write(STDOUT_FILENO, buf, got);
         off += got;
-        total += (int)got;
     }
 
     (void)file_close(file);
-
-    /*
-     * Zero, not the byte count. A status says whether the program did
-     * what it was asked, and how much it printed is not that; the
-     * count is kept only so that a read of nothing is tellable from a
-     * file that is empty.
-     */
-    (void)total;
 
     return 0;
 }

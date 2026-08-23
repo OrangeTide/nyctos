@@ -52,8 +52,19 @@ request(sys_handle_t target, uint32_t op, const char *name, uint64_t off,
     req->fr_op = op;
     req->fr_offset = off;
     req->fr_length = len;
+    /*
+     * Bounded here rather than by the caller. The field is the
+     * protocol's and its size is section 25's business, so a copy
+     * into it that trusts whoever called is a copy that is correct
+     * only while every caller stays correct.
+     */
     if (name != NULL) {
-        memcpy(req->fr_name, name, strlen(name) + 1);
+        size_t n = strlen(name);
+
+        if (n + 1 > FS_NAME_MAX) {
+            return SYS_ERR_INVALID_ARG;
+        }
+        memcpy(req->fr_name, name, n + 1);
     }
 
     err = sys_msg_send(target, &message, reply);
@@ -82,10 +93,15 @@ file_open(const char *path, sys_handle_t *out)
     }
 
     /*
-     * A path that names a mount point and nothing below it names the
-     * directory the process already holds, and there is nothing to walk
-     * to. Opening one is not a file operation, so it is refused here
-     * rather than sent to a server that would have to say the same.
+     * A path that names a mount point exactly names a handle this
+     * process already holds, and there is nothing to walk to.
+     *
+     * Refused rather than handed back, and the reason is ownership
+     * rather than type. The handle is the process's own namespace
+     * entry: returning it would give a caller something that closing
+     * would close the mount, and a program that opened its own root
+     * twice would lose it. What a mount point is for is resolving
+     * paths below it.
      */
     if (rest[0] == '\0') {
         return SYS_ERR_WRONG_TYPE;
@@ -104,6 +120,16 @@ file_open(const char *path, sys_handle_t *out)
     err = request(dir, FS_OP_WALK, rest, 0, 0, &reply);
     if (err != SYS_OK) {
         return err;
+    }
+
+    /*
+     * A walk that says it worked and hands back nothing is a server
+     * this library cannot use. Reported here rather than left to
+     * fail on the first read, where it would look like the file
+     * going away rather than never having been opened.
+     */
+    if (reply.handle == SYS_HANDLE_INVALID) {
+        return SYS_ERR_STALE;
     }
 
     *out = reply.handle;

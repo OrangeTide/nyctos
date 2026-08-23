@@ -2310,10 +2310,43 @@ more than one thing in it.
 
 **Two answers a person will meet immediately.** `cat motd` fails, because
 the shell hands its children no working directory and section 20.3 has no
-root to fall back on. `cat /dev` fails, because a mount point names a
-directory the process already holds and there is nothing to walk to.
-Both are correct and neither is friendly, and the first is a composition
-decision the shell has not made yet rather than a resolver limitation.
+root to fall back on. `cat /` fails, because a path that lands exactly on
+a mount point names a handle the process already holds. Both are correct
+and neither is friendly, and the first is a composition decision the
+shell has not made yet rather than a resolver limitation.
+
+
+*Reviewing it found four defects, and two of them were the stage saying
+something that was not so.*
+
+**The entry claimed `cat /dev` fails because it is a mount point.** It is
+not one. In the namespace the shell hands out, `/dev` matches the root
+and fails because the root has no file of that name, and the sentence
+described a namespace the tree does not have. What does land on a mount
+point is `cat /`, and that is what the entry says now.
+
+**The shell named the console as if it were a directory.** Section 20.4
+calls a namespace an array of named *directory* handles, and the console
+is not one: it is a service reached by role, and nothing serves walks for
+it. Mounting it at `/dev/console` put a thing in the table that answers
+no path below it, so `cat /dev/console` resolved onto it, found nothing
+under it, and was told it was a directory. The console keeps its role and
+loses its name, and naming it is what stage 5 is for, when something can
+answer a walk on its behalf.
+
+**The library refused a mount point for the wrong reason and said so.**
+The refusal is right and the reason is ownership rather than type: the
+handle is the process's own namespace entry, so handing it back would
+give a caller something whose close would close the mount. A program that
+opened its own root twice would lose it. `cat` says mount point now,
+because that is what happened.
+
+**And a copy into a fixed protocol field trusted its caller.** The name a
+walk carries is twenty-four bytes and the bound lived in `file_open`
+rather than beside the copy, which is correct exactly as long as every
+caller stays correct. It is beside the copy. An open that succeeds and
+hands back no handle is also refused now, rather than left to fail on the
+first read where it would look like the file going away.
 
 **4. Composition at spawn.** What a parent hands a child.
 

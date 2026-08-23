@@ -1323,7 +1323,14 @@ shell_checks(sys_handle_t console, sys_handle_t root)
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_CONSOLE;
     ns[0].handle = dup.out_handle;
-    strncpy_ns(ns[0].name, "/dev/console");
+    /*
+     * Unnamed, deliberately. Section 20.4 calls a namespace an array
+     * of named *directory* handles, and the console is not one: it
+     * is a service this process reaches by role, and nothing serves
+     * walks for it. Naming it would put a thing in the table that
+     * answers no path below it, and a resolver would hand a program
+     * a handle it cannot walk into and call it a directory.
+     */
 
     memset(&dup, 0, sizeof(dup));
     dup.new_rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
