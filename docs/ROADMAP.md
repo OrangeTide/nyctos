@@ -2074,6 +2074,123 @@ tiers.
 Handle-relative naming throughout (20.3). Named directory handles handed over
 at launch and consumed like `envp` (20.4). Union directories.
 
+*Five things it needs that were not listed.* The first is a decision the
+tree has already made the other way, and the rest are consequences of
+building four milestones without any naming at all.
+
+**A named directory handle needs a name, and the startup record says
+names are the wrong trade.** `sys/startup.h` argues against a
+string-keyed table: a name buffer per entry and a comparison per lookup,
+on a part where the whole record has to fit in a few hundred bytes. That
+argument was right for what the table then was, which is a set of roles a
+parent and child agreed on by number. It is wrong for what section 20.4
+describes, which is the set of directory handles a process was given
+*with names attached*, because a parent that cannot say where to mount a
+handle cannot compose a namespace at all. The milestone re-decides it and
+rewrites the comment, and the cost is bounded: eight entries of a short
+name each, beside the two hundred and fifty-six bytes the record already
+carries for a command line.
+
+**The kernel gains another array a program points it at.** Section 23.2
+was half-built for four milestones and M4 stage 5 found what that costs:
+a program could stop the machine with a descriptor array nobody checked.
+A mount array is the same shape and gets the same treatment from the
+first line, including each name it points at, rather than after something
+faults.
+
+**There is no path syntax anywhere in the tree.** The protocol takes a
+directory handle and one name, `cat motd` is not a path, and the file
+server matches a single component against a flat table. Every part of
+`/`, `..`, a prefix and a remainder is new, and half of it is in the
+server rather than the library.
+
+**The console is reached by role, not by name.** A program prints through
+`SYS_NS_CONSOLE` because the library was handed a connection, and nothing
+about that looks like a filesystem. Making `/dev/console` name it is what
+turns section 25's claim into something a person can see: two servers
+under one namespace, resolved by a library that knows neither of them.
+
+**Two tiers, still.** The startup record is placed in the child's own
+memory at Tier 2 and in the process object at Tier 0, and it now has to
+carry strings in both. The four configurations are not optional: the
+milestone that made them exist is the one before this.
+
+*Stages.* Six. The library work is most of it, and the first stage is the
+one that changes an interface the kernel writes.
+
+**1. Named directory handles at spawn.** The namespace entry grows a
+name, and the library keeps a mount table rather than a lookup by number.
+
+- A bounded name per namespace entry, placed in the child's memory
+  alongside the record and the command line, at both tiers.
+- The kernel checking every pointer a spawn now follows, per 23.2, before
+  it follows any of them.
+- `ns_lookup` by role stays what it is; the mount table is the new thing
+  beside it.
+
+*Check.* A program prints the namespace it was launched with, names and
+all, and the shell hands its children a different one from its own. A
+program given no entries has an empty table, and the spawn that names a
+mount array it does not own is refused rather than read.
+
+**2. Lexical reduction, and the longest prefix that matches.** The
+resolver, with no server involved.
+
+- `..` reduced lexically before any entry is selected, which section 20.3
+  says is forced rather than convenient.
+- Longest-prefix match against the table, and the remainder handed on.
+- A path that reduces outside every entry matching nothing at all.
+
+*Check.* `/dev/../motd` resolves to the handle mounted at `/` with the
+remainder `motd`, and not to the device server, which could only refuse
+it. `/..` and `../x` match nothing. The check is a unit test in a program,
+because a resolver is the one thing here that can be checked without a
+machine doing anything.
+
+**3. Open by path.** The utilities stop naming a single component against
+a single handle.
+
+- An open in the library that resolves, walks and returns a handle.
+- `cat` and the shell using it, with the fs protocol unchanged: a walk
+  still carries a handle and a relative path, because that is what
+  section 20.3 says the protocol always did.
+
+*Check.* `cat /motd` prints the file. The recorded session changes here,
+which is the point: the same session on all four configurations, with
+paths in it.
+
+**4. Composition at spawn.** What a parent hands a child.
+
+- `NS_SHARE`, `NS_CLONE` and `NS_NEW` as a choice of what array to pass,
+  which is what section 20.4 says they are.
+- The shell doing it deliberately rather than passing what it holds.
+
+*Check.* The milestone's own clause: two programs see different views of
+the same underlying handles, from one shell, with no kernel involvement.
+A program launched with `NS_NEW` can name nothing and says so.
+
+**5. Union directories.** One prefix, several handles, in order.
+
+- A table entry that names more than one handle, tried in order until one
+  answers.
+- A name present in both resolving to the first, which is the whole of
+  the semantics.
+
+*Check.* A directory that is two servers: a name only the second has is
+found, a name both have comes from the first, and a name neither has
+fails once rather than twice.
+
+**6. The root of a subtree, and the client that skips the library.**
+
+- A server refusing to resolve above the root its channel represents,
+  which section 20.3 calls the backstop.
+- The rule stated where a server implementor reads it.
+
+*Check.* A program sends `..` on a directory handle directly, without the
+library, and is refused. That is the case the lexical rule cannot cover,
+because a program that constructs its own messages is not running the
+library's code.
+
 *Done when* two processes see different filesystem views assembled from the
 same underlying handles, with no kernel involvement and no ambient root
 anywhere.
@@ -2083,7 +2200,30 @@ absolute paths is usable by ordinary programs, or whether the complexity simply
 moves into libc and gets worse there. If this fails, section 20 changes
 substantially and section 25 with it.
 
-*Size.* Medium. Pure userland and libc, so it blocks nothing and can move.
+The evidence is the utilities. `cat` is eighty lines of protocol today
+because it names one component against one handle; if it is longer and
+worse after paths exist, the complexity moved rather than went. And the
+number to watch is how much of the library a program that never opens
+anything by name still pays for.
+
+*Watch for.* **Longest-prefix matching is where the off-by-one lives.** A
+table holding `/` and `/dev` has to match `/development` against `/` and
+not against `/dev`, which means matching on component boundaries rather
+than on characters.
+
+**A path that reduces above every entry must match nothing.** The
+tempting failure is to fall back to the shortest entry, which manufactures
+authority out of a name and is exactly what section 20.1 says names cannot
+do.
+
+**The table is fixed and small, and something has to say so.** Eight
+entries is a build-time bound like every other bound here, and a program
+handed nine gets an error at spawn rather than a truncated namespace it
+cannot tell from a complete one.
+
+*Size.* Medium. Mostly library and programs, but the first stage changes
+the startup record, which is kernel and both tiers, so it does not block
+nothing and cannot move as freely as this entry used to claim.
 
 ### M6. Driver Cohorts
 
