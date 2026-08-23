@@ -2194,8 +2194,8 @@ program can write a path. That is the next two stages, and keeping them
 apart is deliberate: the record that carries a namespace and the resolver
 that reads one fail in different ways.
 
-**2. Lexical reduction, and the longest prefix that matches.** The
-resolver, with no server involved.
+**2. Lexical reduction, and the longest prefix that matches.** *Built.*
+The resolver, with no server involved.
 
 - `..` reduced lexically before any entry is selected, which section 20.3
   says is forced rather than convenient.
@@ -2207,6 +2207,39 @@ remainder `motd`, and not to the device server, which could only refuse
 it. `/..` and `../x` match nothing. The check is a unit test in a program,
 because a resolver is the one thing here that can be checked without a
 machine doing anything.
+
+Eighteen cases, against a namespace whoever starts it chose, so the
+answers are properties of the table rather than of the library.
+Removing the reduction fails case five, `/dev/../motd`, which is section
+20.3's own example. Matching by character rather than by component fails
+case seven, `/development/x`, which is the off-by-one the entry warned
+about. Dropping a `..` at the top instead of refusing it fails case
+thirteen, `/..`.
+
+**Resolution costs no system call, and the file is the argument.** Sixty
+lines of string handling, no cache, no message and nothing asked of the
+kernel. Section 20.2 claims this and the way to check it is to look: the
+resolver includes `<ns.h>` and `<string.h>` and nothing else.
+
+**Two entries at one name keep the parent's order.** The first attempt
+let a later entry win a tie, which made the answer depend on where in the
+table a name happened to sit, and it showed up immediately: a working
+directory mounted at `/` beside a root mounted at `/` took every path
+that should have gone to the root. Strictly longer replaces, equal keeps
+the earlier, which is also what a union directory will mean when stage 5
+gives one more than one handle.
+
+**A working directory is a name, not a second kind of thing.** A relative
+path is joined to whatever the entry with the working-directory role is
+mounted at and then resolved like any other. A process without that entry
+cannot write a relative path at all, and there is deliberately no
+fallback: falling back to the shortest entry would reintroduce the
+ambient root section 20.3 removed, by the back door and under another
+name.
+
+*What this stage did not do.* Nothing opens anything. The resolver hands
+back a handle and a remainder, which is what a message to a server
+carries, and no program sends one yet.
 
 **3. Open by path.** The utilities stop naming a single component against
 a single handle.

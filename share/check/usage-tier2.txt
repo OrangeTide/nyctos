@@ -1,3 +1,3 @@
-used at most: 53 of 80 threads, 34 of 48 processes
-  kernel stacks under those threads: 217088 bytes
+used at most: 54 of 80 threads, 35 of 48 processes
+  kernel stacks under those threads: 221184 bytes
 stage 9 complete

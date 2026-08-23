@@ -184,3 +184,17 @@ ns_name(unsigned int slot)
 {
     return sys_ns_name(ns_names, ns_words, slot);
 }
+
+const char *
+ns_name_of(sys_ns_id_t id)
+{
+    unsigned int i;
+
+    for (i = 0; i < ns_words / 2; i++) {
+        if ((sys_ns_id_t)ns_table[i * 2] == id) {
+            return ns_name(i);
+        }
+    }
+
+    return "";
+}

@@ -2984,7 +2984,7 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
 {
     struct proc *self = proc_current();
     struct handle_table *ht = &self->p_handles;
-    sys_ns_spec_t ns[2];
+    sys_ns_spec_t ns[3];
     struct child c;
     sys_handle_t h;
     void *obj;
@@ -3045,6 +3045,39 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
       proc_spawn_op(self, "status", PRIO_BOOT - 1, ns, 1, NULL, 0, &h),
       SYS_ERR_INVALID_ARG);
     handle_close(ht, ns[0].handle);
+
+    /*
+     * And the resolver, against a namespace this thread chose so that
+     * the answers are properties of the table rather than of the
+     * library. A root at `/`, something else at `/dev`, and a working
+     * directory at `/`, which is what `resolve` is written against.
+     *
+     * It is a unit test in a program because that is where the library
+     * runs. Nothing here sends a message: section 20.2's claim is that
+     * resolution costs no syscall, and a check that needed a server
+     * would not be checking that.
+     */
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_ROOT;
+    ns[0].handle = share(root);
+    strncpy_ns(ns[0].name, "/");
+    ns[1].id = SYS_NS_CONSOLE;
+    ns[1].handle = share(console);
+    strncpy_ns(ns[1].name, "/dev");
+    ns[2].id = SYS_NS_CWD;
+    ns[2].handle = share(root);
+    strncpy_ns(ns[2].name, "/");
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("resolve", 20, ns, 3, NULL, 0));
+    sched_undefer();
+
+    code = child_join(&c, 1000);
+    if (code != 0) {
+        panic("namespace: the resolver failed case %d", code);
+    }
+    cnprintf("    %-38s %s\n", "paths resolve where they should",
+      "every case");
 
     (void)obj;
 }

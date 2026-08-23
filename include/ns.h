@@ -24,6 +24,8 @@
 
 #include <sys/startup.h>
 
+#include <stddef.h>
+
 /*
  * Called by crt1 with whatever the loader left in the first argument
  * register, before main() and before anything else in the library has run.
@@ -56,5 +58,34 @@ void ns_slot(unsigned int i, sys_ns_id_t *id, sys_handle_t *handle);
  * from the parent rather than from a convention the child assumed.
  */
 const char *ns_name(unsigned int slot);
+
+/*
+ * The longest path this library will hold in canonical form. A bound
+ * like every other bound here, and it is the library's rather than the
+ * protocol's: what crosses a boundary is a handle and the part of a path
+ * below it, which is shorter than this by construction.
+ */
+#define NS_PATH_MAX     128
+
+/*
+ * Resolve a path against the namespace this process was given, per
+ * section 20.3.
+ *
+ * What comes back is one of the handles the process already holds and
+ * the part of the path relative to it, which is exactly what a message
+ * to a server carries. No message is sent and nothing is cached: the
+ * table is the set of handles this process was given, so there is
+ * nothing to invalidate and nothing to ask.
+ *
+ * A path that reduces outside every entry returns SYS_ERR_NO_ENT and
+ * writes nothing. That is not an error condition so much as the shape of
+ * the model: a name is not authority, so a name matching nothing reaches
+ * nothing.
+ */
+sys_err_t ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
+  size_t rest_len);
+
+/* The name an entry with this role is mounted at, or the empty string. */
+const char *ns_name_of(sys_ns_id_t id);
 
 #endif /* _NS_H_ */

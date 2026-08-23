@@ -484,6 +484,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Identifier layout | One machine word: index low, generation high, split sized to the pools per word size. |
 | Mount table | In the C library, not the kernel. |
 | Naming | Handle-relative only. No global namespace, no absolute paths, no ambient root. |
+| Path resolution | Lexical reduction first, then the longest mount name that matches on a component boundary. Ties keep the parent's order. |
 | Namespace handoff | Named directory handles passed at spawn, consumed by libc like `envp`. The name is inside the entry, not pointed at from it. |
 | Interrupts | Disabled in kernel on Tier 0; enabled on Tier 2. |
 | Interrupt handoff | The handler masks a source it cannot finish with; the driver drains and unmasks. |
