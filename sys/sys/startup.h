@@ -48,6 +48,27 @@
 #define SYS_NS_WORDS            (SYS_NS_MAX * 2)
 
 /*
+ * A name per entry, and why the argument above no longer applies.
+ *
+ * The comment above defends a table keyed by number: a string-keyed one
+ * costs a name buffer per entry and a comparison per lookup. That was
+ * right while an entry was a role a parent and child agreed on, where the
+ * number is the whole of the meaning and a name would be decoration.
+ *
+ * Section 20.4 asks for something else beside it: the set of directory
+ * handles this process was given, with names attached, which is what a
+ * mount table is. A parent that cannot say where to mount a handle cannot
+ * compose a namespace, and composing one is the milestone. So an entry
+ * may carry a name, and an entry that is only a role carries none.
+ *
+ * The cost is bounded and paid once: sixteen bytes a slot, beside the two
+ * hundred and fifty-six the record already carries for a command line. It
+ * buys the ability to write a path.
+ */
+#define SYS_NS_NAME_MAX         16      /* bytes, including the terminator */
+#define SYS_NS_NAME_BYTES       (SYS_NS_MAX * SYS_NS_NAME_MAX)
+
+/*
  * Identifiers below SYS_NS_PRIVATE mean the same thing in every process
  * and are assigned here. Everything at or above it is arbitrary and means
  * whatever a parent and its child have agreed, which in practice means
@@ -101,6 +122,20 @@ typedef enum sys_ns_id {
 typedef struct sys_ns_spec {
     sys_ns_id_t     id;
     sys_handle_t    handle;
+
+    /*
+     * Where this handle is mounted, or an empty string for an entry that
+     * is only a role.
+     *
+     * Inline rather than a pointer, and the reason is worth keeping. A
+     * pointer is a second thing the kernel has to follow out of a
+     * caller's memory, which is section 23.2's problem again, and it is a
+     * field every existing caller of spawn would have left uninitialised:
+     * adding one turned fifteen working call sites into fifteen wild
+     * reads, which is what happened. Sixteen bytes in the caller's array
+     * costs a little stack and cannot point anywhere.
+     */
+    char            name[SYS_NS_NAME_MAX];
 } sys_ns_spec_t;
 
 /*
@@ -123,6 +158,16 @@ typedef struct sys_startup {
     uintptr_t       argv;       /* char ** */
     uintptr_t       envp;       /* char ** */
     uintptr_t       ns;         /* sys_handle_t *, ns_words of them */
+
+    /*
+     * The names, one fixed-size slot per pair in the table above,
+     * indexed the same way. A slot is empty for an entry that has no
+     * name. Fixed slots rather than pointers because the loader
+     * copies the block and a pointer per entry would have to be
+     * rewritten per entry, which is what argv costs and what a
+     * namespace does not have to.
+     */
+    uintptr_t       ns_names;   /* char *, SYS_NS_NAME_BYTES of them */
 } sys_startup_t;
 
 /*
@@ -148,7 +193,23 @@ sys_ns_find(const sys_handle_t *ns, uint32_t words, sys_ns_id_t id)
     return SYS_HANDLE_INVALID;
 }
 
-_Static_assert(sizeof(sys_startup_t) == 16 + 3 * sizeof(uintptr_t),
-  "sys_startup_t is an ABI structure: four words then three pointers");
+/*
+ * The name in slot i, which is the empty string for an entry that has
+ * none. Inline and shared for the same reason sys_ns_find is: the kernel
+ * that writes a block and the library that reads one cannot disagree
+ * about how it is indexed.
+ */
+static inline const char *
+sys_ns_name(const char *names, uint32_t words, uint32_t slot)
+{
+    if (names == NULL || slot >= words / 2 || slot >= SYS_NS_MAX) {
+        return "";
+    }
+
+    return names + (size_t)slot * SYS_NS_NAME_MAX;
+}
+
+_Static_assert(sizeof(sys_startup_t) == 16 + 4 * sizeof(uintptr_t),
+  "sys_startup_t is an ABI structure: four words then four pointers");
 
 #endif /* _SYS_STARTUP_H_ */

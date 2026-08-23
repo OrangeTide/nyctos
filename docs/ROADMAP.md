@@ -2118,8 +2118,9 @@ milestone that made them exist is the one before this.
 *Stages.* Six. The library work is most of it, and the first stage is the
 one that changes an interface the kernel writes.
 
-**1. Named directory handles at spawn.** The namespace entry grows a
-name, and the library keeps a mount table rather than a lookup by number.
+**1. Named directory handles at spawn.** *Built.* The namespace entry
+grows a name, and the library keeps a mount table rather than a lookup by
+number.
 
 - A bounded name per namespace entry, placed in the child's memory
   alongside the record and the command line, at both tiers.
@@ -2132,6 +2133,30 @@ name, and the library keeps a mount table rather than a lookup by number.
 all, and the shell hands its children a different one from its own. A
 program given no entries has an empty table, and the spawn that names a
 mount array it does not own is refused rather than read.
+
+`namespace` prints what it holds and exits with the count of named
+entries. Given a root at `/` and a console at `/dev/console` it finds
+two; given nothing it finds none and says so. Both at both tiers, from
+one image.
+
+**The name is inside the entry rather than pointed at from it, and that
+is the stage's one real decision.** The first version made it a `const
+char *`, which is what a caller would write, and it was wrong twice over.
+The kernel would have had another pointer to follow out of a caller's
+memory, which is section 23.2's obligation again for no gain. And a new
+pointer field in a structure fifteen call sites already build is fifteen
+wild reads the day it is added, which is precisely what happened: the
+machine stopped in the boot checks dereferencing a handle value. Sixteen
+bytes inside the entry cannot point anywhere, and the check that survives
+is the one that is still possible to fail: a name with no terminator in
+its slot is refused rather than truncated, because half a mount point
+resolves to something other than what the parent meant.
+
+*What this stage did not do.* Nothing resolves anything. A name is a
+string attached to a handle, `ns_lookup` still answers by role, and no
+program can write a path. That is the next two stages, and keeping them
+apart is deliberate: the record that carries a namespace and the resolver
+that reads one fail in different ways.
 
 **2. Lexical reduction, and the longest prefix that matches.** The
 resolver, with no server involved.

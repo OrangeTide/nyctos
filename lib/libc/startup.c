@@ -29,6 +29,13 @@ static sys_handle_t ns_table[SYS_NS_WORDS];
 static uint32_t ns_words;
 
 /*
+ * Where each of those handles is mounted, per section 20.4, copied for
+ * the same reason the table is. Fixed slots rather than pointers, so
+ * the copy is one memcpy and a name cannot outlive what it names.
+ */
+static char ns_names[SYS_NS_NAME_BYTES];
+
+/*
  * The command line, copied for the same reason the namespace table is.
  * The record lives in loader memory, which at this tier is the process
  * object and at the next one is wherever section 15.2's loader put it;
@@ -111,6 +118,19 @@ __libc_startup(const sys_startup_t *startup)
     }
     ns_words = n;
 
+    /*
+     * The names beside the table. A loader that wrote a table and no
+     * names is one where nothing is mounted anywhere, which is a
+     * process that can hold handles and name none of them.
+     */
+    if (startup->ns_names != 0) {
+        const char *from = (const char *)startup->ns_names;
+
+        for (i = 0; i < SYS_NS_NAME_BYTES; i++) {
+            ns_names[i] = from[i];
+        }
+    }
+
     copy_args(startup);
 }
 
@@ -154,4 +174,10 @@ char **
 __libc_argv(void)
 {
     return arg_vec;
+}
+
+const char *
+ns_name(unsigned int slot)
+{
+    return sys_ns_name(ns_names, ns_words, slot);
 }

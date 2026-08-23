@@ -17,6 +17,9 @@
 
 /* Resolve and validate a pager, per section 15.3 and 15.4 rule 1. */
 static sys_err_t proc_set_pager(struct proc *p, sys_handle_t h);
+
+/* Copy the name a namespace entry was mounted at, per section 20.4. */
+static sys_err_t proc_copy_ns_name(char *dst, const char *name);
 static sys_err_t pager_chain_check(struct proc *server);
 
 /* Copy a command line into the process that will run it. */
@@ -98,6 +101,7 @@ proc_init(struct proc *p, const char *name)
     p->p_startup.version = SYS_STARTUP_VERSION;
     p->p_startup.ns_words = SYS_NS_WORDS;
     p->p_startup.ns = (uintptr_t)p->p_ns;
+    p->p_startup.ns_names = (uintptr_t)p->p_ns_names;
 }
 
 /*
@@ -141,6 +145,11 @@ proc_create(const char *name, const sys_ns_spec_t *ns, uint32_t nns)
             panic("spawn %s: could not hand over handle %u", name, i);
         }
         p->p_ns[i * 2] = (sys_handle_t)ns[i].id;
+        if (proc_copy_ns_name(&p->p_ns_names[i * SYS_NS_NAME_MAX],
+          ns[i].name) != SYS_OK) {
+            panic("spawn %s: entry %u has no name it can keep",
+              name, i);
+        }
 
         /*
          * A pager is a handle like any other and is also the one the
@@ -170,7 +179,6 @@ proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
 
     return p;
 }
-
 
 #if SYS_TIER == 2
 
@@ -202,6 +210,16 @@ proc_place_startup(struct proc *p, uintptr_t page_pa, uintptr_t page_va)
     memcpy(ns, p->p_ns, sizeof(p->p_ns));
     rec->ns = page_va + off;
     off += sizeof(p->p_ns);
+
+    /*
+     * The names beside the table, one fixed slot per pair. Fixed
+     * slots are why this is a copy and an address rather than a
+     * rewrite per entry: nothing inside the block points at
+     * anything, so where it lands does not change what it says.
+     */
+    memcpy(dst + off, p->p_ns_names, sizeof(p->p_ns_names));
+    rec->ns_names = page_va + off;
+    off += sizeof(p->p_ns_names);
 
     argv = (uintptr_t *)(dst + off);
     args = (char *)(dst + off + sizeof(p->p_argv));
@@ -406,7 +424,6 @@ proc_watch(struct proc *p)
 {
     p->p_watched = true;
 }
-
 
 /*
  * Where a process's own memory is, or false if it has none of its own.
@@ -650,7 +667,32 @@ proc_set_pager(struct proc *p, sys_handle_t h)
     return SYS_OK;
 }
 
+/*
+ * Copy the name a namespace entry was mounted at, per section 20.4.
+ *
+ * The name is inside the caller's array rather than pointed at from it,
+ * so there is nothing further to follow and nothing further to check: the
+ * array itself was checked before the operation ran. What is left is
+ * whether the name ends inside its slot, and a name that does not is
+ * refused rather than truncated, because half a mount point resolves to
+ * something other than what the parent meant.
+ */
+static sys_err_t
+proc_copy_ns_name(char *dst, const char *name)
+{
+    uint32_t n = 0;
 
+    while (n < SYS_NS_NAME_MAX && name[n] != '\0') {
+        n++;
+    }
+    if (n == SYS_NS_NAME_MAX) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    memcpy(dst, name, n + 1);
+
+    return SYS_OK;
+}
 
 /*
  * Copy a command line into the process that will run it.
@@ -775,6 +817,7 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
   uint32_t argc, sys_handle_t *out_handle)
 {
     sys_ns_spec_t spec[SYS_NS_MAX];
+    char names[SYS_NS_NAME_BYTES];
     const struct boot_member *m;
     struct proc *p;
     struct thread *t;
@@ -882,6 +925,18 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
                 return err;
             }
         }
+
+        /*
+         * The name is copied here rather than after the move, for the
+         * reason the specification array is: a pointer into the
+         * caller's memory checked in one place and read in another
+         * is two reads of something a second thread can change.
+         */
+        err = proc_copy_ns_name(&names[i * SYS_NS_NAME_MAX],
+          spec[i].name);
+        if (err != SYS_OK) {
+            return err;
+        }
     }
 
     p = pool_alloc(proc_pool(), NULL);
@@ -917,6 +972,8 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
             panic("spawn %s: handover failed after it was checked", image);
         }
         p->p_ns[i * 2] = (sys_handle_t)spec[i].id;
+        memcpy(&p->p_ns_names[i * SYS_NS_NAME_MAX],
+          &names[i * SYS_NS_NAME_MAX], SYS_NS_NAME_MAX);
 
         /*
          * The chain was checked before anything moved, so what is

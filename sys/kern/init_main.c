@@ -65,6 +65,38 @@ hex_into(char *out, uintptr_t v)
     out[n] = '\0';
 }
 
+/*
+ * A copy of a handle to give away, keeping the original. Spawn moves what
+ * it is given, per section 7.4, so a parent that means to keep something
+ * duplicates first; this is that, with the rights the child needs and no
+ * more.
+ */
+static sys_handle_t
+share(sys_handle_t h)
+{
+    sys_handle_t copy;
+
+    if (handle_dup(&proc_current()->p_handles, h,
+      SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE | SYS_RIGHT_TRANSFER,
+      &copy) != SYS_OK) {
+        panic("namespace: cannot share handle %lu", (unsigned long)h);
+    }
+
+    return copy;
+}
+
+/* A mount name into a namespace entry, which is a fixed slot. */
+static void
+strncpy_ns(char *dst, const char *src)
+{
+    size_t i;
+
+    for (i = 0; i + 1 < SYS_NS_NAME_MAX && src[i] != '\0'; i++) {
+        dst[i] = src[i];
+    }
+    dst[i] = '\0';
+}
+
 static void
 expect(const char *what, sys_err_t got, sys_err_t want)
 {
@@ -1250,6 +1282,7 @@ greet_checks(sys_handle_t conn)
     expect("a console handle for the child",
       run(SYS_OP_HANDLE_DUP, conn, &dup, sizeof(dup)), SYS_OK);
 
+    memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_CONSOLE;
     ns[0].handle = dup.out_handle;
 
@@ -1292,6 +1325,7 @@ shell_checks(sys_handle_t console, sys_handle_t root)
       SYS_RIGHT_TRANSFER;
     expect("a console for the shell",
       run(SYS_OP_HANDLE_DUP, console, &dup, sizeof(dup)), SYS_OK);
+    memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_CONSOLE;
     ns[0].handle = dup.out_handle;
 
@@ -1448,6 +1482,7 @@ console_service(void)
      * means the same in every process, which is what section 20.4
      * reserves the range above SYS_NS_PRIVATE for.
      */
+    memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = h_recv;
     ns[1].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 0);
@@ -1678,6 +1713,7 @@ slice_checks(void)
       run(SYS_OP_CHAN_CONNECT, h_fs_recv, &cargs, sizeof(cargs)), SYS_OK);
     root = cargs.out_handle;
 
+    memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_ROOT;
     ns[0].handle = root;
     cnputs("    spawning a client process with that one handle\n");
@@ -1845,6 +1881,7 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
     trace_reset();
     trace_enable(true);
 
+    memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_ROOT;
     ns[0].handle = root;
 
@@ -1926,6 +1963,7 @@ trespass_checks(sys_handle_t root)
     struct child c;
     int32_t code;
 
+    memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_ROOT;
     ns[0].handle = root;
 
@@ -2345,6 +2383,7 @@ move_checks(void)
       SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &h_gate);
     expect("a gate for its second thread to wait on", err, SYS_OK);
 
+    memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = cargs.out_handle;
     ns[1].id = SYS_NS_PRIVATE;
@@ -2564,6 +2603,7 @@ grant_checks(void)
       SYS_RIGHT_TRANSFER, &hg);
     expect("a grant over a page of memory", err, SYS_OK);
 
+    memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_DEVICE;
     ns[0].handle = hg;
 
@@ -2805,6 +2845,7 @@ paging_checks(void)
     }
     want &= 0x7fffffffu;
 
+    memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_PAGER;
     ns[0].handle = cargs.out_handle;
 
@@ -2937,6 +2978,90 @@ paging_checks(void)
     (void)h;
 }
 
+
+/*
+ * What a process was given, with names on it.
+ *
+ * Section 20.4 has a namespace arrive at launch as an array of named
+ * directory handles. Until now the array carried numbers, which is what a
+ * role is; a name is what a mount point is, and a parent that cannot say
+ * where to mount a handle cannot compose a namespace at all.
+ *
+ * Three things are checked here and the last is the one with teeth. That
+ * a child sees the names its parent chose, that a child given nothing
+ * sees nothing, and that a name the caller does not own is refused rather
+ * than read, which is section 23.2 applied to the array this milestone
+ * added rather than to the arrays the last one did.
+ */
+static void
+namespace_checks(sys_handle_t root, sys_handle_t console)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    sys_ns_spec_t ns[2];
+    struct child c;
+    sys_handle_t h;
+    void *obj;
+    int32_t code;
+
+    /*
+     * Two entries with names, and the names are this thread's choice
+     * rather than the child's assumption. A different pair of names from
+     * the same image is a different namespace.
+     */
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_ROOT;
+    ns[0].handle = share(root);
+    strncpy_ns(ns[0].name, "/");
+    ns[1].id = SYS_NS_CONSOLE;
+    ns[1].handle = share(console);
+    strncpy_ns(ns[1].name, "/dev/console");
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("namespace", 20, ns, 2, NULL, 0));
+    sched_undefer();
+
+    code = child_join(&c, 1000);
+    if (code != 2) {
+        panic("namespace: it found %d named entries, not 2", code);
+    }
+    cnprintf("    %-38s %d\n", "a child sees the names it was given",
+      code);
+
+    /*
+     * And a child given nothing. Section 20.3: there is no ambient root,
+     * so a process handed no entries can name nothing at all, and the
+     * check is that it says so rather than finding something anyway.
+     */
+    sched_defer();
+    child_watch(&c, proc_spawn_image("namespace", 20, NULL, 0, NULL, 0));
+    sched_undefer();
+
+    code = child_join(&c, 1000);
+    if (code != 0) {
+        panic("namespace: a child given nothing found %d entries", code);
+    }
+    cnprintf("    %-38s %s\n", "and a child given none finds",
+      "nothing at all");
+
+    /*
+     * A name that does not end inside its slot. There is no pointer to
+     * follow here any more, which is the point: the name is inside the
+     * array the operation already checked, so what is left to get wrong
+     * is a name with no terminator, and a mount point cut in half
+     * resolves to something other than what the parent meant.
+     */
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_ROOT;
+    ns[0].handle = share(root);
+    memset(ns[0].name, 'x', sizeof(ns[0].name));
+    expect("a mount name with no end to it",
+      proc_spawn_op(self, "status", PRIO_BOOT - 1, ns, 1, NULL, 0, &h),
+      SYS_ERR_INVALID_ARG);
+    handle_close(ht, ns[0].handle);
+    (void)obj;
+}
+
 /* The console and the directory the shell is handed, kept from the
  * checks that created them. Root will hold both when there is a root;
  * until then the kernel is what assembles the system. */
@@ -3017,6 +3142,7 @@ user_slice(void)
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     root3 = cargs.out_handle;
 
+    memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = h_recv;
     cnputs("    loading fs_server, which receives on that channel\n");
@@ -3159,6 +3285,9 @@ kernel_main(void)
     user_slice();
 
     cnputs("a shell, which is what all of it was for\n");
+    cnputs("namespaces: what a process was given, and its names\n");
+    namespace_checks(h_fs_root, h_console);
+
     shell_checks(h_console, h_fs_root);
 
     object_report_usage();

@@ -51,6 +51,14 @@ struct proc {
     sys_handle_t        p_ns[SYS_NS_WORDS];
 
     /*
+     * Where each of those handles is mounted, per section 20.4. Copied
+     * for the same reason the command line is: the array a caller builds
+     * is a stack frame in a program, and the child reads it after that
+     * frame is gone. An entry that is only a role has an empty slot.
+     */
+    char                p_ns_names[SYS_NS_NAME_BYTES];
+
+    /*
      * The command line, copied. Section 20.4 has the loader place the
      * strings in the child's memory; the kernel is the loader here, so
      * they live in the process object beside the record that points at

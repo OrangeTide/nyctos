@@ -107,6 +107,7 @@ main(void)
      * what is left behind: nothing, so the spawn that follows must still
      * work.
      */
+    memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_ROOT;
     ns[0].handle = (sys_handle_t)0x1234;
     if (sys_proc_spawn("status", SYS_PRIO_INHERIT, ns, 1, NULL, 0, NULL)

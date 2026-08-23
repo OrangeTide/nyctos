@@ -119,6 +119,7 @@ run(int argc, char **argv, int32_t *status)
     uint32_t state;
     sys_err_t err;
 
+    memset(ns, 0, sizeof(ns));
     ns[nns].id = SYS_NS_CONSOLE;
     ns[nns].handle = share(ns_lookup(SYS_NS_CONSOLE));
     if (ns[nns].handle != SYS_HANDLE_INVALID) {

@@ -45,4 +45,16 @@ sys_handle_t ns_lookup(sys_ns_id_t id);
 unsigned int ns_slots(void);
 void ns_slot(unsigned int i, sys_ns_id_t *id, sys_handle_t *handle);
 
+/*
+ * Where a namespace entry is mounted, per section 20.4, or the empty
+ * string for an entry that is only a role. Slot numbers are the ones
+ * ns_slot walks.
+ *
+ * This is the whole of naming at this stage. What it grows into is a
+ * mount table with a resolver over it, which is the next stage; what it
+ * already has is the property that matters, which is that the name came
+ * from the parent rather than from a convention the child assumed.
+ */
+const char *ns_name(unsigned int slot);
+
 #endif /* _NS_H_ */
