@@ -138,18 +138,67 @@ model.
 `make check` feeds a recorded session to the machine twice, once paced
 like a person typing and once as a burst like a pipe, and compares the
 transcript. It runs on both architectures and the transcript is identical
-between them.
-
-What does not exist: the MMU and everything resting on it, driver cohorts,
-multicore, per-process namespaces, the submission engine, and anything at
-all to do with death. Nothing is reaped, nothing is cancelled, and a
-rendezvous carries no deadline, so a server that stops answering hangs its
-client rather than failing it.
+between them, and between tiers: four configurations, one file.
 
 The one figure this milestone owed is what having no wait-set costs. It is
 one thread, the console's second, at eight and a half kilobytes with both
 its stacks. A system with N devices that must stay responsive while
 serving pays N of them, which is linear and, at this size, cheap.
+
+**Milestone 4 is done, and it is the one the design exists to be tested
+by.** There is a second protection tier. The same source builds four
+configurations, two architectures by two tiers, and `make check` runs the
+same recorded shell session against all four.
+
+At Tier 2 every process has an address space of its own. A program's
+image is mapped into frames nobody else has, so two live copies of one
+image are two processes that cannot reach each other, which is the first
+thing this tier buys that Tier 0 cannot have at any price. The move
+contract of section 6.1 is enforced rather than trusted: the pages of a
+message buffer leave the sender as they enter the receiver and go back at
+the reply, so a program that touches its own buffer during a call faults
+on it.
+
+```
+$ touch_addr 40080000                         (Tier 0)
+touch_addr: 0xd53800a0 at 0x40080000
+[-717750112]
+
+$ touch_addr 40080000                         (Tier 2)
+sh: touch_addr: access fault at 0x40080000, pc 0x40f000f4
+[-16]
+```
+
+That is one program, one command line and two tiers. Nothing in the
+interface differs between them: enforcement cost three lines in the
+rendezvous, and no operation, argument structure or error code exists at
+one tier and not the other.
+
+A fault is an exit with a reason. Every exception each port can raise is
+mapped to a kind of section 16.1, exhaustively and checked at boot, and a
+faulting thread dies with the kind, the address and the instruction in
+its status, which the shell reports. A page fault is the exception: it is
+a message the faulting thread sends to its pager, and the reply carries
+the page. That needed nothing added to message passing, which is the
+single most valuable borrowed idea in the design paying for itself:
+priority inheritance across a page fault was never implemented, it simply
+happens, because a faulting thread is an ordinary blocked sender.
+
+A driver holds a grant over its registers rather than an address compiled
+into it, and a program that touches those registers without one dies at
+the address of the register. Program text can be demand-paged: `paged`
+adds up the bytes of its own image, which arrives five pages at a time,
+and gets the same answer as the kernel computes from the archive.
+
+Kernel object memory is 504896 bytes, of which 360960 is thread stacks
+and most of the rest is the process pool. Both pools are sized by the
+boot check sequence rather than by a workload, because nothing is reaped
+until M7.
+
+What does not exist: driver cohorts, multicore, per-process namespaces,
+the submission engine, and anything at all to do with death. Nothing is
+reaped, nothing is cancelled, no address space is ever torn down, and a
+rendezvous still carries no deadline.
 ---
 
 ## 2. How This Plan Is Organised
@@ -1522,7 +1571,6 @@ That is the opt-in half of the section and it needs the pager shape of
 15.3, which is stage 8. `SYS_FAULT_EXTERNAL` is mapped on both ports and
 cannot be provoked on either board, so the row is written and untested.
 
-
 *Reviewing it found two defects and one hole the stage exposed rather
 than made.*
 
@@ -1651,7 +1699,6 @@ crosses a boundary in and the one that outlives a call. Section 19.2's
 driver still holds its registers as an address compiled into it, mapped
 into every space because otherwise it could not run. That is stage 7.
 
-
 *Reviewing it found two defects in the kernel and one in the program
 written for the stage.*
 
@@ -1775,7 +1822,6 @@ permission. Which register is safe to read differs by board, one of them
 is a byte wide, and reading the wrong one consumes an input byte or
 acknowledges an interrupt. The tier with nothing to enforce is the tier
 where the demonstration costs something and shows nothing.
-
 
 *Reviewing it found one defect in the model and one limit that would
 have stopped the next stage.*
@@ -1915,7 +1961,6 @@ halt the machine: locking the demand-paged program and letting it start
 stops the system with `paged is memory-locked and faulted at
 0x41200000`, which is the rule saying what it is for.
 
-
 *Reviewing it found three defects, one of them much older than the
 stage and only visible because of it.*
 
@@ -2010,9 +2055,16 @@ by two tiers. `make check` has to run all four, or Tier 0 rots while Tier
 2 is being built and the claim that one source serves both stops being
 tested exactly when it starts mattering.
 
-*Size.* Large, and larger than M3. Two of the stages are ports of things
-that already work, which is the kind of work that produces no new
-behaviour and takes the longest to be sure of.
+*Size.* Large, and larger than M3, and spent. Eight stages, of which the
+one that made a process a process and the one that enforced the contract
+were most of it. The two that were ports of things that already work,
+supervisor mode and the kernel's own address space, cost less than
+expected and produced the two hardest bugs in the milestone.
+
+**Done.** Section 7 says what it answered, what it cost, and what it left
+untested. The central claim holds: four configurations of one source,
+one recorded session, and nothing in the interface that differs between
+tiers.
 
 ### M5. Namespaces
 
@@ -2440,7 +2492,214 @@ exactly when a production fault needs it, and then the image being
 debugged is not the image that broke. A GDB stub over the same UART is
 named in 22.4 as the next thing of this kind and is not built.
 
-## 6. Bring-Up Order Within M1
+## 6. Milestone 3, in Retrospect
+
+M3 asked whether the parts built so far compose into something a person
+can use, and answered it with a shell. This section is what the milestone
+entry points at.
+
+### 6.1 The Two Questions
+
+**Is one thread per event source affordable?** Yes, and the number is
+small enough to state plainly. Having no wait-set cost this system one
+thread, the console driver's second, at 4352 bytes of kernel object
+memory and 4096 more of user stack. A system with N devices that must
+stay responsive while serving pays N of them, which is linear rather than
+alarming. The trigger in `PROPOSALS.md` stays untripped.
+
+**Does an interrupt the handler cannot finish with break section 13.2?**
+It does not, and the fix needed no device knowledge in the kernel: the
+handler masks the source at the controller and the driver unmasks it
+after draining. Section 13.2 and section 26 carry the rule now. It was
+also exactly the predicted failure: the machine wedged in the handler
+before printing anything.
+
+### 6.2 What It Cost
+
+About 2600 lines across forty files, of which the console driver, the
+shell and the two utilities are half. Kernel object memory moved little,
+because the milestone added threads and channels rather than pools. The
+recorded session and the two ways of feeding it are perhaps the most
+valuable thing built, and were the cheapest.
+
+### 6.3 What the Building Kept Finding
+
+Four things the design did not say, each written into the section that
+should have said it: a child may not outrank its parent (11.1), one live
+process per image while loading is a copy to a fixed address (15.2), what
+protects state shared between a driver's two threads and when that
+argument expires (19.3), and which of a reply's two payload paths a read
+uses (25.5). The rule two writers to one device need is in 22.4.
+
+The check that mattered most was the one that could fail. An interactive
+session compared against a recorded transcript found a scheduler defect
+that a byte count would not have: a server whose base priority exceeded
+its client's corrupted the run queues.
+
+### 6.4 What Is Still Untested
+
+A second reader of the console, a client that dies inside a rendezvous,
+and any recovery at all from a server that stops answering, which hangs
+its client because a rendezvous carries no deadline. All three are M7's.
+
+## 7. Milestone 4, in Retrospect
+
+M4 is the milestone the design exists to be tested by. Section 2.1 claims
+one interface across two protection models, and until Tier 2 ran that was
+a claim about one tier, which is not a claim. This is what it settled,
+what it cost, and what it left alone.
+
+### 7.1 The Two Questions
+
+**Does the interface have to differ between tiers?** No. The evidence is
+four configurations of one source tree, two architectures by two tiers,
+and a recorded shell session that is one file compared against all four.
+Enforcement cost three lines in the rendezvous: an unmap when a buffer is
+handed over and a lookup and a map when it comes back. No operation, no
+argument structure and no error code exists at one tier and not at the
+other.
+
+That has to be stated precisely, because the interface did grow. A grant
+is a new object with a new operation, faults are reported through new
+fields, and two well-known namespace identifiers were added. Every one of
+those is present and meaningful at both tiers: `sys_grant_map` returns an
+address at Tier 0 with nothing mapped, because the grant is what makes
+the permission explicit rather than what creates it; a fault kind is
+reported at Tier 0 for the faults Tier 0 can take. What section 2.1
+forbids is a program having to know which tier it is on, and no program
+here does.
+
+What differs is what a machine can do and what it notices. Two live
+processes from one image are possible at Tier 2 and refused at Tier 0,
+which is the one place a request succeeds on one tier and fails on the
+other; the refusal is in the loader rather than in the interface, and the
+program that provokes it takes either answer. A program that breaks the
+move contract faults at Tier 2 and is believed at Tier 0. Those are the
+differences the design predicted and wanted.
+
+**Does modelling a fault as IPC from the faulting thread reuse the reply
+path, the blocking invariant and donation without extending any of them?**
+Yes, and this is the clearest result in the milestone. `thread_fault`
+records three fields and calls `thread_exit`, because a fault is an exit
+with a reason. `pager_fault` builds a message and calls `channel_send`,
+because a faulting thread is an ordinary blocked sender. Nothing in
+sections 10, 12 or 21 needed a case added. Priority inheritance across a
+page fault was not implemented at all: the pager runs at the faulting
+thread's priority because a client donates to a server, and the check
+had to be written to observe a property nobody arranged.
+
+One thing did have to be added, and it was in the ports rather than in
+the design: a fault that returns. Every fault before this one ended a
+thread, so neither port had a path back into the frame it had built.
+
+### 7.2 What It Cost
+
+Nineteen commits, sixty-seven files, about 7700 lines added and 270
+removed. Roughly 1800 of those lines are in the two ports, 5800 in the
+kernel and the rest in programs, the library and the build.
+
+Kernel object memory went from 380992 bytes to 504896. Almost all of the
+growth is the process and thread pools, raised because nothing is reaped
+and the boot check sequence spawns thirty-two processes over a run where
+two are ever alive. That is the check suite sizing the pools, and it is
+said where the numbers are; M7 is what makes them a property of a
+workload instead.
+
+The window held for loaded programs grew from twelve megabytes to
+eighteen, because five programs were added and every image is now padded
+to a page boundary between its read-only and writable halves.
+
+Five new programs: `trespass`, `touch_addr`, `grabber`, `granted` and
+`paged`. Every one of them exists to break something on purpose.
+
+### 7.3 What the Building Kept Finding
+
+**Enforcement finds what trust hides, including in the enforcement.** The
+clearest case is not a kernel bug at all: `grabber` passed the top of its
+thread's stack where the library wanted the bottom, so the library put a
+thread's stack inside a message buffer. The move took the buffer away
+with the stack in it and the kernel faulted writing a status to a
+descriptor that was no longer there. Nothing but enforcement would have
+found it, and it had been silently writing past the end of an array.
+
+The same shape appeared twice more. A page a pager supplied was
+executable whether or not it was granted as such, which only a check that
+withheld the right could show. And the RISC-V linker scripts named `.bss`
+and not `.sbss`, so the linker placed the small sections as orphans:
+outside the range that zeroes bss in the kernel, and in the middle of the
+text in a program, where the first demand-paged run faulted on it.
+
+**Two bugs cost most of the milestone's time, and both were about what a
+register held.** The AArch64 interrupt path restored `elr` and `spsr`
+into `x9` and `x10` after restoring the general registers, so interrupted
+code resumed with a code address in `x9`, which is `memset`'s
+destination. It was found by noticing that the faulting store address was
+always exactly the program counter minus five. The RISC-V trap entry
+clears `sscratch` unconditionally and the kernel return path put nothing
+back, so an interrupt landing in the two-instruction window inside
+`enter_user` left a thread reaching user mode with no kernel stack
+parked. That one had been there since M3 and needed a loaded host and
+fourteen machines at once to see.
+
+**A program could stop the machine with a number.** The kernel
+dereferences the descriptor array a program passes, the argument pointer
+inside each descriptor, and the vectors and strings a spawn points at.
+Section 23.2 has required checking those since M1 and nothing did. Stage
+5 did not create the hole; it created the ability to see it, as a panic
+naming the kernel's own instruction and a program's address.
+
+**A refusal has to name something.** Three defects were error codes that
+were true of the code path and false about the world: a page already lent
+reported a bad argument, a buffer that granted no access became a page
+table on one port, and `SYS_EXIT_FAULT` was documented as a value no
+program returns by a milestone whose own program returns arbitrary words.
+
+**The pmap could not refine a block, and the stage that found it fixed
+the wrong half.** Mapping a grant over a page of a two-megabyte block
+panicked; making the device regions the size of the devices fixed the
+console and hid the rule. All of ordinary memory is mapped in blocks too,
+so the next grant panicked in the same place, and so would every page a
+pager supplies.
+
+### 7.4 What Is Still Untested
+
+**Nothing in the check suite runs under load.** All four configurations
+passed on an idle machine with a fault-path bug present that a loaded
+host reproduces in seconds. The suite is not the place to fix that, but a
+stage that changes how often threads switch should be run under load
+deliberately, and this one was only after a flake made it obvious.
+
+**Nothing tears an address space down.** A spawn that fails after its
+tables exist leaks the frames in them. A grant remembers nothing about
+which process mapped it, so closing a handle puts the region back whether
+or not this process ever mapped it, and two grants over overlapping
+regions would undo each other. All of it is the same bookkeeping, and it
+belongs with M7's reclamation.
+
+**The move contract is enforced for a buffer and not for a grant.** A
+grant crosses a boundary and stays, which is what section 6.1 says it is
+for, and nothing revokes one except closing its handle.
+
+**There is one pager and it is the kernel.** A user pager would need the
+image bytes from somewhere, which is a filesystem, so the chain has never
+been longer than one link. Rule 3 of section 15.4 is enforced and shown
+by hand rather than by a check, because what it does is halt the machine.
+`sys_mem_lock()` is not an operation: the right that would guard it
+belongs to a root task that does not exist.
+
+**`SYS_FAULT_EXTERNAL` cannot be provoked on either board**, so that row
+of the mapping is written and untested. The mapping is otherwise checked
+exhaustively, by asking about every encoding at boot, which is what found
+two missing abort groups.
+
+**A demand-paged program may not have initialised writable data.** The
+loader pages in what is inside the image and maps everything else
+eagerly, and the boundary it uses is the end of the image rather than the
+end of the read-only part. The linker aligns those to the same page today
+because no program here has a `.data` section. The archive carrying a
+layout rather than a size is what would fix it.
+
+## 8. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -2484,7 +2743,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 7. Ordering: What Is Forced and What Is Chosen
+## 9. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -2515,7 +2774,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 8. What Would Change This Plan
+## 10. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -2552,7 +2811,7 @@ reason, so nothing else moves.
 
 ---
 
-## 9. Deliberately Not Scheduled
+## 11. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

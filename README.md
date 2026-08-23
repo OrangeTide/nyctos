@@ -22,16 +22,16 @@ about.
 
 **Roughly half the kernel exists, and there is enough userland to talk
 to it.** `docs/design.md` describes the intended system and says which
-half that is. Two figures have been obtained and both are footprints
-rather than speeds; nothing has been measured for time. The gap between
-what is described and what runs is deliberate rather than hidden, and it
-narrows one stage at a time.
+half that is. Three figures have been obtained and all three are
+footprints rather than speeds; nothing has been measured for time. The
+gap between what is described and what runs is deliberate rather than
+hidden, and it narrows one stage at a time.
 
 ## Status
 
-**Milestone 3 is done: there is a shell.** It reads a line from a console
-driver that is an ordinary process, starts what the line names, waits on
-its completion timeline, and reports the status.
+**Milestone 4 is done: there are two protection tiers, and the same
+source builds both.** Four configurations, two architectures by two
+tiers, and `make check` runs one recorded shell session against all four.
 
 ```
 $ echo one two three
@@ -43,39 +43,69 @@ cat: nothing: no such file
 [3]
 ```
 
-`cat` reads through a filesystem server and prints through a console
-service, and both speak the protocol of section 25. That is the first
-evidence for the claim that a filesystem here is a protocol rather than a
-layer: the console is one.
+That session is identical on every configuration. What differs is what
+the machine notices when a program breaks a rule:
 
-Underneath it: static object pools, threads and the context switch, a
-strict-priority scheduler with priority inheritance, per-process handle
-tables with rights, the operation entry point, timelines, interrupts on a
-controller per board, timers with absolute deadlines, programs loaded from
-a boot archive into user mode, exit and join over completion timelines,
-spawn and thread creation as operations a program can call, and a C
+```
+$ touch_addr 40080000                         (Tier 0)
+touch_addr: 0xd53800a0 at 0x40080000
+[-717750112]
+
+$ touch_addr 40080000                         (Tier 2)
+sh: touch_addr: access fault at 0x40080000, pc 0x40f000f4
+[-16]
+```
+
+One program, one command line, two tiers: at Tier 0 it reads the kernel's
+first instruction and prints it, and at Tier 2 it dies at the address it
+touched. Nothing in the interface differs between them. Enforcing the
+memory contract of section 6.1 cost three lines in the rendezvous, and no
+operation, argument structure or error code exists at one tier and not
+the other.
+
+At Tier 2 every process has an address space of its own, so two live
+copies of one image are two processes that cannot reach each other. A
+message buffer is moved rather than shared: its pages leave the sender as
+they enter the receiver and go back at the reply, so a program that
+touches its own buffer during a call faults on it. A driver holds a grant
+over its device registers rather than an address compiled into it. A
+fault is an exit with a reason, with the kind, the address and the
+instruction in the dead thread's status, which the shell reports.
+
+A page fault is the exception: it is a message the faulting thread sends
+to its pager, and the reply carries the page. That needed nothing added
+to message passing, and priority inheritance across a page fault was
+never implemented at all, it simply happens, because a faulting thread is
+an ordinary blocked sender that donates to its pager.
+
+Underneath all of it: static object pools, threads and the context
+switch, a strict-priority scheduler with priority inheritance,
+per-process handle tables with rights, the operation entry point,
+timelines, interrupts on a controller per board, timers with absolute
+deadlines, programs loaded from a boot archive into user mode, exit and
+join over completion timelines, spawn and thread creation as operations a
+program can call, page tables and TLB maintenance in each port, and a C
 library whose input and output reach a connection the process was handed
-rather than a hole in the capability model. All of it runs on AArch64 and
-RISC-V64 from one source.
+rather than a hole in the capability model.
 
 `make check` feeds a recorded session to the machine twice, once paced
 like a person typing and once as a burst like a pipe, and compares the
-transcript against a recorded one. The transcript is identical on both
-architectures.
+transcript against a recorded one.
 
-What does not exist: the MMU and everything resting on it, driver cohorts,
-multicore, per-process namespaces, the submission engine, and everything
-to do with death. Nothing is reaped, nothing is cancelled, and a
-rendezvous carries no deadline, so a server that stops answering hangs its
-client rather than failing it.
+What does not exist: driver cohorts, multicore, per-process namespaces,
+the submission engine, and everything to do with death. Nothing is
+reaped, nothing is cancelled, no address space is ever torn down, and a
+rendezvous carries no deadline, so a server that stops answering hangs
+its client rather than failing it.
 
-Two figures have been obtained, and both are footprints rather than
-speeds. Kernel object memory is 365248 bytes, almost all of it thread
-stacks and process handle tables sized by two constants, which is section
-8 of the design holding and also saying the defaults are wrong for a small
-target. And having no wait-set costs this system one thread, the console's
-second, at eight and a half kilobytes with both its stacks; a system with
-N devices that must stay responsive while serving pays N of them.
+Three figures have been obtained, and all three are footprints rather
+than speeds. Kernel object memory is 504896 bytes, of which 360960 is
+thread stacks; both pools that dominate it are sized by the boot check
+sequence rather than by a workload, because nothing is reaped yet. Having
+no wait-set costs this system one thread, the console's second, at eight
+and a half kilobytes with both its stacks. And an address space costs a
+handful of frames per process, because the kernel is mapped into each one
+rather than shared between them.
 
 `docs/ROADMAP.md` says what each milestone answered, what it cost, and what
 it left untested.
@@ -212,9 +242,9 @@ is the userland libraries, `bin` is the userland programs, `include` is the
 headers those programs compile against, and `share/mk` holds the make
 fragments that tie it all together.
 
-`bin` is empty and `lib` builds a C library nothing links against yet. Both
-are kept because the stage that spawns the first process needs them, and
-letting them rot in the meantime would cost more than building them does.
+`bin` holds seventeen programs: the shell, its utilities, the console
+driver, the filesystem server, and the ones written to break a rule on
+purpose. `lib` builds the C library they link against.
 
 ```
 .
@@ -231,71 +261,86 @@ letting them rot in the meantime would cost more than building them does.
 │   └── libc/                # the C library
 └── sys/                     # the kernel
     ├── sys/
-    │   ├── config.h         # build-time pool sizes
+    │   ├── config.h         # build-time pool sizes and the tier switch
     │   ├── pool.h           # static pools and the 20/44 identifier layout
     │   ├── object.h         # the kernel object types and their pools
-    │   ├── syscall.h        # the old numbered ABI, awaiting replacement
+    │   ├── vm.h             # address spaces, and what a port provides
+    │   ├── grant.h          # authority over a region, held as a handle
     │   └── systm.h          # kernel-internal prototypes
     ├── kern/                # machine-independent
-    │   ├── init_main.c      # kernel_main
+    │   ├── init_main.c      # kernel_main and the boot checks
     │   ├── kern_object.c    # the pool instances
-    │   ├── kern_syscall.c   # the trap path
-    │   ├── subr_mem.c       # memset, memcpy
+    │   ├── kern_syscall.c   # the trap path and what a fault means
+    │   ├── kern_channel.c   # send, receive, reply, and the move contract
+    │   ├── kern_proc.c      # processes, spawn, and the loader
+    │   ├── kern_pager.c     # a page fault, sent as a message
+    │   ├── subr_page.c      # the frame allocator
+    │   ├── subr_vm.c        # the kernel's own address space
     │   ├── subr_pool.c      # the pool mechanism
     │   └── subr_prf.c       # console output, formatting, panic
     └── arch/
         ├── aarch64/
         │   ├── boot.S           # reset entry, EL2->EL1 drop, .bss, stack
-        │   ├── exception.S      # EL1 vector table and SVC path
+        │   ├── exception.S      # EL1 vector table, SVC and fault paths
+        │   ├── pmap.c           # page tables, 39-bit VA, 4KB granule
+        │   ├── fault_md.c       # every exception, mapped to a fault kind
+        │   ├── mem_md.c         # what memory and devices this board has
         │   ├── halt.c           # PSCI power off and reset
         │   ├── machdep.S        # drop to EL0
         │   ├── uart.c           # PL011 UART (QEMU virt @ 0x09000000)
         │   └── conf/kern.ld     # places the kernel at 0x40080000
         └── riscv64/
-            ├── boot.S           # reset entry, .bss, stack, mtvec
-            ├── exception.S      # M-mode trap entry and ecall path
+            ├── boot.S           # reset entry, M-mode handover to S-mode
+            ├── exception.S      # S-mode trap entry, ecall and fault paths
+            ├── pmap.c           # page tables, Sv39
+            ├── fault_md.c       # every exception, mapped to a fault kind
+            ├── mem_md.c         # what memory and devices this board has
             ├── halt.c           # SiFive test finisher
-            ├── machdep.S        # PMP setup and drop to U-mode
+            ├── machdep.S        # drop to U-mode
             ├── uart.c           # 16550A UART (QEMU virt @ 0x10000000)
             └── conf/kern.ld     # places the kernel at 0x80000000
 ```
 
 ## Building
 
-`ARCH` selects the target architecture and defaults to `aarch64`. Each
-`make` invocation builds exactly one architecture; to build another,
-re-invoke `make` with a different `ARCH`. Building both is two commands,
-not one:
+`ARCH` selects the target architecture and defaults to `aarch64`. `TIER`
+selects the protection tier and defaults to `0`: flat memory, where the
+memory contract is trusted. `TIER=2` is the same source with an MMU
+behind it. Each `make` invocation builds exactly one configuration, so
+building all four is four commands, not one:
 
 ```sh
-make                    # builds ARCH=aarch64 (the default)
-make ARCH=riscv64       # builds riscv64 instead
+make                       # aarch64, Tier 0 (the defaults)
+make ARCH=riscv64          # the other architecture
+make TIER=2                # the other tier
+make ARCH=riscv64 TIER=2   # both
 ```
 
-Outputs land in `_out/<target-triplet>/`, keyed by the clang target triplet
-so the two architectures' object files, `.d` dependency files, libraries and
-images never collide. The tree below `_out/<target-triplet>/` mirrors the
+Outputs land in `_out/<target-triplet>-tier<N>/`, keyed by the clang
+target triplet and the tier so that the four configurations' object
+files, `.d` dependency files, libraries and images never collide.
+The tree below it mirrors the
 source tree, with `lib/libc.a` and `lib/crt1.o` staged where userland
 programs link against them, and the final image at `sys/kernel.elf`. Header
 dependencies are tracked automatically (via `-MMD -MP`) and picked up on the
 next build, so editing a shared header like
-[sys/sys/syscall.h](sys/sys/syscall.h) correctly rebuilds every `.c`/`.S`
+[sys/sys/op.h](sys/sys/op.h) correctly rebuilds every `.c`/`.S`
 file that includes it.
 
 ```sh
-make clean                 # removes _out/aarch64-none-elf/ only
-make ARCH=riscv64 clean    # removes _out/riscv64-none-elf/ only
+make clean                 # removes _out/aarch64-none-elf-tier0/ only
+make ARCH=riscv64 clean    # removes _out/riscv64-none-elf-tier0/ only
 make cleandir              # removes _out/ entirely
 ```
 
-`make clean` only ever removes the current `ARCH`'s output directory; it
-never touches another architecture's build outputs.
+`make clean` only ever removes the current configuration's output
+directory; it never touches another architecture's or another tier's.
 
 ## Running under QEMU
 
 ```sh
-make run                  # aarch64 (the default)
-make ARCH=riscv64 run     # riscv64
+make run                       # aarch64, Tier 0 (the defaults)
+make ARCH=riscv64 TIER=2 run   # the other of each
 ```
 
 Both run QEMU with `-nographic`, so console output appears directly in your
@@ -322,14 +367,16 @@ typing three lines of anything.
 ## Running the recorded session
 
 ```sh
-make check                  # aarch64
-make ARCH=riscv64 check     # riscv64
+make check                       # aarch64, Tier 0 (the defaults)
+make ARCH=riscv64 check          # the other architecture
+make TIER=2 check                # the other tier
+make ARCH=riscv64 TIER=2 check   # both
 ```
 
 `make check` feeds [share/check/session.txt](share/check/session.txt) to
 the machine twice and takes about half a minute. Once paced at two seconds
 a line, which is how a person types, and the transcript from the shell's
-banner onward is compared against
+banner to the shell's exit is compared against
 [share/check/expected.txt](share/check/expected.txt). Then once as a
 burst, which is how a pipe delivers a whole session before anything has
 asked for any of it, where what is checked is that the machine reaches the
@@ -340,6 +387,12 @@ completed line block whatever is typed behind it passes the paced session
 and hangs the burst one; a receive buffer too small for a burst fails
 both.
 
+The session file is one file for every configuration, which is the
+point of it. The resource report after the session is one file per
+tier, because Tier 2 runs two processes where Tier 0 refuses the
+second and an exact count of what a run used is worth more than a
+line both tiers can share.
+
 ## Memory map notes
 
 | Arch | Kernel load address | Why | UART |
@@ -348,11 +401,16 @@ both.
 | riscv64 | `0x80000000` | QEMU `virt` RAM base; with `-bios none` the reset vector jumps straight here | 16550A @ `0x10000000` |
 
 `USER_LOAD_ADDR` in [share/mk/nyc.own.mk](share/mk/nyc.own.mk) must agree
-with the userland linker script in `share/ld/`. Every program that can
-be live at the same time as another also needs its own slot above that
-base, assigned by hand in the program's own Makefile, because there is
-no MMU and a second copy of an image would be loaded over the first.
-Section 15.2's loader is what removes the restriction.
+with the userland linker script in `share/ld/`. Every program also needs
+its own slot above that base, assigned by hand in the program's own
+Makefile, because at Tier 0 there is no MMU and a second copy of an image
+would be loaded over the first.
+
+At Tier 2 the slot is a virtual address and the memory behind it is
+frames nobody else has, so the rule that one image has one live process
+is compiled out. The slots stay because the loader still uses them to
+decide where a program's memory is, and because one source has to build
+both tiers.
 
 ## Coding style
 
@@ -377,22 +435,28 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Known limitations
 
-- One `make` invocation builds exactly one architecture at a time (selected
-  via `ARCH`). This keeps the build system's variables simple and
-  unambiguous instead of juggling per-architecture state in a single run;
-  building for both architectures just means running `make` twice.
-- Nothing runs in user mode. The privilege drop and the trap path exist but
-  no process reaches them, so the whole system is the kernel.
-- There is no memory protection. Tier 0 is flat memory by design, and the
-  MMU arrives in milestone 4.
+- One `make` invocation builds exactly one architecture and one tier
+  (selected via `ARCH` and `TIER`). This keeps the build system's
+  variables simple and unambiguous instead of juggling per-configuration
+  state in a single run; building all four is four commands.
+- Nothing is ever reclaimed. A process that exits keeps its slot so that
+  its status stays readable, no address space is torn down, and a spawn
+  that fails partway leaks the frames it had allocated. Milestone 7 is
+  reclamation.
+- There is no way to stop anything. Nothing is cancelled and a rendezvous
+  carries no deadline, so a server that stops answering hangs its client.
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is the vertical
-slice: one thread, one channel, one driver, one file read, with the driver
-as a separate process rather than kernel code.
+See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is namespaces:
+path resolution as ordinary library code walking a table the process was
+handed, so that two processes see different filesystem views assembled
+from the same underlying handles, with no kernel involvement and no
+ambient root anywhere.
 
-The bring-up order that gets there is in the same file. It puts timelines
-before IPC, which looks wrong and is not: interrupts and timers depend on
-timelines and not on message passing, so building them first gets the
-system responding to hardware several stages earlier.
+The ordering that got here is in the same file, along with what each
+milestone answered and what it left untested. The one choice most likely
+to look wrong is timelines before message passing, and it is not:
+interrupts and timers depend on timelines and not on message passing, so
+building them first got the system responding to hardware several stages
+earlier.
