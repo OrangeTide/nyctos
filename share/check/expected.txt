@@ -15,6 +15,7 @@ $ namespace
 namespace: id 3 has no name
 namespace: / is id 1
 namespace: /files is id 4096
+namespace: cannot hand these on with those rights
     namespace exited with status 2
 [2]
 $ only / namespace

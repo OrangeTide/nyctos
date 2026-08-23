@@ -2403,6 +2403,43 @@ its own from it. A library that chooses attenuation for its callers is a
 library that undoes their policy, so the rights are a parameter and the
 shell still strips what it stripped.
 
+*Reviewing it found two defects and one thing the shell was doing all
+along that nothing had said out loud.*
+
+**A namespace is not all one kind of thing, and the composer assumed it
+was.** Section 7.2 refuses a duplication asking for a right the source
+lacks rather than clamping it, deliberately, so a composer handing on
+connection rights cannot compose an entry that is a grant. The whole
+composition failed, which is arguable, and it reported running out of
+memory, which is not: those are different events and one of them is a
+lie. The error says which now, and the interface says that a namespace
+holding two kinds of thing is composed in two calls.
+
+That is a tension worth naming rather than a defect to fix. A generic
+"hand on what I hold, attenuated" needs to know what each entry carries,
+and nothing in the interface tells a program that. Adding a way to ask
+would be a new operation nothing else needs, so what exists instead is a
+caller that knows what it holds, which every caller here does.
+
+**A child of the shell cannot compose a namespace at all, and now says
+so.** The shell strips the right to duplicate from what it hands on, on
+purpose and since long before this stage: a child may use a connection
+and pass it on and may not make another. The consequence is that
+`ns_compose` fails for such a child on its first entry, which is correct
+and was invisible. It is in the recorded session now, which is the
+attenuation being demonstrated rather than asserted.
+
+**And the message guessed at a cause it could not know.** Two walls
+answer with the same error, an entry of the wrong kind and an entry that
+may not be duplicated, and the program named the first. It says what is
+true of both.
+
+*What `only` does that is worth knowing.* It keeps the entries whose
+names were listed and nothing else, so `only / cat /motd` hands over a
+root and no console, and the program runs and cannot print. That is what
+the word means and it is not a defect, but it is the shape of every
+mistake a person will make with it.
+
 **5. Union directories.** One prefix, several handles, in order.
 
 - A table entry that names more than one handle, tried in order until one

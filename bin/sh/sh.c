@@ -96,7 +96,7 @@ static sys_err_t
 run(int argc, char **argv, int32_t *status)
 {
     sys_ns_spec_t ns[SYS_NS_MAX];
-    const char *only[1];
+    const char *only[1] = { NULL };
     ns_how_t how = NS_SHARE;
     sys_handle_t child, done;
     unsigned int nns = 0;

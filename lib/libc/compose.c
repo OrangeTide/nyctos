@@ -61,6 +61,7 @@ ns_compose(ns_how_t how, const char *const *only, unsigned int nonly,
 {
     unsigned int slots = ns_slots();
     unsigned int i, n = 0;
+    sys_err_t err;
 
     if (out == NULL || nout == NULL) {
         return SYS_ERR_INVALID_ARG;
@@ -106,11 +107,26 @@ ns_compose(ns_how_t how, const char *const *only, unsigned int nonly,
             return SYS_ERR_TRUNCATED;
         }
 
-        if (sys_handle_dup(h, rights, &copy) != SYS_OK) {
+        /*
+         * Section 7.2 refuses a duplication that asks for anything
+         * the source lacks, rather than clamping it, and that is
+         * deliberate: a caller asking for more than it holds has
+         * made a mistake worth hearing about. It means the rights
+         * passed here have to be rights every entry being composed
+         * actually carries. A namespace holding two kinds of thing,
+         * a connection and a grant say, is composed in two calls.
+         *
+         * The error says which of the two happened rather than
+         * standing in for both. Running out of table is not the
+         * same as asking for a right an entry does not have, and
+         * the first version reported the second as the first.
+         */
+        err = sys_handle_dup(h, rights, &copy);
+        if (err != SYS_OK) {
             while (n > 0) {
                 (void)sys_handle_close(out[--n].handle);
             }
-            return SYS_ERR_NO_MEMORY;
+            return err;
         }
 
         out[n].id = id;

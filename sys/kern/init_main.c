@@ -3010,26 +3010,52 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
     struct proc *self = proc_current();
     struct handle_table *ht = &self->p_handles;
     sys_ns_spec_t ns[3];
+    struct grant *g;
+    uintptr_t pa;
     struct child c;
     sys_handle_t h;
     void *obj;
     int32_t code;
 
     /*
-     * Two entries with names, and the names are this thread's choice
-     * rather than the child's assumption. A different pair of names from
-     * the same image is a different namespace.
+     * Two names for one directory, and a grant with no name at all.
+     *
+     * The two names are the composition this milestone is about. The
+     * grant is there because a namespace is not all one kind of thing: a
+     * driver holds one by role, and a composer that hands on connection
+     * rights cannot hand it on, which is section 7.2 refusing to clamp a
+     * duplication rather than a defect. The program says which happened.
+     *
+     * Neither the grant nor the console is named, and that is the rule
+     * rather than an omission: section 20.4's array is of named
+     * *directory* handles, and a thing that answers no path below it has
+     * no business being a mount point.
      */
+    pa = page_alloc();
+    if (pa == 0) {
+        panic("namespace: no page to describe");
+    }
+    g = grant_create("a-namespace-page", pa, PAGE_SIZE, false);
+    if (g == NULL) {
+        panic("namespace: no grant to hand over");
+    }
+
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_ROOT;
     ns[0].handle = share(root);
     strncpy_ns(ns[0].name, "/");
-    ns[1].id = SYS_NS_CONSOLE;
-    ns[1].handle = share(console);
-    strncpy_ns(ns[1].name, "/dev/console");
+    ns[1].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 0);
+    ns[1].handle = share(root);
+    strncpy_ns(ns[1].name, "/files");
+    if (handle_insert(ht, g, SYS_OBJ_GRANT,
+      SYS_RIGHT_MAP | SYS_RIGHT_READ | SYS_RIGHT_DUPLICATE |
+      SYS_RIGHT_TRANSFER, &ns[2].handle) != SYS_OK) {
+        panic("namespace: no handle for the grant");
+    }
+    ns[2].id = SYS_NS_DEVICE;
 
     sched_defer();
-    child_watch(&c, proc_spawn_image("namespace", 20, ns, 2, NULL, 0));
+    child_watch(&c, proc_spawn_image("namespace", 20, ns, 3, NULL, 0));
     sched_undefer();
 
     code = child_join(&c, 1000);
