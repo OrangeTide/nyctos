@@ -88,4 +88,37 @@ sys_err_t ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
 /* The name an entry with this role is mounted at, or the empty string. */
 const char *ns_name_of(sys_ns_id_t id);
 
+/*
+ * What to hand a child, per section 20.4. These are choices about what
+ * array to pass rather than mechanisms: there is nothing for the kernel
+ * to do, because a namespace is the set of handles a parent decided to
+ * give away and the names it gave them.
+ */
+typedef enum ns_how {
+    NS_NEW = 0,     /* nothing, and a child that can name nothing */
+    NS_SHARE,       /* every entry this process holds, under its names */
+    NS_CLONE,       /* the entries whose names the caller lists */
+} ns_how_t;
+
+/*
+ * Build the array for a spawn. The handles in it are duplicates, because
+ * spawn moves what it is given and a parent that handed over its own
+ * root would cease to have one; a caller whose spawn fails owns them and
+ * closes them.
+ *
+ * The rights are the caller's decision and not this function's. A parent
+ * may hand on less than it holds, per section 7, and what to keep back
+ * is a policy: a shell that strips the right to duplicate hands its
+ * children a namespace they may use and may not pass on further, which
+ * is a reasonable thing to want and a terrible thing for a library to
+ * choose on a caller's behalf.
+ *
+ * More entries than the caller made room for is refused rather than
+ * truncated. A child holding most of a namespace cannot tell that from a
+ * child holding all of one, and the difference is what it can reach.
+ */
+sys_err_t ns_compose(ns_how_t how, const char *const *only,
+  unsigned int nonly, uint32_t rights, sys_ns_spec_t *out,
+  unsigned int max, unsigned int *nout);
+
 #endif /* _NS_H_ */

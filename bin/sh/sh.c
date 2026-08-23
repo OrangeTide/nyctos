@@ -70,26 +70,6 @@ split(char *s, char **out, int max)
     return n;
 }
 
-/*
- * Hand a child a copy of one of this shell's handles, attenuated to what a
- * child needs: it may send on the connection and hand it on, and it may
- * not mint another or duplicate it further than that.
- */
-static sys_handle_t
-share(sys_handle_t h)
-{
-    sys_handle_t copy;
-
-    if (h == SYS_HANDLE_INVALID) {
-        return SYS_HANDLE_INVALID;
-    }
-    if (sys_handle_dup(h, SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER,
-      &copy) != SYS_OK) {
-        return SYS_HANDLE_INVALID;
-    }
-
-    return copy;
-}
 
 /*
  * The name of a fault kind. Section 16.1's list, in the words a person
@@ -110,73 +90,51 @@ fault_name(uint32_t kind)
     }
 }
 
-/* A name into a namespace entry, which is a fixed slot. */
-static void
-strncpy_slot(char *dst, const char *src)
-{
-    unsigned int i;
 
-    for (i = 0; i + 1 < SYS_NS_NAME_MAX && src[i] != '\0'; i++) {
-        dst[i] = src[i];
-    }
-    dst[i] = '\0';
-}
-
-/*
- * Pass a name on with the handle it belongs to. The shell holds its own
- * namespace under names its parent chose, so what it gives a child is
- * what it was given: it does not invent a mount point and does not drop
- * one.
- */
-static void
-name_entry(sys_ns_spec_t *e, sys_ns_id_t id)
-{
-    unsigned int slots = ns_slots();
-    unsigned int i;
-
-    for (i = 0; i < slots; i++) {
-        sys_ns_id_t got;
-
-        ns_slot(i, &got, NULL);
-        if (got != id) {
-            continue;
-        }
-        strncpy_slot(e->name, ns_name(i));
-        return;
-    }
-
-    e->name[0] = '\0';
-}
 
 static sys_err_t
 run(int argc, char **argv, int32_t *status)
 {
-    sys_ns_spec_t ns[2];
+    sys_ns_spec_t ns[SYS_NS_MAX];
+    const char *only[1];
+    ns_how_t how = NS_SHARE;
     sys_handle_t child, done;
-    uint32_t nns = 0;
+    unsigned int nns = 0;
     uint32_t state;
     sys_err_t err;
 
     /*
-     * Named, because a child that is handed a directory and not told
-     * where it sits cannot write a path to anything in it. Section 20.4:
-     * the namespace is the set of handles a process was given with names
-     * attached, and attaching them is the parent's job. The shell passes
-     * on what it holds under the names it holds them under, which is
-     * NS_SHARE; choosing differently is what the later stages are for.
+     * Two words in front of a command choose what it is launched with.
+     * Section 20.4 says composition is a choice about what array to
+     * pass, and this is a shell making that choice out loud: `alone`
+     * hands over nothing, `only <name>` hands over one entry, and a bare
+     * command hands over everything this shell holds.
+     *
+     * They are not builtins in any deeper sense. Nothing in the kernel
+     * knows they exist and nothing in the library does either; they
+     * decide which of three arrays is built.
      */
-    memset(ns, 0, sizeof(ns));
-    ns[nns].id = SYS_NS_CONSOLE;
-    ns[nns].handle = share(ns_lookup(SYS_NS_CONSOLE));
-    if (ns[nns].handle != SYS_HANDLE_INVALID) {
-        name_entry(&ns[nns], SYS_NS_CONSOLE);
-        nns++;
+    if (argc >= 2 && strncmp(argv[0], "alone", 6) == 0) {
+        how = NS_NEW;
+        argv++;
+        argc--;
+    } else if (argc >= 3 && strncmp(argv[0], "only", 5) == 0) {
+        how = NS_CLONE;
+        only[0] = argv[1];
+        argv += 2;
+        argc -= 2;
     }
-    ns[nns].id = SYS_NS_ROOT;
-    ns[nns].handle = share(ns_lookup(SYS_NS_ROOT));
-    if (ns[nns].handle != SYS_HANDLE_INVALID) {
-        name_entry(&ns[nns], SYS_NS_ROOT);
-        nns++;
+
+    /*
+     * Attenuated on the way down, per section 7: a child may send on
+     * these connections and hand them to its own children, and may
+     * not mint another. What it cannot do is duplicate one, which
+     * means it cannot compose a namespace of its own from them.
+     */
+    err = ns_compose(how, only, 1, SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER,
+      ns, SYS_NS_MAX, &nns);
+    if (err != SYS_OK) {
+        return err;
     }
 
     err = sys_proc_spawn(argv[0], SYS_PRIO_INHERIT, ns, nns,

@@ -2348,7 +2348,7 @@ caller stays correct. It is beside the copy. An open that succeeds and
 hands back no handle is also refused now, rather than left to fail on the
 first read where it would look like the file going away.
 
-**4. Composition at spawn.** What a parent hands a child.
+**4. Composition at spawn.** *Built.* What a parent hands a child.
 
 - `NS_SHARE`, `NS_CLONE` and `NS_NEW` as a choice of what array to pass,
   which is what section 20.4 says they are.
@@ -2357,6 +2357,51 @@ first read where it would look like the file going away.
 *Check.* The milestone's own clause: two programs see different views of
 the same underlying handles, from one shell, with no kernel involvement.
 A program launched with `NS_NEW` can name nothing and says so.
+
+The shell is handed one filesystem under two names, `/` and `/files`, so
+that different views of the same handles is a fact rather than a
+rearrangement of words. Two words in front of a command choose what it is
+launched with, and the recorded session now shows all three:
+
+```
+$ namespace
+namespace: id 3 has no name
+namespace: / is id 1
+namespace: /files is id 4096
+$ only / namespace
+    namespace exited with status 1
+$ alone namespace
+    namespace exited with status 0
+$ cat /files/motd
+served from outside the kernel
+```
+
+`cat /files/motd` and `cat /motd` are the same file down two paths, which
+is the clause. Making `NS_CLONE` keep everything, or `NS_NEW` hand over
+what the parent holds, fails the session.
+
+**A program given nothing cannot say so, and that is the better answer.**
+The clause expected it to report an empty namespace. It cannot: saying
+anything needs a console, and a console is a namespace entry like any
+other, so a process handed nothing has no way to tell anyone. What it has
+is an exit status, which is how it says so and is what the check reads.
+The wording was written before the thing existed and the thing is more
+honest than the wording.
+
+**Composition is a library function and not a mechanism.** Section 20.4
+says these are choices about what array to pass, and the file is thirty
+lines of loop: walk this process's own entries, keep the ones the caller
+wants, duplicate the handles because spawn moves them. Nothing in the
+kernel knows the three names exist. Neither does the shell's parser, in
+any deeper sense than deciding which of three arrays to build.
+
+**The rights are the caller's and not the library's.** The first version
+duplicated with the right to duplicate, which quietly widened what the
+shell hands out: the shell had been stripping that on purpose, so that a
+child may use a connection and pass it on but not compose a namespace of
+its own from it. A library that chooses attenuation for its callers is a
+library that undoes their policy, so the rights are a parameter and the
+shell still strips what it stripped.
 
 **5. Union directories.** One prefix, several handles, in order.
 

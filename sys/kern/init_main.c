@@ -1311,7 +1311,7 @@ static void
 shell_checks(sys_handle_t console, sys_handle_t root)
 {
     struct sys_op_dup_args dup;
-    sys_ns_spec_t ns[2];
+    sys_ns_spec_t ns[3];
     struct child c;
     int32_t code;
 
@@ -1341,8 +1341,26 @@ shell_checks(sys_handle_t console, sys_handle_t root)
     ns[1].handle = dup.out_handle;
     strncpy_ns(ns[1].name, "/");
 
+    /*
+     * And the same directory again, under a second name. Section 20.4's
+     * clause is that two processes see different views assembled from
+     * the same underlying handles, and this is what makes that
+     * demonstrable rather than a rearrangement of words: one filesystem,
+     * reachable as `/` and as `/files`, and a child given one of those
+     * names sees one of them.
+     */
+    memset(&dup, 0, sizeof(dup));
+    dup.new_rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
+      SYS_RIGHT_TRANSFER;
+    expect("the same directory under a second name",
+      run(SYS_OP_HANDLE_DUP, root, &dup, sizeof(dup)), SYS_OK);
+    ns[2].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 0);
+    ns[2].handle = dup.out_handle;
+    strncpy_ns(ns[2].name, "/files");
+
+
     sched_defer();
-    child_watch(&c, proc_spawn_image("sh", 20, ns, 2, NULL, 0));
+    child_watch(&c, proc_spawn_image("sh", 20, ns, 3, NULL, 0));
     sched_undefer();
 
     /*

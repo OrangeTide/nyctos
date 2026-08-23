@@ -11,8 +11,22 @@ $ cat /nothing
 cat: /nothing: no such file
     cat exited with status 3
 [3]
+$ namespace
+namespace: id 3 has no name
+namespace: / is id 1
+namespace: /files is id 4096
+    namespace exited with status 2
+[2]
+$ only / namespace
+    namespace exited with status 1
+[1]
+$ alone namespace
+    namespace exited with status 0
+$ cat /files/motd
+served from outside the kernel
+    cat exited with status 0
 $ last
-3
+0
 $ exit
     sh exited with status 0
     the shell exited with status 0
