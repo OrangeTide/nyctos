@@ -42,6 +42,36 @@
 #define FS_OP_CLOSE     11
 #define FS_OP_BATCH     12
 
+
+/*
+ * What a walk carries, and the one rule a server must enforce itself.
+ *
+ * The name is relative to the connection the request arrives on, and may
+ * have several components in it. Section 20.3 has the C library reduce
+ * `.` and `..` lexically before it chooses which handle to send to, and
+ * that rule is not a security measure: it exists so that a path crossing
+ * a namespace boundary reaches the right server, because a server cannot
+ * see the boundary above itself and could only refuse.
+ *
+ * **A server must refuse to resolve above the root of the subtree its
+ * channel represents.** That is this rule, and it is the backstop for a
+ * client that builds its own messages rather than calling the library. A
+ * program is entitled to do that and gains nothing by it, because it
+ * still holds only the handles it was given; what it must not gain is
+ * reach above the one it is using, which is why the refusal is the
+ * server's to make and not the library's.
+ *
+ * It is a rule about a channel's own scope, so a server needs to know
+ * nothing about any client's namespace to enforce it: no component of a
+ * name may be `..`, whatever the server's own shape is. A server that
+ * implements physical parent links applies the same check to its own
+ * walk, per section 20.3, because lexical and physical resolution
+ * diverge where a name is bound to a directory elsewhere.
+ *
+ * The refusal is SYS_ERR_PERM_DENIED and deliberately not SYS_ERR_NO_ENT.
+ * A client that is told a name does not exist will look for it somewhere
+ * else; a client that is told it may not ask has learned the true thing.
+ */
 #define FS_NAME_MAX     24
 
 /* Request, carried in the inline payload of a message. */

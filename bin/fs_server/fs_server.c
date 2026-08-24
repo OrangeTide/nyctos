@@ -67,6 +67,32 @@ static const struct {
 #define FS_NODE_COUNT   (sizeof(fs_nodes) / sizeof(fs_nodes[0]))
 
 /*
+ * Whether any component of a name is `..`, which is the one thing a
+ * server must refuse whatever its own shape is. See sys/sys/fs.h.
+ */
+static int
+climbs_out(const char *name, uint32_t namelen)
+{
+    uint32_t i = 0;
+
+    while (i < namelen) {
+        uint32_t start = i;
+
+        while (i < namelen && name[i] != '/') {
+            i++;
+        }
+        if (i - start == 2 && name[start] == '.' && name[start + 1] == '.') {
+            return 1;
+        }
+        while (i < namelen && name[i] == '/') {
+            i++;
+        }
+    }
+
+    return 0;
+}
+
+/*
  * Resolve one name under this connection's node. A walk that would leave
  * the subtree the connection represents is refused here rather than
  * anywhere else, per section 25.3: it is a rule about the connection's own
@@ -156,8 +182,23 @@ do_walk(sys_handle_t chan, const fs_request_t *req, uint32_t node,
 {
     sys_handle_t conn;
     uint32_t found;
+    uint32_t len;
 
-    found = walk(node, req->fr_name, name_len(req->fr_name));
+    len = name_len(req->fr_name);
+
+    /*
+     * Before anything is looked up, and refused rather than missed.
+     * This is section 20.3's backstop, the rule a server owes a
+     * client that builds its own messages: it may not reach above
+     * the root of the subtree this connection represents. See
+     * sys/sys/fs.h for why the refusal is this server's to make.
+     */
+    if (climbs_out(req->fr_name, len)) {
+        rep->fr_status = SYS_ERR_PERM_DENIED;
+        return;
+    }
+
+    found = walk(node, req->fr_name, len);
     if (found >= FS_NODE_COUNT) {
         rep->fr_status = SYS_ERR_NO_ENT;
         return;

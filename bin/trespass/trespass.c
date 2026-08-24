@@ -38,6 +38,18 @@ static char buf[256];
  * Ask for a file's bytes into a named address. Everything but the buffer
  * is what any client would send.
  */
+/*
+ * What the server said, as opposed to whether the message arrived. A
+ * refusal by a server is a status in the reply; a refusal by the kernel
+ * is the send failing. This program provokes both and has to tell them
+ * apart.
+ */
+static sys_err_t
+status_of(const sys_msg_t *reply)
+{
+    return ((const fs_reply_t *)reply->inline_data)->fr_status;
+}
+
 static sys_err_t
 read_into(sys_handle_t target, uintptr_t addr, uint32_t len)
 {
@@ -157,6 +169,74 @@ main(void)
         return 7;
     }
 
+
+
+    /*
+     * And a walk that climbs out of the subtree the connection stands
+     * for, sent by hand rather than through the library.
+     *
+     * Section 20.3 puts `..` in two places for two reasons. The library
+     * reduces it lexically before choosing a handle, so that a path
+     * crossing a namespace boundary reaches the server that can answer
+     * it; that is about correctness and not about confinement. The
+     * server refuses it whatever the client did, and that is the
+     * backstop, because a program is entitled to build its own messages
+     * and this program just did.
+     *
+     * Refused rather than missing. A client told a name does not exist
+     * goes looking for it elsewhere; a client told it may not ask has
+     * been told the truth.
+     */
+    memset(&message, 0, sizeof(message));
+    message.handle = SYS_HANDLE_INVALID;
+    message.inline_len = sizeof(*req);
+    req = (fs_request_t *)message.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "..", sizeof(".."));
+    if (sys_msg_send(dir, &message, &reply) != SYS_OK ||
+      status_of(&reply) != SYS_ERR_PERM_DENIED) {
+        return 14;
+    }
+
+    /* And with something after it, which is the shape that would climb. */
+    memset(&message, 0, sizeof(message));
+    message.handle = SYS_HANDLE_INVALID;
+    message.inline_len = sizeof(*req);
+    req = (fs_request_t *)message.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "../motd", sizeof("../motd"));
+    if (sys_msg_send(dir, &message, &reply) != SYS_OK ||
+      status_of(&reply) != SYS_ERR_PERM_DENIED) {
+        return 15;
+    }
+
+    /* A name with a dot-dot in the middle of it is the same rule. */
+    memset(&message, 0, sizeof(message));
+    message.handle = SYS_HANDLE_INVALID;
+    message.inline_len = sizeof(*req);
+    req = (fs_request_t *)message.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "a/../b", sizeof("a/../b"));
+    if (sys_msg_send(dir, &message, &reply) != SYS_OK ||
+      status_of(&reply) != SYS_ERR_PERM_DENIED) {
+        return 16;
+    }
+
+    /*
+     * And one that only looks like it. A name beginning with two dots is
+     * not a `..` component, and refusing it would be refusing a file
+     * somebody is entitled to have called that.
+     */
+    memset(&message, 0, sizeof(message));
+    message.handle = SYS_HANDLE_INVALID;
+    message.inline_len = sizeof(*req);
+    req = (fs_request_t *)message.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "..quiet", sizeof("..quiet"));
+    if (sys_msg_send(dir, &message, &reply) != SYS_OK ||
+      status_of(&reply) != SYS_ERR_NO_ENT) {
+        return 17;
+    }
 
     return 0;
 }

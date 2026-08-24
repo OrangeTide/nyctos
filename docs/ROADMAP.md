@@ -2534,6 +2534,7 @@ walks, because asking is the only way to find out, and the second is not
 waste: it is the half that usually has it.
 
 **6. The root of a subtree, and the client that skips the library.**
+*Built.*
 
 - A server refusing to resolve above the root its channel represents,
   which section 20.3 calls the backstop.
@@ -2543,6 +2544,37 @@ waste: it is the half that usually has it.
 library, and is refused. That is the case the lexical rule cannot cover,
 because a program that constructs its own messages is not running the
 library's code.
+
+`trespass` sends four walks by hand: `..`, `../motd`, `a/../b`, and
+`..quiet`. The first three are refused with `SYS_ERR_PERM_DENIED` and the
+fourth is an ordinary missing file, because a name beginning with two
+dots is not a `..` component and refusing it would refuse a file somebody
+is entitled to call that. Removing the rule fails the first; making it
+match any component that starts with two dots fails the fourth.
+
+**The rule is about a channel's own scope, which is why the server can
+enforce it alone.** No component of a name may be `..`, whatever the
+server's own shape is, and that needs no knowledge of any client's
+namespace. It is in `sys/sys/fs.h` beside the operation numbers, because
+that is the file a server implementor reads, and the server's own walk
+points at it.
+
+**Refused rather than missing, and the difference is the point.** A
+client told a name does not exist looks for it somewhere else. A client
+told it may not ask has been told the truth. The same distinction the
+resolver drew for a path that climbs above the top, made again by the
+other party, for the client that did not ask the resolver.
+
+**Two places, two reasons, and neither is redundant.** The library
+reduces `..` before choosing a handle so that a path crossing a namespace
+boundary reaches the server that can answer it, which is correctness
+rather than confinement: matching the boundary first would send `../motd`
+to a server that cannot see above itself. The server refuses `..`
+whatever the client did, which is confinement rather than correctness.
+Section 20.3 says assigning the whole job to either one breaks something,
+and building both is what showed which something: with only the library
+rule, `trespass` reaches above its connection; with only the server rule,
+`/dev/../motd` reaches nothing at all.
 
 *Done when* two processes see different filesystem views assembled from the
 same underlying handles, with no kernel involvement and no ambient root
