@@ -2576,6 +2576,34 @@ and building both is what showed which something: with only the library
 rule, `trespass` reaches above its connection; with only the server rule,
 `/dev/../motd` reaches nothing at all.
 
+*Reviewing it found the stage had written down a stricter rule than the
+one section 20.3 states, and called it the rule.*
+
+**Refusing every `..` is one implementation of "must not resolve above
+the root", not the rule itself.** A name like `a/../b` never leaves the
+subtree and is refused anyway. That is right for a server with one level
+and nothing to walk, and it is wrong as a statement of what a server
+owes: a server with real directories has to resolve the name and check
+where it arrived, because a client is entitled to write a path that goes
+down and comes back up. The header says the rule and then says which of
+the two ways this server takes and why, and the test case that encodes
+the strict reading says that is what it is testing.
+
+**And one refusal was standing in for two.** A `..` sent on a connection
+that names a file was answered with the refusal, when what is wrong is
+that a file has no subtree to climb out of. The connection not naming a
+place things can be found in is checked first, and a walk on a file says
+so. Nothing noticed when that ordering was removed, because no test sent
+anything to a file connection; one does now, and it fails when the order
+goes back.
+
+*A note on breaking things to check them.* The first attempt to break the
+ordering edited the wrong line: the same condition appears in the walk
+itself and in the handler above it, and disabling the first left the
+second doing the work. The check passed, which looked like the ordering
+not mattering and was the experiment not having been performed. Both
+occurrences look identical and only their next line differs.
+
 *Done when* two processes see different filesystem views assembled from the
 same underlying handles, with no kernel involvement and no ambient root
 anywhere.

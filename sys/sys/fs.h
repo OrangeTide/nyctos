@@ -62,11 +62,22 @@
  * server's to make and not the library's.
  *
  * It is a rule about a channel's own scope, so a server needs to know
- * nothing about any client's namespace to enforce it: no component of a
- * name may be `..`, whatever the server's own shape is. A server that
- * implements physical parent links applies the same check to its own
- * walk, per section 20.3, because lexical and physical resolution
- * diverge where a name is bound to a directory elsewhere.
+ * nothing about any client's namespace to enforce it.
+ *
+ * How to enforce it is the server's choice, and the two ways are not the
+ * same rule. A server with no hierarchy to speak of refuses any name
+ * with a `..` component in it, which is simple, needs no walk, and is
+ * stricter than the rule: `a/../b` never leaves the subtree and is
+ * refused anyway. A server with real directories may instead resolve the
+ * name and check that where it arrived is at or below its own root,
+ * which is what the rule actually says and what a hierarchy needs, since
+ * a client is entitled to write a path that goes down and comes back up.
+ *
+ * The one this tree has takes the strict route because it has one level
+ * and nothing to walk. Section 20.3 adds that a server implementing
+ * physical parent links must apply its root check to the physical walk,
+ * because lexical and physical resolution diverge where a name is bound
+ * to a directory elsewhere in the tree.
  *
  * The refusal is SYS_ERR_PERM_DENIED and deliberately not SYS_ERR_NO_ENT.
  * A client that is told a name does not exist will look for it somewhere

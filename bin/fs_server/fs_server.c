@@ -187,11 +187,23 @@ do_walk(sys_handle_t chan, const fs_request_t *req, uint32_t node,
     len = name_len(req->fr_name);
 
     /*
-     * Before anything is looked up, and refused rather than missed.
-     * This is section 20.3's backstop, the rule a server owes a
-     * client that builds its own messages: it may not reach above
-     * the root of the subtree this connection represents. See
-     * sys/sys/fs.h for why the refusal is this server's to make.
+     * Not a directory before not permitted. A file connection has no
+     * subtree to climb out of, so answering a `..` on one with a
+     * refusal would be the right answer to a question nobody asked:
+     * what is wrong is that this connection does not name a place
+     * things can be found in.
+     */
+    if (node >= FS_NODE_COUNT || fs_nodes[node].data != NULL) {
+        rep->fr_status = SYS_ERR_NO_ENT;
+        return;
+    }
+
+    /*
+     * And then the backstop of section 20.3, before anything is
+     * looked up: a client may not reach above the root of the
+     * subtree this connection represents. See sys/sys/fs.h for why
+     * the refusal is this server's to make and why refusing every
+     * `..` is stricter than the rule.
      */
     if (climbs_out(req->fr_name, len)) {
         rep->fr_status = SYS_ERR_PERM_DENIED;

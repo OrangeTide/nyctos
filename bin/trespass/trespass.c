@@ -210,7 +210,13 @@ main(void)
         return 15;
     }
 
-    /* A name with a dot-dot in the middle of it is the same rule. */
+    /*
+     * A dot-dot in the middle, which never leaves the subtree and is
+     * refused anyway. That is this server being stricter than the
+     * rule rather than the rule: it has one level and nothing to
+     * walk, so refusing every `..` costs it nothing. A server with
+     * real directories would resolve this and check where it landed.
+     */
     memset(&message, 0, sizeof(message));
     message.handle = SYS_HANDLE_INVALID;
     message.inline_len = sizeof(*req);
@@ -236,6 +242,25 @@ main(void)
     if (sys_msg_send(dir, &message, &reply) != SYS_OK ||
       status_of(&reply) != SYS_ERR_NO_ENT) {
         return 17;
+    }
+
+
+    /*
+     * And the same name on a connection that is a file rather than a
+     * directory. A file has no subtree to climb out of, so the true
+     * answer is that this connection does not name a place things can be
+     * found in, and not that the client may not ask. Two refusals that
+     * would otherwise be one.
+     */
+    memset(&message, 0, sizeof(message));
+    message.handle = SYS_HANDLE_INVALID;
+    message.inline_len = sizeof(*req);
+    req = (fs_request_t *)message.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "..", sizeof(".."));
+    if (sys_msg_send(file, &message, &reply) != SYS_OK ||
+      status_of(&reply) != SYS_ERR_NO_ENT) {
+        return 18;
     }
 
     return 0;
