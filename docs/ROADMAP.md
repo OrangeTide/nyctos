@@ -195,10 +195,44 @@ and most of the rest is the process pool. Both pools are sized by the
 boot check sequence rather than by a workload, because nothing is reaped
 until M7.
 
-What does not exist: driver cohorts, multicore, per-process namespaces,
-the submission engine, and anything at all to do with death. Nothing is
-reaped, nothing is cancelled, no address space is ever torn down, and a
-rendezvous still carries no deadline.
+**Milestone 5 is done: there are paths, and no absolute ones.** A process
+receives its namespace at launch as a set of directory handles with names
+attached, and resolves a path against it in the C library. Nothing asks
+the kernel: the resolver is string handling over a table the process was
+given, so a name that matches no entry reaches nothing at all and there
+is no root anywhere that everyone has.
+
+```
+$ namespace
+namespace: / is id 1
+namespace: /files is id 4096
+namespace: /u is id 4097
+namespace: /u is id 4098
+$ cat /files/motd
+served from outside the kernel
+$ only / namespace
+    namespace exited with status 1
+$ alone namespace
+    namespace exited with status 0
+```
+
+`/` and `/files` are one filesystem under two names, and `/u` is two
+directories under one name, tried in order, which is a union. What a
+child is launched with is a choice the shell makes: everything it holds,
+a named subset, or nothing at all, which is `NS_SHARE`, `NS_CLONE` and
+`NS_NEW` and is thirty lines of library rather than a mechanism.
+
+Dot-dot is handled in two places for two reasons and neither is
+redundant. The library reduces it before choosing a handle, so a path
+crossing a namespace boundary reaches the server that can answer it. The
+server refuses it whatever the client did, because a program may build
+its own messages and must not thereby reach above the connection it is
+using.
+
+What does not exist: driver cohorts, multicore, the submission engine,
+and anything at all to do with death. Nothing is reaped, nothing is
+cancelled, no address space is ever torn down, and a rendezvous still
+carries no deadline.
 ---
 
 ## 2. How This Plan Is Organised
@@ -2160,7 +2194,6 @@ is the one that is still possible to fail: a name with no terminator in
 its slot is refused rather than truncated, because half a mount point
 resolves to something other than what the parent meant.
 
-
 *Reviewing it found three defects, and one of them was in the record of
 the stage rather than in the stage.*
 
@@ -2236,7 +2269,6 @@ cannot write a relative path at all, and there is deliberately no
 fallback: falling back to the shortest entry would reintroduce the
 ambient root section 20.3 removed, by the back door and under another
 name.
-
 
 *Reviewing it found three defects, all of them one answer standing for
 two questions.*
@@ -2314,7 +2346,6 @@ root to fall back on. `cat /` fails, because a path that lands exactly on
 a mount point names a handle the process already holds. Both are correct
 and neither is friendly, and the first is a composition decision the
 shell has not made yet rather than a resolver limitation.
-
 
 *Reviewing it found four defects, and two of them were the stage saying
 something that was not so.*
@@ -2634,9 +2665,15 @@ entries is a build-time bound like every other bound here, and a program
 handed nine gets an error at spawn rather than a truncated namespace it
 cannot tell from a complete one.
 
-*Size.* Medium. Mostly library and programs, but the first stage changes
-the startup record, which is kernel and both tiers, so it does not block
-nothing and cannot move as freely as this entry used to claim.
+*Size.* Medium, and spent. Six stages, of which the resolver and the
+composer are most of the code and the first is the one that changed an
+interface the kernel writes. Mostly library and programs, but not the
+"blocks nothing and can move" this entry claimed before it was planned.
+
+**Done.** Section 8 says what it answered, what it cost, and what it left
+untested. The question is answered: a system with no absolute paths is
+usable, the complexity moved into the library, and it moved once rather
+than per program.
 
 ### M6. Driver Cohorts
 
@@ -3252,7 +3289,122 @@ end of the read-only part. The linker aligns those to the same page today
 because no program here has a `.data` section. The archive carrying a
 layout rather than a size is what would fix it.
 
-## 8. Bring-Up Order Within M1
+## 8. Milestone 5, in Retrospect
+
+M5 asked whether a system with no absolute paths is usable by ordinary
+programs, or whether the complexity simply moves into the C library and
+gets worse there. It is the second of the two provisional mechanisms, and
+this is what it settled, what it cost, and what it left alone.
+
+### 8.1 The Question
+
+**Is a system with no absolute paths usable, or does the complexity move
+into libc and get worse?** It is usable, the complexity did move, and the
+number that matters is that it moved once rather than per program.
+
+The evidence the entry asked for was the utilities. `cat` was a hundred
+and twenty-two lines, of which about fifty were message building, because
+the only way to name a file was to send a walk to the one directory it
+had been handed. It is eighty-seven lines now and none of them are
+protocol. Its binary went from 6710 bytes to 8514, so what it stopped
+carrying was smaller than what the library carries for it, and the shell
+grew by about a kilobyte for the same reason.
+
+The other half of the question is what a program that never names
+anything pays. `status` is 3837 bytes before and after, to the byte: the
+library is an archive, and a program that opens nothing links neither the
+resolver nor the file layer nor the composer. That is the whole answer to
+"does it get worse there". It got bigger there, once, for the programs
+that wanted it.
+
+**So section 20 stands.** Nothing in it needed changing, and section 25
+needed nothing either: a walk carries a handle and a relative name
+because a message to a server cannot carry anything else, and the only
+thing that changed is where the name comes from. The claim that
+resolution costs no system call is a file that includes `<ns.h>` and
+`<string.h>`.
+
+**What did change is a decision that was written down against this.** The
+startup record argued for a table keyed by number, because a string-keyed
+one costs a name buffer per entry. That was right while an entry was a
+role a parent and child agreed on and wrong for a mount table, and the
+milestone re-decided it and rewrote the comment rather than leaving the
+two contradicting each other.
+
+### 8.2 What It Cost
+
+Thirteen commits, twenty-five files, about 2100 lines added and 150
+removed. Roughly 830 of those are the library, of which the resolver, the
+file layer and the composer are 645; the rest is the kernel carrying
+names through spawn, two new programs, and the documents.
+
+Kernel object memory did not move, because the milestone added no pools.
+What moved is the boot check sequence: 42 of 48 processes at Tier 2
+against 32 before it, because six of the thirteen commits added a program
+or a case that spawns one, and nothing is reaped until M7.
+
+### 8.3 What the Building Kept Finding
+
+**One answer standing for two questions, five times.** A path too long to
+hold and a path that names nothing. An empty path and the root. A
+remainder that did not fit and a caller left holding an uninitialised
+buffer. A union hiding a broken half behind a missing file. A `..` on a
+file answered as a refusal rather than as a connection that names no
+directory. Every one of them was a place where the code was right about
+what to do and wrong about what to say, and every one of them would have
+sent somebody looking in the wrong place.
+
+**Three times, the defect was the prose rather than the code.** The
+roadmap claimed the shell handed its children a namespace before the
+shell had been taught to name anything. It claimed `cat /dev` failed
+because it was a mount point when it was not one. And it stated a
+stricter rule than section 20.3's and called it the rule. The checks kept
+passing throughout: what drifts is the sentence next to the check, and
+nothing in the suite reads sentences.
+
+**A new field in a structure fifteen callers build is fifteen wild reads
+the day it lands.** The namespace entry's name started as a pointer,
+which is what a caller would write, and the machine stopped in the boot
+checks dereferencing a handle value. Putting the name inside the entry
+removed the pointer, removed the obligation to check it, and made an
+uninitialised entry a wrong name rather than a wild read.
+
+**A library that chooses attenuation for its callers undoes their
+policy.** The composer duplicated handles with the right to duplicate,
+silently widening what the shell hands out, and the shell had been
+stripping that on purpose since M3. Rights are the caller's decision.
+
+**A check written for one stage caught a later stage's regression, once.**
+The resolver's eighteen cases failed on the first run of the union work,
+because taking the nth entry that matched at all had quietly turned the
+longest-prefix rule into a first-match rule. That is the first time in
+five milestones that an older check has caught a newer defect, and it is
+an argument for checks that are tables rather than sessions.
+
+### 8.4 What Is Still Untested
+
+**A path with more than one component below a mount point.** The resolver
+produces them and the protocol carries them; the file server has one
+level and matches them against a flat table, so `a/b` fails as a name
+rather than being walked. Nothing here has subdirectories yet.
+
+**A server that resolves `..` physically.** Section 20.3 says such a
+server must apply its own root check to the physical walk, and the one
+here refuses every `..` instead, which is stricter and simpler and does
+not exercise the rule the section actually states.
+
+**A union whose half is broken** is reasoned and was checked by hand, by
+mounting a console in one, and is not in the suite: keeping it would mean
+a deliberately misconfigured namespace in the recorded session for the
+rest of the run.
+
+**Composition of a namespace holding more than one kind of handle.** A
+composer hands on one set of rights, and section 7.2 refuses rather than
+clamps a duplication asking for what a source lacks, so a namespace with
+a grant in it is composed in two calls. The wall is met on every boot and
+the second call is not written, because nothing needs it yet.
+
+## 9. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -3296,7 +3448,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 9. Ordering: What Is Forced and What Is Chosen
+## 10. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -3327,7 +3479,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 10. What Would Change This Plan
+## 11. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -3364,7 +3516,7 @@ reason, so nothing else moves.
 
 ---
 
-## 11. Deliberately Not Scheduled
+## 12. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

@@ -22,29 +22,42 @@ about.
 
 **Roughly half the kernel exists, and there is enough userland to talk
 to it.** `docs/design.md` describes the intended system and says which
-half that is. Three figures have been obtained and all three are
+half that is. Four figures have been obtained and all four are
 footprints rather than speeds; nothing has been measured for time. The
 gap between what is described and what runs is deliberate rather than
 hidden, and it narrows one stage at a time.
 
 ## Status
 
-**Milestone 4 is done: there are two protection tiers, and the same
-source builds both.** Four configurations, two architectures by two
-tiers, and `make check` runs one recorded shell session against all four.
+**Milestone 5 is done: there are paths, and no absolute ones.** A process
+receives its namespace at launch as a set of directory handles with names
+attached, and resolves a path against it in the C library. Nothing asks
+the kernel: resolution is string handling over a table the process was
+given, so a name matching no entry reaches nothing at all, and there is
+no root anywhere that everyone has.
 
 ```
-$ echo one two three
-one two three
-$ cat motd
+$ namespace
+namespace: / is id 1
+namespace: /files is id 4096
+namespace: /u is id 4097
+namespace: /u is id 4098
+$ cat /files/motd
 served from outside the kernel
-$ cat nothing
-cat: nothing: no such file
-[3]
+$ only / namespace
+    namespace exited with status 1
+$ alone namespace
+    namespace exited with status 0
 ```
 
-That session is identical on every configuration. What differs is what
-the machine notices when a program breaks a rule:
+`/` and `/files` are one filesystem under two names; `/u` is two
+directories under one name, tried in order, which is a union. What a
+child is launched with is a choice the shell makes out loud: everything
+it holds, a named subset, or nothing at all.
+
+**Milestone 4 is what that rests on: two protection tiers, from one
+source.** Four configurations, two architectures by two tiers, and the
+same recorded shell session runs against all four.
 
 ```
 $ touch_addr 40080000                         (Tier 0)
@@ -70,13 +83,10 @@ they enter the receiver and go back at the reply, so a program that
 touches its own buffer during a call faults on it. A driver holds a grant
 over its device registers rather than an address compiled into it. A
 fault is an exit with a reason, with the kind, the address and the
-instruction in the dead thread's status, which the shell reports.
-
-A page fault is the exception: it is a message the faulting thread sends
-to its pager, and the reply carries the page. That needed nothing added
-to message passing, and priority inheritance across a page fault was
-never implemented at all, it simply happens, because a faulting thread is
-an ordinary blocked sender that donates to its pager.
+instruction in the dead thread's status, which the shell reports. A page
+fault is the exception: it is a message the faulting thread sends to its
+pager, and priority inheritance across it was never implemented, it
+simply happens, because a faulting thread is an ordinary blocked sender.
 
 Underneath all of it: static object pools, threads and the context
 switch, a strict-priority scheduler with priority inheritance,
@@ -92,20 +102,22 @@ rather than a hole in the capability model.
 like a person typing and once as a burst like a pipe, and compares the
 transcript against a recorded one.
 
-What does not exist: driver cohorts, multicore, per-process namespaces,
-the submission engine, and everything to do with death. Nothing is
-reaped, nothing is cancelled, no address space is ever torn down, and a
-rendezvous carries no deadline, so a server that stops answering hangs
-its client rather than failing it.
+What does not exist: driver cohorts, multicore, the submission engine,
+and everything to do with death. Nothing is reaped, nothing is cancelled,
+no address space is ever torn down, and a rendezvous carries no deadline,
+so a server that stops answering hangs its client rather than failing it.
 
-Three figures have been obtained, and all three are footprints rather
-than speeds. Kernel object memory is 504896 bytes, of which 360960 is
-thread stacks; both pools that dominate it are sized by the boot check
-sequence rather than by a workload, because nothing is reaped yet. Having
-no wait-set costs this system one thread, the console's second, at eight
-and a half kilobytes with both its stacks. And an address space costs a
-handful of frames per process, because the kernel is mapped into each one
-rather than shared between them.
+Four figures have been obtained, and all four are footprints rather than
+speeds. Kernel object memory is 504896 bytes, of which 360960 is thread
+stacks; both pools that dominate it are sized by the boot check sequence
+rather than by a workload, because nothing is reaped yet. Having no
+wait-set costs this system one thread, the console's second, at eight and
+a half kilobytes with both its stacks. An address space costs a handful
+of frames per process, because the kernel is mapped into each one rather
+than shared between them. And naming costs about two kilobytes in a
+program that opens files and nothing at all in one that does not:
+`status` is 3837 bytes with and without the whole of section 20 in the
+library beside it.
 
 `docs/ROADMAP.md` says what each milestone answered, what it cost, and what
 it left untested.
@@ -242,7 +254,7 @@ is the userland libraries, `bin` is the userland programs, `include` is the
 headers those programs compile against, and `share/mk` holds the make
 fragments that tie it all together.
 
-`bin` holds seventeen programs: the shell, its utilities, the console
+`bin` holds nineteen programs: the shell, its utilities, the console
 driver, the filesystem server, and the ones written to break a rule on
 purpose. `lib` builds the C library they link against.
 
@@ -259,6 +271,9 @@ purpose. `lib` builds the C library they link against.
 ├── lib/
 │   ├── csu/<arch>/crt1.S    # C runtime startup
 │   └── libc/                # the C library
+│       ├── path.c            # resolving a path against a namespace
+│       ├── file.c            # opening one by name
+│       └── compose.c         # what to hand a child
 └── sys/                     # the kernel
     ├── sys/
     │   ├── config.h         # build-time pool sizes and the tier switch
@@ -448,11 +463,11 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is namespaces:
-path resolution as ordinary library code walking a table the process was
-handed, so that two processes see different filesystem views assembled
-from the same underlying handles, with no kernel involvement and no
-ambient root anywhere.
+See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is driver
+cohorts: a shared protection domain for a set of processes that must
+exchange buffers without copying, which is the third and last of the
+provisional mechanisms and the one most likely to be deleted rather than
+built.
 
 The ordering that got here is in the same file, along with what each
 milestone answered and what it left untested. The one choice most likely
