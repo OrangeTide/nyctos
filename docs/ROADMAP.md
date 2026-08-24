@@ -2495,6 +2495,44 @@ table, `/dev/console` went to `/`. It is two passes now, one to find the
 longest name that matches and one to count entries carrying it, and the
 resolver's own eighteen cases caught it immediately.
 
+*Reviewing it found one defect and confirmed two properties nobody had
+asked about.*
+
+**A union hid a broken half behind a missing file.** Every failure from a
+candidate moved on to the next, and when none answered the caller was
+told the name was not there. Those are different questions. A name in
+none of three directories is missing; a name in none of two because the
+third could not be asked is a namespace with something wrong in it, and
+telling a person the first when the second happened sends them looking in
+the wrong place. What comes back now is the first failure that was not a
+directory saying it did not have the file, and `cat` says which of the
+two it met.
+
+Verified by hand rather than by the suite: a third half was added to the
+union, a console connection, which answers a walk with
+`SYS_ERR_NOT_SUPPORTED` because it is not a directory and never claimed
+to be. With the distinction in place `cat /u/absent` says it cannot be
+reached, and without it says there is no such file. It is not kept,
+because keeping it means a deliberately misconfigured namespace in the
+recorded session for the rest of the run, and the thing being
+demonstrated is what happens when a person makes that mistake rather than
+that the system can be made to make it.
+
+*Two things that turned out to hold without being designed for.* A union
+survives composition: `only /u` keeps both entries, because `NS_CLONE`
+filters on the name and both halves have it, so a child gets the whole
+union or none of it. And a working directory named the same as the root
+is a union with it, which is what any two entries at one name are; the
+handles are the same directory there, so nothing observable follows, but
+it is worth knowing that the rule has no special case for the entry a
+relative path is measured from.
+
+*And one thing the check's wording could be read as claiming.* "Fails
+once rather than twice" is about what the caller is told, not about what
+is sent. A union with two halves that do not have the file sends two
+walks, because asking is the only way to find out, and the second is not
+waste: it is the half that usually has it.
+
 **6. The root of a subtree, and the client that skips the library.**
 
 - A server refusing to resolve above the root its channel represents,

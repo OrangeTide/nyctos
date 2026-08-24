@@ -50,9 +50,20 @@ main(int argc, char **argv)
         printf("cat: %s: that is a mount point\n", argv[1]);
         return 2;
     }
-    if (err != SYS_OK) {
+    if (err == SYS_ERR_NO_ENT) {
         printf("cat: %s: no such file\n", argv[1]);
         return 3;
+    }
+    if (err != SYS_OK) {
+        /*
+         * Something other than the file not being there. With a
+         * union that is usually a half of it that could not be
+         * asked, and telling a person their file is missing when
+         * their namespace is broken sends them looking in the
+         * wrong place.
+         */
+        printf("cat: %s: cannot be reached\n", argv[1]);
+        return 5;
     }
 
     for (;;) {

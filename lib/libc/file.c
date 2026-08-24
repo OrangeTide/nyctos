@@ -82,6 +82,7 @@ file_open(const char *path, sys_handle_t *out)
     sys_handle_t dir;
     sys_msg_t reply;
     unsigned int nth;
+    sys_err_t stumbled = SYS_ERR_NO_ENT;
     sys_err_t err = SYS_ERR_NO_ENT;
 
     if (out == NULL) {
@@ -103,7 +104,17 @@ file_open(const char *path, sys_handle_t *out)
     for (nth = 0; ; nth++) {
         err = ns_resolve_at(path, nth, &dir, rest, sizeof(rest));
         if (err != SYS_OK) {
-            return nth == 0 ? err : SYS_ERR_NO_ENT;
+            /*
+             * Out of candidates. What comes back is the first thing
+             * that went wrong other than a directory not having the
+             * file, because those are different questions: a name
+             * that is in none of three directories is missing, and a
+             * name that is in none of two because the third could
+             * not be asked is a namespace with something wrong in
+             * it. Reporting the second as the first tells a program
+             * its file does not exist when its mount is broken.
+             */
+            return nth == 0 ? err : stumbled;
         }
 
         /*
@@ -134,6 +145,9 @@ file_open(const char *path, sys_handle_t *out)
         err = request(dir, FS_OP_WALK, rest, 0, 0, &reply);
         if (err == SYS_OK) {
             break;
+        }
+        if (err != SYS_ERR_NO_ENT && stumbled == SYS_ERR_NO_ENT) {
+            stumbled = err;
         }
     }
 
