@@ -81,52 +81,67 @@ file_open(const char *path, sys_handle_t *out)
     char rest[NS_PATH_MAX];
     sys_handle_t dir;
     sys_msg_t reply;
-    sys_err_t err;
+    unsigned int nth;
+    sys_err_t err = SYS_ERR_NO_ENT;
 
     if (out == NULL) {
         return SYS_ERR_INVALID_ARG;
     }
 
-    err = ns_resolve(path, &dir, rest, sizeof(rest));
-    if (err != SYS_OK) {
-        return err;
-    }
-
     /*
-     * A path that names a mount point exactly names a handle this
-     * process already holds, and there is nothing to walk to.
+     * Every handle mounted at the name, in the order the parent wrote
+     * them, until one answers. That is a union directory and this loop is
+     * all of it: section 20.4 says it needs no kernel involvement, and
+     * what it needs instead is a caller willing to ask twice.
      *
-     * Refused rather than handed back, and the reason is ownership
-     * rather than type. The handle is the process's own namespace
-     * entry: returning it would give a caller something that closing
-     * would close the mount, and a program that opened its own root
-     * twice would lose it. What a mount point is for is resolving
-     * paths below it.
+     * What comes back is one failure rather than one per handle. Which
+     * of them did not have the file is this loop's business and not the
+     * caller's, and a program told that a name was missing from three
+     * directories has learned about the namespace rather than about the
+     * name.
      */
-    if (rest[0] == '\0') {
-        return SYS_ERR_WRONG_TYPE;
+    for (nth = 0; ; nth++) {
+        err = ns_resolve_at(path, nth, &dir, rest, sizeof(rest));
+        if (err != SYS_OK) {
+            return nth == 0 ? err : SYS_ERR_NO_ENT;
+        }
+
+        /*
+         * A path that names a mount point exactly names a handle this
+         * process already holds, and there is nothing to walk to.
+         *
+         * Refused rather than handed back, and the reason is ownership
+         * rather than type. The handle is the process's own namespace
+         * entry: returning it would give a caller something that closing
+         * would close the mount, and a program that opened its own root
+         * twice would lose it. What a mount point is for is resolving
+         * paths below it.
+         */
+        if (rest[0] == '\0') {
+            return SYS_ERR_WRONG_TYPE;
+        }
+
+        /*
+         * The protocol's name is shorter than a path the resolver will
+         * hold, which is a real bound and not a library one: a name too
+         * long for the message cannot be sent, and truncating it would
+         * open a different file.
+         */
+        if (strlen(rest) + 1 > FS_NAME_MAX) {
+            return SYS_ERR_INVALID_ARG;
+        }
+
+        err = request(dir, FS_OP_WALK, rest, 0, 0, &reply);
+        if (err == SYS_OK) {
+            break;
+        }
     }
 
     /*
-     * The protocol's name is shorter than a path the resolver will hold,
-     * which is a real bound and not a library one: a name too long for
-     * the message cannot be sent, and truncating it would open a
-     * different file.
-     */
-    if (strlen(rest) + 1 > FS_NAME_MAX) {
-        return SYS_ERR_INVALID_ARG;
-    }
-
-    err = request(dir, FS_OP_WALK, rest, 0, 0, &reply);
-    if (err != SYS_OK) {
-        return err;
-    }
-
-    /*
-     * A walk that says it worked and hands back nothing is a server
-     * this library cannot use. Reported here rather than left to
-     * fail on the first read, where it would look like the file
-     * going away rather than never having been opened.
+     * A walk that says it worked and hands back nothing is a server this
+     * library cannot use. Reported here rather than left to fail on the
+     * first read, where it would look like the file going away rather
+     * than never having been opened.
      */
     if (reply.handle == SYS_HANDLE_INVALID) {
         return SYS_ERR_STALE;

@@ -29,19 +29,39 @@
 #include <unistd.h>
 #include <sys/fs.h>
 
+/*
+ * Two directories, not one.
+ *
+ * A server serving one tree is a server that cannot demonstrate what a
+ * union directory is, and section 20.4 makes a union a library feature
+ * needing no kernel involvement: several handles under one name, tried in
+ * order. Two directories from one server is the smallest thing that shows
+ * it, and is honest about what a union actually joins, which is
+ * directories rather than servers. Which one a connection sees is its
+ * cookie, which is section 25.2's per-connection state and is chosen by
+ * whoever minted the connection.
+ *
+ * `motd` is in both, deliberately and with different bytes in it, because
+ * the whole of union semantics is which one wins.
+ */
 #define FS_NODE_ROOT    0
-#define FS_NODE_MOTD    1
-#define FS_NODE_ROOT    0
+#define FS_NODE_ALT     2
 
 static const char motd_text[] = "served from outside the kernel\n";
+static const char alt_motd_text[] = "and this one from the other one\n";
+static const char notes_text[] = "only the second directory has this\n";
 
 static const struct {
     const char *name;
     const char *data;
     uint32_t    len;
+    uint32_t    dir;        /* the directory this entry is in */
 } fs_nodes[] = {
-    { "/",    NULL,      0 },
-    { "motd", motd_text, sizeof(motd_text) - 1 },
+    { "/",     NULL,          0,                          FS_NODE_ROOT },
+    { "motd",  motd_text,     sizeof(motd_text) - 1,      FS_NODE_ROOT },
+    { "/",     NULL,          0,                          FS_NODE_ALT },
+    { "motd",  alt_motd_text, sizeof(alt_motd_text) - 1,  FS_NODE_ALT },
+    { "notes", notes_text,    sizeof(notes_text) - 1,     FS_NODE_ALT },
 };
 
 #define FS_NODE_COUNT   (sizeof(fs_nodes) / sizeof(fs_nodes[0]))
@@ -60,10 +80,17 @@ walk(uint32_t node, const char *name, uint32_t namelen)
 {
     uint32_t i;
 
-    if (node != FS_NODE_ROOT || namelen == 0 || namelen > FS_NAME_MAX) {
+    if (namelen == 0 || namelen > FS_NAME_MAX) {
         return FS_NODE_COUNT;
     }
-    for (i = 1; i < FS_NODE_COUNT; i++) {
+    if (node >= FS_NODE_COUNT || fs_nodes[node].data != NULL) {
+        return FS_NODE_COUNT;       /* not a directory */
+    }
+
+    for (i = 0; i < FS_NODE_COUNT; i++) {
+        if (fs_nodes[i].dir != node || fs_nodes[i].data == NULL) {
+            continue;
+        }
         if (strlen(fs_nodes[i].name) == namelen &&
           strncmp(fs_nodes[i].name, name, namelen) == 0) {
             return i;

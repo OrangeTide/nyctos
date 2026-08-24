@@ -2440,7 +2440,7 @@ root and no console, and the program runs and cannot print. That is what
 the word means and it is not a defect, but it is the shape of every
 mistake a person will make with it.
 
-**5. Union directories.** One prefix, several handles, in order.
+**5. Union directories.** *Built.* One prefix, several handles, in order.
 
 - A table entry that names more than one handle, tried in order until one
   answers.
@@ -2450,6 +2450,50 @@ mistake a person will make with it.
 *Check.* A directory that is two servers: a name only the second has is
 found, a name both have comes from the first, and a name neither has
 fails once rather than twice.
+
+All three, in the recorded session:
+
+```
+$ cat /u/motd
+served from outside the kernel
+$ cat /u/notes
+only the second directory has this
+$ cat /u/absent
+cat: /u/absent: no such file
+```
+
+`/u` is two entries with one name. The first half has `motd`, the second
+has `motd` with different bytes in it and `notes` besides, so the first
+line is the whole of union order: reversing the two entries changes what
+`cat /u/motd` prints, and the session says so. Stopping after the first
+candidate loses `notes`.
+
+**What a union joins is directories, not servers.** The check says two
+servers and the tree has one, serving two directories through connections
+whose cookie says which. That is closer to what a union is and it costs
+nothing to be accurate about: the library never learns how many servers
+are behind the handles it was given, which is the point of them being
+handles.
+
+**Only entries at the same name are in the union.** An entry with a
+shorter name is a different mount and not a fallback. Falling through to
+one would let a name reach a place the parent deliberately mounted
+something else over, which is the same mistake as falling back to the
+shortest entry when nothing matches, and section 20.1's answer is the
+same: a name is not authority, so a name that matches nothing here
+reaches nothing.
+
+**One failure comes back, not one per handle.** Which of the directories
+did not have the file is the loop's business. A program told that a name
+was missing from three places has learned about the namespace it was
+given rather than about the name it asked for.
+
+*What went wrong on the way.* The first version walked the table once,
+taking the nth entry that matched at all, which quietly turned the
+longest-prefix rule into a first-match rule: with `/` and `/dev` in the
+table, `/dev/console` went to `/`. It is two passes now, one to find the
+longest name that matches and one to count entries carrying it, and the
+resolver's own eighteen cases caught it immediately.
 
 **6. The root of a subtree, and the client that skips the library.**
 

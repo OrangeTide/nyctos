@@ -9,5 +9,8 @@ namespace
 only / namespace
 alone namespace
 cat /files/motd
+cat /u/motd
+cat /u/notes
+cat /u/absent
 last
 exit

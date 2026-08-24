@@ -85,6 +85,22 @@ const char *ns_name(unsigned int slot);
 sys_err_t ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
   size_t rest_len);
 
+/*
+ * The same, for the nth handle mounted at that name.
+ *
+ * Several entries under one name is a union directory, per section 20.4,
+ * and this is the whole of the mechanism: they are tried in the order
+ * the parent wrote them until one answers. Only entries at the same name
+ * are in the union. An entry with a shorter name is a different mount
+ * rather than a fallback, because falling through to it would let a name
+ * reach a place the parent deliberately mounted something else over.
+ *
+ * SYS_ERR_NO_ENT means there is no nth one, which is how a caller walking
+ * them knows to stop.
+ */
+sys_err_t ns_resolve_at(const char *path, unsigned int nth,
+  sys_handle_t *out_dir, char *rest, size_t rest_len);
+
 /* The name an entry with this role is mounted at, or the empty string. */
 const char *ns_name_of(sys_ns_id_t id);
 

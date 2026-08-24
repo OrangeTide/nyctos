@@ -15,9 +15,11 @@ $ namespace
 namespace: id 3 has no name
 namespace: / is id 1
 namespace: /files is id 4096
+namespace: /u is id 4097
+namespace: /u is id 4098
 namespace: cannot hand these on with those rights
-    namespace exited with status 2
-[2]
+    namespace exited with status 4
+[4]
 $ only / namespace
     namespace exited with status 1
 [1]
@@ -26,8 +28,18 @@ $ alone namespace
 $ cat /files/motd
 served from outside the kernel
     cat exited with status 0
+$ cat /u/motd
+served from outside the kernel
+    cat exited with status 0
+$ cat /u/notes
+only the second directory has this
+    cat exited with status 0
+$ cat /u/absent
+cat: /u/absent: no such file
+    cat exited with status 3
+[3]
 $ last
-0
+3
 $ exit
     sh exited with status 0
     the shell exited with status 0

@@ -819,6 +819,7 @@ high_priority_server_checks(void)
  */
 
 #define FS_NODE_ROOT    0
+#define FS_NODE_ALT     2
 
 static const char motd_text[] =
     "served from outside the kernel\n";
@@ -1244,6 +1245,10 @@ thread_checks(void)
 static sys_handle_t h_console;
 static sys_handle_t h_fs_root;
 
+/* The two halves of the union the shell is handed; see user_slice. */
+static sys_handle_t u_first;
+static sys_handle_t u_second;
+
 /*
  * A program with no ambient authority saying something to a person.
  *
@@ -1311,7 +1316,7 @@ static void
 shell_checks(sys_handle_t console, sys_handle_t root)
 {
     struct sys_op_dup_args dup;
-    sys_ns_spec_t ns[3];
+    sys_ns_spec_t ns[5];
     struct child c;
     int32_t code;
 
@@ -1358,9 +1363,23 @@ shell_checks(sys_handle_t console, sys_handle_t root)
     ns[2].handle = dup.out_handle;
     strncpy_ns(ns[2].name, "/files");
 
+    /*
+     * And both halves of the union, under one name. Section 20.4 makes
+     * this a library feature needing no kernel involvement, and from
+     * here that is visible as there being nothing to do: two entries,
+     * one name, written in the order they are to be tried.
+     */
+    ns[3].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 1);
+    ns[3].handle = u_first;
+    strncpy_ns(ns[3].name, "/u");
+    ns[4].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 2);
+    ns[4].handle = u_second;
+    strncpy_ns(ns[4].name, "/u");
+
+
 
     sched_defer();
-    child_watch(&c, proc_spawn_image("sh", 20, ns, 3, NULL, 0));
+    child_watch(&c, proc_spawn_image("sh", 20, ns, 5, NULL, 0));
     sched_undefer();
 
     /*
@@ -3200,6 +3219,30 @@ user_slice(void)
     expect("a third one, for the shell",
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     h_fs_root = cargs.out_handle;
+
+    /*
+     * And a union: two directories under one name, per section 20.4.
+     * Both are this filesystem, reached through connections whose cookie
+     * says which directory the server should show, so what is joined is
+     * two directories rather than two servers. The order is the order
+     * these are written, and it is the whole of the semantics: a name in
+     * both comes from the first.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
+      SYS_RIGHT_TRANSFER;
+    expect("a union, first half",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    u_first = cargs.out_handle;
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ALT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
+      SYS_RIGHT_TRANSFER;
+    expect("and second", 
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    u_second = cargs.out_handle;
 
     /*
      * A fourth connection, for the program that describes a buffer it

@@ -168,12 +168,12 @@ under(const char *path, const char *mount, size_t *rest_at)
 }
 
 sys_err_t
-ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
-  size_t rest_len)
+ns_resolve_at(const char *path, unsigned int nth, sys_handle_t *out_dir,
+  char *rest, size_t rest_len)
 {
     char canon[NS_PATH_MAX];
     unsigned int slots = ns_slots();
-    unsigned int i, best = 0;
+    unsigned int i, best = 0, seen = 0;
     size_t best_len = 0, best_at = 0;
     int found = 0;
     sys_err_t err;
@@ -213,27 +213,52 @@ ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
         return err;
     }
 
+    /*
+     * The longest name that matches, and then the nth entry carrying
+     * that name. Several entries at one name is a union directory, per
+     * section 20.4: they are tried in the order the parent wrote them,
+     * and only entries at the *same* name are in it. An entry with a
+     * shorter name is a different mount and not a fallback, because
+     * falling through to it would let a name reach a place the parent
+     * mounted something else over.
+     *
+     * Two passes, because the longest match is not known until the table
+     * has been walked and the first version stopped at the first entry
+     * that matched at all. All the matches for one path are prefixes of
+     * it and so are ordered by length, which is why a length is enough
+     * to identify which of them are the same mount.
+     */
     for (i = 0; i < slots; i++) {
-        const char *mount = ns_name(i);
-        size_t at, n = strlen(mount);
+        size_t at, n = strlen(ns_name(i));
 
-        /*
-         * Strictly longer wins, so two entries at the same name
-         * keep the order the parent wrote them in. That order is
-         * what a union directory means, and picking the last would
-         * make the answer depend on where in the table a name
-         * happens to sit.
-         */
-        if ((found && n <= best_len) || !under(canon, mount, &at)) {
+        if (!under(canon, ns_name(i), &at)) {
+            continue;
+        }
+        if (!found || n > best_len) {
+            found = 1;
+            best_len = n;
+        }
+    }
+    if (!found) {
+        return SYS_ERR_NO_ENT;
+    }
+
+    for (i = 0; i < slots; i++) {
+        size_t at, n = strlen(ns_name(i));
+
+        if (n != best_len || !under(canon, ns_name(i), &at)) {
+            continue;
+        }
+        if (seen++ != nth) {
             continue;
         }
         best = i;
-        best_len = n;
         best_at = at;
-        found = 1;
+        found = 2;
+        break;
     }
 
-    if (!found) {
+    if (found != 2) {
         return SYS_ERR_NO_ENT;
     }
 
@@ -244,10 +269,9 @@ ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
 
         if (n + 1 > rest_len) {
             /*
-             * Terminated even though it did not fit, because the
-             * handle is already written and a caller that checks
-             * one and not the other would send whatever was on its
-             * stack as a path.
+             * Terminated even though it did not fit, because the handle
+             * is already written and a caller that checks one and not
+             * the other would send whatever was on its stack as a path.
              */
             if (rest_len > 0) {
                 rest[0] = '\0';
@@ -258,4 +282,11 @@ ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
     }
 
     return SYS_OK;
+}
+
+sys_err_t
+ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
+  size_t rest_len)
+{
+    return ns_resolve_at(path, 0, out_dir, rest, rest_len);
 }
