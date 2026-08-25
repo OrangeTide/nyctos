@@ -3183,7 +3183,8 @@ cohort_checks(void)
     struct channel *ch;
     struct child c;
     struct proc *p;
-    sys_handle_t h_recv, to;
+    sys_handle_t h_recv, to, h_second;
+    void *obj;
     int32_t code;
     sys_err_t err;
 
@@ -3238,6 +3239,50 @@ cohort_checks(void)
 
     cnputs("    a peer read and wrote memory it was only given the "
       "address of\n");
+
+    /*
+     * And a second copy of a member that is still running is refused.
+     * peer_a is blocked in receive with its slot mapped in the shared
+     * space; loading another at the address it was linked for would
+     * write over it. This was not refused when the stage was first
+     * built, and the loader duly moved the running peer_a's slot base
+     * from one frame to another underneath it.
+     *
+     * At Tier 0 the loader's own one-copy rule answers first and this
+     * never reaches the cohort. Both refuse, both say WOULDBLOCK, and
+     * the check does not care which rule spoke, because a condition
+     * with two answers is worse than a rule stated twice.
+     *
+     * peer_b is the other case and must still be allowed: it has
+     * exited, so its place is free and a second one may have it.
+     */
+    expect("a second copy of a member that is still running",
+      proc_spawn_op(self, "peer_a", PRIO_BOOT - 1, NULL, 0, NULL, 0,
+        NULL),
+      SYS_ERR_WOULDBLOCK);
+
+    /*
+     * And the other half of the same rule. peer_b has exited, so its
+     * place is free and a second one may have it. Without this the
+     * refusal above would pass just as well if a member could never be
+     * spawned twice at all, which is a different rule and the wrong
+     * one: M7 restarts a cohort by spawning its members again.
+     *
+     * It is given nothing, so it stops at its first lookup and exits.
+     * What is being checked is that it was allowed to start.
+     */
+    sched_defer();
+    err = proc_spawn_op(self, "peer_b", PRIO_BOOT - 1, NULL, 0, NULL, 0,
+      &h_second);
+    if (err == SYS_OK &&
+      handle_lookup(&self->p_handles, h_second, SYS_OBJ_PROCESS, 0,
+        &obj) == SYS_OK) {
+        child_watch(&c, obj);
+    }
+    sched_undefer();
+    expect("a second copy of one that has exited", err, SYS_OK);
+    (void)child_join(&c, 1000);
+
 }
 
 /* The console and the directory the shell is handed, kept from the

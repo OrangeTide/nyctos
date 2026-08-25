@@ -2827,11 +2827,69 @@ flush stays because the manuals allow the case, not because anything observed
 it, and the comment in `proc_load` says so rather than implying a check stands
 behind it.
 
-*What it cost.* Two processes and two threads, which puts Tier 2 at 44 of 48
-processes and Tier 0 at 40. The address space is the same one word it always
-was, shared rather than copied, so a cohort of two costs one page table
-instead of two. The kernel grew one file of about a hundred and twenty lines
+*What it cost.* Three processes and three threads, which puts Tier 2 at 45 of
+48 processes and Tier 0 at 41. The address space is the same one word it
+always was, shared rather than copied, so a cohort of two costs one page table
+instead of two. The kernel grew one file of about a hundred and seventy lines
 and one field in `struct proc`.
+
+*Reviewing it found one defect, and it was the milestone undoing something an
+earlier one had earned.*
+
+**A cohort put back the rule that a program may have only one live copy, and
+nothing noticed.** At Tier 0 the loader copies an image to the address it was
+linked for, so a second copy of a running program writes over the first, and
+`proc_spawn_op` has refused that since the tier existed. Tier 2 ended the
+restriction rather than improving the check: an address space each makes two
+copies of one image two processes that cannot reach each other, and the
+comment on that rule says so in as many words. A cohort shares the space
+again, so for a member the hazard is back, and this stage shipped without
+noticing that the sentence it had just read no longer held.
+
+It is reachable from a shell. `peer_a` is in the boot archive, `sh` spawns any
+image in it by name, and the first `peer_a` is sitting blocked in receive with
+its slot mapped in the shared space. Instrumenting the loader showed exactly
+what the rule exists to prevent: the running `peer_a`'s slot base was frame
+0x8307b000 before the second spawn and frame 0x8327d000 after it, with the
+first process still alive. Its text, its data and its stack were replaced
+underneath it by fresh zeroed frames, and its old frames were lost. Nothing
+crashed in that run, which is the worst part. The victim was blocked in the
+kernel and never got the chance to notice.
+
+The fix is a record in the cohort of which process is running as each member,
+and a refusal when that place is taken. The place a process left by exiting is
+free again, because M7 restarts a cohort by spawning its members, and a rule
+that said "never twice" would be a different rule and the wrong one.
+
+**The refusal says `SYS_ERR_WOULDBLOCK`, which is what the loader's own rule
+has always said.** The first version added an error code for it. That was
+wrong for the reason the last two milestones keep turning up in the other
+direction: one condition should not have two answers depending on which rule
+happened to notice it. The condition is the same condition, and the answer is
+honest either way, since the request succeeds once the running copy has
+exited.
+
+*Two things the review recorded rather than fixed.*
+
+**A member cannot tell a peer's address from anyone else's.** Passing a buffer
+as a bare address is sound between members and unsound from anywhere else, and
+nothing in a message says which it is. `peer_a` is safe because the only
+connection to its channel was minted for `peer_b`, which is a fact about who
+holds handles and not about the cohort. A member serving one channel to
+members and outsiders alike would be handing the whole domain to its clients.
+Stage 5 meets this directly, because the filesystem serves clients that are
+not members and talks to a block driver that is, and it will need two channels
+rather than one. Section 18.1 now says so.
+
+**The member table holds process pointers that M7 has to clear.** Nothing is
+reaped, so nothing can reuse a process slot and the pointer cannot go stale
+today. The day reaping arrives it can, and the teardown of section 18.2 owns
+that array as much as spawn does.
+
+*Both halves of the new check were broken on purpose.* Removing the refusal
+makes the second spawn return OK and the check fails; making a place stay
+taken after its process exits makes the legitimate restart fail. Neither
+passes quietly.
 
 **2. A block driver under the filesystem.**
 

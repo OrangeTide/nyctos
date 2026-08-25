@@ -264,13 +264,17 @@ proc_place_startup(struct proc *p, uintptr_t page_pa, uintptr_t page_va)
 static sys_err_t
 proc_space_create(struct proc *p)
 {
-    struct addrspace *as;
-
-    if (p->p_cohort == NULL) {
-        return vm_as_create(&p->p_as);
+    /*
+     * A member has nothing to build. Its cohort's space was made when
+     * the first member took its place, which happened before this,
+     * because taking a place is what can be refused and nothing that
+     * can be refused should run after a frame has been spent.
+     */
+    if (p->p_cohort != NULL) {
+        return SYS_OK;
     }
 
-    return cohort_place(p->p_cohort, &as);
+    return vm_as_create(&p->p_as);
 }
 
 /*
@@ -435,6 +439,11 @@ proc_spawn_image(const char *image, uint8_t prio,
 
     /* Section 18.1, and see proc_spawn_op for why it is read here. */
     p->p_cohort = cohort_of_image(image);
+    if (p->p_cohort != NULL &&
+      cohort_place(p->p_cohort, image, p) != SYS_OK) {
+        panic("spawn %s: its place in cohort %s is taken", image,
+          cohort_name(p->p_cohort));
+    }
 
     /*
      * The command line, if there is one. The kernel spawning at boot
@@ -937,6 +946,12 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
      * image are two processes that cannot reach each other. Section 15.2
      * said a loader would end this, and an address space per process is
      * what a loader needed.
+     *
+     * Section 18 brings it back for cohort members, which share a space
+     * and therefore share the address. cohort_place() is where that half
+     * lives, and it returns this same error for this same reason. A
+     * member is the only thing at Tier 2 that this rule still applies
+     * to, and at Tier 0 the line below already covers it.
      */
 #if SYS_TIER == 0
     if (image_in_use(m->bm_load)) {
@@ -1003,9 +1018,25 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
      * decide.
      */
     p->p_cohort = cohort_of_image(image);
+    if (p->p_cohort != NULL) {
+        /*
+         * Taken before anything is spent, because this is the one
+         * refusal here that is about the request rather than about
+         * the machine, and a caller told no should get a system in
+         * the state it was in.
+         */
+        err = cohort_place(p->p_cohort, image, p);
+        if (err != SYS_OK) {
+            pool_free(proc_pool(), p->p_id);
+            return err;
+        }
+    }
 
     t = thread_alloc(p->p_name, prio, proc_user_start, &p->p_startup);
     if (t == NULL) {
+        if (p->p_cohort != NULL) {
+            cohort_release(p->p_cohort, p);
+        }
         pool_free(proc_pool(), p->p_id);
         return SYS_ERR_NO_MEMORY;
     }
@@ -1021,6 +1052,9 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
     if (err != SYS_OK) {
         thread_set_proc(t, NULL);
         pool_free(thread_pool(), t->t_id);
+        if (p->p_cohort != NULL) {
+            cohort_release(p->p_cohort, p);
+        }
         pool_free(proc_pool(), p->p_id);
         return err;
     }
@@ -1055,6 +1089,9 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
         handle_close(&parent->p_handles, h);
         thread_set_proc(t, NULL);
         pool_free(thread_pool(), t->t_id);
+        if (p->p_cohort != NULL) {
+            cohort_release(p->p_cohort, p);
+        }
         pool_free(proc_pool(), p->p_id);
         return err;
     }
@@ -1074,6 +1111,9 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
         handle_close(&parent->p_handles, h);
         thread_set_proc(t, NULL);
         pool_free(thread_pool(), t->t_id);
+        if (p->p_cohort != NULL) {
+            cohort_release(p->p_cohort, p);
+        }
         pool_free(proc_pool(), p->p_id);
         return err;
     }

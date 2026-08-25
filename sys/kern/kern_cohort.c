@@ -6,6 +6,7 @@
 
 #include <sys/bootarch.h>
 #include <sys/cohort.h>
+#include <sys/proc.h>
 #include <sys/systm.h>
 #include <sys/vm.h>
 
@@ -73,11 +74,51 @@ cohort_name(const struct cohort *c)
     return c == NULL ? "none" : c->c_name;
 }
 
-#if SYS_TIER == 2
+/*
+ * Which member of this cohort an image is, or c_nmembers if it is not
+ * one. Through boot_lookup for the reason cohort_of_image gives.
+ */
+static uint32_t
+member_index(const struct cohort *c, const char *image)
+{
+    const struct boot_member *m = boot_lookup(image);
+    uint32_t j;
+
+    for (j = 0; m != NULL && j < c->c_nmembers; j++) {
+        if (boot_lookup(c->c_members[j]) == m) {
+            return j;
+        }
+    }
+
+    return c->c_nmembers;
+}
 
 sys_err_t
-cohort_place(struct cohort *c, struct addrspace **out)
+cohort_place(struct cohort *c, const char *image, struct proc *p)
 {
+    uint32_t j = member_index(c, image);
+
+    if (j >= c->c_nmembers) {
+        panic("cohort %s: %s is a member and then is not", c->c_name,
+          image);
+    }
+
+    /*
+     * A place a dead process left is free. Nothing is reaped before M7,
+     * so today this only ever sees NULL or something still running, and
+     * the exited case is here because the rule is about what is running
+     * and not about what has ever run.
+     *
+     * M7 has to clear this pointer when it reclaims a process. Until
+     * something reuses a process slot the pointer cannot go stale, and
+     * the day reaping arrives it can, so the teardown of section 18.2
+     * owns this array as much as spawn does.
+     */
+    if (c->c_running[j] != NULL && !c->c_running[j]->p_exited) {
+        return SYS_ERR_WOULDBLOCK;
+    }
+
+#if SYS_TIER == 2
     if (c->c_placed == 0) {
         sys_err_t err = vm_as_create(&c->c_as);
 
@@ -85,14 +126,26 @@ cohort_place(struct cohort *c, struct addrspace **out)
             return err;
         }
     }
+#endif
 
+    c->c_running[j] = p;
     c->c_placed++;
-    *out = &c->c_as;
 
     return SYS_OK;
 }
 
-#endif /* SYS_TIER == 2 */
+void
+cohort_release(struct cohort *c, struct proc *p)
+{
+    uint32_t j;
+
+    for (j = 0; j < c->c_nmembers; j++) {
+        if (c->c_running[j] == p) {
+            c->c_running[j] = NULL;
+            return;
+        }
+    }
+}
 
 void
 cohort_report(void)
@@ -103,6 +156,11 @@ cohort_report(void)
       (unsigned int)NCOHORTS);
 
     for (i = 0; i < NCOHORTS; i++) {
+        if (cohorts[i].c_nmembers > SYS_COHORT_MEMBERS_MAX) {
+            panic("cohort %s: %u members, and there is room for %u",
+              cohorts[i].c_name, (unsigned int)cohorts[i].c_nmembers,
+              (unsigned int)SYS_COHORT_MEMBERS_MAX);
+        }
         cnprintf("    %s:", cohorts[i].c_name);
         for (j = 0; j < cohorts[i].c_nmembers; j++) {
             cnprintf(" %s", cohorts[i].c_members[j]);

@@ -15,7 +15,17 @@
  * dereferenced exactly as it arrived.
  *
  * That is the whole of what a shared protection domain buys, stated as
- * small as it can be stated. At Tier 2 this works because peer_b's slot
+ * small as it can be stated.
+ *
+ * It is also the whole of what makes such a server dangerous, and the
+ * danger is not the cohort's doing. Nothing in a message says whether
+ * the sender is a member, so a program that dereferences an address
+ * because it arrived is trusting whoever holds a send handle rather
+ * than trusting its peers. This one is safe because the only
+ * connection to its channel was minted for peer_b and moved there. A
+ * member that served the same channel to outsiders would be handing
+ * them the whole cohort, and section 18 has nothing to say about that
+ * because it is a question about who holds handles. At Tier 2 this works because peer_b's slot
  * is mapped in the address space this program runs in, which is true
  * because the build says the two are one cohort. Give the same message
  * to a program outside the cohort and it faults, which is what stage

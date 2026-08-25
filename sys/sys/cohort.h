@@ -41,6 +41,10 @@
 
 #include <stdint.h>
 
+#define SYS_COHORT_MEMBERS_MAX  8
+
+struct proc;
+
 struct cohort {
     const char         *c_name;
 
@@ -58,7 +62,21 @@ struct cohort {
     struct addrspace    c_as;
 #endif
 
-    /* How many members have been placed, for the report and the flush. */
+    /*
+     * Which process is running as each member, indexed the same way as
+     * c_members. NULL is nobody, and a process that has exited leaves
+     * its place free.
+     *
+     * This is what refuses a second copy of a member. Every program is
+     * linked for a slot of its own, so loading one twice into a shared
+     * space would write the second over the first while the first was
+     * running: not two processes at one address, which is what an
+     * address space each is for, but one process having its memory
+     * replaced under it by a loader.
+     */
+    struct proc        *c_running[SYS_COHORT_MEMBERS_MAX];
+
+    /* How many members have ever been placed, for the flush. */
     uint32_t            c_placed;
 };
 
@@ -73,13 +91,34 @@ struct cohort *cohort_of_image(const char *image);
 const char *cohort_name(const struct cohort *c);
 
 /*
- * Place a process in this cohort and hand back the space its threads
- * run in, building that space if this is the first member. Fails only
- * for want of a frame.
+ * Take this image's place in the cohort for this process, and at Tier 2
+ * build the shared address space if this is the first member in it.
+ *
+ * SYS_ERR_WOULDBLOCK if a live process is already running as that
+ * member. A second copy would be loaded at the address the first is
+ * running at, and in a shared space the loader would write over it.
+ *
+ * That is the same refusal the loader already makes at Tier 0 for every
+ * image, and it returns the same error deliberately. One condition
+ * should not have two answers depending on which rule noticed it, and
+ * the answer is honest either way: the request succeeds once the
+ * running one has exited.
+ *
+ * SYS_ERR_NO_MEMORY if the space has to be built and there is no frame
+ * to build it from.
+ *
+ * Both tiers, because the rule is about the cohort rather than about
+ * translation. Tier 0 has nothing to build and still has one place per
+ * member.
  */
-#if SYS_TIER == 2
-sys_err_t cohort_place(struct cohort *c, struct addrspace **out);
-#endif
+sys_err_t cohort_place(struct cohort *c, const char *image, struct proc *p);
+
+/*
+ * Give the place back, for a spawn that failed after taking it. Not the
+ * teardown of section 18.2, which is M7's and tears down every member
+ * together; this is the undo of a placement whose process never ran.
+ */
+void cohort_release(struct cohort *c, struct proc *p);
 
 /*
  * Say what the build was configured with, at boot, beside the other

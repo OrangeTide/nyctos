@@ -1566,6 +1566,8 @@ Membership is stated as a set of images, and spawning one of those images is wha
 
 **Inside a cohort the handle table is bookkeeping rather than protection.** Authority is per-process and stays per-process, so each member still has a table of its own and still cannot name a handle a peer holds. That distinction is worth something between mutually suspicious processes and worth nothing here: a member can read and write any peer's memory, so it can read whatever a peer read through a handle and write whatever a peer is about to write. A cohort should be reasoned about as one principal with several handle tables, and the tables should be read as a record of which member does what rather than as a boundary between them.
 
+**A member cannot tell a peer's address from anyone else's.** Passing a buffer as a bare address works between members and is unsound from anywhere else, and nothing in a message distinguishes the two: the sender's identity is not in it, and a member that dereferences an address because it arrived is trusting whoever holds a send handle rather than trusting its peers. The rule that follows is that a member serves member traffic and outside traffic on different channels, and treats an address as an address only on the first. A server with one channel for both would be handing the whole cohort to its clients.
+
 ### 18.2 Fault Recovery
 
 **The cohort is the recovery unit.** If any member faults, the entire cohort is torn down and restarted.
