@@ -316,6 +316,25 @@ md_tlb_flush_all(void)
     __asm__ volatile ("isb");
 }
 
+/*
+ * One page, in every address space identifier. This port assigns none,
+ * so vaae1is is what its translations are actually filed under; the
+ * operand is the address shifted down to a page number, which is the
+ * encoding the instruction takes.
+ */
+void
+md_tlb_invalidate(uintptr_t va)
+{
+    uint64_t page = (uint64_t)va >> 12;
+
+    vm_charge_inval();
+
+    __asm__ volatile ("dsb ishst");
+    __asm__ volatile ("tlbi vaae1is, %0" :: "r" (page));
+    __asm__ volatile ("dsb ish");
+    __asm__ volatile ("isb");
+}
+
 
 /*
  * What a virtual address names, for a caller handing a page to another

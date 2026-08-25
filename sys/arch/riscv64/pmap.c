@@ -266,6 +266,20 @@ md_tlb_flush_all(void)
     __asm__ volatile ("sfence.vma" ::: "memory");
 }
 
+/*
+ * The two operand form: an address in the first, and zero in the second
+ * for every address space identifier. This port assigns none, so every
+ * translation it makes lives under the same one, and zero is the only
+ * honest thing to put there.
+ */
+void
+md_tlb_invalidate(uintptr_t va)
+{
+    vm_charge_inval();
+
+    __asm__ volatile ("sfence.vma %0, zero" :: "r" (va) : "memory");
+}
+
 
 /*
  * What a virtual address names, for a caller handing a page to another

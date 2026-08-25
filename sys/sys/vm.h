@@ -86,10 +86,21 @@ struct vm_cost {
     uint64_t    vc_leaf;
     uint64_t    vc_table;
     uint64_t    vc_flush;
+    uint64_t    vc_inval;
 
     /* What was asked of them. */
     uint64_t    vc_pages;
     uint64_t    vc_halves;
+
+    /*
+     * And how many times a thread was dispatched into a different
+     * address space, which is not the buffer path and is counted
+     * beside it for scale. Neither port tags translations with the
+     * space they came from, so every one of these throws the whole
+     * cache away too. A number for the buffer path with nothing to
+     * compare it against would be a number with no size.
+     */
+    uint64_t    vc_switch;
 };
 
 /*
@@ -103,6 +114,7 @@ void vm_charge_end(void);
 void vm_charge_leaf(void);
 void vm_charge_table(void);
 void vm_charge_flush(void);
+void vm_charge_inval(void);
 
 /*
  * Called by the rendezvous for each half of a move, saying how many
@@ -111,6 +123,9 @@ void vm_charge_flush(void);
  * is thrown away once per half whatever the page count.
  */
 void vm_charge_pages(uint32_t pages);
+
+/* Called by the dispatcher when it enters a different address space. */
+void vm_count_switch(void);
 
 /* What has been spent so far. */
 void vm_cost_read(struct vm_cost *out);
@@ -160,6 +175,22 @@ void md_mmu_enable(const struct addrspace *as);
 
 /* Everything, for a change too broad to describe. */
 void md_tlb_flush_all(void);
+
+/*
+ * One address, for a change that names the addresses it made.
+ *
+ * Across every address space rather than the current one, because
+ * neither port tags its translations with which space they came from.
+ * That makes this coarser than it looks and still far narrower than
+ * throwing the whole cache away: it removes one page of one address
+ * from every space at once, which for a page being moved between two
+ * spaces is exactly the two entries that changed.
+ *
+ * The day either port carries address space identifiers this becomes
+ * an invalidation of one address in one space, and the callers do not
+ * change.
+ */
+void md_tlb_invalidate(uintptr_t va);
 
 /*
  * Map the registers this port's kernel reaches directly: the console it

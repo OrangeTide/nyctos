@@ -209,9 +209,11 @@ object_report_usage(void)
 
         vm_cost_read(&c);
         cnprintf("  buffer remapping: %u pages in %u halves, "
-          "%u entries, %u tables, %u flushes\n",
+          "%u entries, %u tables, %u invalidations, %u flushes\n",
           (unsigned int)c.vc_pages, (unsigned int)c.vc_halves,
           (unsigned int)c.vc_leaf, (unsigned int)c.vc_table,
-          (unsigned int)c.vc_flush);
+          (unsigned int)c.vc_inval, (unsigned int)c.vc_flush);
+        cnprintf("  address space switches: %u, each a whole-TLB flush\n",
+          (unsigned int)c.vc_switch);
     }
 }

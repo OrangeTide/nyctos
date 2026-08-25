@@ -1909,22 +1909,26 @@ chain_checks(void)
 /*
  * What moving a buffer costs at each tier, per section 18.
  *
- * Two entries per page in each half of the move, and one whole-TLB
- * flush per half whatever the page count. A crossing is both halves,
- * so a one page buffer crossing one boundary is four entries and two
- * flushes, and that is where the headline number comes from. The rule
- * is stated per half here because that is the shape the code has, and
- * because stating it per crossing hid that the two have different
- * denominators.
+ * Two entries per page in each half of the move, one invalidation per
+ * page in each half, and no whole-TLB flush at all. A crossing is both
+ * halves, so a one page buffer crossing one boundary is four entries
+ * and two invalidations, and nothing thrown away that had not moved.
+ *
+ * Stated per half because that is the shape the code has. The whole-TLB
+ * count is kept and asserted at zero rather than deleted, because a
+ * flush put back here would vanish into a system that already flushes
+ * on every address space switch.
  *
  * Checked against what the ports actually wrote, not recorded as a
  * total, so it holds for any workload rather than for this one.
  */
 #if SYS_TIER == 2
 #define ENTRIES_PER_PAGE    2
-#define FLUSHES_PER_HALF    1
+#define INVALS_PER_PAGE     1
+#define FLUSHES_PER_HALF    0
 #else
 #define ENTRIES_PER_PAGE    0
+#define INVALS_PER_PAGE     0
 #define FLUSHES_PER_HALF    0
 #endif
 
@@ -1936,8 +1940,21 @@ boundary_rate(const char *what, const struct vm_cost *c)
           (unsigned long)c->vc_pages, (unsigned long)c->vc_leaf,
           (unsigned long)(c->vc_pages * ENTRIES_PER_PAGE));
     }
+    if (c->vc_inval != c->vc_pages * INVALS_PER_PAGE) {
+        panic("%s: %lu pages moved cost %lu invalidations, not %lu", what,
+          (unsigned long)c->vc_pages, (unsigned long)c->vc_inval,
+          (unsigned long)(c->vc_pages * INVALS_PER_PAGE));
+    }
+
+    /*
+     * And nothing throws the whole cache away any more. This is a
+     * zero the check has to keep asserting rather than a line that
+     * could be deleted: a flush reintroduced here would be invisible
+     * in a total that already had thousands of them from address
+     * space switches.
+     */
     if (c->vc_flush != c->vc_halves * FLUSHES_PER_HALF) {
-        panic("%s: %lu halves cost %lu flushes, not %lu", what,
+        panic("%s: %lu halves cost %lu whole-TLB flushes, not %lu", what,
           (unsigned long)c->vc_halves, (unsigned long)c->vc_flush,
           (unsigned long)(c->vc_halves * FLUSHES_PER_HALF));
     }
@@ -1992,10 +2009,11 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
         flush = after.vc_flush - cost.vc_flush;
 
         cnprintf("    %-10s %lu rendezvous, %lu connections, "
-          "%lu entries, %lu flushes\n", image,
+          "%lu entries, %lu invalidations\n", image,
           (unsigned long)rounds,
           (unsigned long)(conns->highwater - pool_before),
-          (unsigned long)leaf, (unsigned long)flush);
+          (unsigned long)leaf,
+          (unsigned long)(after.vc_inval - cost.vc_inval));
 
         /*
          * The rate over this run alone, against what was asked for
@@ -2015,6 +2033,7 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
 
             run.vc_leaf = leaf;
             run.vc_flush = flush;
+            run.vc_inval = after.vc_inval - cost.vc_inval;
             run.vc_table = after.vc_table - cost.vc_table;
             run.vc_pages = after.vc_pages - cost.vc_pages;
             run.vc_halves = after.vc_halves - cost.vc_halves;

@@ -237,6 +237,25 @@ vm_charge_flush(void)
     }
 }
 
+void
+vm_charge_inval(void)
+{
+    if (charging()) {
+        vm_buffer_cost.vc_inval++;
+    }
+}
+
+/*
+ * Not charged and not bracketed: a switch happens between threads and
+ * belongs to neither. It is counted always because it is the thing the
+ * buffer path has to be compared against.
+ */
+void
+vm_count_switch(void)
+{
+    vm_buffer_cost.vc_switch++;
+}
+
 /*
  * What was asked for, which is the other half of the rate. A page is
  * one page moved one way; a half is one hand-over or one take-back.

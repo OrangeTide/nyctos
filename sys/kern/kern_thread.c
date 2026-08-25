@@ -310,6 +310,7 @@ thread_switch_to(struct thread *next)
 
         if (as->as_root != current_as_root) {
             md_as_activate(as);
+            vm_count_switch();
             current_as_root = as->as_root;
         }
     }

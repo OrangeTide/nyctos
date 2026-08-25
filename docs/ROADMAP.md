@@ -3157,19 +3157,67 @@ it needs to be.
   buffer remapping: 0 pages in 0 halves, 0 entries, 0 tables, 0 flushes
 ```
 
-
-**4. Invalidating by address.**
+**4. Invalidating by address.** *Built.* The buffer path throws nothing away
+that has not moved. It also turns out never to have needed to throw anything
+away at all, and that is the stage's real result.
 
 - Both ports invalidate the addresses that moved instead of flushing the whole
   TLB.
 - The buffer path is measured again.
 
-*Check.* The report counts whole-TLB flushes separately from single-address
-invalidations. The buffer path's flush count falls to zero and its
-invalidation count rises to one per page per crossing. A port made to
-invalidate a neighbouring address instead of the one that moved fails an
-existing check rather than passing quietly, which is what says the
-invalidation is doing the work.
+*Check.* The report counts the two separately, and the buffer path's flush
+count is now zero:
+
+```
+  buffer remapping: 42 pages in 42 halves, 84 entries, 4 tables, 42 invalidations, 0 flushes
+  address space switches: 395, each a whole-TLB flush
+```
+
+One invalidation per page per half, not per crossing. The page enters the
+receiver at the address it had in the sender and leaves the sender at that
+same address, and neither port tags a translation with the space it came from,
+so one call removes both entries. The zero is asserted rather than merely
+observed, because a flush put back here would vanish into a system that
+already flushes on every address space switch.
+
+**The second line is the finding.** Three hundred and ninety-five address
+space switches, each of them a whole-TLB flush, against forty-two on the
+buffer path before this stage. The thing this milestone set out to measure was
+under ten percent of the whole-TLB flushes in the system, and the other ninety
+percent is context switching, because neither port assigns address space
+identifiers and so every switch discards everything.
+
+*And the invalidation cannot be shown to matter.* The entry said a port made
+to invalidate a neighbouring address would fail an existing check. It does
+not: the check passes. Removing the maintenance entirely, both halves, also
+passes, on both ports, with the whole recorded session intact. There is an
+address space switch between the hand-over and the receiver touching the
+buffer, and another between the take-back and the client touching it again,
+and each of those already discards the translation that would have been stale.
+
+So the forty-two flushes stage three measured were work that did not need
+doing, and the forty-two invalidations replacing them are not needed either,
+*as the system is currently arranged*. They stay, for a reason that is about
+what comes next rather than about what a check can show: inside a cohort there
+is no switch between members, so this is the only thing that would clear a
+stale entry, and a system that assigned address space identifiers would be in
+the same position. The maintenance is correct and it is insurance. It is
+recorded here as insurance rather than as something the suite proves, which is
+the same standing as the flush in stage one.
+
+**The plan's fair competitor was the wrong one.** This stage exists because
+measuring a shared address space against a system that flushes the whole TLB
+on every crossing would flatter it, and the honest alternative was said to be
+invalidating by address. That was aimed at the wrong cost. Invalidation on the
+buffer path saves flushes that were redundant. What a cohort actually removes
+is the address space switch between its members, and the alternative that
+removes the same cost without a shared domain is address space identifiers,
+which neither port has. Stage five now has a sharper question than it was
+given, and the milestone's falsification clause has to be answered against
+ASIDs rather than against this.
+
+*What it cost.* Two functions, one per port, and a counter. Nothing in the
+recorded session moved.
 
 **5. The two layers in one cohort.**
 

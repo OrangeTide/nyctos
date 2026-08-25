@@ -202,9 +202,14 @@ msg_buf_take_back(struct thread *client)
             panic("ipc: %s cannot have its own page at 0x%lx back",
               client->t_name, (unsigned long)va);
         }
-    }
 
-    md_tlb_flush_all();
+        /*
+         * The same address in both spaces, so one call again: it left
+         * the borrower and came back to the owner at the address it
+         * always had.
+         */
+        md_tlb_invalidate(va);
+    }
 
     vm_charge_pages((uint32_t)(client->t_lend_len / PAGE_SIZE));
 
@@ -392,8 +397,19 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
          * and nothing cached can contradict them, but a negative entry
          * from an earlier fault on the same address can, and that is
          * exactly the address a server is about to touch.
+         *
+         * By address, and one call covers both spaces. The page went
+         * into the receiver at the address it had in the sender and
+         * was taken away from the sender at that same address, and
+         * neither port tags a translation with the space it came from,
+         * so removing that address removes both entries. Throwing the
+         * whole cache away instead was correct and was also every
+         * other translation in the system, most of which had not
+         * moved.
          */
-        md_tlb_flush_all();
+        for (va = first; va <= last; va += PAGE_SIZE) {
+            md_tlb_invalidate(va);
+        }
 
         vm_charge_pages((uint32_t)(client->t_lend_len / PAGE_SIZE));
     }

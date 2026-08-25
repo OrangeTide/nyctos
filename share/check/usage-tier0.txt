@@ -1,4 +1,5 @@
 used at most: 61 of 96 threads, 42 of 56 processes
   kernel stacks under those threads: 249856 bytes
-  buffer remapping: 0 pages in 0 halves, 0 entries, 0 tables, 0 flushes
+  buffer remapping: 0 pages in 0 halves, 0 entries, 0 tables, 0 invalidations, 0 flushes
+  address space switches: 0, each a whole-TLB flush
 stage 9 complete
