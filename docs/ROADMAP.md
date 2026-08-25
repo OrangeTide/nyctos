@@ -2677,28 +2677,186 @@ than per program.
 
 ### M6. Driver Cohorts
 
-**A shared protection domain, and the zero-copy path it buys.**
+**A shared protection domain, and what it actually saves.**
 
 Cannot come before M4. Without protection domains a cohort is a naming
 convention that demonstrates nothing.
 
-*Needs.* Cohort membership fixed at build time. Zero-copy buffer handoff by
-address within a cohort. Scatter-gather with lazy mapping (18.4). Cohort
-scheduling nodes (11.5).
+*Needs.* Cohort membership fixed at build time. Buffer handoff by address
+within a cohort. A two-layer stack to hand a buffer through, and a count of
+what each layer costs.
 
-*Deferred to M7.* Cohort fault recovery (18.2). Tearing down and restarting
-every member together is the one mechanism in the plan that cannot be
-demonstrated without death, and it is the reason M7 sits immediately after
-this milestone rather than later.
+*Five things M4 and M5 taught that change this entry.* The first one changes
+what the milestone is about.
+
+**The move contract is already zero-copy, so a cohort does not buy zero
+copies.** M4 built the buffer handoff of section 6.1 and it copies nothing at
+either tier: the sender's pages are re-mapped into the receiver at the address
+they already had, and taken back at the reply. A boundary crossing does not
+cost a copy. It costs four page-table entry writes per page and two whole-TLB
+flushes, one in the hand-over and one in the take-back. The claim this
+milestone can test is therefore narrower and sharper than the one written here
+before. A cohort buys zero *mapping*, not zero copying, and the question is
+whether a shared protection domain is worth two TLB flushes per layer per
+request.
+
+**The fair competitor is a cheaper invalidation, not a copy.** Both ports
+flush the whole TLB, which was the right thing to build when the only mapping
+change in the system was a spawn. Invalidating the one address that moved is a
+far smaller change than a shared address space, and it costs no isolation at
+all. A mechanism measured against a deliberately slow alternative proves
+nothing, so the alternative is built first and the measurement is taken
+against it.
+
+**There is no second layer to cross.** The done-when clause needs a
+filesystem and a block driver, and the tree has a filesystem that serves text
+out of its own image. Every buffer in the system today crosses exactly one
+boundary. The stack has to exist before anything about it can be counted, and
+it is worth having whether or not the cohort survives the measurement.
+
+**At Tier 0 a cohort is what the system already is.** There is one address
+space, every process is in it, and a member reading a peer's memory is what
+Tier 0 permits anybody to do. The mechanism's whole Tier 0 content is
+therefore the membership list, which fault reporting reads. The recorded
+session cannot show the difference, because one transcript covers all four
+configurations. The difference goes where per-tier numbers already go, which
+is the resource report.
+
+**Nothing is reaped, and the pool stands at 42 of 48 processes.** M5 raised it
+because the boot and check sequences size it and nothing is freed until M7.
+This milestone adds a block driver and the programs that exercise a cohort, so
+it raises it again. That is the third milestone in a row paying for M7 not
+having happened yet, and it is written down here as a cost rather than
+adjusted quietly in a header.
+
+*Deferred, and why.* Scatter-gather with lazy mapping (18.4) and cohort
+scheduling nodes (11.5) were listed in this entry and are not built.
+
+Lazy mapping pays off on a forwarding path, where a server passes a payload on
+without looking at it. No such server exists in the plan before M10, so
+building the interface now means guessing its shape with nothing able to say
+the guess was wrong. It moves to whichever milestone first has a layer that
+forwards.
+
+A scheduling node buys one thing, which is that time yielded inside a group
+stays inside it. On one core, with a check suite that runs nothing
+concurrently, nothing can observe that. It moves to M8, where there are cores
+to lose work to.
+
+Cohort fault recovery (18.2) stays deferred to M7 for the reason already
+given: tearing down and restarting every member together cannot be shown
+without death.
+
+*The prediction, written before building so that it can be wrong.* A cohort
+removes four page-table entry writes and two TLB operations per page per layer
+crossed, and nothing else. If invalidating by address closes most of that gap,
+then a shared protection domain is being bought for very little, and section
+18 should be deleted rather than kept. The retrospective answers this with the
+two numbers and not with an argument.
+
+*This is not the measurement section 2 puts late.* That rule is about
+performance numbers, which need a system and a real workload before they mean
+anything. What this milestone counts is operations rather than time: how many
+page-table entries are written and how many TLB operations are issued to read
+one file through two layers. That count is exact on an idle machine and does
+not become truer under load, so taking it now is safe. What it cannot say is
+how much those operations cost, which is the part that waits for M10.
+
+*Stages.* Six. Two of them build the apparatus, one builds the honest
+alternative, and only the fourth and fifth are the mechanism itself.
+
+**1. A cohort is an object, and membership is fixed at build time.**
+
+- A cohort owns one address space, and a member points at it rather than
+  owning one of its own.
+- Membership is named where the process is spawned, from a table the kernel is
+  built with. No operation joins a cohort, which is section 18.1: a runtime
+  join would be a privilege escalation primitive.
+- At Tier 0 a cohort is a membership list and nothing else.
+
+*Check.* Two programs in one cohort each write a value into their own slot and
+read the peer's, and both find what the peer wrote, at both tiers, from one
+image. A third program outside the cohort reading the same address faults at
+Tier 2. The peer read goes in the recorded session because its outcome is the
+same at both tiers. The outside read is checked by hand at Tier 2, which is
+where the tiers disagree.
+
+**2. A block driver under the filesystem.**
+
+- A RAM disk serving fixed-size blocks over the protocol that already exists.
+- `fs_server` reads file contents through it rather than out of its own image.
+- A buffer a client sent now crosses two boundaries instead of one.
+
+*Check.* `cat /motd` prints the line it has always printed and the recorded
+transcript does not move. What changed is underneath it, and the resource
+report shows one more process and one more thread. A block driver made to
+refuse the read makes `cat` report an error rather than printing text from the
+image, which is what says the second layer is load-bearing rather than
+decorative.
+
+**3. What a boundary costs.**
+
+- A count of page-table entry writes and TLB operations on the buffer path,
+  kept in the kernel and printed in the resource report.
+- Per tier, because the answer at Tier 0 is zero.
+
+*Check.* The report carries a nonzero count at Tier 2 and zero at Tier 0.
+Reading one file through two layers costs twice what reading it through one
+layer costs, and the recorded numbers say so. Removing the second layer moves
+the number, which is what says the count measures the path rather than
+something fixed.
+
+**4. Invalidating by address.**
+
+- Both ports invalidate the addresses that moved instead of flushing the whole
+  TLB.
+- The buffer path is measured again.
+
+*Check.* The report counts whole-TLB flushes separately from single-address
+invalidations. The buffer path's flush count falls to zero and its
+invalidation count rises to one per page per crossing. A port made to
+invalidate a neighbouring address instead of the one that moved fails an
+existing check rather than passing quietly, which is what says the
+invalidation is doing the work.
+
+**5. The two layers in one cohort.**
+
+- `fs_server` and the block driver share a cohort, so the buffer crosses the
+  second boundary as an address.
+- The hand-over already does nothing when both ends share an address space.
+  The work here is making the two ends share one, and establishing that the
+  validation rules of sections 6.1 and 23.2 still hold when they do.
+
+*Check.* The transcript is unchanged again, and the storage crossing's mapping
+count is zero: the same read costs what a one-layer read cost before the block
+driver existed. The buffer is at the same address in both members, which the
+block driver shows by printing it. Taking the two out of the cohort puts the
+count back.
+
+**6. A fault names the cohort, and the recovery path is stubbed.**
+
+- The fault reporting of section 16.2 says which cohort a faulting member
+  belongs to.
+- The system halts, and the teardown of 18.2 is named in the message as M7's
+  work rather than attempted.
+
+*Check.* A member made to fault reports its cohort and halts. A process in no
+cohort reports as it does today. The recovery path is named at the halt, so
+what is missing is stated by the running system and not only by this document.
 
 *Done when* a filesystem and a block driver in one cohort exchange a buffer as
-an address rather than a grant, with no mapping cost per layer, and a fault in
-either halts the system with the recovery path stubbed and named.
+an address rather than a grant, with no mapping cost for that crossing, a
+fault in either halts the system with the recovery path stubbed and named, and
+the resource report carries the number that says what the cohort saved against
+an alternative that keeps the isolation.
 
-*Would falsify.* Whether zero-copy within a shared domain is worth a shared
-domain at all, which is the half of the trade this milestone can answer alone.
-Whether the fault-domain cost is tolerable is answered in M7, when a fault
-actually recovers rather than halting.
+*Would falsify.* Whether zero mapping within a shared domain is worth a shared
+domain at all. The measurement is taken against a system that invalidates by
+address, not against one that flushes everything, because the second
+comparison flatters the mechanism. If the difference is small, section 18 is
+deleted in the retrospective and the plan loses a mechanism rather than
+gaining one. Whether the fault-domain cost is tolerable is still answered in
+M7, when a fault recovers rather than halting.
 
 *Size.* Medium.
 
