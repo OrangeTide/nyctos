@@ -3685,6 +3685,33 @@ kernel_main(void)
 
         vm_cost_read(&all);
         boundary_rate("the whole run", &all);
+
+        /*
+         * And the scale the buffer path has to be read against.
+         *
+         * Printed here rather than in the resource report, and as a
+         * relation rather than as a recorded total, because the exact
+         * count depends on when console input arrives: the same
+         * session paced gives three hundred and ninety-five and burst
+         * gives three hundred and eighty-eight. Pinning a number that
+         * moves with the host would be a check that failed for
+         * reasons no change caused. What does not move is that there
+         * are far more of these than there are buffer moves, and each
+         * of them discards the whole translation cache because
+         * neither port assigns address space identifiers.
+         *
+         * If a later stage ever makes this false, that is a result
+         * rather than a broken check, and it should be read as one.
+         */
+        cnprintf("address space switches: %u, each a whole-TLB flush, "
+          "against %u buffer halves\n", (unsigned int)all.vc_switch,
+          (unsigned int)all.vc_halves);
+#if SYS_TIER == 2
+        if (all.vc_switch <= all.vc_halves) {
+            panic("switching stopped dominating: %u switches, %u halves",
+              (unsigned int)all.vc_switch, (unsigned int)all.vc_halves);
+        }
+#endif
     }
 
     object_report_usage();

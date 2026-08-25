@@ -186,9 +186,14 @@ void md_tlb_flush_all(void);
  * from every space at once, which for a page being moved between two
  * spaces is exactly the two entries that changed.
  *
- * The day either port carries address space identifiers this becomes
- * an invalidation of one address in one space, and the callers do not
- * change.
+ * That one call covering every space is not a convenience, it is what
+ * makes a single call correct for a page moving between two of them.
+ * The day either port assigns address space identifiers, an entry
+ * carries the space it came from, this stops covering both, and the
+ * callers here have to name the space and call twice. Both would then
+ * be cheaper than what this replaced, and neither would be this
+ * function: the signature would grow the space, so it is left out
+ * today rather than carried as a parameter nothing reads.
  */
 void md_tlb_invalidate(uintptr_t va);
 

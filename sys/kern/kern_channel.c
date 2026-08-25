@@ -401,11 +401,15 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
          * By address, and one call covers both spaces. The page went
          * into the receiver at the address it had in the sender and
          * was taken away from the sender at that same address, and
-         * neither port tags a translation with the space it came from,
-         * so removing that address removes both entries. Throwing the
-         * whole cache away instead was correct and was also every
-         * other translation in the system, most of which had not
-         * moved.
+         * neither port tags a translation with the space it came
+         * from, so removing that address removes both entries. A
+         * port with address space identifiers would need two calls
+         * here rather than one, which is a cost this counts as one
+         * because it is not paying it.
+         *
+         * Throwing the whole cache away instead was correct and was
+         * also every other translation in the system, most of which
+         * had not moved.
          */
         for (va = first; va <= last; va += PAGE_SIZE) {
             md_tlb_invalidate(va);

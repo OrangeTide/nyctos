@@ -3170,7 +3170,12 @@ count is now zero:
 
 ```
   buffer remapping: 42 pages in 42 halves, 84 entries, 4 tables, 42 invalidations, 0 flushes
-  address space switches: 395, each a whole-TLB flush
+```
+
+and, on the line above the compared report, the scale to read it against:
+
+```
+address space switches: 395, each a whole-TLB flush, against 42 buffer halves
 ```
 
 One invalidation per page per half, not per crossing. The page enters the
@@ -3218,6 +3223,43 @@ ASIDs rather than against this.
 
 *What it cost.* Two functions, one per port, and a counter. Nothing in the
 recorded session moved.
+
+*Reviewing it found two defects. One was a number that moves on its own, put
+into a file compared exactly.*
+
+**The switch count is not deterministic and was recorded as though it were.**
+The same session gives three hundred and ninety-five switches paced and three
+hundred and eighty-eight burst, because how many times a thread is dispatched
+into a different space depends on when console input arrives. Three runs of
+each are stable, so it would have passed today and failed later for a reason
+no change caused. Everything else in that file is fixed by program logic: the
+buffer remapping line is forty-two in both modes, because how many buffers
+cross is a property of the programs and not of the host.
+
+The count moved out of the compared report into the line above it, which is
+printed and read and not diffed, and what is checked instead is the relation
+that does not move: there are more switches than there are buffer halves. Set
+the threshold to a hundred times and the check fails with `switching stopped
+dominating: 395 switches, 42 halves`, so the claim is still falsifiable
+without pinning a number the host can move. If a later stage makes the
+relation false, that is a result and should be read as one rather than
+repaired.
+
+**And a claim about what comes next was backwards.** The comment said that a
+port carrying address space identifiers would turn this into an invalidation
+of one address in one space "and the callers do not change". The callers
+change. One call covers both spaces here precisely *because* nothing is
+tagged: an entry cannot say which space it came from, so removing an address
+removes it everywhere, and a page moving between two spaces needs one call.
+Give the ports identifiers and each entry carries its space, one call stops
+covering both, and the buffer path needs two calls per page instead of one.
+
+That matters beyond the comment, because ASIDs are now the alternative this
+milestone has to be measured against. They would remove the flush from every
+one of those switches and add a second invalidation to every page move. The
+number this stage records for the buffer path is therefore a number for a
+system that is not paying that, and the retrospective has to say so rather
+than comparing the two as if they were like for like.
 
 **5. The two layers in one cohort.**
 
