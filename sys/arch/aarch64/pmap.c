@@ -137,6 +137,7 @@ descend(uint64_t *table, uint32_t index, unsigned int level)
         return NULL;
     }
     next = table_at(pa);
+    vm_charge_table();
 
     if ((table[index] & 0x3u) == DESC_BLOCK) {
         uint64_t block = table[index];
@@ -203,6 +204,7 @@ md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
         if (len >= LEVEL_SIZE(2) && (va & (LEVEL_SIZE(2) - 1)) == 0 &&
           (pa & (LEVEL_SIZE(2) - 1)) == 0) {
             l2[INDEX(va, 2)] = (uint64_t)pa | leaf_attrs(flags, true);
+            vm_charge_leaf();
             step = LEVEL_SIZE(2);
         } else {
             uint64_t *l3 = descend(l2, (uint32_t)INDEX(va, 2), 2);
@@ -211,6 +213,7 @@ md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
                 return SYS_ERR_NO_MEMORY;
             }
             l3[INDEX(va, 3)] = (uint64_t)pa | leaf_attrs(flags, false);
+            vm_charge_leaf();
             step = PAGE_SIZE;
         }
 
@@ -305,6 +308,8 @@ md_mmu_enable(const struct addrspace *as)
 void
 md_tlb_flush_all(void)
 {
+    vm_charge_flush();
+
     __asm__ volatile ("dsb ishst");
     __asm__ volatile ("tlbi vmalle1is");
     __asm__ volatile ("dsb ish");
@@ -360,6 +365,7 @@ md_unmap(struct addrspace *as, uintptr_t va, size_t len)
             e = table_at(e & 0x0000fffffffff000ULL)[INDEX(va, 2)];
             if ((e & 0x3u) == DESC_TABLE) {
                 table_at(e & 0x0000fffffffff000ULL)[INDEX(va, 3)] = 0;
+                vm_charge_leaf();
             }
         }
 

@@ -1,3 +1,4 @@
 used at most: 61 of 96 threads, 42 of 56 processes
   kernel stacks under those threads: 249856 bytes
+  moving buffers: 0 entries, 0 tables, 0 flushes
 stage 9 complete

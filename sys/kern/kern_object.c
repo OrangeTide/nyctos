@@ -13,6 +13,7 @@
 #include <sys/object.h>
 #include <sys/pool.h>
 #include <sys/systm.h>
+#include <sys/vm.h>
 
 POOL_STORAGE(procs, struct proc, SYS_MAX_PROCESSES);
 POOL_STORAGE(threads, struct thread, SYS_MAX_THREADS);
@@ -188,4 +189,25 @@ object_report_usage(void)
       threads->highwater, threads->count, procs->highwater, procs->count);
     cnprintf("  kernel stacks under those threads: %u bytes\n",
       (unsigned int)(threads->highwater * SYS_KSTACK_SIZE));
+
+    /*
+     * And what moving buffers between address spaces cost, per section
+     * 18. Here rather than in a line of its own because it is a
+     * resource the run consumed, and in the compared part of the
+     * report because a number nobody would notice changing is a number
+     * that stops meaning anything.
+     *
+     * Zero at Tier 0, and that is the measurement. There is one
+     * address space, a buffer that arrives is already where it needs
+     * to be, and the whole of this cost is what the other tier pays
+     * for keeping programs apart.
+     */
+    {
+        struct vm_cost c;
+
+        vm_cost_read(&c);
+        cnprintf("  moving buffers: %u entries, %u tables, %u flushes\n",
+          (unsigned int)c.vc_leaf, (unsigned int)c.vc_table,
+          (unsigned int)c.vc_flush);
+    }
 }

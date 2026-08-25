@@ -16,6 +16,7 @@
 #include <sys/systm.h>
 #include <sys/trace.h>
 #include <sys/thread.h>
+#include <sys/vm.h>
 #include <sys/timeline.h>
 
 struct channel *
@@ -473,7 +474,9 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
          * reply, which is what makes the blocked sender the queue slot.
          */
         msg_copy(&server->t_stage, &self->t_stage);
+        vm_charge_begin();
         err = msg_buf_hand_over(server, self, &server->t_stage);
+        vm_charge_end();
         if (err != SYS_OK) {
             /*
              * The receiver has not been touched yet, so putting it
@@ -580,7 +583,9 @@ channel_recv(struct channel *ch, struct sys_msg *out,
         sys_err_t lend;
 
         msg_copy(out, &client->t_stage);
+        vm_charge_begin();
         lend = msg_buf_hand_over(self, client, out);
+        vm_charge_end();
         if (lend != SYS_OK) {
             /*
              * The buffer could not be put where this thread could
@@ -688,7 +693,9 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
      * runnable: after that point there is a thread that may touch memory
      * another process still has mapped.
      */
+    vm_charge_begin();
     msg_buf_take_back(client);
+    vm_charge_end();
 
     /*
      * Section 7.4: a handle travels by move. The value changes across the

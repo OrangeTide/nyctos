@@ -66,6 +66,40 @@ struct addrspace {
     uintptr_t   as_root;        /* physical address of the port's root table */
 };
 
+/*
+ * What moving a buffer costs, counted where it is spent.
+ *
+ * Three numbers rather than one, because they are three different
+ * costs. A leaf is a page-table entry written, which is a store. A
+ * table is an intermediate level built, which is a store and a frame
+ * that is never given back. A flush is the whole translation cache
+ * thrown away, which is neither and is usually the expensive one.
+ *
+ * At Tier 0 all three stay zero, and that is the measurement rather
+ * than a gap in it: there is one address space and a buffer that
+ * arrives is already where it needs to be.
+ */
+struct vm_cost {
+    uint64_t    vc_leaf;
+    uint64_t    vc_table;
+    uint64_t    vc_flush;
+};
+
+/*
+ * Charge what follows to the buffer path, until the matching end.
+ * Nests, because the move undoes itself by calling its other half.
+ */
+void vm_charge_begin(void);
+void vm_charge_end(void);
+
+/* Called by the ports as they spend it. */
+void vm_charge_leaf(void);
+void vm_charge_table(void);
+void vm_charge_flush(void);
+
+/* What has been spent so far. */
+void vm_cost_read(struct vm_cost *out);
+
 /* Build an empty address space, or return SYS_ERR_NO_MEMORY. */
 sys_err_t md_as_create(struct addrspace *as);
 

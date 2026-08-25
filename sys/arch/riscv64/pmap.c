@@ -111,6 +111,7 @@ descend(uint64_t *table, uint32_t index, unsigned int level)
         return NULL;
     }
     next = table_at(pa);
+    vm_charge_table();
 
     if ((table[index] & PTE_V) != 0) {
         uint64_t leaf = table[index];
@@ -165,6 +166,7 @@ md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
         if (len >= LEVEL_SIZE(1) && (va & (LEVEL_SIZE(1) - 1)) == 0 &&
           (pa & (LEVEL_SIZE(1) - 1)) == 0) {
             l1[INDEX(va, 1)] = PTE_PPN(pa) | leaf_attrs(flags);
+            vm_charge_leaf();
             step = LEVEL_SIZE(1);
         } else {
             uint64_t *l2 = descend(l1, (uint32_t)INDEX(va, 1), 1);
@@ -173,6 +175,7 @@ md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
                 return SYS_ERR_NO_MEMORY;
             }
             l2[INDEX(va, 2)] = PTE_PPN(pa) | leaf_attrs(flags);
+            vm_charge_leaf();
             step = PAGE_SIZE;
         }
 
@@ -258,6 +261,8 @@ md_mmu_enable(const struct addrspace *as)
 void
 md_tlb_flush_all(void)
 {
+    vm_charge_flush();
+
     __asm__ volatile ("sfence.vma" ::: "memory");
 }
 
@@ -310,6 +315,7 @@ md_unmap(struct addrspace *as, uintptr_t va, size_t len)
             e = table_at((uintptr_t)PTE_ADDR(e))[INDEX(va, 1)];
             if ((e & PTE_V) != 0 && !PTE_LEAF(e)) {
                 table_at((uintptr_t)PTE_ADDR(e))[INDEX(va, 2)] = 0;
+                vm_charge_leaf();
             }
         }
 

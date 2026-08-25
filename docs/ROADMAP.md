@@ -3027,17 +3027,78 @@ again rather than merely true.
 where it cost three before the store existed, and `fs_batch` three where it
 cost one. Two of each are the store, one per block of a thirty-one byte file.
 
-**3. What a boundary costs.**
+**3. What a boundary costs.** *Built.* Four page-table entries and two
+whole-TLB flushes, per page, per boundary, at Tier 2. Nothing at Tier 0.
 
 - A count of page-table entry writes and TLB operations on the buffer path,
   kept in the kernel and printed in the resource report.
 - Per tier, because the answer at Tier 0 is zero.
 
-*Check.* The report carries a nonzero count at Tier 2 and zero at Tier 0.
-Reading one file through two layers costs twice what reading it through one
-layer costs, and the recorded numbers say so. Removing the second layer moves
-the number, which is what says the count measures the path rather than
-something fixed.
+*Check.* The resource report carries a line the check compares:
+
+```
+  moving buffers: 84 entries, 4 tables, 42 flushes     (Tier 2)
+  moving buffers: 0 entries, 0 tables, 0 flushes       (Tier 0)
+```
+
+The same numbers on both ports, which is worth saying: the ports describe
+memory differently and spend the same amount doing this.
+
+**The rate is checked as arithmetic, not recorded as a total.** Every message
+in the boot client runs carries a buffer of one page, so every rendezvous
+moves exactly one page across and back. The hand-over writes the entry into
+the receiver and rewrites the sender's to take the page away; the take-back
+unmaps one and restores the other; each half throws the whole translation
+cache away when it is done. Four entries and two flushes per rendezvous, and
+`run_client` panics if the ports spent anything else. `fs_client` costs twenty
+entries and ten flushes over five rendezvous, `fs_batch` twelve and six over
+three, and neither number is written down anywhere: they are derived and then
+compared against what happened.
+
+**Three numbers rather than one, because they are three costs.** An entry is a
+store. A table is an intermediate level built, which is a store and a frame
+that is never given back. A flush is the whole translation cache discarded,
+which is neither and is the expensive one. The tables are the interesting
+small number: four for the whole run, because a table is built the first time
+a program lends a page into a particular peer's space and is reused by every
+crossing after it. The mapping cost of a boundary is per message; the table
+cost is per pair of programs that have ever spoken.
+
+*Counted where it is spent.* The counters are in the ports rather than in the
+rendezvous, because what matters is what the hardware description had written
+to it and not what the caller asked for. A port that maps a block where the
+other maps a page does less work, and a count taken above them could not tell.
+Charging is bracketed around the two halves of the move, which is honest
+because neither half can block: nothing else runs between the begin and the
+end, so nothing else can be charged to it. Loading a program writes an entry
+per page of its slot, two hundred and fifty-six per process, and a total that
+included those would be a number about the loader with the buffer path lost in
+it.
+
+*Breaking it on purpose.* Taking the block store back out of the read path,
+and changing nothing else, drops the run from 84 entries and 42 flushes to 24
+and 12, and from four tables to three. The store is 60 of the 84 and 30 of the
+42, and one of the tables. So the count follows the path rather than measuring
+something fixed about the boot sequence.
+
+**The entry predicted the wrong multiple, and the real relationship is
+better.** It said two layers cost twice one layer. They cost one crossing for
+the client plus one per block of the file, and with sixteen byte blocks a
+thirty-one byte file is two blocks, so `fs_batch`'s single client message costs
+three crossings and not two. The general statement is the one worth having:
+a read costs four entries and two flushes per page per crossing, and the
+number of crossings is one plus the number of blocks the file occupies. A
+block store with realistic blocks would make that two; this one makes it
+three; neither is a property of the boundary, which is the thing being
+measured.
+
+*One cost is deliberately not counted.* Reviewing stage two found that a layer
+also costs a scheduling round trip per block, because the store's reply wakes
+the file server at its client's donated priority and the file server preempts
+the store before it returns to receive. That is real and it is not a mapping,
+so it does not belong in this line. It is already visible as the rendezvous
+count and in the send-blocking trace, and a cohort will not remove it: members
+still send messages to each other. Only the mapping goes.
 
 **4. Invalidating by address.**
 

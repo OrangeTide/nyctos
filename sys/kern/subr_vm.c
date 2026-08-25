@@ -153,3 +153,71 @@ vm_kernel_init(void)
 }
 
 #endif /* SYS_TIER == 2 */
+
+/*
+ * What the buffer path costs, per section 18's question.
+ *
+ * The counters are in the ports, because what matters is what the
+ * hardware description actually had written to it and not what the
+ * caller asked for: a port that maps a block where another maps a page
+ * does less work, and a count taken above them could not tell.
+ *
+ * They are charged only while the rendezvous is moving a buffer.
+ * Loading a program writes a leaf per page of its slot, which is two
+ * hundred and fifty-six per process, and a total that included those
+ * would be a number about the loader with the buffer path lost in the
+ * noise. Bracketing is honest here because neither half of the move can
+ * block: nothing else runs between the begin and the end, so nothing
+ * else can be charged to it.
+ *
+ * A depth rather than a flag, because the failure paths of the move
+ * undo it by calling the other half, and a flag would be cleared by the
+ * inner call while the outer one was still going.
+ */
+static struct vm_cost vm_buffer_cost;
+static uint32_t vm_charge_depth;
+
+void
+vm_charge_begin(void)
+{
+    vm_charge_depth++;
+}
+
+void
+vm_charge_end(void)
+{
+    if (vm_charge_depth == 0) {
+        panic("vm: the buffer path was charged out more than in");
+    }
+    vm_charge_depth--;
+}
+
+void
+vm_charge_leaf(void)
+{
+    if (vm_charge_depth != 0) {
+        vm_buffer_cost.vc_leaf++;
+    }
+}
+
+void
+vm_charge_table(void)
+{
+    if (vm_charge_depth != 0) {
+        vm_buffer_cost.vc_table++;
+    }
+}
+
+void
+vm_charge_flush(void)
+{
+    if (vm_charge_depth != 0) {
+        vm_buffer_cost.vc_flush++;
+    }
+}
+
+void
+vm_cost_read(struct vm_cost *out)
+{
+    *out = vm_buffer_cost;
+}

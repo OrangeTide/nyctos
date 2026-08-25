@@ -1906,18 +1906,33 @@ chain_checks(void)
  * produces byte counts that look exactly the same, so the states each
  * thread passed through are checked rather than assumed.
  */
+/*
+ * What one page crossing one boundary costs at each tier, per section
+ * 18. Derived in run_client() and checked there against what the ports
+ * actually wrote.
+ */
+#if SYS_TIER == 2
+#define BOUNDARY_ENTRIES    4
+#define BOUNDARY_FLUSHES    2
+#else
+#define BOUNDARY_ENTRIES    0
+#define BOUNDARY_FLUSHES    0
+#endif
+
 static void
 run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
   bool expect_send_block)
 {
     struct pool *conns = connection_pool();
     sys_ns_spec_t ns[1];
+    struct vm_cost cost;
     struct proc *p;
     struct child c;
     int32_t code;
     uint64_t before = channel_rendezvous;
     uint32_t pool_before;
 
+    vm_cost_read(&cost);
     pool_highwater_reset(conns);
     pool_before = conns->highwater;
 
@@ -1943,9 +1958,51 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
 
     trace_enable(false);
 
-    cnprintf("    %-10s %lu rendezvous, %lu connections\n", image,
-      (unsigned long)(channel_rendezvous - before),
-      (unsigned long)(conns->highwater - pool_before));
+    {
+        struct vm_cost after;
+        uint64_t rounds = channel_rendezvous - before;
+        uint64_t leaf, flush;
+
+        vm_cost_read(&after);
+        leaf = after.vc_leaf - cost.vc_leaf;
+        flush = after.vc_flush - cost.vc_flush;
+
+        cnprintf("    %-10s %lu rendezvous, %lu connections, "
+          "%lu entries, %lu flushes\n", image,
+          (unsigned long)rounds,
+          (unsigned long)(conns->highwater - pool_before),
+          (unsigned long)leaf, (unsigned long)flush);
+
+        /*
+         * What a boundary costs, as arithmetic rather than as a
+         * recorded total. Every message in this run carries a buffer
+         * of one page, so every rendezvous moves exactly one page
+         * across and back: the hand-over writes the entry into the
+         * receiver and rewrites the sender's to take it away, the
+         * take-back unmaps one and restores the other, and each half
+         * throws the whole translation cache away when it is done.
+         * Four entries and two flushes, times the number of
+         * rendezvous.
+         *
+         * At Tier 0 it is nothing at all, which is not this check
+         * being skipped. There is one address space and a buffer that
+         * arrives is already where it needs to be, so the whole of
+         * this is what the other tier pays to keep programs apart.
+         *
+         * The assumption about one page per message is the part that
+         * would go stale first. If a message ever carries no buffer or
+         * a buffer spanning two pages this stops holding, and it says
+         * so here rather than being quietly loosened.
+         */
+        if (leaf != rounds * BOUNDARY_ENTRIES ||
+          flush != rounds * BOUNDARY_FLUSHES) {
+            panic("%s: %lu rendezvous cost %lu entries and %lu flushes, "
+              "not %lu and %lu", image, (unsigned long)rounds,
+              (unsigned long)leaf, (unsigned long)flush,
+              (unsigned long)(rounds * BOUNDARY_ENTRIES),
+              (unsigned long)(rounds * BOUNDARY_FLUSHES));
+        }
+    }
     trace_report(image);
 
     if (code != (int32_t)expect_bytes) {
