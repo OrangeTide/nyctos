@@ -176,6 +176,15 @@ struct thread {
     size_t              t_lend_len;
     struct proc        *t_lend_to;
 
+    /*
+     * Whether this thread is inside the buffer move, so that what the
+     * ports write can be charged to it. Per thread and not a global
+     * flag: the timer interrupt can dispatch on its way out, so a
+     * thread can be preempted in the middle of the move, and a global
+     * flag would charge whatever ran next to the buffer path.
+     */
+    uint32_t            t_charging;
+
     struct sys_msg     *t_msg;          /* the request being carried */
     struct sys_msg     *t_reply;        /* where the reply is to be written */
     sys_thread_id_t     t_client;       /* the client this thread owes */

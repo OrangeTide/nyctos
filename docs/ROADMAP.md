@@ -3028,7 +3028,9 @@ where it cost three before the store existed, and `fs_batch` three where it
 cost one. Two of each are the store, one per block of a thirty-one byte file.
 
 **3. What a boundary costs.** *Built.* Four page-table entries and two
-whole-TLB flushes, per page, per boundary, at Tier 2. Nothing at Tier 0.
+whole-TLB flushes to move one page across a boundary and back, at Tier 2.
+Nothing at Tier 0. The review below corrects the shape of that: the entries
+are per page and the flushes are per half of the move.
 
 - A count of page-table entry writes and TLB operations on the buffer path,
   kept in the kernel and printed in the resource report.
@@ -3037,23 +3039,23 @@ whole-TLB flushes, per page, per boundary, at Tier 2. Nothing at Tier 0.
 *Check.* The resource report carries a line the check compares:
 
 ```
-  moving buffers: 84 entries, 4 tables, 42 flushes     (Tier 2)
-  moving buffers: 0 entries, 0 tables, 0 flushes       (Tier 0)
+  buffer remapping: 42 pages in 42 halves, 84 entries, 4 tables, 42 flushes
+  buffer remapping: 0 pages in 0 halves, 0 entries, 0 tables, 0 flushes
 ```
 
 The same numbers on both ports, which is worth saying: the ports describe
 memory differently and spend the same amount doing this.
 
-**The rate is checked as arithmetic, not recorded as a total.** Every message
-in the boot client runs carries a buffer of one page, so every rendezvous
-moves exactly one page across and back. The hand-over writes the entry into
-the receiver and rewrites the sender's to take the page away; the take-back
-unmaps one and restores the other; each half throws the whole translation
-cache away when it is done. Four entries and two flushes per rendezvous, and
-`run_client` panics if the ports spent anything else. `fs_client` costs twenty
-entries and ten flushes over five rendezvous, `fs_batch` twelve and six over
-three, and neither number is written down anywhere: they are derived and then
-compared against what happened.
+**The rate is checked as arithmetic, not recorded as a total.** The hand-over
+writes the entry into the receiver and rewrites the sender's to take the page
+away; the take-back unmaps one and restores the other; each half throws the
+whole translation cache away when it is done. Two entries per page in each
+half, one flush per half, and the kernel panics if the ports spent anything
+else. `fs_client` costs twenty entries and ten flushes over ten page-moves in
+ten halves, `fs_batch` twelve and six over six and six, and neither number is
+written down anywhere: they are derived and then compared against what
+happened. The review below is where the denominators were separated; the first
+version multiplied by the rendezvous count.
 
 **Three numbers rather than one, because they are three costs.** An entry is a
 store. A table is an intermediate level built, which is a store and a frame
@@ -3099,6 +3101,62 @@ the store before it returns to receive. That is real and it is not a mapping,
 so it does not belong in this line. It is already visible as the rendezvous
 count and in the send-blocking trace, and a cohort will not remove it: members
 still send messages to each other. Only the mapping goes.
+
+*Reviewing it found two defects, and both were in what the stage claimed
+rather than in what it built.*
+
+**The rate has two denominators and the stage stated one.** An entry is written
+per page. The translation cache is thrown away once per half of the move,
+however many pages that half carried. The stage said "four entries and two
+flushes per page per crossing", which is right only for a one page buffer, and
+every buffer in this tree is one page. A two page buffer costs eight entries
+and still two flushes.
+
+The check had the same fault and was worse, because it multiplied by the
+rendezvous count: it asserted four entries and two flushes per message, which
+held only because every message here happens to carry exactly one page. It was
+checking the workload and calling it the mechanism.
+
+The rendezvous now says how many pages each half moved and how many halves
+there were, so the numerator comes from the ports and the denominator from the
+message. The rule checked is two entries per page and one flush per half, and
+it holds for any workload rather than for this one. Spending one extra entry
+per page fails with `10 pages moved cost 25 entries, not 20`; spending one
+extra flush per half fails with `10 halves cost 15 flushes, not 10`. The two
+are independently falsifiable, which the earlier form could not be.
+
+It is also checked over the whole run and not only over the two client runs
+that print it, so a path that spent something other than the rule says would
+be caught even though nothing measures it directly.
+
+**The bracket can be preempted, and the comment said it could not.** The first
+version kept the charging depth in a global and justified it by saying neither
+half of the move can block, so nothing else runs between the begin and the
+end. Blocking is not the only way something else runs. The timer interrupt
+calls `sched_undefer()` on its way out, which dispatches if something better
+became runnable, so a thread can be preempted in the middle of the move and
+everything the next thread mapped would have been charged to the buffer path.
+
+The depth is on the thread now, so a preempting thread is not charging and its
+work is its own. Instrumenting the old form to panic if a second thread wrote
+tables mid-move shows it never happens in these runs, so this was latent
+rather than live, and it is recorded here as latent. That is the same shape as
+the flush in stage one: kept because the argument for it is sound, not because
+a check caught it.
+
+**And the report line said the wrong thing at Tier 0.** It read `moving
+buffers: 0 pages`, which says no buffers were exchanged. Buffers are exchanged
+at both tiers and the rendezvous counts show it. What is zero is the
+*remapping*, so the line says `buffer remapping` and the zero now means what
+it should: the same messages carrying the same buffers cost nothing to place,
+because there is one address space and a buffer that arrives is already where
+it needs to be.
+
+```
+  buffer remapping: 42 pages in 42 halves, 84 entries, 4 tables, 42 flushes
+  buffer remapping: 0 pages in 0 halves, 0 entries, 0 tables, 0 flushes
+```
+
 
 **4. Invalidating by address.**
 

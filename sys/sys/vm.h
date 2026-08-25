@@ -69,8 +69,10 @@ struct addrspace {
 /*
  * What moving a buffer costs, counted where it is spent.
  *
- * Three numbers rather than one, because they are three different
- * costs. A leaf is a page-table entry written, which is a store. A
+ * Five numbers. Three are what the ports spent and two are what they
+ * were asked for, and the rate is the one divided by the other.
+ *
+ * The three costs are three different costs. A leaf is a page-table entry written, which is a store. A
  * table is an intermediate level built, which is a store and a frame
  * that is never given back. A flush is the whole translation cache
  * thrown away, which is neither and is usually the expensive one.
@@ -80,9 +82,14 @@ struct addrspace {
  * arrives is already where it needs to be.
  */
 struct vm_cost {
+    /* What the ports wrote. */
     uint64_t    vc_leaf;
     uint64_t    vc_table;
     uint64_t    vc_flush;
+
+    /* What was asked of them. */
+    uint64_t    vc_pages;
+    uint64_t    vc_halves;
 };
 
 /*
@@ -96,6 +103,14 @@ void vm_charge_end(void);
 void vm_charge_leaf(void);
 void vm_charge_table(void);
 void vm_charge_flush(void);
+
+/*
+ * Called by the rendezvous for each half of a move, saying how many
+ * pages that half carried. The two counts have different denominators
+ * on purpose: an entry is written per page, and the translation cache
+ * is thrown away once per half whatever the page count.
+ */
+void vm_charge_pages(uint32_t pages);
 
 /* What has been spent so far. */
 void vm_cost_read(struct vm_cost *out);

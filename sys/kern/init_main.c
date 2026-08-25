@@ -1907,17 +1907,41 @@ chain_checks(void)
  * thread passed through are checked rather than assumed.
  */
 /*
- * What one page crossing one boundary costs at each tier, per section
- * 18. Derived in run_client() and checked there against what the ports
- * actually wrote.
+ * What moving a buffer costs at each tier, per section 18.
+ *
+ * Two entries per page in each half of the move, and one whole-TLB
+ * flush per half whatever the page count. A crossing is both halves,
+ * so a one page buffer crossing one boundary is four entries and two
+ * flushes, and that is where the headline number comes from. The rule
+ * is stated per half here because that is the shape the code has, and
+ * because stating it per crossing hid that the two have different
+ * denominators.
+ *
+ * Checked against what the ports actually wrote, not recorded as a
+ * total, so it holds for any workload rather than for this one.
  */
 #if SYS_TIER == 2
-#define BOUNDARY_ENTRIES    4
-#define BOUNDARY_FLUSHES    2
+#define ENTRIES_PER_PAGE    2
+#define FLUSHES_PER_HALF    1
 #else
-#define BOUNDARY_ENTRIES    0
-#define BOUNDARY_FLUSHES    0
+#define ENTRIES_PER_PAGE    0
+#define FLUSHES_PER_HALF    0
 #endif
+
+static void
+boundary_rate(const char *what, const struct vm_cost *c)
+{
+    if (c->vc_leaf != c->vc_pages * ENTRIES_PER_PAGE) {
+        panic("%s: %lu pages moved cost %lu entries, not %lu", what,
+          (unsigned long)c->vc_pages, (unsigned long)c->vc_leaf,
+          (unsigned long)(c->vc_pages * ENTRIES_PER_PAGE));
+    }
+    if (c->vc_flush != c->vc_halves * FLUSHES_PER_HALF) {
+        panic("%s: %lu halves cost %lu flushes, not %lu", what,
+          (unsigned long)c->vc_halves, (unsigned long)c->vc_flush,
+          (unsigned long)(c->vc_halves * FLUSHES_PER_HALF));
+    }
+}
 
 static void
 run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
@@ -1974,33 +1998,27 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
           (unsigned long)leaf, (unsigned long)flush);
 
         /*
-         * What a boundary costs, as arithmetic rather than as a
-         * recorded total. Every message in this run carries a buffer
-         * of one page, so every rendezvous moves exactly one page
-         * across and back: the hand-over writes the entry into the
-         * receiver and rewrites the sender's to take it away, the
-         * take-back unmaps one and restores the other, and each half
-         * throws the whole translation cache away when it is done.
-         * Four entries and two flushes, times the number of
-         * rendezvous.
+         * The rate over this run alone, against what was asked for
+         * rather than against how many messages there were. The
+         * earlier version multiplied by the rendezvous count, which
+         * held only because every message here happens to carry one
+         * page, and would have been checking the workload rather than
+         * the mechanism the day one did not.
          *
-         * At Tier 0 it is nothing at all, which is not this check
+         * At Tier 0 it is nothing at all, which is not the check
          * being skipped. There is one address space and a buffer that
          * arrives is already where it needs to be, so the whole of
          * this is what the other tier pays to keep programs apart.
-         *
-         * The assumption about one page per message is the part that
-         * would go stale first. If a message ever carries no buffer or
-         * a buffer spanning two pages this stops holding, and it says
-         * so here rather than being quietly loosened.
          */
-        if (leaf != rounds * BOUNDARY_ENTRIES ||
-          flush != rounds * BOUNDARY_FLUSHES) {
-            panic("%s: %lu rendezvous cost %lu entries and %lu flushes, "
-              "not %lu and %lu", image, (unsigned long)rounds,
-              (unsigned long)leaf, (unsigned long)flush,
-              (unsigned long)(rounds * BOUNDARY_ENTRIES),
-              (unsigned long)(rounds * BOUNDARY_FLUSHES));
+        {
+            struct vm_cost run;
+
+            run.vc_leaf = leaf;
+            run.vc_flush = flush;
+            run.vc_table = after.vc_table - cost.vc_table;
+            run.vc_pages = after.vc_pages - cost.vc_pages;
+            run.vc_halves = after.vc_halves - cost.vc_halves;
+            boundary_rate(image, &run);
         }
     }
     trace_report(image);
@@ -3635,6 +3653,20 @@ kernel_main(void)
     namespace_checks(h_fs_root, h_console);
 
     shell_checks(h_console, h_fs_root);
+
+    /*
+     * The same rate over the whole run and not only over the two
+     * client runs that print it. Everything that ever moved a buffer
+     * is in this, including the shell session, and a path that spent
+     * something other than the rule says would be caught here even if
+     * nothing measured it directly.
+     */
+    {
+        struct vm_cost all;
+
+        vm_cost_read(&all);
+        boundary_rate("the whole run", &all);
+    }
 
     object_report_usage();
     cnputs("stage 9 complete\n");

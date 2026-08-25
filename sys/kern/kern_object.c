@@ -191,22 +191,26 @@ object_report_usage(void)
       (unsigned int)(threads->highwater * SYS_KSTACK_SIZE));
 
     /*
-     * And what moving buffers between address spaces cost, per section
-     * 18. Here rather than in a line of its own because it is a
-     * resource the run consumed, and in the compared part of the
-     * report because a number nobody would notice changing is a number
-     * that stops meaning anything.
+     * And what remapping buffers between address spaces cost, per
+     * section 18. In the compared part of the report because a number
+     * nobody would notice changing is a number that stops meaning
+     * anything.
      *
-     * Zero at Tier 0, and that is the measurement. There is one
-     * address space, a buffer that arrives is already where it needs
-     * to be, and the whole of this cost is what the other tier pays
-     * for keeping programs apart.
+     * Remapping, and not moving. Zero here does not mean no buffers
+     * were exchanged: the same messages carrying the same buffers
+     * cross at both tiers, which the rendezvous counts in the boot
+     * report show. It means none of it had to be remapped, because
+     * there is one address space and a buffer that arrives is already
+     * where it needs to be. The whole of this line is what the other
+     * tier pays for keeping programs apart.
      */
     {
         struct vm_cost c;
 
         vm_cost_read(&c);
-        cnprintf("  moving buffers: %u entries, %u tables, %u flushes\n",
+        cnprintf("  buffer remapping: %u pages in %u halves, "
+          "%u entries, %u tables, %u flushes\n",
+          (unsigned int)c.vc_pages, (unsigned int)c.vc_halves,
           (unsigned int)c.vc_leaf, (unsigned int)c.vc_table,
           (unsigned int)c.vc_flush);
     }

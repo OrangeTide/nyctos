@@ -27,6 +27,7 @@
 
 #include <sys/page.h>
 #include <sys/systm.h>
+#include <sys/thread.h>
 #include <sys/vm.h>
 
 #if SYS_TIER == 2
@@ -154,48 +155,68 @@ vm_kernel_init(void)
 
 #endif /* SYS_TIER == 2 */
 
+
 /*
  * What the buffer path costs, per section 18's question.
  *
- * The counters are in the ports, because what matters is what the
- * hardware description actually had written to it and not what the
+ * The numerator is counted in the ports, because what matters is what
+ * the hardware description actually had written to it and not what the
  * caller asked for: a port that maps a block where another maps a page
- * does less work, and a count taken above them could not tell.
+ * does less work, and a count taken above them could not tell. The
+ * denominator is counted in the rendezvous, because how many pages were
+ * asked for and how many times is a question about the message and not
+ * about the tables.
  *
- * They are charged only while the rendezvous is moving a buffer.
- * Loading a program writes a leaf per page of its slot, which is two
- * hundred and fifty-six per process, and a total that included those
- * would be a number about the loader with the buffer path lost in the
- * noise. Bracketing is honest here because neither half of the move can
- * block: nothing else runs between the begin and the end, so nothing
- * else can be charged to it.
+ * They are charged only while a thread is inside the move. Loading a
+ * program writes an entry per page of its slot, two hundred and
+ * fifty-six per process, and a total that included those would be a
+ * number about the loader with the buffer path lost in the noise.
  *
- * A depth rather than a flag, because the failure paths of the move
- * undo it by calling the other half, and a flag would be cleared by the
- * inner call while the outer one was still going.
+ * Charged to the thread and not to a global flag. The first version
+ * used a global and said in this comment that nothing else could run
+ * between the begin and the end, because neither half of the move can
+ * block. Blocking is not the only way something else runs: the timer
+ * interrupt calls sched_undefer() on its way out, which dispatches if
+ * something better became runnable, so a thread can be preempted in the
+ * middle of the move and whatever ran next would have been charged to
+ * it. Per thread, the preempting thread is not charging and its work is
+ * its own.
+ *
+ * A depth rather than a flag on the thread as well, because the failure
+ * paths of the move undo it by calling the other half.
  */
 static struct vm_cost vm_buffer_cost;
-static uint32_t vm_charge_depth;
+
+static bool
+charging(void)
+{
+    const struct thread *t = thread_current();
+
+    return t != NULL && t->t_charging != 0;
+}
 
 void
 vm_charge_begin(void)
 {
-    vm_charge_depth++;
+    thread_current()->t_charging++;
 }
 
 void
 vm_charge_end(void)
 {
-    if (vm_charge_depth == 0) {
-        panic("vm: the buffer path was charged out more than in");
+    struct thread *t = thread_current();
+
+    if (t->t_charging == 0) {
+        panic("vm: %s was charged out of the buffer path more than in",
+          t->t_name);
     }
-    vm_charge_depth--;
+    t->t_charging--;
 }
 
 void
 vm_charge_leaf(void)
 {
-    if (vm_charge_depth != 0) {
+    if (charging()) {
         vm_buffer_cost.vc_leaf++;
     }
 }
@@ -203,7 +224,7 @@ vm_charge_leaf(void)
 void
 vm_charge_table(void)
 {
-    if (vm_charge_depth != 0) {
+    if (charging()) {
         vm_buffer_cost.vc_table++;
     }
 }
@@ -211,9 +232,23 @@ vm_charge_table(void)
 void
 vm_charge_flush(void)
 {
-    if (vm_charge_depth != 0) {
+    if (charging()) {
         vm_buffer_cost.vc_flush++;
     }
+}
+
+/*
+ * What was asked for, which is the other half of the rate. A page is
+ * one page moved one way; a half is one hand-over or one take-back.
+ * They have different denominators and that is the point: an entry is
+ * written per page, and the translation cache is thrown away once per
+ * half however many pages moved.
+ */
+void
+vm_charge_pages(uint32_t pages)
+{
+    vm_buffer_cost.vc_pages += pages;
+    vm_buffer_cost.vc_halves++;
 }
 
 void

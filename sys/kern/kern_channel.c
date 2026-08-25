@@ -206,6 +206,8 @@ msg_buf_take_back(struct thread *client)
 
     md_tlb_flush_all();
 
+    vm_charge_pages((uint32_t)(client->t_lend_len / PAGE_SIZE));
+
     client->t_lend_va = 0;
     client->t_lend_len = 0;
     client->t_lend_to = NULL;
@@ -392,6 +394,8 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
          * exactly the address a server is about to touch.
          */
         md_tlb_flush_all();
+
+        vm_charge_pages((uint32_t)(client->t_lend_len / PAGE_SIZE));
     }
 #else
     (void)server;
