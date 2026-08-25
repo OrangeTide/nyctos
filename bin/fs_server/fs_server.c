@@ -27,6 +27,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/blk.h>
 #include <sys/fs.h>
 
 /*
@@ -47,21 +48,32 @@
 #define FS_NODE_ROOT    0
 #define FS_NODE_ALT     2
 
-static const char motd_text[] = "served from outside the kernel\n";
-static const char alt_motd_text[] = "and this one from the other one\n";
-static const char notes_text[] = "only the second directory has this\n";
+/*
+ * A file is a block and a length, and a directory is neither.
+ *
+ * The bytes are not here any more. They are in the block store this
+ * server reads through, which is the whole of what this stage changed:
+ * a file server with no copy of its own files has to ask for them, and
+ * a request from a client now crosses two boundaries to reach them.
+ *
+ * FS_NOT_A_FILE rather than a separate flag, because every place that
+ * used to ask whether a node had bytes has to keep asking the same
+ * question, and a second field to keep consistent with the first is a
+ * second field that will one day disagree.
+ */
+#define FS_NOT_A_FILE   (-1)
 
 static const struct {
     const char *name;
-    const char *data;
+    int32_t     block;      /* in the store, or FS_NOT_A_FILE */
     uint32_t    len;
     uint32_t    dir;        /* the directory this entry is in */
 } fs_nodes[] = {
-    { "/",     NULL,          0,                          FS_NODE_ROOT },
-    { "motd",  motd_text,     sizeof(motd_text) - 1,      FS_NODE_ROOT },
-    { "/",     NULL,          0,                          FS_NODE_ALT },
-    { "motd",  alt_motd_text, sizeof(alt_motd_text) - 1,  FS_NODE_ALT },
-    { "notes", notes_text,    sizeof(notes_text) - 1,     FS_NODE_ALT },
+    { "/",     FS_NOT_A_FILE,       0,  FS_NODE_ROOT },
+    { "motd",  BLK_MOTD_BLOCK,     31,  FS_NODE_ROOT },
+    { "/",     FS_NOT_A_FILE,       0,  FS_NODE_ALT },
+    { "motd",  BLK_ALT_MOTD_BLOCK, 32,  FS_NODE_ALT },
+    { "notes", BLK_NOTES_BLOCK,    35,  FS_NODE_ALT },
 };
 
 #define FS_NODE_COUNT   (sizeof(fs_nodes) / sizeof(fs_nodes[0]))
@@ -109,12 +121,12 @@ walk(uint32_t node, const char *name, uint32_t namelen)
     if (namelen == 0 || namelen > FS_NAME_MAX) {
         return FS_NODE_COUNT;
     }
-    if (node >= FS_NODE_COUNT || fs_nodes[node].data != NULL) {
+    if (node >= FS_NODE_COUNT || fs_nodes[node].block != FS_NOT_A_FILE) {
         return FS_NODE_COUNT;       /* not a directory */
     }
 
     for (i = 0; i < FS_NODE_COUNT; i++) {
-        if (fs_nodes[i].dir != node || fs_nodes[i].data == NULL) {
+        if (fs_nodes[i].dir != node || fs_nodes[i].block == FS_NOT_A_FILE) {
             continue;
         }
         if (strlen(fs_nodes[i].name) == namelen &&
@@ -127,6 +139,60 @@ walk(uint32_t node, const char *name, uint32_t namelen)
 }
 
 /*
+ * The block store, and one block of it.
+ *
+ * The buffer is this server's own memory, because that is the only
+ * memory it may lend: section 23.2 checks a buffer descriptor against
+ * the sender's own image, and a client's buffer is mapped here at the
+ * client's address without becoming this process's to hand on. So a
+ * read through two layers copies once, here, and the copy is not
+ * something a cohort removes. What a cohort removes is the mapping, and
+ * stage five is where that shows.
+ *
+ * One block, because every file here fits in one and a second would be
+ * memory spent on a case the check never reaches. A file spanning
+ * blocks reads them one at a time through this.
+ */
+static sys_handle_t store;
+static uint8_t block[BLK_BLOCK_BYTES];
+
+/*
+ * Ask the store for the block at this offset. Returns what the store
+ * said, so a store that refuses is a read that fails rather than a read
+ * that quietly returns nothing.
+ */
+static sys_err_t
+store_read(uint32_t blocknr)
+{
+    fs_request_t *req;
+    sys_msg_t message, reply;
+    sys_err_t err;
+
+    if (store == SYS_HANDLE_INVALID) {
+        return SYS_ERR_NOT_SUPPORTED;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.handle = SYS_HANDLE_INVALID;
+    message.inline_len = sizeof(*req);
+    message.buf = (uintptr_t)block;
+    message.buf_len = sizeof(block);
+    message.buf_flags = SYS_BUF_WRITE;
+
+    req = (fs_request_t *)message.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = (uint64_t)blocknr * BLK_BLOCK_BYTES;
+    req->fr_length = BLK_BLOCK_BYTES;
+
+    err = sys_msg_send(store, &message, &reply);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    return ((const fs_reply_t *)reply.inline_data)->fr_status;
+}
+
+/*
  * Copy file bytes into the buffer the client supplied, per the reply-path
  * caveat of section 6.1: a server does not hand back memory of its own,
  * because it could never tell when the client had finished with it.
@@ -135,15 +201,24 @@ walk(uint32_t node, const char *name, uint32_t namelen)
  * that does not know a file's length has to be able to ask for more than
  * there is, which is section 25.7's rule and the reason a compound read
  * does not abort its own sequence.
+ *
+ * A store that refuses is different, and returns a short count of zero
+ * having failed rather than a short count of zero having reached the
+ * end. The caller can tell them apart because this reports the error
+ * separately; before the store existed there was nothing that could
+ * fail here and nothing to report.
  */
 static uint32_t
 read_into(void *dst, uint32_t dstlen, uint32_t node, uint64_t off,
-  uint32_t want)
+  uint32_t want, sys_err_t *err)
 {
+    uint32_t done = 0;
     uint32_t avail;
 
+    *err = SYS_OK;
+
     if (dst == NULL || node >= FS_NODE_COUNT ||
-      fs_nodes[node].data == NULL) {
+      fs_nodes[node].block == FS_NOT_A_FILE) {
         return 0;
     }
 
@@ -156,9 +231,32 @@ read_into(void *dst, uint32_t dstlen, uint32_t node, uint64_t off,
         avail = dstlen;
     }
 
-    memcpy(dst, &fs_nodes[node].data[off], avail);
+    /*
+     * Block at a time, because that is what the store serves. The file
+     * starts at a block boundary, so the block a byte offset falls in
+     * is arithmetic and not a lookup, which is the whole reason a
+     * filesystem sits above a block store rather than beside it.
+     */
+    while (done < avail) {
+        uint64_t pos = off + done;
+        uint32_t within = (uint32_t)(pos % BLK_BLOCK_BYTES);
+        uint32_t n = BLK_BLOCK_BYTES - within;
 
-    return avail;
+        if (n > avail - done) {
+            n = avail - done;
+        }
+
+        *err = store_read((uint32_t)fs_nodes[node].block +
+          (uint32_t)(pos / BLK_BLOCK_BYTES));
+        if (*err != SYS_OK) {
+            return 0;
+        }
+
+        memcpy((uint8_t *)dst + done, &block[within], n);
+        done += n;
+    }
+
+    return done;
 }
 
 /* The length of a fixed-width name field, which need not be terminated. */
@@ -193,7 +291,7 @@ do_walk(sys_handle_t chan, const fs_request_t *req, uint32_t node,
      * what is wrong is that this connection does not name a place
      * things can be found in.
      */
-    if (node >= FS_NODE_COUNT || fs_nodes[node].data != NULL) {
+    if (node >= FS_NODE_COUNT || fs_nodes[node].block != FS_NOT_A_FILE) {
         rep->fr_status = SYS_ERR_NO_ENT;
         return;
     }
@@ -237,7 +335,7 @@ static void
 do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
   sys_msg_t *reply, fs_reply_t *rep)
 {
-    if (node >= FS_NODE_COUNT || fs_nodes[node].data == NULL) {
+    if (node >= FS_NODE_COUNT || fs_nodes[node].block == FS_NOT_A_FILE) {
         rep->fr_status = SYS_ERR_NO_ENT;
         return;
     }
@@ -252,13 +350,13 @@ do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
      */
     if (message->buf != 0 && message->buf_len > 0) {
         rep->fr_length = read_into((void *)message->buf,
-          message->buf_len, node, req->fr_offset, req->fr_length);
+          message->buf_len, node, req->fr_offset, req->fr_length,
+          &rep->fr_status);
     } else {
         rep->fr_length = read_into(&reply->inline_data[sizeof(*rep)],
           SYS_IPC_INLINE_BYTES - (uint32_t)sizeof(*rep), node,
-          req->fr_offset, req->fr_length);
+          req->fr_offset, req->fr_length, &rep->fr_status);
     }
-    rep->fr_status = SYS_OK;
 }
 
 /*
@@ -335,13 +433,23 @@ do_batch(const sys_msg_t *message, uint32_t node, sys_msg_t *reply,
              * that does not know a file's length must be able to ask for
              * more than there is without aborting its own sequence.
              */
-            if (node >= FS_NODE_COUNT || fs_nodes[node].data == NULL) {
+            if (node >= FS_NODE_COUNT || fs_nodes[node].block == FS_NOT_A_FILE) {
                 rep->fb_status = SYS_ERR_NO_ENT;
                 rep->fb_failed = i;
                 return;
             }
-            rep->fb_length = read_into((void *)message->buf,
-              message->buf_len, node, e->fe_offset, e->fe_length);
+            {
+                sys_err_t serr;
+
+                rep->fb_length = read_into((void *)message->buf,
+                  message->buf_len, node, e->fe_offset, e->fe_length,
+                  &serr);
+                if (serr != SYS_OK) {
+                    rep->fb_status = serr;
+                    rep->fb_failed = i;
+                    return;
+                }
+            }
             break;
 
         default:
@@ -371,6 +479,17 @@ main(void)
     chan = ns_lookup(SYS_NS_SERVICE);
     if (chan == SYS_HANDLE_INVALID) {
         return 1;
+    }
+
+    /*
+     * The store this server reads through. Not optional: with the
+     * bytes in the block store there is nothing here to serve without
+     * it, and a file server that started anyway would answer every
+     * read with an error nobody could act on.
+     */
+    store = ns_lookup(SYS_NS_STORE);
+    if (store == SYS_HANDLE_INVALID) {
+        return 4;
     }
 
     for (;;) {

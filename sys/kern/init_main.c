@@ -3294,9 +3294,10 @@ user_slice(void)
 {
     struct proc *self = proc_current();
     struct sys_op_connect_args cargs;
-    sys_ns_spec_t ns[1];
+    sys_ns_spec_t ns[2];
     struct channel *ch;
-    sys_handle_t h_recv, root, root2, root3;
+    struct channel *blk;
+    sys_handle_t h_recv, h_blk, store, root, root2, root3;
     sys_err_t err;
 
     boot_report();
@@ -3390,11 +3391,45 @@ user_slice(void)
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     root3 = cargs.out_handle;
 
+    /*
+     * The block store, and the connection the filesystem reads it
+     * through. Built before the filesystem because the filesystem
+     * cannot start without it: the bytes it serves are down there now,
+     * and a file server with nothing under it has nothing to serve.
+     *
+     * Two processes and one more boundary. What a client asks for now
+     * crosses into the filesystem and then into the store, which is
+     * the stack section 18 is about and the thing this tree did not
+     * have. Nothing above notices, which is the check.
+     */
+    blk = channel_create("blk-store", self);
+    if (blk == NULL) {
+        panic("user slice: no channel for the store");
+    }
+    err = handle_insert(&self->p_handles, blk, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_blk);
+    expect("a receive handle for the block store", err, SYS_OK);
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = 0;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to it, for the filesystem",
+      run(SYS_OP_CHAN_CONNECT, h_blk, &cargs, sizeof(cargs)), SYS_OK);
+    store = cargs.out_handle;
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = h_blk;
+    cnputs("    loading blk_server, which holds the bytes\n");
+    (void)proc_spawn_image("blk_server", 15, ns, 1, NULL, 0);
+
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = h_recv;
+    ns[1].id = SYS_NS_STORE;
+    ns[1].handle = store;
     cnputs("    loading fs_server, which receives on that channel\n");
-    (void)proc_spawn_image("fs_server", 15, ns, 1, NULL, 0);
+    (void)proc_spawn_image("fs_server", 15, ns, 2, NULL, 0);
 
     /*
      * The same file, read two ways. Section 25.7 says one message should

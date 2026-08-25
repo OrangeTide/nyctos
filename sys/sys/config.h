@@ -61,8 +61,18 @@
  * makes these numbers a property of a system instead of a property of
  * its tests is reclamation, and that is M7.
  */
-#define SYS_MAX_PROCESSES         48
-#define SYS_MAX_THREADS           80
+
+/*
+ * Raised for the third milestone running, and by M6 rather than by
+ * anything M6 is about: a block store under the filesystem is one more
+ * process, and the cohort checks are three more. Forty-six of forty-
+ * eight was two spare with three stages still to build. The honest
+ * reading is that these numbers track how long the boot sequence is
+ * and will keep doing so until something reclaims a slot, which is M7
+ * and is why M7 comes next.
+ */
+#define SYS_MAX_PROCESSES         56
+#define SYS_MAX_THREADS           96
 #define SYS_MAX_CHANNELS          32
 #define SYS_MAX_GRANTS            64
 #define SYS_MAX_TIMELINES         64

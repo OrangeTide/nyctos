@@ -2891,18 +2891,78 @@ makes the second spawn return OK and the check fails; making a place stay
 taken after its process exits makes the legitimate restart fail. Neither
 passes quietly.
 
-**2. A block driver under the filesystem.**
+**2. A block driver under the filesystem.** *Built.* The bytes moved out of
+the file server into a store beneath it, so a read now crosses two boundaries
+and the tree has a stack to measure.
 
 - A RAM disk serving fixed-size blocks over the protocol that already exists.
 - `fs_server` reads file contents through it rather than out of its own image.
 - A buffer a client sent now crosses two boundaries instead of one.
 
 *Check.* `cat /motd` prints the line it has always printed and the recorded
-transcript does not move. What changed is underneath it, and the resource
-report shows one more process and one more thread. A block driver made to
-refuse the read makes `cat` report an error rather than printing text from the
-image, which is what says the second layer is load-bearing rather than
-decorative.
+transcript does not move at all. What changed is underneath it. The resource
+report shows one more process and one more thread, and the boot report shows
+`fs_client` costing four rendezvous where it cost three and `fs_batch` costing
+two where it cost one. Each read gained exactly one crossing, which is the
+shape a layer has.
+
+Breaking the store breaks the reader. A store made to refuse the block
+`/u/notes` lives in turns
+
+```
+$ cat /u/notes
+only the second directory has this
+```
+
+into
+
+```
+$ cat /u/notes
+cat: /u/notes: read failed
+```
+
+so the bytes really do come from underneath, and the refusal travels up
+through the filesystem to the client rather than being swallowed into a short
+read.
+
+**No new protocol, deliberately.** A block read is a read. The request and
+reply of section 25.2 already carry an offset, a length and a buffer, and a
+block store is what is left when the name is dropped and the offset and length
+are required to be whole blocks. `sys/blk.h` holds a block size and a layout
+and no messages. The store does refuse three different ways rather than one,
+because an unaligned offset, a length that is not whole blocks, and a range
+off the end of the disk are three mistakes and a caller told only "no" has to
+guess which.
+
+**The move contract does not forward, and that is the stage's real finding.**
+`fs_server` cannot pass the client's buffer down to the store. The buffer is
+mapped into the file server at the client's address, but section 23.2 checks a
+descriptor against the sender's own image, and a page on loan is not the
+sender's to lend on. So the file server sends a buffer of its own, and a read
+through two layers copies once. That copy is not something a cohort removes.
+What a cohort removes is the mapping, and stage five is where the file server
+stops sending a descriptor at all and passes the client's address to a peer
+that can already see it. The milestone is measuring mapping cost, and this is
+the moment it became clear that copies and mappings are separate questions
+that a stack of layers pays separately.
+
+**A store the filesystem cannot reach is a filesystem that does not start.**
+`fs_server` returns rather than serving errors when `SYS_NS_STORE` names
+nothing. There is no content left in it to serve, and a server that started
+anyway would answer every read with a failure no client could act on.
+
+*One thing the break test turned up about the check suite.* Refusing the block
+behind the second directory's `motd` changes nothing observable, because
+`cat /u/motd` resolves to the first half of the union and the second half's
+`motd` exists in order to be shadowed. The union is exercised, since
+`/u/notes` comes from the second half, but those particular bytes have never
+been read by the recorded session and were not read before this stage either.
+
+*What it cost.* One process and one thread, and the process pool went from 48
+to 56 and the thread pool from 80 to 96. That is the third milestone running
+to raise them, and it is M6 paying for M7 not having happened: forty-six of
+forty-eight with three stages still to build was not enough room. The comment
+in `config.h` says so rather than the constant changing quietly.
 
 **3. What a boundary costs.**
 

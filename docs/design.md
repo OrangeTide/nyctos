@@ -490,6 +490,8 @@ Four constraints shape everything that follows, and they are stated here because
 | Namespace handoff | Named directory handles passed at spawn, consumed by libc like `envp`. The name is inside the entry, not pointed at from it. |
 | Cohort membership | A set of images, fixed by the build and read at spawn. No operation joins one. |
 | Cohort space | One address space per cohort, member slots mapped side by side in it. A member has none of its own. |
+| Block layering | A block store is the read of section 25.2 with the name dropped and whole blocks required. No second protocol. |
+| Forwarding a buffer | A page held on loan is not the holder's to lend on, so a stack of layers copies at each one. |
 | Interrupts | Disabled in kernel on Tier 0; enabled on Tier 2. |
 | Interrupt handoff | The handler masks a source it cannot finish with; the driver drains and unmasks. |
 | Spawn priority | A child may not outrank its parent. `SYS_PRIO_INHERIT` asks for the caller's own. |

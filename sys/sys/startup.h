@@ -105,6 +105,16 @@ typedef enum sys_ns_id {
      * pager to give.
      */
     SYS_NS_PAGER    = 6,
+
+    /*
+     * The block store a server keeps its data in, as a connection to
+     * the driver that owns it. Not SYS_NS_DEVICE, which is a grant over
+     * registers and is what a driver holds; this is what a layer above
+     * a driver holds, which is an ordinary connection to an ordinary
+     * server. Section 19.1: a driver is a process, so talking to one is
+     * talking to a process.
+     */
+    SYS_NS_STORE    = 7,
     SYS_NS_SYSTEM_MAX = 0x0fff,
     SYS_NS_PRIVATE    = 0x1000,
 } sys_ns_id_t;

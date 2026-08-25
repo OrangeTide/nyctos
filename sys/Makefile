@@ -81,7 +81,8 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
     $(OBJTOP)/bin/namespace/namespace.bin \
     $(OBJTOP)/bin/resolve/resolve.bin \
     $(OBJTOP)/bin/peer_a/peer_a.bin \
-    $(OBJTOP)/bin/peer_b/peer_b.bin
+    $(OBJTOP)/bin/peer_b/peer_b.bin \
+    $(OBJTOP)/bin/blk_server/blk_server.bin
 	@mkdir -p $(@D)
 	$(MKBOOTARCH) $@ \
 	    fs_server=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 0 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_server/fs_server.bin \
@@ -104,6 +105,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
 	    namespace=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 17 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/namespace/namespace.bin \
 	    resolve=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 18 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/resolve/resolve.bin \
 	    peer_a=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 19 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/peer_a/peer_a.bin \
-	    peer_b=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 20 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/peer_b/peer_b.bin
+	    peer_b=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 20 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/peer_b/peer_b.bin \
+	    blk_server=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 21 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/blk_server/blk_server.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)
