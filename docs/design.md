@@ -488,6 +488,8 @@ Four constraints shape everything that follows, and they are stated here because
 | Union directories | Several entries at one name, tried in the order the parent wrote them. Only the same name, never a shorter one. |
 | Climbing out | The library reduces `..` for correctness; the server refuses it for confinement. Both, and neither alone. |
 | Namespace handoff | Named directory handles passed at spawn, consumed by libc like `envp`. The name is inside the entry, not pointed at from it. |
+| Cohort membership | A set of images, fixed by the build and read at spawn. No operation joins one. |
+| Cohort space | One address space per cohort, member slots mapped side by side in it. A member has none of its own. |
 | Interrupts | Disabled in kernel on Tier 0; enabled on Tier 2. |
 | Interrupt handoff | The handler masks a source it cannot finish with; the driver drains and unmasks. |
 | Spawn priority | A child may not outrank its parent. `SYS_PRIO_INHERIT` asks for the caller's own. |
@@ -1559,6 +1561,10 @@ A cohort is simultaneously **one protection domain, one recovery unit, and one s
 ### 18.1 Membership
 
 Cohort membership is fixed at system configuration time and cannot change at runtime. This is a security property, not an implementation convenience: joining a cohort grants access to every other member's memory, so a runtime join would be a privilege escalation primitive and the capability authorizing it would become the most valuable object in the system.
+
+Membership is stated as a set of images, and spawning one of those images is what places a process in the domain. That keeps the decision where it belongs: a program that spawns a member gets a member whether or not it knows what the image is, because membership is not the spawner's to choose. It also means two members must be two images, since every program is linked for a slot of its own and two copies of one image in one address space would land on top of each other.
+
+**Inside a cohort the handle table is bookkeeping rather than protection.** Authority is per-process and stays per-process, so each member still has a table of its own and still cannot name a handle a peer holds. That distinction is worth something between mutually suspicious processes and worth nothing here: a member can read and write any peer's memory, so it can read whatever a peer read through a handle and write whatever a peer is about to write. A cohort should be reasoned about as one principal with several handle tables, and the tables should be read as a record of which member does what rather than as a boundary between them.
 
 ### 18.2 Fault Recovery
 

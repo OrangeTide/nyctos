@@ -22,6 +22,7 @@ SRCS := arch/$(ARCH)/boot.S \
         kern/bootimg.S \
         kern/init_main.c \
         kern/kern_channel.c \
+        kern/kern_cohort.c \
         kern/kern_connection.c \
         kern/kern_grant.c \
         kern/kern_handle.c \
@@ -78,7 +79,9 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
     $(OBJTOP)/bin/granted/granted.bin \
     $(OBJTOP)/bin/paged/paged.bin \
     $(OBJTOP)/bin/namespace/namespace.bin \
-    $(OBJTOP)/bin/resolve/resolve.bin
+    $(OBJTOP)/bin/resolve/resolve.bin \
+    $(OBJTOP)/bin/peer_a/peer_a.bin \
+    $(OBJTOP)/bin/peer_b/peer_b.bin
 	@mkdir -p $(@D)
 	$(MKBOOTARCH) $@ \
 	    fs_server=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 0 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_server/fs_server.bin \
@@ -99,6 +102,8 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
 	    granted=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 15 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/granted/granted.bin \
 	    paged=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 16 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/paged/paged.bin \
 	    namespace=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 17 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/namespace/namespace.bin \
-	    resolve=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 18 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/resolve/resolve.bin
+	    resolve=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 18 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/resolve/resolve.bin \
+	    peer_a=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 19 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/peer_a/peer_a.bin \
+	    peer_b=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 20 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/peer_b/peer_b.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)

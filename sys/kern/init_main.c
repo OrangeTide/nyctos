@@ -5,6 +5,7 @@
 
 #include <sys/bootarch.h>
 #include <sys/channel.h>
+#include <sys/cohort.h>
 #include <sys/config.h>
 #include <sys/connection.h>
 #include <sys/fs.h>
@@ -3152,6 +3153,93 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
     (void)obj;
 }
 
+/*
+ * Two processes in one protection domain, per section 18.
+ *
+ * The check is the smallest thing a cohort can be shown to do that a
+ * pair of ordinary processes cannot: one member is handed the address
+ * of a word in the other's memory, and it reads and writes it. Nothing
+ * in the message is a buffer descriptor, so the kernel maps nothing,
+ * validates nothing, and never learns that an address crossed at all.
+ *
+ * The same code runs at both tiers and both must pass, which sounds
+ * like a check that proves nothing and is the opposite. At Tier 0 it
+ * passes because there is one address space, which is what Tier 0 is.
+ * At Tier 2 it passes only because the build put these two images in
+ * one cohort, and every other pair of processes at that tier would
+ * fault on the same message. Making the two tiers agree here is the
+ * whole content of the mechanism.
+ *
+ * The peer that faults is not this check. It is run by hand at Tier 2,
+ * because the two tiers disagree about it and one transcript covers all
+ * four configurations.
+ */
+static void
+cohort_checks(void)
+{
+    struct proc *self = proc_current();
+    struct sys_op_connect_args cargs;
+    sys_ns_spec_t ns[1];
+    struct channel *ch;
+    struct child c;
+    struct proc *p;
+    sys_handle_t h_recv, to;
+    int32_t code;
+    sys_err_t err;
+
+    cnputs("cohorts: two processes, one address space\n");
+
+    ch = channel_create("peers", self);
+    if (ch == NULL) {
+        panic("cohort check: no channel");
+    }
+
+    err = handle_insert(&self->p_handles, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_recv);
+    expect("a receive handle for the pair", err, SYS_OK);
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = 0;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection from one member to the other",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    to = cargs.out_handle;
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = h_recv;
+    p = proc_spawn_image("peer_a", 15, ns, 1, NULL, 0);
+    if (p->p_cohort == NULL) {
+        panic("cohort check: peer_a is in no cohort");
+    }
+
+    /*
+     * Spawned and watched under one deferral, for the reason
+     * run_client() gives: the child outranks this thread and would
+     * finish before anything held its completion timeline.
+     */
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_ROOT;
+    ns[0].handle = to;
+
+    sched_defer();
+    p = proc_spawn_image("peer_b", 20, ns, 1, NULL, 0);
+    child_watch(&c, p);
+    sched_undefer();
+
+    if (p->p_cohort == NULL) {
+        panic("cohort check: peer_b is in no cohort");
+    }
+
+    code = child_join(&c, 1000);
+    if (code != 0) {
+        panic("cohort check: peer_b stopped at step %d", code);
+    }
+
+    cnputs("    a peer read and wrote memory it was only given the "
+      "address of\n");
+}
+
 /* The console and the directory the shell is handed, kept from the
  * checks that created them. Root will hold both when there is a root;
  * until then the kernel is what assembles the system. */
@@ -3167,6 +3255,7 @@ user_slice(void)
     sys_err_t err;
 
     boot_report();
+    cohort_report();
 
     ch = channel_create("fs-user", self);
     if (ch == NULL) {
@@ -3275,6 +3364,7 @@ user_slice(void)
     trespass_checks(root3);
 
     move_checks();
+    cohort_checks();
 }
 
 void

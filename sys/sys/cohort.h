@@ -1,0 +1,92 @@
+/*
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ *
+ * PUBLIC DOMAIN (CC0-1.0)
+ */
+
+/*
+ * Cohorts: a protection domain shared by more than one process, per
+ * section 18.
+ *
+ * A cohort is a set of images that run in one address space. Membership
+ * is a property of the build and not of anything a running program can
+ * ask for, which is section 18.1: an operation that joined a cohort
+ * would be an operation that granted a program the memory of every
+ * member, and that is a privilege escalation primitive rather than a
+ * convenience.
+ *
+ * The table lives in this kernel's source because that is where a
+ * build-time decision belongs. A member is named by its image, so
+ * spawning that image is what places a process in the domain, whether
+ * the boot sequence spawns it or a program does.
+ *
+ * Two members must be two images. Every program is linked for a slot of
+ * its own, so two copies of one image would be two processes at one
+ * address, and in a shared space the second would land on top of the
+ * first. Section 6.1 already says two copies of one image cannot pass
+ * buffers to each other; this is the same fact reaching further.
+ *
+ * At Tier 0 a cohort carries no address space, because there is one
+ * address space and every process is already in it. What is left is the
+ * membership list, which is what fault reporting reads. A cohort is
+ * therefore not a mechanism that Tier 0 lacks. It is a mechanism whose
+ * whole content at Tier 0 is a name.
+ */
+
+#ifndef _SYS_COHORT_H_
+#define _SYS_COHORT_H_
+
+#include <sys/op.h>
+#include <sys/vm.h>
+
+#include <stdint.h>
+
+struct cohort {
+    const char         *c_name;
+
+    /* The images that make it up, fixed by the build. */
+    const char *const  *c_members;
+    uint32_t            c_nmembers;
+
+#if SYS_TIER == 2
+    /*
+     * The one address space, built when the first member is placed in
+     * it rather than at boot. A cohort no one spawns costs nothing,
+     * and a page table built for it would be a page table spent on a
+     * configuration that is not in use.
+     */
+    struct addrspace    c_as;
+#endif
+
+    /* How many members have been placed, for the report and the flush. */
+    uint32_t            c_placed;
+};
+
+/*
+ * The cohort this image belongs to, or NULL for an image that is in
+ * none. Looked up by name because the name is what the build-time table
+ * holds and what a spawn carries.
+ */
+struct cohort *cohort_of_image(const char *image);
+
+/* What a cohort is called, for a fault message and for the report. */
+const char *cohort_name(const struct cohort *c);
+
+/*
+ * Place a process in this cohort and hand back the space its threads
+ * run in, building that space if this is the first member. Fails only
+ * for want of a frame.
+ */
+#if SYS_TIER == 2
+sys_err_t cohort_place(struct cohort *c, struct addrspace **out);
+#endif
+
+/*
+ * Say what the build was configured with, at boot, beside the other
+ * object reports. A cohort is a decision made where nobody can see it,
+ * so the running system says which images share memory rather than
+ * leaving that to a table in a source file.
+ */
+void cohort_report(void);
+
+#endif /* _SYS_COHORT_H_ */

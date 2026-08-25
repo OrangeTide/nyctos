@@ -2765,7 +2765,9 @@ how much those operations cost, which is the part that waits for M10.
 *Stages.* Six. Two of them build the apparatus, one builds the honest
 alternative, and only the fourth and fifth are the mechanism itself.
 
-**1. A cohort is an object, and membership is fixed at build time.**
+**1. A cohort is an object, and membership is fixed at build time.** *Built.*
+A cohort owns one address space, member slots sit side by side in it, and
+which images are members is a table in the kernel's source.
 
 - A cohort owns one address space, and a member points at it rather than
   owning one of its own.
@@ -2774,12 +2776,62 @@ alternative, and only the fourth and fifth are the mechanism itself.
   join would be a privilege escalation primitive.
 - At Tier 0 a cohort is a membership list and nothing else.
 
-*Check.* Two programs in one cohort each write a value into their own slot and
-read the peer's, and both find what the peer wrote, at both tiers, from one
-image. A third program outside the cohort reading the same address faults at
-Tier 2. The peer read goes in the recorded session because its outcome is the
-same at both tiers. The outside read is checked by hand at Tier 2, which is
-where the tiers disagree.
+*Check.* `peer_b` tells `peer_a` where a word in its own memory is, and
+`peer_a` reads that word and writes it. The message carries an address and
+nothing else: no buffer descriptor, no grant, and nothing for the kernel to
+map or validate. `peer_b` then checks that the reply carried the old value and
+that the new one is in its memory, and exits zero. This passes in all four
+configurations.
+
+**The clause is narrower than it was written, in two places.** It said each
+member reads the other's memory; one member reads and writes the other's,
+which is the same claim in one round trip and is what the two programs do. And
+it said the peer read goes in the recorded session, which it does not: it is a
+boot check, beside the other structural checks, because it needs a channel
+wired between two named images and there is nothing for a person at a shell to
+type. That is enforcement of the same strength, since a boot check that fails
+halts the machine and `make check` fails with it, but it is not the recorded
+transcript and the entry should not have claimed it would be.
+
+*Breaking it on purpose.* Taking `peer_b` out of the cohort and leaving
+everything else alone kills `peer_a` at Tier 2: it takes a page fault at
+0x81601000, which is the address inside `peer_b`'s slot that it was handed,
+and the machine halts on a fault nobody was waiting for. The same edit at
+Tier 0 passes, and `peer_b` exits zero with the two programs in no shared
+domain at all. That pair is the whole of what the stage built. The Tier 2 half
+is the mechanism working, and the Tier 0 half is the mechanism being absent
+and the check passing anyway, which is what section 18 means when it says a
+cohort is what Tier 0 already is.
+
+Two build mistakes stop the boot rather than surfacing later. A cohort naming
+an image the archive does not have halts with `no image called peer_c`, and
+two members linked for one address halt with `peer_a and peer_b are linked for
+0x81500000`. Both were provoked. The second matters more than it looks: in a
+shared space the loader would have written the second member on top of the
+first, and the first would have found its memory rewritten by the loader
+rather than by a peer.
+
+**Membership is decided by the archive lookup and not by a comparison of its
+own.** The kernel has no `strcmp` and should not grow one for this. The
+question is whether a spawn of this image is a spawn of that member, and the
+comparison entitled to answer it is the one the loader uses a moment later.
+Two rules for one question is how a member ends up almost in a cohort, which
+is the shape of half the defects the last two milestones turned up.
+
+*One thing here cannot be falsified by the suite.* Loading a second member
+into a space its peers are already running in flushes the TLB, because the
+addresses just filled were absent from that space a moment ago and both
+architectures permit an implementation to have cached the absence. Removing
+that flush breaks nothing on either port under QEMU, which was tried. The
+flush stays because the manuals allow the case, not because anything observed
+it, and the comment in `proc_load` says so rather than implying a check stands
+behind it.
+
+*What it cost.* Two processes and two threads, which puts Tier 2 at 44 of 48
+processes and Tier 0 at 40. The address space is the same one word it always
+was, shared rather than copied, so a cohort of two costs one page table
+instead of two. The kernel grew one file of about a hundred and twenty lines
+and one field in `struct proc`.
 
 **2. A block driver under the filesystem.**
 

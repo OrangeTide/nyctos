@@ -4,6 +4,7 @@
  */
 
 #include <sys/bootarch.h>
+#include <sys/cohort.h>
 #include <sys/page.h>
 #include <sys/handle.h>
 #include <sys/object.h>
@@ -53,6 +54,7 @@ proc_bootstrap(const char *name)
     timeline_init(&p->p_completion, p->p_name);
     p->p_nthreads = 0;
     handle_table_init(&p->p_handles, p);
+    p->p_cohort = NULL;
 
     /*
      * Section 15.4 rule 1: the chain ends here. The kernel's own
@@ -88,6 +90,7 @@ proc_init(struct proc *p, const char *name)
 {
     p->p_id = pool_id_of(proc_pool(), p);
     proc_set_name(p, name);
+    p->p_cohort = NULL;
     p->p_entry = 0;
     timeline_init(&p->p_completion, p->p_name);
     p->p_nthreads = 0;
@@ -250,7 +253,28 @@ proc_place_startup(struct proc *p, uintptr_t page_pa, uintptr_t page_va)
 #if SYS_TIER == 2
 
 /*
- * Load a program into an address space of its own.
+ * The address space this process's threads will run in.
+ *
+ * A process in no cohort gets one of its own, which is what every
+ * process got before section 18 was built. A member gets its cohort's,
+ * built when the first member is placed and shared by every one after
+ * it. Nothing else in the loader has to know which happened, because
+ * proc_as() answers the same question afterwards either way.
+ */
+static sys_err_t
+proc_space_create(struct proc *p)
+{
+    struct addrspace *as;
+
+    if (p->p_cohort == NULL) {
+        return vm_as_create(&p->p_as);
+    }
+
+    return cohort_place(p->p_cohort, &as);
+}
+
+/*
+ * Load a program into the address space it will run in.
  *
  * At Tier 0 an image is copied to the address it was linked for and runs
  * there, which is why one image can have only one live process. Here the
@@ -258,6 +282,13 @@ proc_place_startup(struct proc *p, uintptr_t page_pa, uintptr_t page_va)
  * frames nobody else has, and two copies of one image are two processes
  * that cannot see each other. That is the first thing this tier buys that
  * the other cannot have at any price.
+ *
+ * A cohort member is the exception to the sentence above, and the only
+ * one: its slot is mapped into a space its peers are already running
+ * in, at the address its own image was linked for. Slots are disjoint
+ * by construction, so a second member lands beside the first rather
+ * than on it, and cohort_report() stops the boot if a build ever
+ * breaks that.
  *
  * The whole slot is allocated and mapped, which is a megabyte per process
  * where the programs here need a few tens of kilobytes. What it costs is
@@ -317,7 +348,7 @@ proc_load(struct proc *p, const struct boot_member *m)
          * The linker script does, and teaching the archive to carry it is
          * what would let this be three mappings instead of one.
          */
-        err = md_map(&p->p_as, va + done, pa, PAGE_SIZE,
+        err = md_map(proc_as(p), va + done, pa, PAGE_SIZE,
           VM_PROGRAM);
         if (err != SYS_OK) {
             return err;
@@ -337,6 +368,24 @@ proc_load(struct proc *p, const struct boot_member *m)
      * child's memory, and this is a loader.
      */
     proc_place_startup(p, last, va + SYS_USER_SLOT_BYTES - PAGE_SIZE);
+
+    /*
+     * A second member was loaded into a space its peers are running in,
+     * so the addresses just filled were absent from that space a moment
+     * ago. Both ports may have walked them speculatively and cached the
+     * absence, and neither architecture promises it did not. Every other
+     * mapping in this loader goes into a space nothing has entered yet,
+     * which is why this is the only flush here.
+     *
+     * Removing it does not break a check on either port, which was
+     * tried. It is here because the architecture manuals permit the
+     * cached absence and not because anything observed one, and that
+     * is the honest reason to keep it: an emulator declining to
+     * speculate is not a promise about a part.
+     */
+    if (p->p_cohort != NULL && p->p_cohort->c_placed > 1) {
+        md_tlb_flush_all();
+    }
 
     return SYS_OK;
 }
@@ -384,6 +433,9 @@ proc_spawn_image(const char *image, uint8_t prio,
     }
     p = proc_create(image, ns, nns);
 
+    /* Section 18.1, and see proc_spawn_op for why it is read here. */
+    p->p_cohort = cohort_of_image(image);
+
     /*
      * The command line, if there is one. The kernel spawning at boot
      * is the loader of section 20.4 as much as the operation a
@@ -395,7 +447,7 @@ proc_spawn_image(const char *image, uint8_t prio,
     }
 
 #if SYS_TIER == 2
-    if (vm_as_create(&p->p_as) != SYS_OK) {
+    if (proc_space_create(p) != SYS_OK) {
         panic("spawn %s: no address space", image);
     }
     if (proc_load(p, m) != SYS_OK) {
@@ -943,6 +995,15 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
     }
     proc_init(p, image);
 
+    /*
+     * Section 18.1: which domain this image runs in is a property of
+     * the build, so it is read here and not asked for. A program that
+     * spawns a member gets a member, whether or not it knows that is
+     * what the image is, because membership is not the spawner's to
+     * decide.
+     */
+    p->p_cohort = cohort_of_image(image);
+
     t = thread_alloc(p->p_name, prio, proc_user_start, &p->p_startup);
     if (t == NULL) {
         pool_free(proc_pool(), p->p_id);
@@ -1005,7 +1066,7 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
      * caller controls, but the caller is a program and section 8 has
      * exhaustion be an error rather than a stop.
      */
-    err = vm_as_create(&p->p_as);
+    err = proc_space_create(p);
     if (err == SYS_OK) {
         err = proc_load(p, m);
     }
@@ -1113,7 +1174,21 @@ proc_thread_create(struct proc *p, uintptr_t entry, uintptr_t uarg,
 struct addrspace *
 proc_as(struct proc *p)
 {
-    if (p == NULL || p->p_as.as_root == 0) {
+    if (p == NULL) {
+        return vm_kernel();
+    }
+
+    /*
+     * A member runs in its cohort's space and has none of its own,
+     * which is the whole of what a shared protection domain is here.
+     * Asked before the process's own space, because the process's
+     * own space is the thing a member does not have.
+     */
+    if (p->p_cohort != NULL) {
+        return &p->p_cohort->c_as;
+    }
+
+    if (p->p_as.as_root == 0) {
         return vm_kernel();
     }
 

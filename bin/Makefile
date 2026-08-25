@@ -4,7 +4,8 @@
 
 include $(TOPDIR)/share/mk/nyc.own.mk
 
-SUBDIR := fs_server fs_client fs_batch spin status spawner threads console greet \
+SUBDIR := peer_a peer_b \
+          fs_server fs_client fs_batch spin status spawner threads console greet \
           resolve \
           namespace \
           paged \

@@ -19,6 +19,7 @@
 #ifndef _SYS_PROC_H_
 #define _SYS_PROC_H_
 
+#include <sys/cohort.h>
 #include <sys/connection.h>
 #include <sys/handle.h>
 #include <sys/pool.h>
@@ -69,12 +70,24 @@ struct proc {
     char                p_args[SYS_ARG_BYTES];
     uintptr_t           p_argv[SYS_MAX_ARGS + 1];
 
+    /*
+     * The cohort this process is in, or NULL for a process in none,
+     * per section 18.1. Fixed when the process is created, from a
+     * table the kernel was built with, and never afterwards: there is
+     * no operation that joins one.
+     *
+     * A member does not own the address space below. It runs in its
+     * cohort's, which proc_as() is what knows.
+     */
+    struct cohort      *p_cohort;
+
 #if SYS_TIER == 2
     /*
-     * This process's address space, and where its startup record
-     * landed in it. Tier 0 has neither: there is one address space
-     * and the record lives in this object, which a program can read
-     * because nothing stops it.
+     * This process's own address space, used when it is in no cohort,
+     * and where its startup record landed in whichever space it runs
+     * in. Tier 0 has neither: there is one address space and the
+     * record lives in this object, which a program can read because
+     * nothing stops it.
      */
     struct addrspace    p_as;
 #endif
