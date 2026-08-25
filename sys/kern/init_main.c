@@ -3,6 +3,7 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
+#include <sys/blk.h>
 #include <sys/bootarch.h>
 #include <sys/channel.h>
 #include <sys/cohort.h>
@@ -1973,8 +1974,13 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
      * server is waiting when it arrives, because the client has not given
      * it anything else to do. Fewer sends is fewer chances to wait for
      * capacity, which is a saving section 25.7 does not mention.
+     *
+     * About this client and not about the system, since the block store
+     * arrived. The file server sends onward for every block and queues
+     * behind the store when it does, so asking whether anything at all
+     * send-blocked now answers yes whatever the client did.
      */
-    if (trace_saw(THREAD_WAIT_SEND) != expect_send_block) {
+    if (trace_saw_thread(image, THREAD_WAIT_SEND) != expect_send_block) {
         panic("%s: send-blocking was %sexpected and %shappened", image,
           expect_send_block ? "" : "un", expect_send_block ? "never " : "");
     }
@@ -3438,8 +3444,8 @@ user_slice(void)
      */
     kernel_buffer_checks(h_fs_root);
 
-    run_client("fs_client", root, sizeof(motd_text) - 1, true);
-    run_client("fs_batch", root2, sizeof(motd_text) - 1, false);
+    run_client("fs_client", root, BLK_MOTD_BYTES, true);
+    run_client("fs_batch", root2, BLK_MOTD_BYTES, false);
 
     trespass_checks(root3);
 

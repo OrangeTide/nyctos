@@ -127,3 +127,44 @@ trace_saw(enum thread_wait wait)
 
     return false;
 }
+
+/*
+ * The same question about one thread rather than about the system.
+ *
+ * It exists because a second layer under a server made the system-wide
+ * answer stop meaning what it used to. A client sending one message
+ * cannot queue behind a busy server, which is the saving section 25.7
+ * claims and the thing worth checking; but the server it sends to now
+ * sends onward to a block store, and queues there. Asking whether
+ * anything at all send-blocked answers yes either way, and stops being
+ * a statement about the client.
+ *
+ * Compared by content and not by pointer. A thread's name is copied
+ * into it at creation, so two threads of one image have equal names at
+ * different addresses, and matching by address would silently answer
+ * about the wrong one.
+ */
+bool
+trace_saw_thread(const char *name, enum thread_wait wait)
+{
+    uint32_t n = trace_written < TRACE_EVENTS ? trace_written : TRACE_EVENTS;
+    uint32_t i;
+
+    for (i = 0; i < n; i++) {
+        const char *a = trace_ring[i].tr_thread;
+        const char *b = name;
+
+        if (trace_ring[i].tr_wait != (uint8_t)wait || a == NULL) {
+            continue;
+        }
+        while (*a != '\0' && *a == *b) {
+            a++;
+            b++;
+        }
+        if (*a == '\0' && *b == '\0') {
+            return true;
+        }
+    }
+
+    return false;
+}

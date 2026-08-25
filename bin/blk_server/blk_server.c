@@ -38,13 +38,46 @@ static uint8_t disk[BLK_BLOCK_COUNT * BLK_BLOCK_BYTES];
  * That is the whole of what the second layer buys this milestone: a
  * file server with no copy of its own files has to ask for them.
  */
+static const char motd_text[] = "served from outside the kernel\n";
+static const char alt_motd_text[] = "and this one from the other one\n";
+static const char notes_text[] = "only the second directory has this\n";
+
+/*
+ * The filesystem above says how long each of these is, out of the same
+ * header. If an edit here changes a length, the build stops rather
+ * than the check finding it: a file server serving the wrong count is
+ * a short read or a read of whatever followed, and neither announces
+ * itself.
+ */
+_Static_assert(sizeof(motd_text) - 1 == BLK_MOTD_BYTES,
+  "motd is not the length blk.h says");
+_Static_assert(sizeof(alt_motd_text) - 1 == BLK_ALT_MOTD_BYTES,
+  "the second motd is not the length blk.h says");
+_Static_assert(sizeof(notes_text) - 1 == BLK_NOTES_BYTES,
+  "notes is not the length blk.h says");
+
+/*
+ * And each has to fit in the blocks between where it starts and where
+ * the next one does, or the store would serve one file the tail of
+ * another.
+ */
+_Static_assert(BLK_MOTD_BYTES <=
+  (BLK_ALT_MOTD_BLOCK - BLK_MOTD_BLOCK) * BLK_BLOCK_BYTES,
+  "motd runs into the second one");
+_Static_assert(BLK_ALT_MOTD_BYTES <=
+  (BLK_NOTES_BLOCK - BLK_ALT_MOTD_BLOCK) * BLK_BLOCK_BYTES,
+  "the second motd runs into notes");
+_Static_assert(BLK_NOTES_BLOCK * BLK_BLOCK_BYTES + BLK_NOTES_BYTES <=
+  BLK_BLOCK_COUNT * BLK_BLOCK_BYTES,
+  "notes runs off the end of the disk");
+
 static const struct {
     uint32_t    block;
     const char *text;
 } contents[] = {
-    { BLK_MOTD_BLOCK,     "served from outside the kernel\n" },
-    { BLK_ALT_MOTD_BLOCK, "and this one from the other one\n" },
-    { BLK_NOTES_BLOCK,    "only the second directory has this\n" },
+    { BLK_MOTD_BLOCK,     motd_text },
+    { BLK_ALT_MOTD_BLOCK, alt_motd_text },
+    { BLK_NOTES_BLOCK,    notes_text },
 };
 
 #define CONTENT_COUNT   (sizeof(contents) / sizeof(contents[0]))

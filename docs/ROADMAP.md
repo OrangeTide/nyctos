@@ -2902,9 +2902,10 @@ and the tree has a stack to measure.
 *Check.* `cat /motd` prints the line it has always printed and the recorded
 transcript does not move at all. What changed is underneath it. The resource
 report shows one more process and one more thread, and the boot report shows
-`fs_client` costing four rendezvous where it cost three and `fs_batch` costing
-two where it cost one. Each read gained exactly one crossing, which is the
-shape a layer has.
+`fs_client` and `fs_batch` each costing one more rendezvous than before the
+store existed. Each read gained a crossing, which is the shape a layer has.
+The review changed the block size and with it the count; the numbers as they
+stand are at the end of this stage.
 
 Breaking the store breaks the reader. A store made to refuse the block
 `/u/notes` lives in turns
@@ -2963,6 +2964,68 @@ to 56 and the thread pool from 80 to 96. That is the third milestone running
 to raise them, and it is M6 paying for M7 not having happened: forty-six of
 forty-eight with three stages still to build was not enough room. The comment
 in `config.h` says so rather than the constant changing quietly.
+
+*Reviewing it found three defects, all of one shape, and the block size was
+wrong for a fourth reason.*
+
+**A number stated twice, three times over.** Splitting one server into two put
+the bytes in one program and their lengths in another, with nothing checking
+they agreed. `blk_server` held the strings, `fs_server`'s node table said 31,
+32 and 35, and the boot sequence checked a read against `sizeof(motd_text) -
+1` taken from the kernel's own unrelated copy of the same text. All three
+agreed on the day, and an edit to any string would have made a file server
+report a length its store did not have. That is a short read or a read of
+whatever followed, and neither announces itself.
+
+The lengths now live in `sys/blk.h` beside the block numbers, `fs_server` uses
+them, the boot sequence uses them, and `blk_server` carries static assertions
+that each string is the length the header claims and that no file runs into
+the next one or off the end of the disk. An edit that breaks the layout stops
+the build instead of the check.
+
+**A reply field nobody read.** `store_read` returned the store's status and
+ignored its length. The block buffer it reads into is reused from one block to
+the next, so a store answering `SYS_OK` without filling it would have had the
+file server copy out the block it fetched last time, which is one file's bytes
+served as another's. Not reachable through this store, which fills the buffer
+whenever it says yes, but the whole point of the layer is that the store is a
+separate program. Reading the field that says how much arrived costs a
+comparison. It now returns `SYS_ERR_TRUNCATED` when the store says yes and
+means less, and a store made to report one byte short fails the check.
+
+**The block loop never ran twice.** Five hundred and twelve byte blocks with
+files of thirty-one, thirty-two and thirty-five bytes meant every read was one
+block, and the arithmetic that makes a filesystem a filesystem was a loop
+nothing ever entered a second time. A block size larger than the data is a
+block store that never asks the layer above it to do anything.
+
+Sixteen bytes now, which is smaller than every file and chosen to be. Each
+file spans two or three blocks, so a read fetches each in turn and copies part
+of the last, and the partial-final-block path runs on every read in the
+recorded session. It is not a plausible size for a disk, and the header says
+that plainly: it is the size that makes the layering real in a system whose
+entire contents are three short strings.
+
+**And that exposed something true about layers that a bigger block had
+hidden.** With several store reads per file read, the file server now queues
+behind the store. The store replies, the reply wakes the file server at the
+priority its client donated, the file server preempts the store before it gets
+back to receive, and its next send finds nobody waiting. So a layer costs a
+scheduling round trip per block on top of the message itself, which is a cost
+stage three should count and this stage did not know about.
+
+It also broke a check M4 built, and quietly. `run_client` asserted that
+`fs_batch` never queues behind a busy server, which is section 25.7's claim
+about one message costing less than three. The trace was system-wide, so the
+file server's own queueing answered yes and the claim silently became
+unfalsifiable. `trace_saw_thread()` asks about one thread by name, and the
+claim is back: `fs_batch` itself still never send-blocks while the system
+around it does. Flipping the expectation fails the check, so it is falsifiable
+again rather than merely true.
+
+*The count changed with the block size.* `fs_client` costs five rendezvous
+where it cost three before the store existed, and `fs_batch` three where it
+cost one. Two of each are the store, one per block of a thirty-one byte file.
 
 **3. What a boundary costs.**
 

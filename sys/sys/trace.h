@@ -32,4 +32,7 @@ void trace_wait(const struct thread *t, enum thread_wait wait);
 void trace_report(const char *what);
 bool trace_saw(enum thread_wait wait);
 
+/* The same, about one thread by name. See the implementation. */
+bool trace_saw_thread(const char *name, enum thread_wait wait);
+
 #endif /* _SYS_TRACE_H_ */

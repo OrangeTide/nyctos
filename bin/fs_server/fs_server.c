@@ -70,10 +70,10 @@ static const struct {
     uint32_t    dir;        /* the directory this entry is in */
 } fs_nodes[] = {
     { "/",     FS_NOT_A_FILE,       0,  FS_NODE_ROOT },
-    { "motd",  BLK_MOTD_BLOCK,     31,  FS_NODE_ROOT },
-    { "/",     FS_NOT_A_FILE,       0,  FS_NODE_ALT },
-    { "motd",  BLK_ALT_MOTD_BLOCK, 32,  FS_NODE_ALT },
-    { "notes", BLK_NOTES_BLOCK,    35,  FS_NODE_ALT },
+    { "motd",  BLK_MOTD_BLOCK,     BLK_MOTD_BYTES,     FS_NODE_ROOT },
+    { "/",     FS_NOT_A_FILE,      0,                  FS_NODE_ALT },
+    { "motd",  BLK_ALT_MOTD_BLOCK, BLK_ALT_MOTD_BYTES, FS_NODE_ALT },
+    { "notes", BLK_NOTES_BLOCK,    BLK_NOTES_BYTES,    FS_NODE_ALT },
 };
 
 #define FS_NODE_COUNT   (sizeof(fs_nodes) / sizeof(fs_nodes[0]))
@@ -164,6 +164,7 @@ static uint8_t block[BLK_BLOCK_BYTES];
 static sys_err_t
 store_read(uint32_t blocknr)
 {
+    const fs_reply_t *rep;
     fs_request_t *req;
     sys_msg_t message, reply;
     sys_err_t err;
@@ -189,7 +190,24 @@ store_read(uint32_t blocknr)
         return err;
     }
 
-    return ((const fs_reply_t *)reply.inline_data)->fr_status;
+    rep = (const fs_reply_t *)reply.inline_data;
+    if (rep->fr_status != SYS_OK) {
+        return rep->fr_status;
+    }
+
+    /*
+     * How much the store says it wrote, and not merely that it said
+     * yes. The buffer below is reused from one block to the next, so a
+     * store answering SYS_OK without filling it would have this server
+     * copy out the block it fetched last time, which is one file's
+     * bytes served as another's. Reading the field that says so costs
+     * a comparison; not reading it costs a leak that looks like data.
+     */
+    if (rep->fr_length != BLK_BLOCK_BYTES) {
+        return SYS_ERR_TRUNCATED;
+    }
+
+    return SYS_OK;
 }
 
 /*
