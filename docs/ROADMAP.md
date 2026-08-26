@@ -3579,12 +3579,12 @@ and then maintaining it across four milestones that never called it.
 
 **What forces it here is cohort recovery.** M6 tears down and restarts every
 member of a cohort together, and that is the first mechanism in the plan
-that cannot be demonstrated without death. M6 is therefore scheduled for
-its zero-copy half only, and its recovery half is part of this milestone.
-Everything earlier can carry a `TODO` in its exit path and lose nothing.
+that cannot be demonstrated without death. M6 was therefore built for its
+zero-mapping half only, and its recovery half is part of this milestone.
 
-*Three things it needs that were not listed before.* Milestone 1 left them
-out and they are each load-bearing.
+*Six things it needs that were not listed.* Three were left out by
+milestone 1 and are each load-bearing; three are new, and are what M6
+built and could not finish.
 
 **Pulses do not exist.** Section 12.5 has a server learn of a dead client
 through `SYS_PULSE_DEAD_OWNER`, because a server is at a receive point and
@@ -3595,6 +3595,7 @@ notification, with the reserved region that keeps a flood of user pulses
 from displacing a death notice. A dropped death notice leaks a dead
 client's resources permanently, which is why that reservation is
 correctness rather than politeness.
+
 **Nothing is ever reaped.** A thread that exits stops being scheduled and
 keeps its pool slot for ever, so nothing has yet reused a slot. Restart
 needs reuse, and reuse is the first real test of the generation counters of
@@ -3606,34 +3607,176 @@ a client's donated priority, or a client killed while its donation is
 held, both leave a priority that no longer has a reason to exist. Nothing
 in section 12.3 says what happens, and nothing in M1 could reach it.
 
+**A lent buffer has to come home when either end dies.** This is M4's move
+contract meeting death for the first time, and M6 made it matter twice
+over by putting a second layer under the filesystem. A client killed while
+reply-blocked has pages mapped in the server and taken away from itself; a
+server killed while holding them has a window into memory whose owner is
+about to be told the server is gone. Neither direction exists. What makes
+it correctness rather than tidiness is that the pages are unmapped from
+the client: a client released with `SYS_ERR_OWNER_DEAD` and no memory
+where its buffer was is a client that faults on its own stack.
+
+**A member's slot has to leave a space something is running in.** Every
+member of a cohort has its slot mapped in one address space and the peers
+keep executing there. Tearing a member out removes mappings from a live
+space, which nothing but the buffer path has ever done, and M6 recorded
+the TLB maintenance on that path as insurance because removing it broke no
+check. This is where the insurance is claimed. It is also the first thing
+in the system whose correctness depends on it, so it is the first thing
+that can falsify it.
+
+**And a cohort's member table holds process pointers.** Nothing can reuse
+a process slot today, so the pointers in `c_running` cannot go stale.
+Reaping is exactly what makes them able to, and M6's stage one recorded
+that the teardown owns that array as much as spawn does.
+
+*What M6 leaves behind is a specification rather than a note.* A member
+that faults halts the machine and prints what is missing:
+
+```
+cohort peers: member peer_c faulted, instruction at 0x0, pc 0x81800042
+  the whole cohort is the recovery unit, per section 18.2: peer_a peer_b peer_c
+  tearing them down together and restarting them is M7, and is not built
+```
+
+Stage six replaces that halt. What it has to do is in sections 18.2 and
+12.5: revoke every handle every member holds, force-signal their timelines
+in error state, release clients blocked sending to them with
+`SYS_ERR_OWNER_DEAD`, deliver `SYS_PULSE_DEAD_OWNER` to every channel with
+an outstanding rendezvous, and then let a supervisor relaunch the cohort.
+
+*The measurable outcome, stated before building so it can be wrong.* Three
+milestones running have raised the process and thread pools because
+nothing is reaped, and they now stand at 56 and 96, which is 606976 bytes
+of kernel object memory with 433152 of it thread stacks. Those numbers
+size the boot check sequence and not the system. After reaping they should
+size what is alive at once, which nobody has measured and which this
+milestone is what measures. The prediction is that the high-water falls
+below fifteen processes and twenty-five threads. If it does not, something
+holds handles it has no reason to hold, and finding out what is worth more
+than the memory.
+
 *Exit and join already exist*, from M3. What is left is everything that
 happens when the exit was not the program's own idea.
 
-*Stages.*
+*Stages.* Six, and the order is forced: nothing can be restarted until
+slots come back, nothing can be killed until it can be released from a
+wait, and nothing can be told about a death until there is a way to tell
+it.
 
-1. **Reaping.** Return thread and process slots to their pools, and check
-   that an identifier held across the reuse is refused rather than reaching
-   the new occupant.
-2. **Cancellation.** Section 10.5, prompt, releasing a thread from whatever
-   it is blocked on without knowing which mechanism blocked it. This should
-   be cheap: the hook that makes it possible was forced into existence by
-   deadlines in stage 7 and already serves channels.
-3. **Pulses.** Section 13.1, including the reserved system region and the
-   overflow flag a receiver observes.
-4. **Death notification.** Section 12.5 in both directions: a blocked
-   client released with `SYS_ERR_OWNER_DEAD`, a server holding an
-   unanswered request given a pulse, and its later reply refused as stale.
-5. **Kill and restart.** A supervisor waiting on a child's completion
-   timeline and relaunching it, with restart bounded and escalating per
-   section 24.3.
-6. **Cohort recovery.** The half of M6 that was deferred: a fault in one
-   member tears down and restarts every member together (18.2). This is
-   the case that forced the milestone to sit here rather than later.
+**1. Reaping.** A slot returns to its pool when its object has finished
+and nothing can ask about it any more.
+
+- A process and a thread stop being permanent. The event is not the exit:
+  section 10.4 keeps a status readable through a handle, so the event is
+  the exit and the last handle both having happened, in either order.
+- The generation counter of section 7.1 gets its first real test, which
+  is an identifier held across a reuse naming a slot somebody else now
+  occupies.
+
+*Check.* The resource report's high-water falls, and by enough to say the
+slots are being reused rather than merely counted differently: the
+prediction above is under fifteen processes and twenty-five threads, and
+the recorded numbers say which. A handle held across a reap and used
+afterwards is refused as stale rather than reaching whatever took the
+slot, and a check that reaps a process and immediately spawns another
+into the same slot fails without the generation bump.
+
+The number is in the compared file, so it has to be the same in the paced
+and burst runs. If it is not, the high-water depends on when input
+arrives rather than on what runs, and M6 stage four's finding applies:
+the number goes where it can be read and the check becomes a relation.
+
+**2. Cancellation.** Section 10.5: releasing a thread from whatever it is
+blocked on, without the caller knowing which mechanism blocked it.
+
+- The `t_unwait` hook already exists, forced into being by deadlines in
+  M1 stage 7, and already serves channels and timelines.
+- A cancelled sender that has already lent a buffer gets it back before
+  it runs again. A thread released with its pages still in another
+  process faults on its own memory, which is worse than the hang it was
+  cancelled out of.
+
+*Check.* A thread blocked in each of the ways this system can block, in
+turn, cancelled and observed to run again with `SYS_ERR_INTERRUPTED`:
+receive, reply, a timeline wait, and a send that queued. A reply-blocked
+client cancelled mid-call has its buffer back, checked by writing to it
+immediately afterwards, and the buffer remapping count says the pages
+moved rather than being abandoned.
+
+**3. Pulses.** Section 13.1: a fixed-size queued notification with a
+region reserved for the system's own.
+
+- The reservation is correctness. A flood of user pulses that displaced a
+  death notice would leak a dead client's resources for good.
+- The overflow flag a receiver observes, so that a receiver knows it
+  missed something rather than inferring it.
+
+*Check.* A queue filled with user pulses still delivers a system pulse,
+and the sender of the one that did not fit is told. Removing the
+reservation makes the death notice the thing that is dropped, which is
+the check for why the reservation exists rather than for whether the
+queue works.
+
+**4. Death notification.** Section 12.5 in both directions.
+
+- A client blocked on a dead server is released with
+  `SYS_ERR_OWNER_DEAD`, because it is not at a receive point and cannot
+  collect anything.
+- A server holding an unanswered request from a dead client gets a
+  `SYS_PULSE_DEAD_OWNER`, because it is at one, and its later reply is
+  refused as stale rather than delivered to whoever holds the id now.
+
+*Check.* The filesystem server killed mid-read releases its client with
+`SYS_ERR_OWNER_DEAD` rather than hanging it, and the client's memory is
+its own again. A client killed mid-call leaves the server able to
+discover it, finish, and have its reply refused; the connection record
+the server was holding goes back to the pool, which is the observation
+`PROPOSALS.md` gates connection death notification on. Both directions
+have to be tried with a buffer outstanding, because that is the case M4
+and M6 made possible and neither had to unwind.
+
+**5. Kill and restart.** A supervisor waiting on a child's completion
+timeline and relaunching it, bounded and escalating per section 24.3.
+
+- The kernel holds no restart policy, per section 18.3. What is built
+  here is the mechanism a supervisor uses and one supervisor that uses
+  it.
+- Escalation is what a bound is for: a child that dies immediately every
+  time is a configuration mistake, and a supervisor that relaunched it
+  for ever would hide one.
+
+*Check.* The filesystem server is killed, restarted, and the client's
+next walk and read succeed against the replacement, with the client
+never knowing which one answered. A server that dies on every start is
+given up on rather than restarted for ever, and the give-up is reported
+rather than silent.
+
+**6. Cohort recovery.** The half of M6 that was deferred, and the case
+that forced this milestone to sit here.
+
+- A fault in any member tears down every member together and a
+  supervisor restarts them, per 18.2 and 18.3.
+- The member table's pointers are cleared as the members go, so a
+  restart can take the places back.
+- The slots leave a live address space, which is where M6's TLB
+  insurance is claimed.
+
+*Check.* The halt M6 prints is replaced by a teardown and a restart, and
+the storage stack serves a file again afterwards through processes that
+are not the ones that started. A client blocked on the dying filesystem
+is released rather than hung. And the peer that did not fault is gone
+too, which is the whole content of 18.2 and the thing worth checking
+explicitly: a survivor left running would be the unsound recovery the
+section forbids.
 
 *Done when* killing the filesystem server mid-read releases the blocked
 client with an owner-dead error rather than hanging it, a supervisor
 restarts the server, the client's next walk and read succeed against the
-replacement, and a fault in one cohort member restarts the whole cohort.
+replacement, a fault in one cohort member restarts the whole cohort, and
+the resource report's high-water reflects what is alive rather than what
+has ever run.
 
 *Would falsify.* Whether "the disappearance of the only party who could
 satisfy a wait is itself an event" is sufficient in practice, which is the
@@ -3650,9 +3793,15 @@ that produced three separate faults in M1, and it will be worse here
 because the structure being walked is the one being destroyed. Finish the
 structure before waking anything, as `handle_close` already has to.
 
+And watch for the rule attached to the wrong event, which M6 got wrong
+twice and caught late both times. Reaping is not "it exited". Cohort
+teardown is not "the process ended", it is "a thread faulted", which is
+where M6 finally put it.
+
 *Size.* Large. The original estimate of medium predated knowing that
 pulses, reaping and donation unwinding were all inside it, and cohort
-recovery has since joined them.
+recovery, the buffer unwind and the live-space teardown have since
+joined them.
 
 ### M8. Multicore
 
