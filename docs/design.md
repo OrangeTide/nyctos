@@ -1590,6 +1590,8 @@ The rule has to be asked twice. A channel does not know who will receive on it: 
 
 
 **A member's fault ends the cohort, and until the teardown exists it ends the system.** The rule above is why: a member that faults may have written anything into any peer before it did, so per-process recovery is unsound and the survivors cannot be vouched for. Halting is what a system without the teardown of section 18.2 can honestly do, and it halts whether or not a supervisor held the member's handle, because whether somebody was waiting changes what can be reported about one process and changes nothing about the domain. The halt names the cohort, its members, and the teardown that is missing.
+
+The event is the fault and not the death of the process. A process ends when its last thread does; a domain ends the moment any thread of any member writes something no one can vouch for. Treating those as one event means a member whose faulting thread is not the last one out ends nothing at all.
 ### 18.2 Fault Recovery
 
 **The cohort is the recovery unit.** If any member faults, the entire cohort is torn down and restarted.

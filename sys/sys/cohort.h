@@ -122,10 +122,21 @@ void cohort_release(struct cohort *c, struct proc *p);
 
 /*
  * A member faulted, so the domain is gone, per section 18.2. Says which
- * cohort, which member, and what the teardown that does not exist yet
- * would have to do. Does not return.
+ * cohort, which thread of which member, and what the teardown that does
+ * not exist yet would have to do. Does not return.
+ *
+ * Takes the fault rather than reading it off a process, because it is
+ * called where the fault happens and not where the process ends. A
+ * member with several threads ends its cohort when any one of them
+ * faults, and the thread that faults need not be the last one out.
+ *
+ * `who` is the faulting thread's name, which is its process's name:
+ * every thread of a process is created with it. If threads ever carry
+ * names of their own this says which one, which is what a person
+ * reading it would want.
  */
-void cohort_fault_halt(const struct cohort *c, const struct proc *p);
+void cohort_fault_halt(const struct cohort *c, const char *who, uint32_t kind,
+  uintptr_t addr, uintptr_t pc);
 
 /*
  * Say what the build was configured with, at boot, beside the other

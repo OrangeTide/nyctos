@@ -220,7 +220,8 @@ cohort_report(void)
 }
 
 void
-cohort_fault_halt(const struct cohort *c, const struct proc *p)
+cohort_fault_halt(const struct cohort *c, const char *who, uint32_t kind,
+  uintptr_t addr, uintptr_t pc)
 {
     uint32_t i;
 
@@ -248,8 +249,8 @@ cohort_fault_halt(const struct cohort *c, const struct proc *p)
      * supervisor relaunches the cohort, per section 18.3.
      */
     cnprintf("cohort %s: member %s faulted, %s at 0x%lx, pc 0x%lx\n",
-      c->c_name, p->p_name, fault_name(p->p_fault),
-      (unsigned long)p->p_fault_addr, (unsigned long)p->p_fault_pc);
+      c->c_name, who, fault_name(kind), (unsigned long)addr,
+      (unsigned long)pc);
 
     cnputs("  the whole cohort is the recovery unit, per section 18.2:");
     for (i = 0; i < c->c_nmembers; i++) {

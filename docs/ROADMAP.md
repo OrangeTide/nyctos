@@ -3460,6 +3460,46 @@ leaving it to this document.
 *What it cost.* One image in the archive, never spawned by the recorded
 session, so no process and no thread. The resource report does not move.
 
+*Reviewing it found one defect, and it was the rule attached to the wrong
+event.*
+
+**A fault in a member with more than one thread ended nothing.** The check sat
+in `proc_thread_exited`, which runs when a process's *last* thread leaves, and
+behind the early return for a process that still has threads. So a member
+whose faulting thread was not the last one out went straight past it. Worse,
+the fault record is taken from whichever thread does leave last, so the fault
+was not merely unhandled, it was erased.
+
+Built as a temporary `peer_c` with two threads, one trapping while the other
+waited for it and then returned normally, and run from the shell:
+
+```
+$ peer_c
+peer_c: still here, and so is the cohort
+    peer_c exited with status 0
+$ last
+0
+```
+
+A thread of a cohort member wrote something no one can vouch for, the cohort
+carried on, and the program reported success. Section 18.2 was not applied and
+nothing said so.
+
+The rule is on `thread_fault` now, where the fault happens. A process ends when
+its last thread does; a domain ends when any thread of any member faults, and
+those are different events that were being treated as one. The same two-thread
+program now halts, and so does the single-threaded one, in all four
+configurations. The check in `proc_thread_exited` is gone rather than kept
+beside it, because the fault record it read is only ever written by
+`thread_fault`, so two places asking would be two places to keep agreeing.
+
+*What this says about the stage as it was written.* The entry asked for a
+member's fault to name its cohort and halt, and a single-threaded member is
+what every member in this tree is, so the stage passed its own check and every
+by-hand run of it. The hole needed a member shaped like nothing the system
+contains, which is the kind a check suite is worst at finding and the kind
+worth building on purpose.
+
 *Done when* a filesystem and a block driver in one cohort exchange a buffer as
 an address rather than a grant, with no mapping cost for that crossing, a
 fault in either halts the system with the recovery path stubbed and named, and

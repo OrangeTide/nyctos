@@ -15,6 +15,8 @@
 #include <sys/config.h>
 #include <sys/object.h>
 #include <sys/proc.h>
+#include <sys/cohort.h>
+#include <sys/proc.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
@@ -150,6 +152,21 @@ thread_fault(uint32_t kind, uintptr_t addr, uintptr_t pc)
     current->t_fault = kind;
     current->t_fault_addr = addr;
     current->t_fault_pc = pc;
+
+    /*
+     * A member of a cohort takes its cohort with it, per section 18.2,
+     * and here rather than where the process ends. A process ends when
+     * its last thread does; a domain ends when any thread of any member
+     * writes something no one can vouch for, which is now. Reading it
+     * off the process at exit missed a fault in a member with more than
+     * one thread entirely: the early return for a process with threads
+     * left came first, the record was overwritten by whichever thread
+     * did leave last, and the program exited zero.
+     */
+    if (current->t_proc != NULL && current->t_proc->p_cohort != NULL) {
+        cohort_fault_halt(current->t_proc->p_cohort, current->t_name,
+          kind, addr, pc);
+    }
 
     thread_exit(SYS_EXIT_FAULT);
 }
