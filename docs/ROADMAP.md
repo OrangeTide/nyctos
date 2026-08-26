@@ -3389,22 +3389,85 @@ anything has succeeded that way; after that a `FAULT` is a read that failed.
 *The measurement is unchanged by all three.* Taking the store out of the
 cohort still restores every number exactly with the transcript identical.
 
-**6. A fault names the cohort, and the recovery path is stubbed.**
+**6. A fault names the cohort, and the recovery path is stubbed.** *Built.*
+A member's fault halts the machine whether or not anything was waiting for it,
+and the halt says which cohort died, who was in it, and what M7 has to build.
 
 - The fault reporting of section 16.2 says which cohort a faulting member
   belongs to.
 - The system halts, and the teardown of 18.2 is named in the message as M7's
   work rather than attempted.
 
-*Check.* A member made to fault reports its cohort and halts. A process in no
-cohort reports as it does today. The recovery path is named at the halt, so
-what is missing is stated by the running system and not only by this document.
+*Check.* `peer_c` is a member of the peers cohort whose only act is to trap.
+It is in the archive and the recorded session never runs it, because running
+it stops the machine. Typed at the shell, in all four configurations:
+
+```
+$ peer_c
+cohort peers: member peer_c faulted, instruction at 0x0, pc 0x81800042
+  the whole cohort is the recovery unit, per section 18.2: peer_a peer_b peer_c
+  tearing them down together and restarting them is M7, and is not built
+
+panic: cohort peers cannot be recovered and must not be left running
+```
+
+And the same program with one line of the membership table changed, so that it
+is in no cohort:
+
+```
+$ peer_c
+sh: peer_c: instruction fault at 0x0, pc 0x81800042
+[-16]
+$ last
+-16
+```
+
+One program, one fault, two outcomes: contained and reported to its parent, or
+the end of the system. That pair is what section 18.2's trade costs, shown
+rather than argued.
+
+**It halts even though something was waiting for it.** The shell is `peer_c`'s
+parent and holds its completion timeline, so before this stage the fault would
+have been an ordinary child death. Section 18.2 is why it cannot be: the
+members share a protection domain, so one that faults may have written
+anything into any peer before it did, and nothing in the system can establish
+that it did not. A supervisor holding one member's handle can be told that
+member died. What it cannot do is anything useful, because putting the domain
+right means tearing every member down together and there is nothing here that
+can. Continuing would mean running peers that may already be wrong, which is
+the one outcome section 18.2 rules out.
+
+The check therefore sits before the question of whether anyone was watching,
+not after it. Whether somebody was waiting changes what can be reported about
+one process and changes nothing about a domain whose survivors may already be
+wrong.
+
+**It traps rather than touching a bad address, and that is not a detail.** An
+address that faults is a Tier 2 idea. At Tier 0 nothing is protected and
+reading the kernel succeeds, which is what M4's fault checks record. An
+illegal instruction is a fault at both tiers and needs no MMU to mean
+anything, so the same program dies the same way in all four configurations and
+the halt can be shown at the tier where a cohort is otherwise invisible.
+
+**What the message says is what is missing.** Section 18.2 and 12.5 between
+them name the work: revoke every handle every member holds, force-signal their
+timelines in error state, release clients blocked sending to them with
+`SYS_ERR_OWNER_DEAD`, and deliver `SYS_PULSE_DEAD_OWNER` to every channel with
+an outstanding rendezvous. Then a supervisor relaunches the cohort, per
+section 18.3. None of that exists, and the running system says so rather than
+leaving it to this document.
+
+*What it cost.* One image in the archive, never spawned by the recorded
+session, so no process and no thread. The resource report does not move.
 
 *Done when* a filesystem and a block driver in one cohort exchange a buffer as
 an address rather than a grant, with no mapping cost for that crossing, a
 fault in either halts the system with the recovery path stubbed and named, and
 the resource report carries the number that says what the cohort saved against
 an alternative that keeps the isolation.
+
+**Done.** All six stages are built. The number is in section 12, which is
+where the milestone answers the question it was written to ask.
 
 *Would falsify.* Whether zero mapping within a shared domain is worth a shared
 domain at all. The measurement is taken against a system that invalidates by

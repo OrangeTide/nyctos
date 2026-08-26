@@ -4,7 +4,7 @@
 
 include $(TOPDIR)/share/mk/nyc.own.mk
 
-SUBDIR := blk_server peer_a peer_b \
+SUBDIR := blk_server peer_a peer_b peer_c \
           fs_server fs_client fs_batch spin status spawner threads console greet \
           resolve \
           namespace \

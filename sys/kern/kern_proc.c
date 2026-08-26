@@ -651,6 +651,18 @@ proc_thread_exited(struct proc *p, int32_t code)
     }
 
     /*
+     * A member that faulted takes its cohort with it, per section 18.2,
+     * and there is nothing here that can tear the others down. Before
+     * the watched question and not after it: whether somebody was
+     * waiting changes what can be reported about one process, and
+     * changes nothing about a domain whose survivors may already be
+     * wrong.
+     */
+    if (p->p_cohort != NULL && p->p_fault != SYS_FAULT_NONE) {
+        cohort_fault_halt(p->p_cohort, p);
+    }
+
+    /*
      * An exit nobody was waiting for stops the system, named. This is the
      * placeholder for supervision that M2 introduced, now asking a better
      * question: not whether the kernel remembered to set a flag, but
@@ -659,7 +671,7 @@ proc_thread_exited(struct proc *p, int32_t code)
      */
     if (!p->p_watched) {
         if (p->p_fault != SYS_FAULT_NONE) {
-            panic("%s took a %s fault at 0x%lx, pc 0x%lx, and nothing "
+            panic("%s faulted, %s at 0x%lx, pc 0x%lx, and nothing "
               "was waiting for it", p->p_name, fault_name(p->p_fault),
               (unsigned long)p->p_fault_addr,
               (unsigned long)p->p_fault_pc);

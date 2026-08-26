@@ -8,6 +8,7 @@
 #include <sys/cohort.h>
 #include <sys/proc.h>
 #include <sys/systm.h>
+#include <sys/thread.h>
 #include <sys/vm.h>
 
 /*
@@ -27,6 +28,7 @@ static const char *const storage_members[] = {
 static const char *const peers_members[] = {
     "peer_a",
     "peer_b",
+    "peer_c",
 };
 
 static struct cohort cohorts[] = {
@@ -38,7 +40,7 @@ static struct cohort cohorts[] = {
     {
         .c_name = "peers",
         .c_members = peers_members,
-        .c_nmembers = 2,
+        .c_nmembers = 3,
     },
 };
 
@@ -215,4 +217,49 @@ cohort_report(void)
             }
         }
     }
+}
+
+void
+cohort_fault_halt(const struct cohort *c, const struct proc *p)
+{
+    uint32_t i;
+
+    /*
+     * Section 18.2: the cohort is the recovery unit, and per-process
+     * recovery is unsound for a member. The members share a protection
+     * domain, so one that faults may have written anything into any
+     * peer before it did, and nothing in the system can establish that
+     * it did not. The survivors are in a state no one can vouch for.
+     *
+     * So this halts, and it halts even when something was waiting for
+     * the process. A supervisor holding a member's handle can be told
+     * that member died; what it cannot do is anything useful about it,
+     * because putting the domain right means tearing down every member
+     * together and there is nothing here that can. Continuing would
+     * mean running peers that may already be wrong, which is the one
+     * outcome section 18.2 rules out.
+     *
+     * The message says what is missing rather than leaving it to a
+     * document. What M7 has to build is in section 18.2 and 12.5:
+     * revoke every handle every member holds, force-signal their
+     * timelines in error state, release clients blocked sending to
+     * them with SYS_ERR_OWNER_DEAD, and deliver SYS_PULSE_DEAD_OWNER
+     * to every channel with an outstanding rendezvous. Then a
+     * supervisor relaunches the cohort, per section 18.3.
+     */
+    cnprintf("cohort %s: member %s faulted, %s at 0x%lx, pc 0x%lx\n",
+      c->c_name, p->p_name, fault_name(p->p_fault),
+      (unsigned long)p->p_fault_addr, (unsigned long)p->p_fault_pc);
+
+    cnputs("  the whole cohort is the recovery unit, per section 18.2:");
+    for (i = 0; i < c->c_nmembers; i++) {
+        cnprintf(" %s", c->c_members[i]);
+    }
+    cnputs("\n");
+
+    cnputs("  tearing them down together and restarting them is M7, "
+      "and is not built\n");
+
+    panic("cohort %s cannot be recovered and must not be left running",
+      c->c_name);
 }

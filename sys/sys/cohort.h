@@ -121,6 +121,13 @@ sys_err_t cohort_place(struct cohort *c, const char *image, struct proc *p);
 void cohort_release(struct cohort *c, struct proc *p);
 
 /*
+ * A member faulted, so the domain is gone, per section 18.2. Says which
+ * cohort, which member, and what the teardown that does not exist yet
+ * would have to do. Does not return.
+ */
+void cohort_fault_halt(const struct cohort *c, const struct proc *p);
+
+/*
  * Say what the build was configured with, at boot, beside the other
  * object reports. A cohort is a decision made where nobody can see it,
  * so the running system says which images share memory rather than

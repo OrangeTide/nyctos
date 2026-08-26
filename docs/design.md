@@ -493,6 +493,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Boundary cost | Four entries and two whole-TLB flushes to move one page across a boundary and back at Tier 2, and nothing at Tier 0. Entries are per page; flushes are per half of the move. |
 | TLB maintenance | The buffer path invalidates the addresses it moved. Neither port has address space identifiers, so every context switch still discards everything. |
 | Buffer inside a cohort | A member may describe the domain's memory to a peer, not only its own. Refused to anyone outside it. |
+| Member fault | Ends the whole cohort. Halts until the teardown of 18.2 exists, whether or not the member was watched. |
 | Block layering | A block store is the read of section 25.2 with the name dropped and whole blocks required. No second protocol. |
 | Forwarding a buffer | A page held on loan is not the holder's to lend on, so a stack of layers copies at each one. |
 | Interrupts | Disabled in kernel on Tier 0; enabled on Tier 2. |
@@ -1587,6 +1588,8 @@ The test is the cohort and not the address space. At Tier 0 every process shares
 
 The rule has to be asked twice. A channel does not know who will receive on it: it is created by whoever assembles the system and its receive right is moved to a server afterwards. So a sender in no cohort is refused when it sends, as it always was, and a member is let through and decided at the rendezvous, where both ends are known.
 
+
+**A member's fault ends the cohort, and until the teardown exists it ends the system.** The rule above is why: a member that faults may have written anything into any peer before it did, so per-process recovery is unsound and the survivors cannot be vouched for. Halting is what a system without the teardown of section 18.2 can honestly do, and it halts whether or not a supervisor held the member's handle, because whether somebody was waiting changes what can be reported about one process and changes nothing about the domain. The halt names the cohort, its members, and the teardown that is missing.
 ### 18.2 Fault Recovery
 
 **The cohort is the recovery unit.** If any member faults, the entire cohort is torn down and restarted.
