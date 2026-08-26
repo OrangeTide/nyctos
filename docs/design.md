@@ -68,11 +68,21 @@ the operations that may block are enumerated in one place and nowhere else.
 Neither claim waits on an implementation, and neither says anything about
 how long anything takes.
 
-**Of the three mechanisms marked provisional, one has been settled.**
+**Of the three mechanisms marked provisional, two have been settled.**
 Timelines earn a separate object and do not deserve the exclusive claim
 section 9 made for them, which that section now says. Per-process
-namespaces (section 20) and the submission engine (section 17) are exactly
-as unproven as when they were written.
+namespaces (section 20) are usable and the complexity they move into the
+C library moved once rather than per program. The submission engine
+(section 17) is exactly as unproven as when it was written.
+
+**And one that was not marked provisional should have been.** Driver
+cohorts (section 18) justify themselves by the mapping a shared address
+space avoids. Building and measuring them says that is the wrong
+justification: what a cohort removes that nothing cheaper does is a
+copy, not a mapping, and the mapping cost it does remove is better
+bought with address space identifiers, which cost no isolation at all.
+Section 18 stands as written and its argument does not. What would
+settle it is in the roadmap.
 
 **What building it has already corrected is marked where it happened.**
 Sections 9.2, 9.3, 11.6, 13.2 and 14.1 carry notes of that kind: an

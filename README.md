@@ -29,6 +29,44 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 6 is done: there are driver cohorts, and measuring them says
+the mechanism is aimed at the wrong cost.** A cohort is a set of images
+the build names, running in one address space. The storage stack is one:
+a filesystem reading its files through a block store underneath it. A
+member may hand a peer an address instead of a buffer for the kernel to
+map, and a member that faults ends the whole cohort.
+
+The same programs and the same recorded session, one line of a
+build-time table apart:
+
+| | out of the cohort | in it |
+|---|---|---|
+| pages remapped | 42 | 12 |
+| page-table entries written | 84 | 24 |
+| single-address invalidations | 42 | 12 |
+| address space switches | 395 | 358 |
+
+It also removes a copy per whole block, which is not in that table and
+is the only thing a cohort uniquely does. The rest is bought more
+cheaply with address space identifiers, which neither port has and which
+would cost no isolation. So the milestone kept section 18 and marked it
+rather than endorsing it, and wrote down what would settle it.
+
+The cost is not a number:
+
+```
+$ peer_c
+cohort peers: member peer_c faulted, instruction at 0x0, pc 0x81800042
+  the whole cohort is the recovery unit, per section 18.2: peer_a peer_b peer_c
+  tearing them down together and restarting them is M7, and is not built
+
+panic: cohort peers cannot be recovered and must not be left running
+```
+
+The same program outside a cohort is `sh: peer_c: instruction fault` and
+the shell carries on. A bug in the block driver takes down the
+filesystem.
+
 **Milestone 5 is done: there are paths, and no absolute ones.** A process
 receives its namespace at launch as a set of directory handles with names
 attached, and resolves a path against it in the C library. Nothing asks
@@ -102,22 +140,30 @@ rather than a hole in the capability model.
 like a person typing and once as a burst like a pipe, and compares the
 transcript against a recorded one.
 
-What does not exist: driver cohorts, multicore, the submission engine,
-and everything to do with death. Nothing is reaped, nothing is cancelled,
-no address space is ever torn down, and a rendezvous carries no deadline,
-so a server that stops answering hangs its client rather than failing it.
+What does not exist: multicore, the submission engine, and everything to
+do with death. Nothing is reaped, nothing is cancelled, no address space
+is ever torn down, no cohort is ever restarted, and a rendezvous carries
+no deadline, so a server that stops answering hangs its client rather
+than failing it.
 
-Four figures have been obtained, and all four are footprints rather than
-speeds. Kernel object memory is 504896 bytes, of which 360960 is thread
-stacks; both pools that dominate it are sized by the boot check sequence
-rather than by a workload, because nothing is reaped yet. Having no
-wait-set costs this system one thread, the console's second, at eight and
-a half kilobytes with both its stacks. An address space costs a handful
-of frames per process, because the kernel is mapped into each one rather
-than shared between them. And naming costs about two kilobytes in a
-program that opens files and nothing at all in one that does not:
-`status` is 3837 bytes with and without the whole of section 20 in the
-library beside it.
+The figures obtained so far are footprints rather than speeds, with one
+exception. Kernel object memory is 606976 bytes, of which 433152 is
+thread stacks; both pools that dominate it are sized by the boot check
+sequence rather than by a workload, because nothing is reaped yet.
+Having no wait-set costs this system one thread, the console's second,
+at eight and a half kilobytes with both its stacks. An address space
+costs a handful of frames per process, because the kernel is mapped into
+each one rather than shared between them. And naming costs about two
+kilobytes in a program that opens files and nothing at all in one that
+does not: `status` is 3837 bytes with and without the whole of section
+20 in the library beside it.
+
+The exception is what a protection boundary costs to cross, which M6
+measured because it had to: four page-table entries and two TLB
+operations to move one page across and back, at Tier 2, and nothing at
+all at Tier 0. Entries are per page and TLB operations are per half of
+the move. That is a count of operations rather than a time, so it is
+exact on an idle machine and does not become truer under load.
 
 `docs/ROADMAP.md` says what each milestone answered, what it cost, and what
 it left untested.
@@ -254,9 +300,10 @@ is the userland libraries, `bin` is the userland programs, `include` is the
 headers those programs compile against, and `share/mk` holds the make
 fragments that tie it all together.
 
-`bin` holds nineteen programs: the shell, its utilities, the console
-driver, the filesystem server, and the ones written to break a rule on
-purpose. `lib` builds the C library they link against.
+`bin` holds twenty-three programs: the shell, its utilities, the console
+driver, the filesystem server and the block store under it, and the ones
+written to break a rule on purpose or to die on purpose. `lib` builds
+the C library they link against.
 
 ```
 .
@@ -281,6 +328,7 @@ purpose. `lib` builds the C library they link against.
     │   ├── object.h         # the kernel object types and their pools
     │   ├── vm.h             # address spaces, and what a port provides
     │   ├── grant.h          # authority over a region, held as a handle
+    │   ├── cohort.h         # a protection domain shared by several images
     │   └── systm.h          # kernel-internal prototypes
     ├── kern/                # machine-independent
     │   ├── init_main.c      # kernel_main and the boot checks
@@ -289,8 +337,10 @@ purpose. `lib` builds the C library they link against.
     │   ├── kern_channel.c   # send, receive, reply, and the move contract
     │   ├── kern_proc.c      # processes, spawn, and the loader
     │   ├── kern_pager.c     # a page fault, sent as a message
+    │   ├── kern_cohort.c    # the build-time membership table, and the halt
     │   ├── subr_page.c      # the frame allocator
-    │   ├── subr_vm.c        # the kernel's own address space
+    │   ├── subr_vm.c        # the kernel's own address space, and what a
+    │   │                   #   boundary crossing costs
     │   ├── subr_pool.c      # the pool mechanism
     │   └── subr_prf.c       # console output, formatting, panic
     └── arch/
@@ -460,14 +510,22 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   reclamation.
 - There is no way to stop anything. Nothing is cancelled and a rendezvous
   carries no deadline, so a server that stops answering hangs its client.
+- A cohort cannot be recovered. Section 18.2 makes the cohort the unit of
+  recovery, and tearing one down and restarting it is milestone 7, so a
+  member that faults halts the machine rather than being restarted with
+  its peers. The halt says what is missing.
+- Neither port assigns address space identifiers, so every dispatch into
+  a different address space discards the whole translation cache. That is
+  the largest cost the milestone 6 measurements turned up and the one
+  that would most change what a cohort is worth.
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is driver
-cohorts: a shared protection domain for a set of processes that must
-exchange buffers without copying, which is the third and last of the
-provisional mechanisms and the one most likely to be deleted rather than
-built.
+See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is death:
+reclamation, cancellation, deadlines, and the cohort teardown that
+milestone 6 stubbed and named. It is the one thing every milestone so
+far has deferred, and three of them in a row have paid for it by raising
+a pool size instead.
 
 The ordering that got here is in the same file, along with what each
 milestone answered and what it left untested. The one choice most likely

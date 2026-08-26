@@ -229,10 +229,49 @@ server refuses it whatever the client did, because a program may build
 its own messages and must not thereby reach above the connection it is
 using.
 
-What does not exist: driver cohorts, multicore, the submission engine,
-and anything at all to do with death. Nothing is reaped, nothing is
-cancelled, no address space is ever torn down, and a rendezvous still
-carries no deadline.
+**Milestone 6 is done: there are cohorts, and the measurement they were
+built for says the mechanism is aimed at the wrong cost.** A cohort is a
+set of images the build names, running in one address space, and the
+storage stack is one: a filesystem reading through a block store
+underneath it. A member may hand a peer an address rather than a buffer
+to be mapped, and a member that faults ends the whole cohort.
+
+The same programs, the same session, one line of a build-time table
+apart:
+
+| | out of the cohort | in it |
+|---|---|---|
+| pages remapped | 42 | 12 |
+| page-table entries written | 84 | 24 |
+| single-address invalidations | 42 | 12 |
+| address space switches | 395 | 358 |
+
+It also removes a copy per whole block, which is not in that table and
+turns out to be the only thing a cohort uniquely does. The rest is
+better bought with address space identifiers, which neither port has and
+which would keep every process apart. Section 9 has the argument and
+what would settle it.
+
+And the cost, which is not a number:
+
+```
+$ peer_c
+cohort peers: member peer_c faulted, instruction at 0x0, pc 0x81800042
+  the whole cohort is the recovery unit, per section 18.2: peer_a peer_b peer_c
+  tearing them down together and restarting them is M7, and is not built
+
+panic: cohort peers cannot be recovered and must not be left running
+```
+
+The same program outside a cohort is `sh: peer_c: instruction fault`,
+and the shell carries on. A bug in the block driver takes down the
+filesystem, and that is what section 18.2 is for.
+
+What does not exist: multicore, the submission engine, and anything at
+all to do with death. Nothing is reaped, nothing is cancelled, no
+address space is ever torn down, no cohort is ever restarted, and a
+rendezvous still carries no deadline.
+
 ---
 
 ## 2. How This Plan Is Organised
@@ -3506,8 +3545,8 @@ fault in either halts the system with the recovery path stubbed and named, and
 the resource report carries the number that says what the cohort saved against
 an alternative that keeps the isolation.
 
-**Done.** All six stages are built. The number is in section 12, which is
-where the milestone answers the question it was written to ask.
+**Done.** Section 9 says what it measured, what the measurement turned out to
+be about, and why the question it was written to ask is not yet answered.
 
 *Would falsify.* Whether zero mapping within a shared domain is worth a shared
 domain at all. The measurement is taken against a system that invalidates by
@@ -4221,7 +4260,220 @@ clamps a duplication asking for what a source lacks, so a namespace with
 a grant in it is composed in two calls. The wall is met on every boot and
 the second call is not written, because nothing needs it yet.
 
-## 9. Bring-Up Order Within M1
+## 9. Milestone 6, in Retrospect
+
+M6 asked whether zero mapping within a shared protection domain is worth
+the shared domain. Section 18 was never marked provisional, and the M5
+close called it the mechanism most likely to be deleted rather than
+built, which was a guess and not a reading of the document. This is what
+it measured, what the measurement turned out to be about, and why the
+question it was written to ask is not yet answered.
+
+### 9.1 The Question
+
+**Is a shared protection domain worth what it saves?**
+
+The measurement is the same programs and the same recorded transcript,
+one line of a build-time table apart:
+
+| | out of the cohort | in it |
+|---|---|---|
+| pages remapped | 42 | 12 |
+| page-table entries written | 84 | 24 |
+| tables built | 4 | 3 |
+| single-address invalidations | 42 | 12 |
+| address space switches | 395 | 358 |
+
+**The prediction was written before the building started, and its rate
+was exactly right.** It said a cohort removes four page-table entry
+writes and two TLB operations per page per layer crossed. Fifteen
+crossings went away and took sixty entries and thirty invalidations with
+them, which is that rate to the unit.
+
+**"And nothing else" was wrong twice.**
+
+It also removed thirty-seven address space switches. Neither port
+assigns address space identifiers, so every switch discards the whole
+translation cache, and a dispatch between two members does not change
+the root register and is skipped. That was not in the prediction, and it
+is the more expensive of the two things.
+
+And it removed a copy. Stage two found what the plan did not know: the
+move contract cannot forward. A server holding a page on loan may not
+lend it on, because section 23.2 checks a descriptor against the
+sender's own image, so a read through two layers copies once. Inside a
+cohort the filesystem hands the store the client's own address and the
+block never passes through the filesystem at all.
+
+**The comparison the plan set up measured nothing.** Stage four built
+the fair competitor the plan named, which was invalidating the addresses
+that moved rather than flushing everything, and then found the buffer
+path's TLB maintenance to be redundant. Removing it entirely breaks
+nothing observable on either port: there is an address space switch
+between the hand-over and the receiver touching the page, and another
+between the take-back and the sender touching it again, and each already
+discards what would have been stale. Invalidating by address closed none
+of the gap, because the gap was not there.
+
+**And the competitor that matters was not built.** What a cohort removes
+that costs anything is the whole-TLB flush on a switch between members.
+The mechanism that removes the same cost without a shared fault domain
+is address space identifiers, which neither port has. They would remove
+the flush from all three hundred and ninety-five switches rather than
+from thirty-seven, and they would keep every process apart.
+
+### 9.2 The Answer, Such As It Is
+
+The falsification clause said that if invalidating by address closed
+most of the gap, section 18 should be deleted. It closed none of it, so
+by the letter of the clause the mechanism survives. By the substance it
+is not so simple, because the clause was aimed at a cost that turned out
+not to be the cost.
+
+Of the three things a cohort was measured doing:
+
+- **Thirty-seven of three hundred and ninety-five whole-TLB flushes.**
+  Address space identifiers would remove all of them and keep the
+  isolation.
+- **Sixty of eighty-four page-table entry writes.** Real, and stores.
+  Small.
+- **One copy per whole block.** Nothing else in the design removes this.
+
+Two of the three are better served by a mechanism that costs no
+isolation. The third is the only thing a cohort uniquely provides. **The
+case for section 18 now rests on forwarding rather than on mapping**,
+which is not the case section 18 makes for itself.
+
+**And there is a cheaper candidate for forwarding that was not tried.**
+Let a process lend on a page it currently holds on loan. That is a
+change to the move contract of section 6.1 rather than a shared address
+space, and it hands the block driver one page instead of the
+filesystem's entire memory. It has a real difficulty, which is that the
+loan becomes a chain and the reply has to unwind it, and that difficulty
+is smaller than a shared fault domain. If it is sound, the cohort's last
+unique benefit goes with it.
+
+**So the milestone does not settle its own question.** Saying otherwise
+would be the easy thing, and the numbers above do not support it. What
+it settled is what the question should have been: not whether a shared
+domain is cheaper than mapping, but whether it is the cheapest way to
+forward a page without copying it, and that has to be answered against
+two alternatives that do not exist yet.
+
+Section 18 is therefore kept and marked, not deleted and not endorsed.
+The next milestone that touches either alternative decides it.
+
+### 9.3 What It Cost
+
+Thirteen commits, thirty-four files, about 3100 lines added and 78
+removed, of which 2240 are code.
+
+The mechanism is small. The cohort object and its build-time table are
+266 lines, its header 149, and the changes to the rendezvous, the
+process and the thread come to 295 lines across five files. Everything
+else is apparatus: a block store, three peer programs, and the
+accounting that makes a boundary countable. That ratio is the honest
+shape of this milestone, and it is the second time a milestone has cost
+more to measure than to build.
+
+Nothing is reaped, so the process pool went from 48 to 56 and the thread
+pool from 80 to 96. The third milestone running to raise them, and the
+last: M7 is next.
+
+**The fault-domain cost is not a number, and it is the largest thing
+here.** One program, one fault, two outcomes. In a cohort:
+
+```
+$ peer_c
+cohort peers: member peer_c faulted, instruction at 0x0, pc 0x81800042
+  the whole cohort is the recovery unit, per section 18.2: peer_a peer_b peer_c
+  tearing them down together and restarting them is M7, and is not built
+
+panic: cohort peers cannot be recovered and must not be left running
+```
+
+With one line of the membership table changed:
+
+```
+$ peer_c
+sh: peer_c: instruction fault at 0x0, pc 0x81800042
+[-16]
+```
+
+A filesystem and a block driver in one cohort means a bug in either
+takes down the storage stack. Section 18.2 says so; this is what it
+looks like.
+
+### 9.4 What the Building Kept Finding
+
+**A comment claiming what the code did not do, three times.** Stage one
+said a TLB flush was kept because removing it broke a check, and
+removing it breaks nothing. Stage three said nothing else could run
+between the two halves of a charged region because neither half can
+block, and the timer interrupt dispatches on its way out. Stage four
+said a port with address space identifiers would not change the callers,
+and it would need two invalidations per page where one does now. Every
+one was a sentence that sounded like reasoning and had not been checked,
+and in a document whose whole method is falsifiable claims, an unchecked
+one in a comment is the same error in a smaller place.
+
+**One value standing for two questions, and once the reverse.** A new
+error code for a condition the loader already answered with
+`SYS_ERR_WOULDBLOCK`. A receiver that was NULL for "not known yet" in
+one caller and would have meant "no process" in another. A
+`SYS_ERR_FAULT` read as a verdict about the domain forever after rather
+than as one refused send. And the reverse in stage three: two
+denominators, entries per page and flushes per half, stated and checked
+as one because in this tree every buffer is one page.
+
+**Measuring the workload and calling it the mechanism.** The rate check
+multiplied by the number of messages, which held only because every
+message here carries exactly one page. A block size larger than every
+file, so the loop that makes a filesystem a filesystem never ran twice.
+A switch count that moves with when console input arrives, put in a file
+compared exactly. Each of those passed, and each was a check about this
+session rather than about the system.
+
+**A rule attached to the wrong event.** The cohort's fault rule sat
+where a process ends rather than where a thread faults, so a member
+whose faulting thread was not the last one out ended nothing and
+reported success. Every member in this tree has one thread, which is why
+it passed its own check and every by-hand run of it.
+
+**And the milestone undoing what an earlier one earned.** Tier 2 ended
+the rule that an image may have only one live copy, and said so in a
+comment that stage one read while writing the code that put it back for
+cohort members. Reachable from the shell, and instrumenting the loader
+showed a running member's slot base move from one frame to another
+underneath it.
+
+### 9.5 What Is Still Untested
+
+**Address space identifiers**, which is the comparison the question
+needs and the largest single cost in the system.
+
+**Lending on a page held on loan**, which is the cheaper candidate for
+the one thing a cohort uniquely does.
+
+**The teardown of section 18.2.** A member's fault halts, which is the
+honest stub and not the mechanism. M7.
+
+**Scatter-gather and lazy mapping**, deferred out of this milestone
+because nothing forwards a payload without inspecting it before M10.
+**Cohort scheduling nodes**, deferred to M8, because one core running
+nothing concurrently cannot observe time staying inside a group.
+
+**A cohort with more than two live members.** The peers cohort names
+three and never has three running, because the third one's job is to
+die.
+
+**Any load at all.** Every number here comes from a session whose entire
+contents are three short strings, and the ratio between the buffer path
+and context switching is a property of that session as much as of the
+system. What does not depend on it is the rate: four entries and two TLB
+operations to move one page across a boundary and back.
+
+## 10. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -4265,7 +4517,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 10. Ordering: What Is Forced and What Is Chosen
+## 11. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -4296,7 +4548,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 11. What Would Change This Plan
+## 12. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -4333,7 +4585,7 @@ reason, so nothing else moves.
 
 ---
 
-## 12. Deliberately Not Scheduled
+## 13. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 
