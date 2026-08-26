@@ -140,7 +140,7 @@ undonate(struct thread *t)
 }
 
 /* Whether a sender may describe this memory to this receiver. */
-static bool buf_may_send(struct proc *from, struct proc *to, uintptr_t va,
+static bool buf_may_deliver(struct proc *from, struct proc *to, uintptr_t va,
   size_t len);
 
 static void
@@ -297,7 +297,8 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
      * function does nothing else at all, and this is the whole of what
      * it is for there.
      */
-    if (!buf_may_send(client->t_proc, server->t_proc, m->buf, m->buf_len)) {
+    if (!buf_may_deliver(client->t_proc, server->t_proc, m->buf,
+      m->buf_len)) {
         return SYS_ERR_FAULT;
     }
 
@@ -319,7 +320,7 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
          *
          * First, before anything reasons about whose memory this is.
          * A member may describe the domain's memory and not only its
-         * own, per buf_may_send(), so the question the assertion below
+         * own, per buf_may_deliver(), so the question the assertion below
          * asks has no answer here and does not need one: nothing is
          * being moved into anywhere.
          */
@@ -494,27 +495,33 @@ uint64_t channel_rendezvous;
  * address is a fault in the member that touches it, exactly as it
  * would be if one member had passed the number to itself.
  *
- * `to` is NULL where the receiver is not yet known, which is every
- * send that has to queue. A channel does not know who receives on it:
- * it was created by whoever built the system and the receive right was
- * moved to a server afterwards, so the only honest answer at send time
- * is the one this gives, which is to let a member past and decide at
- * the rendezvous. One rule asked twice, and not two rules: a sender in
- * no cohort gets the same refusal at the same moment it always did,
- * and only a member can reach the second asking.
+ * The rule is asked in two places because a channel does not know who
+ * receives on it: it was created by whoever assembled the system and
+ * the receive right was moved to a server afterwards. So there are two
+ * functions rather than one with a receiver that is sometimes absent.
+ * An argument meaning "not known yet" in one caller and "no process"
+ * in another is one value standing for two questions, and this file
+ * has been bitten by that shape more than once.
+ *
+ * buf_may_deliver() is the rule. buf_may_send() is the most that can
+ * be decided before there is a receiver, and it must never be stricter
+ * than the rule, or a legitimate send would be refused before anyone
+ * could say it was legitimate.
  */
 static bool
-buf_may_send(struct proc *from, struct proc *to, uintptr_t va, size_t len)
+buf_may_send(struct proc *from, uintptr_t va, size_t len)
+{
+    return proc_owns(from, va, len) || from->p_cohort != NULL;
+}
+
+static bool
+buf_may_deliver(struct proc *from, struct proc *to, uintptr_t va, size_t len)
 {
     if (proc_owns(from, va, len)) {
         return true;
     }
 
-    if (from->p_cohort == NULL) {
-        return false;
-    }
-
-    return to == NULL || from->p_cohort == to->p_cohort;
+    return from->p_cohort != NULL && from->p_cohort == to->p_cohort;
 }
 
 sys_err_t
@@ -537,7 +544,7 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
      * fault in whichever process dereferenced it, and a refusal here is
      * an answer instead of a corpse.
      */
-    if (req->buf_len > 0 && !buf_may_send(self->t_proc, NULL,
+    if (req->buf_len > 0 && !buf_may_send(self->t_proc,
       req->buf, req->buf_len)) {
         return SYS_ERR_FAULT;
     }

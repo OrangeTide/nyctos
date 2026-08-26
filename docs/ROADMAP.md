@@ -3341,9 +3341,53 @@ the store, so taking the two out of the cohort stopped reads working
 altogether rather than making them cost more. A server that breaks because a
 build-time table changed is a coupling nothing declares, and it also destroys
 the measurement, which needs one program that runs both ways. It now tries the
-direct path once, and a refusal sets a flag and is never repeated. The refusal
-costs no rendezvous, because a hand-over that fails puts the receiver back in
-receive before anything is counted.
+direct path once, before anything has succeeded that way, and a refusal
+answers the question for good. The refusal costs no rendezvous, because a
+hand-over that fails puts the receiver back in receive before anything is
+counted.
+
+*Reviewing it found nothing that let memory escape, and three things that were
+one edit away from letting it.*
+
+**The check at Tier 0 is real, which is worth having established rather than
+assumed.** The stage rests on a rule that has to hold at a tier with no
+hardware behind it, and the temptation with such rules is that they compile
+and are never exercised. Removing the second asking and running Tier 0 makes
+`peer_b` return seven, which is the send it expected to be refused succeeding.
+At Tier 2 the same edit halts the machine in the assertion behind it. Both
+catch it; they catch it differently, and the Tier 0 one is the one that
+matters, because at Tier 2 the hardware would have had something to say
+eventually.
+
+**One argument stood for two questions.** `buf_may_send(from, to, ...)` took a
+receiver that was NULL at send time, meaning "not known yet", and a real
+process at the rendezvous. Nothing reaches it with a threadless receiver
+today, so the two meanings never collided, and a NULL that means "allow" in
+one caller and "no process" in another is the shape this file has been bitten
+by more than once. It is two functions now. `buf_may_deliver` is the rule.
+`buf_may_send` is the most that can be decided before there is a receiver, and
+the invariant is written down: it must never be stricter than the rule, or a
+legitimate send would be refused before anyone could say it was legitimate.
+
+**A check program was teaching a wrong use of a name.** `peer_b` was handed
+its outsider connection as `SYS_NS_CWD`, which means the directory a process's
+paths start at. `peer_b` resolves no paths. Section 20.4 has private
+identifiers for exactly this, a number a parent and a child agree on and
+nothing else reads, so it uses one. A borrowed role in a check program is a
+worked example of misusing a role.
+
+**And a downgrade could have been permanent for the wrong reason.** The
+filesystem learns whether the store is in its cohort by sending it an address
+and reading the refusal, and `SYS_ERR_FAULT` was taken to mean "not my memory"
+forever after. No store answers `SYS_ERR_FAULT`, and this one cannot: it says
+`INVALID_ARG`, `NO_ENT`, `TRUNCATED` or `NOT_SUPPORTED`. But a store that did
+would have turned one bad read into a permanent loss of the direct path, quiet
+and unattributable, and the whole point of the layer is that the store is a
+separate program that may change. The question is asked once now, before
+anything has succeeded that way; after that a `FAULT` is a read that failed.
+
+*The measurement is unchanged by all three.* Taking the store out of the
+cohort still restores every number exactly with the transcript identical.
 
 **6. A fault names the cohort, and the recovery path is stubbed.**
 

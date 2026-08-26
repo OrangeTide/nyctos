@@ -94,7 +94,7 @@ main(void)
      * even though it is a member of one.
      */
     {
-        sys_handle_t out = ns_lookup(SYS_NS_CWD);
+        sys_handle_t out = ns_lookup(PEER_NS_OUTSIDER);
         fs_request_t *req;
         uintptr_t inside;
 

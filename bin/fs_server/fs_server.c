@@ -160,12 +160,12 @@ static uint8_t block[BLK_BLOCK_BYTES];
  * Whether the store shares this server's memory, which is whether the
  * build put the two in one cohort.
  *
- * There is no operation that asks, and there should not be one for this:
- * what a program wants to know is not "am I in a cohort" but "may I hand
- * this address to that connection", and the answer is the send itself.
- * So the first block that could go direct is sent direct, and a refusal
- * sets this and is never repeated. One refused send per boot, which
- * costs no rendezvous because the refusal happens before the message is
+ * There is no operation that asks, and there should not be one for
+ * this: what a program wants to know is not "am I in a cohort" but "may
+ * I hand this address to that connection", and the answer is the send
+ * itself. So the first block that could go direct is sent direct, and a
+ * refusal answers the question. One refused send per boot, which costs
+ * no rendezvous because the refusal happens before the message is
  * delivered.
  *
  * The alternative was to require the cohort and fail without it, and
@@ -173,8 +173,20 @@ static uint8_t block[BLK_BLOCK_BYTES];
  * build-time table changed is a coupling nothing declares, and the
  * milestone measuring this needs the same server to run both ways so
  * that the difference is the cohort and not the program.
+ *
+ * Three states and not two, because the refusal is read from an error
+ * code. SYS_ERR_FAULT on that send means the address was not this
+ * server's to hand over, and no store answers with it: this one says
+ * INVALID_ARG, NO_ENT, TRUNCATED or NOT_SUPPORTED. A store that did
+ * answer FAULT would otherwise turn one bad read into a permanent
+ * downgrade. So the question is asked once, before anything has
+ * succeeded, and after that a FAULT is a read that failed.
  */
-static int store_shares_memory = 1;
+#define STORE_UNKNOWN   0
+#define STORE_SHARED    1
+#define STORE_APART     2
+
+static int store_memory = STORE_UNKNOWN;
 
 /*
  * Ask the store for a block, into an address of the caller's choosing.
@@ -306,24 +318,25 @@ read_into(void *dst, uint32_t dstlen, uint32_t node, uint64_t off,
          * a special case. A file of thirty-one bytes in sixteen byte
          * blocks takes one of each.
          */
-        if (store_shares_memory && within == 0 &&
+        if (store_memory != STORE_APART && within == 0 &&
           n == BLK_BLOCK_BYTES) {
             *err = store_read((uint8_t *)dst + done, blocknr);
             if (*err == SYS_OK) {
+                store_memory = STORE_SHARED;
                 done += n;
                 continue;
             }
-            if (*err != SYS_ERR_FAULT) {
+            if (*err != SYS_ERR_FAULT || store_memory != STORE_UNKNOWN) {
                 return 0;
             }
 
             /*
-             * Refused because that address is not this server's to
-             * hand over, which means the store is not in its cohort.
-             * Nothing was delivered, so falling through costs the
-             * message and not the read.
+             * Refused, and nothing had succeeded this way yet, so the
+             * address was not this server's to hand over and the store
+             * is not in its cohort. Nothing was delivered, so falling
+             * through costs the message and not the read.
              */
-            store_shares_memory = 0;
+            store_memory = STORE_APART;
         }
 
         *err = store_read(block, blocknr);

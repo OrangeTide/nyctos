@@ -16,6 +16,7 @@
 #include <sys/object.h>
 #include <sys/op.h>
 #include <sys/page.h>
+#include <sys/peer.h>
 #include <sys/proc.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
@@ -3334,7 +3335,7 @@ cohort_checks(void)
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_ROOT;
     ns[0].handle = to;
-    ns[1].id = SYS_NS_CWD;
+    ns[1].id = PEER_NS_OUTSIDER;
     ns[1].handle = cargs.out_handle;
 
     sched_defer();
