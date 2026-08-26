@@ -144,9 +144,8 @@ What does not exist: multicore, the submission engine, and everything to
 do with death beyond reaping and cancellation. Slots come back and a
 thread can be broken out of any wait, but nothing is killed, no address
 space is ever torn down, no cohort is ever restarted, and a rendezvous
-carries no deadline. A wedged server hangs
-its client until something cancels it, and nothing yet notices on its
-own that something should.
+carries no deadline. A wedged server hangs its client until something
+cancels it, and nothing yet notices on its own that something should.
 
 The figures obtained so far are footprints rather than speeds, with one
 exception. Kernel object memory is 226496 bytes, of which 143872 is
