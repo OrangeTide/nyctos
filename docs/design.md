@@ -492,6 +492,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Cohort space | One address space per cohort, member slots mapped side by side in it. A member has none of its own. |
 | Boundary cost | Four entries and two whole-TLB flushes to move one page across a boundary and back at Tier 2, and nothing at Tier 0. Entries are per page; flushes are per half of the move. |
 | TLB maintenance | The buffer path invalidates the addresses it moved. Neither port has address space identifiers, so every context switch still discards everything. |
+| Buffer inside a cohort | A member may describe the domain's memory to a peer, not only its own. Refused to anyone outside it. |
 | Block layering | A block store is the read of section 25.2 with the name dropped and whole blocks required. No second protocol. |
 | Forwarding a buffer | A page held on loan is not the holder's to lend on, so a stack of layers copies at each one. |
 | Interrupts | Disabled in kernel on Tier 0; enabled on Tier 2. |
@@ -1579,6 +1580,12 @@ Membership is stated as a set of images, and spawning one of those images is wha
 **Inside a cohort the handle table is bookkeeping rather than protection.** Authority is per-process and stays per-process, so each member still has a table of its own and still cannot name a handle a peer holds. That distinction is worth something between mutually suspicious processes and worth nothing here: a member can read and write any peer's memory, so it can read whatever a peer read through a handle and write whatever a peer is about to write. A cohort should be reasoned about as one principal with several handle tables, and the tables should be read as a record of which member does what rather than as a boundary between them.
 
 **A member cannot tell a peer's address from anyone else's.** Passing a buffer as a bare address works between members and is unsound from anywhere else, and nothing in a message distinguishes the two: the sender's identity is not in it, and a member that dereferences an address because it arrived is trusting whoever holds a send handle rather than trusting its peers. The rule that follows is that a member serves member traffic and outside traffic on different channels, and treats an address as an address only on the first. A server with one channel for both would be handing the whole cohort to its clients.
+
+**A member may describe the domain's memory in a buffer descriptor, and only to the domain.** Section 23.2 requires a descriptor to name the sender's own memory, because a number naming somebody else's would be acted on for the sender if nothing checked it. Two members are one protection domain: the receiver already reaches everything the sender does, the kernel maps nothing and dereferences nothing, and no authority is created by allowing it because none is moved. Handing the same address to a process outside the domain is refused, because there it would be a page nobody granted.
+
+The test is the cohort and not the address space. At Tier 0 every process shares an address space, so a rule asking about the space would let any program describe any other program's memory. Asking about the cohort gives the same answer at both tiers, which is what having two tiers is for, and it is the reason a cohort is a named thing at Tier 0 rather than nothing at all.
+
+The rule has to be asked twice. A channel does not know who will receive on it: it is created by whoever assembles the system and its receive right is moved to a server afterwards. So a sender in no cohort is refused when it sends, as it always was, and a member is let through and decided at the rendezvous, where both ends are known.
 
 ### 18.2 Fault Recovery
 

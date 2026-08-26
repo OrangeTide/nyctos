@@ -22,6 +22,7 @@
 #include <ns.h>
 #include <stddef.h>
 #include <string.h>
+#include <sys/fs.h>
 #include <sys/peer.h>
 
 #define WAS     0xa5a5a5a5u
@@ -78,6 +79,46 @@ main(void)
     /* And what it wrote into it. */
     if (word != NOW) {
         return 5;
+    }
+
+    /*
+     * And the other half of the rule, which is the half that matters.
+     * A member may describe the domain's memory because the domain can
+     * already reach it. Describing it to somebody outside the domain
+     * would be handing them a page nobody gave them, and that is
+     * refused.
+     *
+     * The address is the slot below this program's, which is peer_a's:
+     * memory this program may read directly and may not lend out. The
+     * file server is in a different cohort, so it is an outsider here
+     * even though it is a member of one.
+     */
+    {
+        sys_handle_t out = ns_lookup(SYS_NS_CWD);
+        fs_request_t *req;
+        uintptr_t inside;
+
+        if (out == SYS_HANDLE_INVALID) {
+            return 6;
+        }
+
+        inside = ((uintptr_t)&word & ~((uintptr_t)SYS_USER_SLOT_BYTES - 1)) -
+          SYS_USER_SLOT_BYTES;
+
+        memset(&message, 0, sizeof(message));
+        message.handle = SYS_HANDLE_INVALID;
+        message.inline_len = sizeof(*req);
+        message.buf = inside;
+        message.buf_len = 64;
+        message.buf_flags = SYS_BUF_WRITE;
+        req = (fs_request_t *)message.inline_data;
+        req->fr_op = FS_OP_READ;
+        req->fr_offset = 0;
+        req->fr_length = 64;
+
+        if (sys_msg_send(out, &message, &reply) != SYS_ERR_FAULT) {
+            return 7;
+        }
     }
 
     return 0;

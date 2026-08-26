@@ -3279,7 +3279,7 @@ cohort_checks(void)
 {
     struct proc *self = proc_current();
     struct sys_op_connect_args cargs;
-    sys_ns_spec_t ns[1];
+    sys_ns_spec_t ns[2];
     struct channel *ch;
     struct child c;
     struct proc *p;
@@ -3319,12 +3319,26 @@ cohort_checks(void)
      * run_client() gives: the child outranks this thread and would
      * finish before anything held its completion timeline.
      */
+    /*
+     * And a connection to something outside the cohort, so that the
+     * other half of the rule can be tried. The kernel's own file
+     * server will do and is the honest choice: it is a kernel thread,
+     * so it is in no cohort at all, which is what an outsider is.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to something outside the cohort",
+      run(SYS_OP_CHAN_CONNECT, h_fs_recv, &cargs, sizeof(cargs)), SYS_OK);
+
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_ROOT;
     ns[0].handle = to;
+    ns[1].id = SYS_NS_CWD;
+    ns[1].handle = cargs.out_handle;
 
     sched_defer();
-    p = proc_spawn_image("peer_b", 20, ns, 1, NULL, 0);
+    p = proc_spawn_image("peer_b", 20, ns, 2, NULL, 0);
     child_watch(&c, p);
     sched_undefer();
 

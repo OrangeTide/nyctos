@@ -139,6 +139,10 @@ undonate(struct thread *t)
     }
 }
 
+/* Whether a sender may describe this memory to this receiver. */
+static bool buf_may_send(struct proc *from, struct proc *to, uintptr_t va,
+  size_t len);
+
 static void
 msg_copy(struct sys_msg *dst, const struct sys_msg *src)
 {
@@ -282,6 +286,21 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
         return SYS_OK;
     }
 
+    /*
+     * The same rule the send asked, now that there is a receiver to
+     * ask it about. A member is let past the first asking because a
+     * channel cannot say who will receive on it; this is where a
+     * member sending the domain's memory to somebody outside the
+     * domain is refused, and it is the only place that can.
+     *
+     * Both tiers, because section 23.2 is not a tier. At Tier 0 this
+     * function does nothing else at all, and this is the whole of what
+     * it is for there.
+     */
+    if (!buf_may_send(client->t_proc, server->t_proc, m->buf, m->buf_len)) {
+        return SYS_ERR_FAULT;
+    }
+
 #if SYS_TIER == 2
     {
         struct addrspace *to = proc_as(server->t_proc);
@@ -290,6 +309,23 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
         uintptr_t sbase, rbase;
         size_t slen, rlen;
         uintptr_t va;
+
+        /*
+         * Nothing to do when the two run in the same memory: a server
+         * and a client in one process, or two members of one cohort.
+         * The page is already where the receiver will look for it and
+         * no entry anywhere has to change, which is the whole of what
+         * a shared protection domain buys on this path.
+         *
+         * First, before anything reasons about whose memory this is.
+         * A member may describe the domain's memory and not only its
+         * own, per buf_may_send(), so the question the assertion below
+         * asks has no answer here and does not need one: nothing is
+         * being moved into anywhere.
+         */
+        if (proc_as(client->t_proc) == to) {
+            return SYS_OK;
+        }
 
         /*
          * Validation refused a buffer the sender has no slot for, so
@@ -302,14 +338,6 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
           first < sbase || last >= sbase + slen) {
             panic("ipc: %s sent a buffer outside its own memory",
               client->t_name);
-        }
-
-        /*
-         * Nothing to do when the two run in the same memory, which is a
-         * server and a client in one process.
-         */
-        if (proc_as(client->t_proc) == to) {
-            return SYS_OK;
         }
 
         /*
@@ -437,6 +465,58 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
  */
 uint64_t channel_rendezvous;
 
+/*
+ * Whether this sender may describe this memory to this receiver.
+ *
+ * The ordinary answer is that it must be the sender's own, per section
+ * 23.2: what arrives from a program is a number, and a number naming
+ * another program's memory would be acted on for that program if
+ * nothing checked.
+ *
+ * Two members of one cohort are the exception, and it is the whole of
+ * what section 18 buys on this path. They are one protection domain, so
+ * the receiver can already reach everything the sender can, and the
+ * kernel maps nothing and dereferences nothing: at Tier 2 the hand-over
+ * sees one address space at both ends and does no work, and at Tier 0
+ * there was never any work to do. No authority is created by allowing
+ * it, because none is being moved.
+ *
+ * The test is the cohort and not the address space, and that difference
+ * is the reason a cohort is a named thing at Tier 0 rather than
+ * nothing. At Tier 0 every process shares an address space, so a rule
+ * asking about the space would let any program describe any other
+ * program's memory and would undo what M4 built. Asking about the
+ * cohort gives the same answer at both tiers, which is what the two
+ * tiers are for.
+ *
+ * What this does not check is that the sender can reach the address.
+ * It does not have to: the receiver is in the same space, so a bad
+ * address is a fault in the member that touches it, exactly as it
+ * would be if one member had passed the number to itself.
+ *
+ * `to` is NULL where the receiver is not yet known, which is every
+ * send that has to queue. A channel does not know who receives on it:
+ * it was created by whoever built the system and the receive right was
+ * moved to a server afterwards, so the only honest answer at send time
+ * is the one this gives, which is to let a member past and decide at
+ * the rendezvous. One rule asked twice, and not two rules: a sender in
+ * no cohort gets the same refusal at the same moment it always did,
+ * and only a member can reach the second asking.
+ */
+static bool
+buf_may_send(struct proc *from, struct proc *to, uintptr_t va, size_t len)
+{
+    if (proc_owns(from, va, len)) {
+        return true;
+    }
+
+    if (from->p_cohort == NULL) {
+        return false;
+    }
+
+    return to == NULL || from->p_cohort == to->p_cohort;
+}
+
 sys_err_t
 channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
   struct sys_msg *reply)
@@ -457,8 +537,8 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
      * fault in whichever process dereferenced it, and a refusal here is
      * an answer instead of a corpse.
      */
-    if (req->buf_len > 0 &&
-      !proc_owns(self->t_proc, req->buf, req->buf_len)) {
+    if (req->buf_len > 0 && !buf_may_send(self->t_proc, NULL,
+      req->buf, req->buf_len)) {
         return SYS_ERR_FAULT;
     }
 

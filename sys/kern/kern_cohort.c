@@ -19,12 +19,22 @@
  * a process that could ask to join would be a process that could ask for
  * every member's memory.
  */
+static const char *const storage_members[] = {
+    "fs_server",
+    "blk_server",
+};
+
 static const char *const peers_members[] = {
     "peer_a",
     "peer_b",
 };
 
 static struct cohort cohorts[] = {
+    {
+        .c_name = "storage",
+        .c_members = storage_members,
+        .c_nmembers = 2,
+    },
     {
         .c_name = "peers",
         .c_members = peers_members,

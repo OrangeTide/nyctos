@@ -157,12 +157,38 @@ static sys_handle_t store;
 static uint8_t block[BLK_BLOCK_BYTES];
 
 /*
- * Ask the store for the block at this offset. Returns what the store
- * said, so a store that refuses is a read that fails rather than a read
- * that quietly returns nothing.
+ * Whether the store shares this server's memory, which is whether the
+ * build put the two in one cohort.
+ *
+ * There is no operation that asks, and there should not be one for this:
+ * what a program wants to know is not "am I in a cohort" but "may I hand
+ * this address to that connection", and the answer is the send itself.
+ * So the first block that could go direct is sent direct, and a refusal
+ * sets this and is never repeated. One refused send per boot, which
+ * costs no rendezvous because the refusal happens before the message is
+ * delivered.
+ *
+ * The alternative was to require the cohort and fail without it, and
+ * that is worse in two ways. A filesystem that stops working because a
+ * build-time table changed is a coupling nothing declares, and the
+ * milestone measuring this needs the same server to run both ways so
+ * that the difference is the cohort and not the program.
+ */
+static int store_shares_memory = 1;
+
+/*
+ * Ask the store for a block, into an address of the caller's choosing.
+ * Returns what the store said, so a store that refuses is a read that
+ * fails rather than a read that quietly returns nothing.
+ *
+ * The address does not have to be this server's memory. The store is
+ * in this server's cohort, so the two are one protection domain and
+ * the kernel neither maps nor dereferences anything: what is sent is a
+ * number the receiver can already use. That is what lets a whole block
+ * land in the client's buffer without passing through here.
  */
 static sys_err_t
-store_read(uint32_t blocknr)
+store_read(void *dst, uint32_t blocknr)
 {
     const fs_reply_t *rep;
     fs_request_t *req;
@@ -176,8 +202,8 @@ store_read(uint32_t blocknr)
     memset(&message, 0, sizeof(message));
     message.handle = SYS_HANDLE_INVALID;
     message.inline_len = sizeof(*req);
-    message.buf = (uintptr_t)block;
-    message.buf_len = sizeof(block);
+    message.buf = (uintptr_t)dst;
+    message.buf_len = BLK_BLOCK_BYTES;
     message.buf_flags = SYS_BUF_WRITE;
 
     req = (fs_request_t *)message.inline_data;
@@ -264,13 +290,48 @@ read_into(void *dst, uint32_t dstlen, uint32_t node, uint64_t off,
             n = avail - done;
         }
 
-        *err = store_read((uint32_t)fs_nodes[node].block +
-          (uint32_t)(pos / BLK_BLOCK_BYTES));
+        uint32_t blocknr = (uint32_t)fs_nodes[node].block +
+          (uint32_t)(pos / BLK_BLOCK_BYTES);
+
+        /*
+         * A whole block wanted at a block boundary in the caller's
+         * buffer goes straight there, and this server never sees it.
+         * Anything else is a piece of a block, and a piece has to be
+         * cut out of somewhere: the store deals in whole blocks and
+         * writing one into part of a buffer would write over what is
+         * beside it.
+         *
+         * So the first blocks of a read are free and the ragged end
+         * is copied, which is the shape a filesystem has rather than
+         * a special case. A file of thirty-one bytes in sixteen byte
+         * blocks takes one of each.
+         */
+        if (store_shares_memory && within == 0 &&
+          n == BLK_BLOCK_BYTES) {
+            *err = store_read((uint8_t *)dst + done, blocknr);
+            if (*err == SYS_OK) {
+                done += n;
+                continue;
+            }
+            if (*err != SYS_ERR_FAULT) {
+                return 0;
+            }
+
+            /*
+             * Refused because that address is not this server's to
+             * hand over, which means the store is not in its cohort.
+             * Nothing was delivered, so falling through costs the
+             * message and not the read.
+             */
+            store_shares_memory = 0;
+        }
+
+        *err = store_read(block, blocknr);
         if (*err != SYS_OK) {
             return 0;
         }
-
         memcpy((uint8_t *)dst + done, &block[within], n);
+
         done += n;
     }
 

@@ -3261,7 +3261,9 @@ number this stage records for the buffer path is therefore a number for a
 system that is not paying that, and the retrospective has to say so rather
 than comparing the two as if they were like for like.
 
-**5. The two layers in one cohort.**
+**5. The two layers in one cohort.** *Built.* One line in a build-time table
+removes seventy-one percent of the buffer remapping in the system and a copy
+per block, and the recorded session does not move.
 
 - `fs_server` and the block driver share a cohort, so the buffer crosses the
   second boundary as an address.
@@ -3269,11 +3271,79 @@ than comparing the two as if they were like for like.
   The work here is making the two ends share one, and establishing that the
   validation rules of sections 6.1 and 23.2 still hold when they do.
 
-*Check.* The transcript is unchanged again, and the storage crossing's mapping
-count is zero: the same read costs what a one-layer read cost before the block
-driver existed. The buffer is at the same address in both members, which the
-block driver shows by printing it. Taking the two out of the cohort puts the
-count back.
+*Check.* The same programs, the same transcript, and one entry in
+`kern_cohort.c` the only difference:
+
+| | out of the cohort | in it |
+|---|---|---|
+| pages remapped | 42 | 12 |
+| page-table entries | 84 | 24 |
+| tables built | 4 | 3 |
+| invalidations | 42 | 12 |
+| address space switches | 395 | 358 |
+
+Thirty of the forty-two page-moves in the system were the filesystem talking
+to its store, and they are gone: the hand-over sees one address space at both
+ends and returns having done nothing. Thirty-seven of the switches are gone
+too, because a dispatch from one member to another does not change the root
+register and the port is not asked to discard anything.
+
+**A member may describe the domain's memory and not only its own.** That is
+the rule this stage adds and it is the whole of what a cohort buys on this
+path. Section 23.2 says a buffer descriptor names the sender's own memory,
+because a number naming somebody else's would be acted on for the sender if
+nothing checked. Two members are one protection domain: the receiver can
+already reach everything the sender can, the kernel maps nothing and
+dereferences nothing, and no authority is created by allowing it because none
+is being moved.
+
+**The test is the cohort and not the address space, and that is why a cohort
+is a named thing at Tier 0.** At Tier 0 every process shares an address space,
+so a rule asking about the space would let any program describe any other
+program's memory, and would undo what M4 stage 5 built. Asking about the
+cohort gives the same answer at both tiers. The membership list that looked
+like bookkeeping in stage one is what makes the rule statable at all.
+
+**The rule is asked twice because a channel does not know who receives on
+it.** It was created by whoever assembled the system and the receive right was
+moved to a server afterwards, so at send time the only honest answer is to
+refuse a non-member at once, as always, and let a member through to be decided
+at the rendezvous. That is one rule asked where the answer is knowable, not
+two rules: a sender in no cohort gets the same refusal at the same moment it
+always did.
+
+**What a member may not do is lend the domain's memory outside the domain.**
+`peer_b` tries it, with the address of `peer_a`'s slot and a connection to a
+server in no cohort, and is refused with `SYS_ERR_FAULT`. Removing the second
+asking does not merely let it through, it stops the machine in the assertion
+that follows, which is the assertion doing its job.
+
+**The copy goes too, and it is not in the table above.** Stage two found that
+the move contract cannot forward: a server holding a page on loan may not lend
+it on, so a read through two layers copied once. Inside a cohort the
+filesystem hands the store the client's own address and the store writes
+straight into it, so a whole block wanted at a block boundary never passes
+through the filesystem at all. A thirty-one byte file in sixteen byte blocks
+takes one block direct and one staged, because the ragged end of a read has to
+be cut out of somewhere.
+
+*Breaking it on purpose, three ways.* Taking the store out of the cohort puts
+every number back exactly and leaves the transcript identical, which is the
+comparison the milestone wanted: the same server running both ways, so the
+difference is the cohort and not the program. Sending the direct block one
+byte off breaks the transcript, which says the direct path is the one being
+taken. Removing the second asking halts the machine, which says the rule is
+load-bearing.
+
+**The filesystem does not require its cohort, and that was a change made
+during the stage.** The first version always handed the client's address to
+the store, so taking the two out of the cohort stopped reads working
+altogether rather than making them cost more. A server that breaks because a
+build-time table changed is a coupling nothing declares, and it also destroys
+the measurement, which needs one program that runs both ways. It now tries the
+direct path once, and a refusal sets a flag and is never repeated. The refusal
+costs no rendezvous, because a hand-over that fails puts the receiver back in
+receive before anything is counted.
 
 **6. A fault names the cohort, and the recovery path is stubbed.**
 
