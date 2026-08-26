@@ -518,6 +518,33 @@ op_thread_create(struct proc *p, struct sys_op *op)
  * for the same reason: a counter cannot carry a code, so the code is read
  * from the object rather than from the timeline that reports the finish.
  */
+/*
+ * Release a thread from whatever it is blocked on, per section 10.5.
+ *
+ * SYS_RIGHT_WRITE and not SYS_RIGHT_STAT, because this changes what the
+ * thread does rather than asking about it. A supervisor that may look
+ * at a wedged driver is not thereby a supervisor that may break it out.
+ *
+ * No arguments. There is nothing to say beyond which thread, and
+ * section 10.6 is what lets that be enough: whatever the thread is
+ * blocked on left behind the one function that takes it off again, so
+ * the caller never has to know which of the waits it is sitting in.
+ */
+static sys_err_t
+op_thread_cancel(struct proc *p, struct sys_op *op)
+{
+    void *obj;
+    sys_err_t err;
+
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_THREAD,
+      SYS_RIGHT_WRITE, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    return thread_cancel(obj);
+}
+
 static sys_err_t
 op_thread_status(struct proc *p, struct sys_op *op)
 {
@@ -653,6 +680,9 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_THREAD_STATUS:
         err = op_thread_status(p, op);
+        break;
+    case SYS_OP_THREAD_CANCEL:
+        err = op_thread_cancel(p, op);
         break;
     case SYS_OP_GRANT_MAP:
         err = op_grant_map(p, op);

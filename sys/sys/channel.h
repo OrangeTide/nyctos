@@ -56,6 +56,13 @@ extern uint64_t channel_rendezvous;
  */
 bool channel_owned_by(const struct proc *p);
 
+/*
+ * Undo what a channel operation was holding on behalf of a thread that
+ * has been cancelled out of it: the buffer it lent, and the expectation
+ * of a reply. See the implementation.
+ */
+void channel_thread_cancelled(struct thread *t);
+
 struct channel *channel_create(const char *name, struct proc *owner);
 
 /*

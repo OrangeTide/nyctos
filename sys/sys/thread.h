@@ -184,6 +184,9 @@ struct thread {
      */
     uint32_t            t_refs;
 
+    /* The next thread of the same process, per proc.p_threads. */
+    struct thread      *t_sibling;
+
     /*
      * Whether this thread is inside the buffer move, so that what the
      * ports write can be charged to it. Per thread and not a global
@@ -349,6 +352,16 @@ void thread_park_if_dead(struct thread *t);
 
 /* Release a thread whose deadline passed while it was still blocked. */
 void thread_wake_timeout(struct thread *t);
+
+/*
+ * Release a thread from whatever it is blocked on, per section 10.5, so
+ * that its pending call returns SYS_ERR_INTERRUPTED.
+ *
+ * SYS_ERR_WOULDBLOCK if it is not blocked. Prompt, in the sense the
+ * section means: the thread is off the object's list and runnable when
+ * this returns, and nothing is left for it to be released from twice.
+ */
+sys_err_t thread_cancel(struct thread *t);
 
 /*
  * The context switch itself. Called by the scheduler and by nothing else:

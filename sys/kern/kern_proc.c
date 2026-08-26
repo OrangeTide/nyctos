@@ -1317,3 +1317,9 @@ proc_thread_reaped(struct proc *p)
     p->p_refs--;
     proc_reap_if_done(p);
 }
+
+struct thread *
+proc_threads(struct proc *p)
+{
+    return p->p_threads;
+}

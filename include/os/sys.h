@@ -162,6 +162,13 @@ sys_err_t sys_irq_unmask(sys_handle_t irq);
 sys_err_t sys_thread_status(sys_handle_t thread, int32_t *out_code,
   uint32_t *out_state);
 
+/*
+ * Release a thread from whatever it is blocked on, per section 10.5. Its
+ * pending call returns SYS_ERR_INTERRUPTED. Needs SYS_RIGHT_WRITE on the
+ * handle, because this changes what the thread does.
+ */
+sys_err_t sys_thread_cancel(sys_handle_t thread);
+
 /* What ended a thread, when the hardware ended it. See sys_proc_fault. */
 sys_err_t sys_thread_fault(sys_handle_t thread, sys_fault_t *out);
 

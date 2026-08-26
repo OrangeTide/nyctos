@@ -3268,6 +3268,215 @@ briefly(void *arg)
 }
 
 /*
+ * A server that receives and never replies, so that something can be
+ * caught between the rendezvous and the reply.
+ */
+static struct channel *ch_wedge;
+static sys_handle_t h_wedge_recv;
+
+static void
+never_replies(void *arg)
+{
+    struct sys_msg m;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+
+    (void)arg;
+
+    for (;;) {
+        if (channel_recv(ch_wedge, &m, &peer, &cookie) != SYS_OK) {
+            return;
+        }
+        /*
+         * And that is all. The client is now reply-blocked with its
+         * buffer here, which is the state section 10.5 calls the
+         * interesting case.
+         */
+    }
+}
+
+/*
+ * Every way this system can block, and a thread broken out of each.
+ *
+ * Section 10.6 closes the list of ways to block, and section 10.5 says
+ * a supervisor never has to know which of them a wedged thread is in.
+ * The four cases below are that list, and one call answers all of them
+ * because each wait left behind the function that takes a thread off
+ * again. That hook has existed since M1 stage 7, put there by
+ * deadlines; this is the second caller it was written for.
+ */
+static void
+cancel_checks(void)
+{
+    static const char *const cases[] = { "recv", "fence", "send", "reply" };
+    struct proc *self = proc_current();
+    struct sys_op_connect_args cargs;
+    struct handle_table *ht = &self->p_handles;
+    struct timeline *tl;
+    struct channel *idle;
+    sys_ns_spec_t ns[4];
+    sys_handle_t h_idle, h_fence, h_nobody, h_towedge, h_own;
+    sys_handle_t h;
+    uint32_t i;
+    void *obj;
+
+    cnputs("cancellation: out of every wait, by the same call\n");
+
+    /* Something to wait on that nothing will ever advance. */
+    tl = timeline_create("never");
+    if (tl == NULL) {
+        panic("cancel: no timeline");
+    }
+    expect("a timeline nothing signals",
+      handle_insert(ht, tl, SYS_OBJ_TIMELINE,
+        SYS_RIGHT_WAIT | SYS_RIGHT_DUPLICATE | SYS_RIGHT_TRANSFER,
+        &h_fence),
+      SYS_OK);
+
+    /* A channel nobody receives on, so a sender queues for ever. */
+    idle = channel_create("nobody", self);
+    if (idle == NULL) {
+        panic("cancel: no idle channel");
+    }
+    expect("a channel with no receiver",
+      handle_insert(ht, idle, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV, &h_idle),
+      SYS_OK);
+
+    /* And a server that receives and then says nothing. */
+    ch_wedge = channel_create("wedge", self);
+    if (ch_wedge == NULL) {
+        panic("cancel: no wedge channel");
+    }
+    expect("a channel for a server that never replies",
+      handle_insert(ht, ch_wedge, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
+        &h_wedge_recv), SYS_OK);
+    sched_ready(thread_create("wedge", 15, never_replies, NULL));
+
+    for (i = 0; i < 4; i++) {
+        const char *argv[2];
+        struct child c;
+        struct thread *t;
+        int32_t code;
+
+        /* A fresh connection each time: a handle moves rather than copies. */
+        memset(&cargs, 0, sizeof(cargs));
+        cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+        expect("a connection to nobody",
+          run(SYS_OP_CHAN_CONNECT, h_idle, &cargs, sizeof(cargs)), SYS_OK);
+        h_nobody = cargs.out_handle;
+
+        memset(&cargs, 0, sizeof(cargs));
+        cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+        expect("a connection to the server that never replies",
+          run(SYS_OP_CHAN_CONNECT, h_wedge_recv, &cargs, sizeof(cargs)),
+          SYS_OK);
+        h_towedge = cargs.out_handle;
+
+        /* Its own channel to receive on, which nothing ever sends to. */
+        {
+            struct channel *own = channel_create("wedged-own", self);
+
+            if (own == NULL) {
+                panic("cancel: no channel for it to receive on");
+            }
+            expect("a receive handle for it",
+              handle_insert(ht, own, SYS_OBJ_CHANNEL,
+                SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_own), SYS_OK);
+        }
+
+        memset(ns, 0, sizeof(ns));
+        ns[0].id = SYS_NS_SERVICE;
+        ns[0].handle = h_own;
+        ns[1].id = SYS_NS_PRIVATE + 0;
+        {
+            sys_handle_t copy;
+
+            /*
+             * Not share(), which duplicates with a connection's
+             * rights. Section 7.2 only attenuates, so asking for SEND
+             * on a handle that carries WAIT is refused rather than
+             * quietly given whatever is left.
+             */
+            if (handle_dup(ht, h_fence,
+              SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &copy) != SYS_OK) {
+                panic("cancel: cannot hand on the timeline");
+            }
+            ns[1].handle = copy;
+        }
+        ns[2].id = SYS_NS_PRIVATE + 1;
+        ns[2].handle = h_nobody;
+        ns[3].id = SYS_NS_PRIVATE + 2;
+        ns[3].handle = h_towedge;
+
+        argv[0] = "wedged";
+        argv[1] = cases[i];
+
+        /*
+         * At this thread's own priority, so that blocking here is what
+         * lets it run and reach its wait. Below this one it would not
+         * run at all while there is anything to do here.
+         */
+        sched_defer();
+        if (proc_spawn_op(self, "wedged", PRIO_BOOT, ns, 4, argv, 2,
+          &h) != SYS_OK) {
+            panic("cancel: could not start it");
+        }
+        if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+            panic("cancel: the spawn returned no process");
+        }
+        child_watch(&c, obj);
+        sched_undefer();
+
+        t = proc_threads(obj);
+        if (t == NULL) {
+            panic("cancel: it has no thread");
+        }
+
+        /*
+         * Until it is actually blocked. A cancel of a thread that has
+         * not got there yet is refused rather than lost, which is what
+         * makes waiting for it a loop and not a race: the answer says
+         * which of the two happened.
+         */
+        {
+            sys_thread_id_t victim = thread_id(t);
+            struct sys_msg late;
+
+            while (thread_cancel(t) == SYS_ERR_WOULDBLOCK) {
+                sched_yield();
+            }
+
+            /*
+             * Section 10.5 step 3: a server that replies anyway is
+             * told the client has moved on. Here rather than after
+             * the join, because the thread is runnable and has not
+             * run: it is alive, so this is the reply being refused
+             * and not the thread being gone, which would be the same
+             * answer to a different question.
+             */
+            if (i == 3) {
+                memset(&late, 0, sizeof(late));
+                late.handle = SYS_HANDLE_INVALID;
+                expect("a reply to a client that was cancelled",
+                  channel_reply(victim, &late), SYS_ERR_STALE);
+            }
+        }
+
+        code = child_join(&c, 1000);
+        if (handle_close(ht, h) != SYS_OK) {
+            panic("cancel: the spawn handle was already gone");
+        }
+        if (code != 0) {
+            panic("cancel: blocked in %s, it reported %d", cases[i], code);
+        }
+        cnprintf("    %-38s %s\n", "released, and it said so", cases[i]);
+    }
+
+    expect("cancelling something that is not blocked",
+      thread_cancel(thread_current()), SYS_ERR_WOULDBLOCK);
+}
+
+/*
  * Slots come back, and a name for one does not follow it.
  *
  * Nothing was ever reaped before this stage, so nothing had ever reused
@@ -3768,6 +3977,7 @@ user_slice(void)
 
     move_checks();
     reap_checks();
+    cancel_checks();
     cohort_checks();
 }
 

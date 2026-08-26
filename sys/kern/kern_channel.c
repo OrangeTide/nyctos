@@ -899,3 +899,37 @@ channel_owned_by(const struct proc *p)
 
     return false;
 }
+
+/*
+ * A thread has been cancelled out of a channel operation, per section
+ * 10.5. Called with interrupts disabled, before the thread is made
+ * runnable again.
+ *
+ * Two things have to be undone, and only one of them is memory.
+ *
+ * The buffer comes home. A client cancelled between the rendezvous and
+ * the reply has its pages mapped in the server and taken away from
+ * itself, and section 6.1 gives them back at the reply. There is not
+ * going to be a reply, so they come back here, and the alternative is a
+ * program released into a call it never finished with a hole where its
+ * memory was. M4 wrote a panic on the far side of the send saying this
+ * is where it would be found when cancellation existed.
+ *
+ * And the reply has nowhere to go. Section 10.5 step 3 says a server
+ * that replies anyway is told SYS_ERR_STALE, and what makes that
+ * happen is this: the reply path asks whether the client is still
+ * waiting for one, and after this it is not. The server keeps its
+ * pointer to a live thread and is refused, rather than writing into a
+ * thread that has moved on.
+ */
+void
+channel_thread_cancelled(struct thread *t)
+{
+    vm_charge_begin();
+    msg_buf_take_back(t);
+    vm_charge_end();
+
+    t->t_msg = NULL;
+    t->t_reply = NULL;
+    t->t_replied = false;
+}

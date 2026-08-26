@@ -83,7 +83,8 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
     $(OBJTOP)/bin/peer_a/peer_a.bin \
     $(OBJTOP)/bin/peer_b/peer_b.bin \
     $(OBJTOP)/bin/blk_server/blk_server.bin \
-    $(OBJTOP)/bin/peer_c/peer_c.bin
+    $(OBJTOP)/bin/peer_c/peer_c.bin \
+    $(OBJTOP)/bin/wedged/wedged.bin
 	@mkdir -p $(@D)
 	$(MKBOOTARCH) $@ \
 	    fs_server=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 0 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_server/fs_server.bin \
@@ -108,6 +109,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
 	    peer_a=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 19 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/peer_a/peer_a.bin \
 	    peer_b=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 20 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/peer_b/peer_b.bin \
 	    blk_server=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 21 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/blk_server/blk_server.bin \
-	    peer_c=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 22 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/peer_c/peer_c.bin
+	    peer_c=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 22 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/peer_c/peer_c.bin \
+	    wedged=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 23 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/wedged/wedged.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)

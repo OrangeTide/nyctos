@@ -141,10 +141,12 @@ like a person typing and once as a burst like a pipe, and compares the
 transcript against a recorded one.
 
 What does not exist: multicore, the submission engine, and everything to
-do with death beyond reaping. Pool slots come back, but nothing is
-cancelled, no address space is ever torn down, no cohort is ever
-restarted, and a rendezvous carries no deadline, so a server that stops
-answering hangs its client rather than failing it.
+do with death beyond reaping and cancellation. Slots come back and a
+thread can be broken out of any wait, but nothing is killed, no address
+space is ever torn down, no cohort is ever restarted, and a rendezvous
+carries no deadline. A wedged server hangs
+its client until something cancels it, and nothing yet notices on its
+own that something should.
 
 The figures obtained so far are footprints rather than speeds, with one
 exception. Kernel object memory is 226496 bytes, of which 143872 is
@@ -511,8 +513,9 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   that fails partway leaks the frames it had allocated. Freeing them
   needs the loader to record which pages it allocated, because a
   demand-paged process runs on frames belonging to its pager.
-- There is no way to stop anything. Nothing is cancelled and a rendezvous
-  carries no deadline, so a server that stops answering hangs its client.
+- A rendezvous carries no deadline, so a server that stops answering
+  hangs its client until something cancels it. Cancellation exists;
+  nothing yet notices on its own that it is needed.
 - A cohort cannot be recovered. Section 18.2 makes the cohort the unit of
   recovery, and tearing one down and restarting it is milestone 7, so a
   member that faults halts the machine rather than being restarted with

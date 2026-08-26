@@ -495,6 +495,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Mount table | In the C library, not the kernel. |
 | Naming | Handle-relative only. No global namespace, no absolute paths, no ambient root. |
 | Reaping | A slot returns when the object has finished and no handle names it. A completion handle holds its object rather than outliving it. |
+| Cancellation | One call for every wait, through the unblock hook of section 10.6. Refused, not ignored, when the thread is not blocked. |
 | Path resolution | Lexical reduction first, then the longest mount name that matches on a component boundary. |
 | Union directories | Several entries at one name, tried in the order the parent wrote them. Only the same name, never a shorter one. |
 | Climbing out | The library reduces `..` for correctness; the server refuses it for confinement. Both, and neither alone. |
@@ -839,6 +840,8 @@ The pulse in step 2 is what makes prompt cancellation safe. Without it a server 
 
 **Why the pulse carries a tag rather than a bare index.** A pulse value is 32 bits, so on a 64-bit build the identity must be compressed; on a 32-bit build it fits whole and the paragraph below describes a hazard that build does not have. A bare index is not sufficient: the client is cancelled, the kernel enqueues the pulse, the slot is recycled to a new thread which sends to the same server, and the server matches the late pulse against the new request and releases the wrong one. That is the ordinary ABA problem. `SYS_ID_TAG32` carries the index plus 12 bits of generation, so a false match would require 4096 recycles of that slot between enqueue and dequeue. The server matches by comparing `SYS_ID_TAG32(client_id)` against the pulse value, using the id it already holds. This is why the 64-bit split leaves generation bits below bit 32, per section 7.1.
 
+
+**Cancelling a thread that is not blocked is refused with `SYS_ERR_WOULDBLOCK`.** There is no pending call to return `SYS_ERR_INTERRUPTED` from, and that is not the same outcome as having released one: a caller told `SYS_OK` may assume the thread is on its way out of a call, where a caller told this has to look again. A cancel is therefore not sticky, and a supervisor that wants a thread out of the next wait as well has to ask again.
 **Process termination cancels every thread.** `sys_proc_kill()` promptly unblocks all threads of the target process exactly as if each had been cancelled individually, including delivering the `DEAD_OWNER` pulse to every server holding one of their requests. This is the path cohort restart actually takes, and it has to work without per-thread handles: a supervisor holds a handle to the cohort's processes and no handles at all to the threads inside them.
 
 ```{=typst}

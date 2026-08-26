@@ -15,6 +15,8 @@
 #include <sys/config.h>
 #include <sys/object.h>
 #include <sys/proc.h>
+#include <sys/channel.h>
+#include <sys/intr.h>
 #include <sys/cohort.h>
 #include <sys/proc.h>
 #include <sys/sched.h>
@@ -205,9 +207,21 @@ void
 thread_set_proc(struct thread *t, struct proc *p)
 {
     if (t->t_proc != NULL) {
+        struct thread **link = &t->t_proc->p_threads;
+
         if (t->t_proc->p_nthreads == 0) {
             panic("proc %s: thread count below zero", t->t_proc->p_name);
         }
+
+        while (*link != NULL && *link != t) {
+            link = &(*link)->t_sibling;
+        }
+        if (*link != t) {
+            panic("thread %s: not in its own process's list", t->t_name);
+        }
+        *link = t->t_sibling;
+        t->t_sibling = NULL;
+
         t->t_proc->p_nthreads--;
         proc_thread_reaped(t->t_proc);
     }
@@ -215,6 +229,8 @@ thread_set_proc(struct thread *t, struct proc *p)
     t->t_proc = p;
 
     if (p != NULL) {
+        t->t_sibling = p->p_threads;
+        p->p_threads = t;
         p->p_nthreads++;
 
         /*
@@ -470,4 +486,50 @@ thread_park_if_dead(struct thread *t)
           t->t_name);
     }
     reap_parked = t;
+}
+
+sys_err_t
+thread_cancel(struct thread *t)
+{
+    intr_state_t s = md_intr_disable();
+
+    if (t->t_state != THREAD_BLOCKED) {
+        md_intr_restore(s);
+        return SYS_ERR_WOULDBLOCK;
+    }
+
+    /*
+     * Off the object's list first, and off the deadline list with it.
+     * Section 10.6's closed unblock list is what makes this possible
+     * without knowing which object it is: whatever blocked the thread
+     * left behind the one function that takes it off again.
+     *
+     * Merely making it runnable would leave it on the list, and the
+     * object would go on to release a thread that has already been
+     * released. That is the same reason the deadline path does both,
+     * which is where this hook came from.
+     */
+    if (t->t_unwait != NULL && t->t_blocked_on != NULL) {
+        t->t_unwait(t->t_blocked_on, t);
+    }
+    time_sleep_cancel(t);
+
+    /*
+     * And whatever the blocking call was holding on this thread's
+     * behalf. A client cancelled between the rendezvous and the reply
+     * has its buffer in the server, and the pages are gone from its own
+     * memory until something puts them back: releasing it without that
+     * is a program running again with a hole where its buffer was.
+     *
+     * M4 left a panic on the far side of that block saying this is
+     * where it would be found. It is.
+     */
+    channel_thread_cancelled(t);
+
+    t->t_waitres = SYS_ERR_INTERRUPTED;
+    sched_ready(t);
+
+    md_intr_restore(s);
+
+    return SYS_OK;
 }

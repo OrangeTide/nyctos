@@ -3841,8 +3841,8 @@ before it switches. And the process's own handle table can be taken
 apart while closing one of its handles wakes something, because by then
 nothing names the process and its threads are all gone.
 
-**2. Cancellation.** Section 10.5: releasing a thread from whatever it is
-blocked on, without the caller knowing which mechanism blocked it.
+**2. Cancellation.** *Built.* One call, four waits, the same answer from
+all of them, and the buffer comes home.
 
 - The `t_unwait` hook already exists, forced into being by deadlines in
   M1 stage 7, and already serves channels and timelines.
@@ -3851,12 +3851,64 @@ blocked on, without the caller knowing which mechanism blocked it.
   process faults on its own memory, which is worse than the hang it was
   cancelled out of.
 
-*Check.* A thread blocked in each of the ways this system can block, in
-turn, cancelled and observed to run again with `SYS_ERR_INTERRUPTED`:
-receive, reply, a timeline wait, and a send that queued. A reply-blocked
-client cancelled mid-call has its buffer back, checked by writing to it
-immediately afterwards, and the buffer remapping count says the pages
-moved rather than being abandoned.
+*Check.* `wedged` blocks one of four ways, chosen by its argument, and
+the boot sequence breaks it out of each:
+
+```
+    released, and it said so               recv
+    released, and it said so               fence
+    released, and it said so               send
+    a reply to a client that was cancelled STALE
+    released, and it said so               reply
+```
+
+The program exits zero only if its blocking call returned
+`SYS_ERR_INTERRUPTED`, and in the reply case only if it could write to
+its own buffer immediately afterwards. The recorded buffer count went
+from twelve halves to fourteen, which is one hand-over and one take-back,
+so the pages moved rather than being abandoned.
+
+**M1 stage 7 built the hook and M4 wrote the check, four milestones and
+two milestones early.** Section 10.6 closes the list of ways to block and
+requires each to leave behind the one function that takes a thread off
+again. Deadlines were the first caller; this is the second, and it needed
+no new hook, which is what that section is for. And M4 left a panic on
+the far side of the send saying "cancellation does not exist yet. When it
+does, this is where it will be found." Removing the buffer return from
+the cancel path prints exactly that: `ipc: wedged ran again with its
+buffer still lent out`.
+
+**A cancelled client stops being somewhere a reply can go.** Section 10.5
+step 3 says a server that replies anyway is told `SYS_ERR_STALE`, and
+what makes it true is clearing the client's record of where a reply would
+be written. The check makes that reply while the cancelled thread is
+still alive and merely runnable, not after it has gone, because a reply
+refused because the thread is dead would be the same answer to a
+different question. Leaving the record in place fails with `thread
+wedged: made runnable while already runnable`, which is the reply
+releasing a thread the cancel had already released.
+
+*What is not built here is step 2.* Section 10.5 has the server also
+receive a `SYS_PULSE_DEAD_OWNER` so that it can let go of what it
+allocated without waiting to find out at reply time. There are no pulses
+yet; they are stage three, and the server in this check simply never
+learns. That is the leak the section describes, and it is why the stages
+are in this order rather than a different one.
+
+**Cancelling a thread that is not blocked is refused, and that matters
+more than it looks.** `SYS_ERR_WOULDBLOCK` and not `SYS_OK`: a caller
+told `SYS_OK` may assume the thread is on its way out of a call, and a
+caller told this has to look again. The check leans on the distinction,
+waiting for the program to reach its wait by cancelling until the answer
+changes. One value for both would have made that loop a race with no way
+to see it.
+
+**And a process can reach its threads now.** It has had a count of them
+since M2 and never a way to reach one, because nothing needed to. The
+list is here because the check has to cancel a thread of a program it
+spawned, and stage five needs it more: killing a process unblocks every
+thread of the target, and there is no doing that to a set nothing can
+enumerate.
 
 **3. Pulses.** Section 13.1: a fixed-size queued notification with a
 region reserved for the system's own.

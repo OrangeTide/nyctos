@@ -162,6 +162,19 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_THREAD_STATUS     19
 
 /*
+ * Release a thread from whatever it is blocked on, per section 10.5. Its
+ * pending call returns SYS_ERR_INTERRUPTED. target names the thread and
+ * carries SYS_RIGHT_WRITE, because this changes what the thread does
+ * rather than asking about it.
+ *
+ * SYS_ERR_WOULDBLOCK if it is not blocked on anything, which is not the
+ * same answer as having released it and must not share one: a caller
+ * told SYS_OK may assume the thread is on its way out of a call, and a
+ * caller told this has to look again.
+ */
+#define SYS_OP_THREAD_CANCEL     21
+
+/*
  * Put a grant's region where the caller can reach it, and say where that
  * is. target names the grant and carries SYS_RIGHT_MAP; the access the
  * mapping permits comes from the other rights on the same handle, so a
@@ -205,7 +218,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             21
+#define SYS_OP_COUNT             22
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the

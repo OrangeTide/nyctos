@@ -163,6 +163,19 @@ struct proc {
      * becomes one when the last thing that could ask lets go.
      */
     uint32_t            p_refs;
+
+    /*
+     * Its threads, newest first. A process has had a count of them
+     * since M2 and never a way to reach one, because nothing needed
+     * to: they were started at spawn and nothing outside ever spoke
+     * to them again.
+     *
+     * Cancellation is what needs it, and killing a process needs it
+     * more: section 10.5 has termination unblock every thread of the
+     * target exactly as if each had been cancelled, and there is no
+     * way to do that to a set nothing can enumerate.
+     */
+    struct thread      *p_threads;
 };
 
 /*
@@ -249,6 +262,9 @@ void proc_unref(struct proc *p);
  * the process still has to exist.
  */
 void proc_thread_reaped(struct proc *p);
+
+/* Its threads, newest first, for a caller that has to reach them all. */
+struct thread *proc_threads(struct proc *p);
 
 /*
  * How many bytes from this address the caller can reach, and whether it

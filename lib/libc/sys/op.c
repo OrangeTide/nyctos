@@ -424,6 +424,12 @@ sys_thread_status(sys_handle_t thread, int32_t *out_code,
 }
 
 sys_err_t
+sys_thread_cancel(sys_handle_t thread)
+{
+    return submit(SYS_OP_THREAD_CANCEL, thread, NULL, 0);
+}
+
+sys_err_t
 sys_irq_unmask(sys_handle_t irq)
 {
     return submit(SYS_OP_IRQ_UNMASK, irq, NULL, 0);
