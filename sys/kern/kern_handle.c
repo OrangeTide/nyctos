@@ -248,3 +248,36 @@ handle_move(struct handle_table *from, struct handle_table *to,
      */
     return handle_close(from, h);
 }
+
+/*
+ * Close everything left in a table, for a process being reaped.
+ *
+ * Section 7 makes a handle the authority, so a table that outlived its
+ * process would be authority that outlived it. Every one goes through
+ * handle_close(), which is what tells the object: a timeline losing its
+ * last signal right enters the error state and releases its waiters, a
+ * grant gives back its mapping, and a process reference dropping to
+ * nothing reaps that process too.
+ *
+ * That last one is why this walks by index and rereads the table each
+ * time rather than taking a copy of what to close. Releasing one handle
+ * can run arbitrary teardown, including teardown that closes handles,
+ * and a list gathered up front would name slots that were already gone.
+ */
+void
+handle_table_close_all(struct handle_table *ht)
+{
+    uint32_t i;
+
+    for (i = 0; i < SYS_MAX_HANDLES_PER_PROC; i++) {
+        if (ht->ht_slots[i].h_inuse) {
+            (void)handle_close(ht,
+              sys_id_make(i, ht->ht_slots[i].h_gen));
+        }
+    }
+
+    if (ht->ht_used != 0) {
+        panic("handles: %u left in a table being taken apart",
+          (unsigned int)ht->ht_used);
+    }
+}

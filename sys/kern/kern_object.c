@@ -11,6 +11,7 @@
 
 #include <sys/config.h>
 #include <sys/object.h>
+#include <sys/page.h>
 #include <sys/pool.h>
 #include <sys/systm.h>
 #include <sys/vm.h>

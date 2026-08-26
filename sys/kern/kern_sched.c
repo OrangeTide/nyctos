@@ -18,6 +18,7 @@
 #include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
+#include <sys/thread.h>
 
 #include <stdbool.h>
 
@@ -209,6 +210,18 @@ static void
 dispatch(void)
 {
     struct thread *next;
+
+    /*
+     * Whatever the last switch left for collection, freed here rather
+     * than in the switch itself. A thread is parked when the switch
+     * leaves it, so by the time any thread reaches a scheduling
+     * decision the parked one is not the stack under it. Doing it in
+     * the switch missed the case where the decision is to carry on:
+     * dispatch returns without switching when the best thread is
+     * already running, and a yield with nothing else runnable is
+     * exactly that.
+     */
+    thread_reap_parked();
 
     next = dequeue_highest();
     if (next == NULL) {

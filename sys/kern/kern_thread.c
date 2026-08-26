@@ -209,12 +209,21 @@ thread_set_proc(struct thread *t, struct proc *p)
             panic("proc %s: thread count below zero", t->t_proc->p_name);
         }
         t->t_proc->p_nthreads--;
+        proc_thread_reaped(t->t_proc);
     }
 
     t->t_proc = p;
 
     if (p != NULL) {
         p->p_nthreads++;
+
+        /*
+         * A thread is a reason its process still exists, alongside
+         * the handles naming it. It stays one after the thread dies
+         * and until the thread is reaped, because until then there is
+         * a slot pointing at the process.
+         */
+        proc_ref(p);
     }
 }
 
@@ -338,6 +347,13 @@ thread_switch_to(struct thread *next)
 
     current = next;
 
+    /*
+     * What the last switch left behind, freed now that this is running
+     * on a stack that is not it, and what this switch is leaving for
+     * good, parked for the next one to free.
+     */
+    thread_park_if_dead(prev);
+
     md_switch(&prev->t_sp, next->t_sp);
 
     /*
@@ -345,4 +361,111 @@ thread_switch_to(struct thread *next)
      * current again. Everything above ran in the other thread's context.
      */
     check_guard(prev);
+}
+
+/*
+ * Reaping a thread, which cannot happen where the thread ends.
+ *
+ * A thread's kernel stack is inside its pool slot, so returning the slot
+ * frees the memory the code doing the returning is standing on. The
+ * thread that exits therefore cannot reap itself, and neither can
+ * anything running before the switch away from it.
+ *
+ * So a dead thread with nothing left to ask about it is parked here and
+ * collected at the start of the next switch, which runs on the incoming
+ * thread's stack. One deep, because a thread is parked only while
+ * switching away from it and a switch cannot begin before the last one
+ * finished.
+ */
+static struct thread *reap_parked;
+
+static void
+thread_reap(struct thread *t)
+{
+    struct proc *p = t->t_proc;
+
+    if (t->t_state != THREAD_DEAD) {
+        panic("thread %s: reaped while still alive", t->t_name);
+    }
+
+    t->t_proc = NULL;
+
+    if (!pool_free(thread_pool(), t->t_id)) {
+        panic("thread: the pool refused a slot it handed out");
+    }
+
+    /*
+     * After the slot, because this can reap the process, and the
+     * process cannot go while a slot still points at it.
+     */
+    if (p != NULL) {
+        proc_thread_reaped(p);
+    }
+}
+
+/*
+ * Collect whatever the last switch left, on a stack that is not it.
+ * Called at the top of the switch and nowhere else.
+ */
+void
+thread_reap_parked(void)
+{
+    struct thread *t = reap_parked;
+
+    if (t == NULL) {
+        return;
+    }
+    reap_parked = NULL;
+    thread_reap(t);
+}
+
+/*
+ * Whether this thread is finished with and nothing can ask about it. A
+ * dead thread with handles outstanding stays: section 10.4 keeps its
+ * status readable through them.
+ */
+static bool
+thread_reapable(const struct thread *t)
+{
+    return t->t_state == THREAD_DEAD && t->t_refs == 0;
+}
+
+void
+thread_ref(struct thread *t)
+{
+    t->t_refs++;
+}
+
+void
+thread_unref(struct thread *t)
+{
+    if (t->t_refs == 0) {
+        panic("thread %s: unreferenced more often than referenced",
+          t->t_name);
+    }
+    t->t_refs--;
+
+    /*
+     * Not the running thread, and not a thread the switch has parked:
+     * either way it is not on a stack anything is using, because a
+     * thread reaches THREAD_DEAD only after it has switched away for
+     * the last time and been parked or passed over.
+     */
+    if (thread_reapable(t) && t != current && t != reap_parked) {
+        thread_reap(t);
+    }
+}
+
+/* Park a thread the switch is leaving for the last time. */
+void
+thread_park_if_dead(struct thread *t)
+{
+    if (!thread_reapable(t)) {
+        return;
+    }
+    if (reap_parked != NULL) {
+        panic("thread %s: two threads parked for reaping at once",
+          t->t_name);
+    }
+    reap_parked = t;
 }

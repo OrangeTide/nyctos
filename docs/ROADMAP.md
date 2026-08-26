@@ -268,9 +268,9 @@ and the shell carries on. A bug in the block driver takes down the
 filesystem, and that is what section 18.2 is for.
 
 What does not exist: multicore, the submission engine, and anything at
-all to do with death. Nothing is reaped, nothing is cancelled, no
-address space is ever torn down, no cohort is ever restarted, and a
-rendezvous still carries no deadline.
+all to do with death beyond reaping. Pool slots come back, but nothing
+is cancelled, no address space is ever torn down, no cohort is ever
+restarted, and a rendezvous still carries no deadline.
 
 ---
 
@@ -3665,8 +3665,9 @@ slots come back, nothing can be killed until it can be released from a
 wait, and nothing can be told about a death until there is a way to tell
 it.
 
-**1. Reaping.** A slot returns to its pool when its object has finished
-and nothing can ask about it any more.
+**1. Reaping.** *Built.* Thirteen processes and fifteen threads where the
+boot sequence used forty-six and sixty-five, and kernel object memory down
+from 606976 bytes to 226496.
 
 - A process and a thread stop being permanent. The event is not the exit:
   section 10.4 keeps a status readable through a handle, so the event is
@@ -3675,18 +3676,76 @@ and nothing can ask about it any more.
   is an identifier held across a reuse naming a slot somebody else now
   occupies.
 
-*Check.* The resource report's high-water falls, and by enough to say the
-slots are being reused rather than merely counted differently: the
-prediction above is under fifteen processes and twenty-five threads, and
-the recorded numbers say which. A handle held across a reap and used
-afterwards is refused as stale rather than reaching whatever took the
-slot, and a check that reaps a process and immediately spawns another
-into the same slot fails without the generation bump.
+*Check.* The high-water is 13 of 24 processes and 15 of 32 threads, the
+same in all four configurations and the same paced as burst, so it
+depends on what runs and not on when input arrives. The prediction was
+under fifteen and twenty-five, and it holds.
 
-The number is in the compared file, so it has to be the same in the paced
-and burst runs. If it is not, the high-water depends on when input
-arrives rather than on what runs, and M6 stage four's finding applies:
-the number goes where it can be read and the check becomes a relation.
+```
+    a thread slot, taken again             13, generation 1 then 2
+    a reply addressed to the thread that was there STALE
+    processes in use, back to              9
+    its handle, used after the join closed it STALE
+```
+
+The second line is the milestone's own falsification question, which said
+nothing had yet tried whether the generation counters close the recycling
+hazard under real reuse. A thread exits, its slot goes back, the next
+thread takes the same index, and a reply addressed by the old name is
+refused rather than delivered to whoever inherited the slot. Nothing
+before this stage could reach that line, because no slot was ever handed
+back.
+
+*The pools are lowered rather than left.* They stood at 56 processes and
+96 threads because three milestones running raised them, and they were
+raised because they tracked how long the boot sequence was. They are 24
+and 32 now, which is about twice what the sequence needs at once. That is
+still not a property of the system in general; what it is now is a
+property of how much runs at the same time, which is a far better thing
+for it to be.
+
+**Reaping a thread cannot happen where a thread ends.** Its kernel stack
+is inside its pool slot, so returning the slot frees the memory the code
+returning it is standing on. A dead thread with nothing left to ask about
+it is parked, and collected at the next scheduling decision, which runs
+on a stack that is not it.
+
+The collection point is `dispatch()` and not the context switch, which
+was the first version and was wrong. `dispatch()` returns without
+switching when the best thread is already running, and a yield with
+nothing else runnable is exactly that, so a thread parked by the last
+switch sat there until something unrelated caused a real one.
+
+**A process outlives its join by a bounded number of decisions**, because
+its last thread is a reason it still exists until that thread's slot is
+collected. The check waits for that rather than asserting a particular
+number of yields, which would be a check about the scheduler dressed as a
+check about reaping.
+
+*Breaking it on purpose.* A thread that is never parked exhausts the pool
+partway through the boot sequence, which is the shape of the system
+before this stage and the reason the pools were where they were. A handle
+that takes no reference moves the recorded high-water, because a process
+is then reaped while something still names it. The generation bump and
+the generation check on lookup are each caught by an invariant that M1
+already had, which is worth saying: those checks were written against
+slots freed by hand and they hold under real reuse without amendment.
+
+*What does not come back is memory.* A slot returns to its pool; the
+megabyte the process was loaded into does not, nor do its page tables.
+The boot report says so, in the numbers beside the compared ones:
+
+```
+frames: 17925 of 32768 used at most, 17925 still held
+```
+
+Used and held are the same number because nothing has ever been freed.
+That line is printed outside the compared file deliberately, because the
+two ports do not spend the same and that file is one per tier. Closing it
+needs the loader to record which pages it allocated, since a demand-paged
+process runs on frames that belong to its pager's grant and freeing those
+would take memory from whoever granted it. That is a stage of its own and
+it is not this one.
 
 **2. Cancellation.** Section 10.5: releasing a thread from whatever it is
 blocked on, without the caller knowing which mechanism blocked it.

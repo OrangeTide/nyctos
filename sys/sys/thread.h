@@ -177,6 +177,14 @@ struct thread {
     struct proc        *t_lend_to;
 
     /*
+     * Handles naming this thread. Its slot goes back to the pool when
+     * this reaches zero and the thread has exited, for the reason the
+     * process has the same field: an exit somebody still holds a
+     * handle to is an exit that can still be asked about.
+     */
+    uint32_t            t_refs;
+
+    /*
      * Whether this thread is inside the buffer move, so that what the
      * ports write can be charged to it. Per thread and not a global
      * flag: the timer interrupt can dispatch on its way out, so a
@@ -322,6 +330,22 @@ void thread_fault(uint32_t kind, uintptr_t addr, uintptr_t pc)
 
 /* The name of a fault kind, for a message a person reads. */
 const char *fault_name(uint32_t kind);
+
+/*
+ * A handle naming this thread was made, or destroyed. The second one
+ * reaps the thread if it has already exited and nothing else can ask
+ * about it.
+ */
+void thread_ref(struct thread *t);
+void thread_unref(struct thread *t);
+
+/*
+ * Called by the switch: collect what the last one left, and park what
+ * this one is leaving for good. Reaping a thread frees the stack it
+ * runs on, so neither can happen in the thread it happens to.
+ */
+void thread_reap_parked(void);
+void thread_park_if_dead(struct thread *t);
 
 /* Release a thread whose deadline passed while it was still blocked. */
 void thread_wake_timeout(struct thread *t);

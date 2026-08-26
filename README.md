@@ -141,15 +141,17 @@ like a person typing and once as a burst like a pipe, and compares the
 transcript against a recorded one.
 
 What does not exist: multicore, the submission engine, and everything to
-do with death. Nothing is reaped, nothing is cancelled, no address space
-is ever torn down, no cohort is ever restarted, and a rendezvous carries
-no deadline, so a server that stops answering hangs its client rather
-than failing it.
+do with death beyond reaping. Pool slots come back, but nothing is
+cancelled, no address space is ever torn down, no cohort is ever
+restarted, and a rendezvous carries no deadline, so a server that stops
+answering hangs its client rather than failing it.
 
 The figures obtained so far are footprints rather than speeds, with one
-exception. Kernel object memory is 606976 bytes, of which 433152 is
-thread stacks; both pools that dominate it are sized by the boot check
-sequence rather than by a workload, because nothing is reaped yet.
+exception. Kernel object memory is 226496 bytes, of which 143872 is
+thread stacks. Those pools were sized by the boot check sequence for six
+milestones, because nothing was reaped and a process that exited kept
+its slot for ever; they are sized by what runs at the same time now,
+which is thirteen processes and fifteen threads.
 Having no wait-set costs this system one thread, the console's second,
 at eight and a half kilobytes with both its stacks. An address space
 costs a handful of frames per process, because the kernel is mapped into
@@ -504,10 +506,11 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   (selected via `ARCH` and `TIER`). This keeps the build system's
   variables simple and unambiguous instead of juggling per-configuration
   state in a single run; building all four is four commands.
-- Nothing is ever reclaimed. A process that exits keeps its slot so that
-  its status stays readable, no address space is torn down, and a spawn
-  that fails partway leaks the frames it had allocated. Milestone 7 is
-  reclamation.
+- Memory is never reclaimed. Pool slots come back, but the megabyte a
+  process was loaded into does not, nor do its page tables, and a spawn
+  that fails partway leaks the frames it had allocated. Freeing them
+  needs the loader to record which pages it allocated, because a
+  demand-paged process runs on frames belonging to its pager.
 - There is no way to stop anything. Nothing is cancelled and a rendezvous
   carries no deadline, so a server that stops answering hangs its client.
 - A cohort cannot be recovered. Section 18.2 makes the cohort the unit of

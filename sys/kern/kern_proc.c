@@ -1236,3 +1236,76 @@ proc_as(struct proc *p)
 }
 
 #endif /* SYS_TIER == 2 */
+
+/*
+ * Reaping a process, per section 10.4 read the other way round.
+ *
+ * A status stays readable through a handle after the object has ended,
+ * so a process that has ended is not yet a process nobody can ask
+ * about. It becomes one when the last handle goes and the last of its
+ * threads has been reaped, and that is when the slot goes back.
+ *
+ * The order below is the order teardown has to have. Everything this
+ * process is holding is let go before the process itself is, because
+ * letting go is what can reach other objects: closing its handles drops
+ * signal rights, unmaps grants, and drops references to other
+ * processes, any of which can reap something else.
+ */
+static void
+proc_reap(struct proc *p)
+{
+    if (!p->p_exited || p->p_refs != 0 || p->p_nthreads != 0) {
+        panic("proc %s: reaped while something still had it", p->p_name);
+    }
+
+    /*
+     * Its place in its cohort, before anything else can spawn into it.
+     * M6 left this pointer for whatever made process slots reusable,
+     * which is this.
+     */
+    if (p->p_cohort != NULL) {
+        cohort_release(p->p_cohort, p);
+    }
+
+    handle_table_close_all(&p->p_handles);
+
+    if (!pool_free(proc_pool(), p->p_id)) {
+        panic("proc: the pool refused a slot it handed out");
+    }
+}
+
+static void
+proc_reap_if_done(struct proc *p)
+{
+    if (p->p_exited && p->p_refs == 0 && p->p_nthreads == 0) {
+        proc_reap(p);
+    }
+}
+
+void
+proc_ref(struct proc *p)
+{
+    p->p_refs++;
+}
+
+void
+proc_unref(struct proc *p)
+{
+    if (p->p_refs == 0) {
+        panic("proc %s: unreferenced more often than referenced",
+          p->p_name);
+    }
+    p->p_refs--;
+    proc_reap_if_done(p);
+}
+
+void
+proc_thread_reaped(struct proc *p)
+{
+    if (p->p_refs == 0) {
+        panic("proc %s: a thread outlived every reference to it",
+          p->p_name);
+    }
+    p->p_refs--;
+    proc_reap_if_done(p);
+}

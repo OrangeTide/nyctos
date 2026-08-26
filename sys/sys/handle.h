@@ -68,6 +68,13 @@ void handle_object_release(const struct handle_table *ht, uint32_t type,
 void handle_table_init(struct handle_table *ht, struct proc *owner);
 
 /*
+ * Close everything left in a table, for a process being reaped. Section
+ * 7 makes a handle the authority, so a table outliving its process
+ * would be authority outliving it.
+ */
+void handle_table_close_all(struct handle_table *ht);
+
+/*
  * Put an object in the table and return a handle naming it. The kernel
  * chooses the slot arbitrarily: section 7.3 keeps lowest-first allocation
  * out of the kernel, because it serialises a hot path and makes handle

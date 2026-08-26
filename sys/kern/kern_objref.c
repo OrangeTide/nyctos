@@ -19,6 +19,7 @@
 #include <sys/handle.h>
 #include <sys/proc.h>
 #include <sys/systm.h>
+#include <sys/thread.h>
 #include <sys/timeline.h>
 
 void
@@ -41,6 +42,11 @@ handle_object_retain(uint32_t type, void *obj, uint32_t rights)
      */
     if (type == SYS_OBJ_PROCESS) {
         proc_watch(obj);
+        proc_ref(obj);
+    }
+
+    if (type == SYS_OBJ_THREAD) {
+        thread_ref(obj);
     }
 }
 
@@ -67,5 +73,18 @@ handle_object_release(const struct handle_table *ht, uint32_t type,
      */
     if (type == SYS_OBJ_GRANT && (rights & SYS_RIGHT_MAP) != 0) {
         grant_unmap(obj, ht->ht_proc);
+    }
+
+    /*
+     * And a process or a thread loses the thing that could still ask
+     * about it. Last, because dropping the last one reaps the object,
+     * and nothing above may touch it afterwards.
+     */
+    if (type == SYS_OBJ_PROCESS) {
+        proc_unref(obj);
+    }
+
+    if (type == SYS_OBJ_THREAD) {
+        thread_unref(obj);
     }
 }

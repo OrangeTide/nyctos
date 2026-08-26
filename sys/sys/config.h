@@ -63,16 +63,23 @@
  */
 
 /*
- * Raised for the third milestone running, and by M6 rather than by
- * anything M6 is about: a block store under the filesystem is one more
- * process, and the cohort checks are three more. Forty-six of forty-
- * eight was two spare with three stages still to build. The honest
- * reading is that these numbers track how long the boot sequence is
- * and will keep doing so until something reclaims a slot, which is M7
- * and is why M7 comes next.
+ * Lowered, for the first time, because they have stopped meaning what
+ * the paragraph above says they mean.
+ *
+ * Three milestones running raised these because nothing was reaped and
+ * a process that had exited kept its slot for ever, so the numbers
+ * tracked how long the boot sequence was. M7 stage 1 returns a slot
+ * when nothing can ask about the object any more, and the boot
+ * sequence that needed forty-six processes now needs thirteen at once
+ * and fifteen threads. These are set at roughly twice that, which is
+ * headroom for the stages still to come rather than a measurement.
+ *
+ * They are still not a property of the system in general. What they
+ * are now is a property of how much runs at the same time, which is a
+ * far better thing for them to be and is what section 8 wanted.
  */
-#define SYS_MAX_PROCESSES         56
-#define SYS_MAX_THREADS           96
+#define SYS_MAX_PROCESSES         24
+#define SYS_MAX_THREADS           32
 #define SYS_MAX_CHANNELS          32
 #define SYS_MAX_GRANTS            64
 #define SYS_MAX_TIMELINES         64

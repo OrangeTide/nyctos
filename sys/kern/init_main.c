@@ -14,6 +14,7 @@
 #include <sys/handle.h>
 #include <sys/intr.h>
 #include <sys/object.h>
+#include <sys/page.h>
 #include <sys/op.h>
 #include <sys/page.h>
 #include <sys/peer.h>
@@ -3254,6 +3255,165 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
     (void)obj;
 }
 
+
+/*
+ * A thread that exists in order to stop, so that its slot can be
+ * watched going back.
+ */
+static void
+briefly(void *arg)
+{
+    (void)arg;
+    thread_exit(0);
+}
+
+/*
+ * Slots come back, and a name for one does not follow it.
+ *
+ * Nothing was ever reaped before this stage, so nothing had ever reused
+ * a pool slot, and the generation counters of section 7.1 had only been
+ * tried against slots freed by hand. This is the first time the system
+ * recycles one itself, which is the hazard those counters are for and
+ * the thing the milestone said nothing had yet tried.
+ */
+static void
+reap_checks(void)
+{
+    struct handle_table *ht = &proc_current()->p_handles;
+    struct pool *procs = proc_pool();
+    struct pool *threads = thread_pool();
+    struct sys_op_status_args sargs;
+    sys_thread_id_t first, second;
+    struct thread *t;
+    struct sys_msg reply;
+    uint32_t procs_before;
+    sys_id_t stale_proc;
+    struct child c;
+    sys_handle_t h;
+    void *obj;
+
+    cnputs("reaping: a slot comes back, and a name for it does not\n");
+
+    /*
+     * A kernel thread, which holds no handle, so it is reapable the
+     * moment it exits. Above this thread so that readying it runs it,
+     * and then a yield to collect it: a thread is parked when the
+     * switch leaves it and freed at the switch after, because the slot
+     * being freed contains the stack the freeing would run on.
+     */
+    t = thread_create("briefly", PRIO_BOOT + 1, briefly, NULL);
+    first = thread_id(t);
+    sched_ready(t);
+    sched_yield();
+
+    if (pool_lookup(threads, first) != NULL) {
+        panic("reap: the thread that exited still answers to its id");
+    }
+
+    t = thread_create("briefly", PRIO_BOOT + 1, briefly, NULL);
+    second = thread_id(t);
+    if (sys_id_index(second) != sys_id_index(first)) {
+        panic("reap: the next thread took index %u, not %u",
+          (unsigned int)sys_id_index(second),
+          (unsigned int)sys_id_index(first));
+    }
+    cnprintf("    %-38s %u, generation %u then %u\n",
+      "a thread slot, taken again", (unsigned int)sys_id_index(first),
+      (unsigned int)sys_id_gen(first), (unsigned int)sys_id_gen(second));
+
+    /*
+     * And the hazard itself. The old name now indexes a live thread,
+     * and speaking to it by that name has to be refused rather than
+     * reaching whoever inherited the slot. Before this stage nothing
+     * could reach this line, because no slot was ever handed back.
+     */
+    memset(&reply, 0, sizeof(reply));
+    reply.handle = SYS_HANDLE_INVALID;
+    expect("a reply addressed to the thread that was there",
+      channel_reply(first, &reply), SYS_ERR_STALE);
+
+    sched_ready(t);
+    sched_yield();
+
+    /*
+     * A process, which is not reaped when it exits. Section 10.4 keeps
+     * its status readable through a handle, so what makes it a thing
+     * nobody can ask about is the last handle going, which is what the
+     * join does.
+     */
+    procs_before = procs->used;
+
+    sched_defer();
+    /*
+     * At this thread's own priority and not below it. A child below
+     * this one is preempted the moment its exit signals the timeline
+     * this thread is waiting on, and never runs again while this
+     * thread has anything to do, so it never reaches the block that
+     * parks it. At equal priority the wake does not preempt and the
+     * child finishes leaving.
+     */
+    if (proc_spawn_op(proc_current(), "status", PRIO_BOOT, NULL, 0,
+      NULL, 0, &h) != SYS_OK) {
+        panic("reap: could not start a program");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("reap: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    stale_proc = ((struct proc *)obj)->p_id;
+
+    (void)child_join(&c, 1000);
+
+    /*
+     * The spawn handed back a handle of its own and the watch made a
+     * second one. The join closes what it opened and not what it was
+     * given, so this closes the other, and only then is there nothing
+     * left that could ask.
+     */
+    if (handle_close(ht, h) != SYS_OK) {
+        panic("reap: the spawn handle was already gone");
+    }
+
+    /*
+     * A few scheduling decisions, because the process is not the last
+     * thing to go and reaping a thread cannot be prompt. A thread is
+     * parked when a switch leaves it and collected at the next
+     * decision, and the exiting thread here is preempted before it
+     * parks: signalling its completion wakes this thread, which
+     * outranks it, so it is still running when this one resumes and
+     * has yet to reach the block that parks it.
+     *
+     * So the slot comes back within a bounded number of decisions
+     * rather than at a particular one, and this waits for that rather
+     * than asserting a count. Tuning it to an exact number of yields
+     * would be a check about the scheduler dressed as a check about
+     * reaping.
+     */
+    {
+        uint32_t spin;
+
+        for (spin = 0; spin < 8 && procs->used != procs_before; spin++) {
+            sched_yield();
+        }
+    }
+
+    if (procs->used != procs_before) {
+        panic("reap: %u processes in use, started with %u",
+          (unsigned int)procs->used, (unsigned int)procs_before);
+    }
+    if (pool_lookup(procs, stale_proc) != NULL) {
+        panic("reap: the reaped process still answers to its id");
+    }
+    cnprintf("    %-38s %u\n", "processes in use, back to",
+      (unsigned int)procs->used);
+
+    memset(&sargs, 0, sizeof(sargs));
+    expect("its handle, used after the join closed it",
+      run(SYS_OP_PROC_STATUS, c.c_handle, &sargs, sizeof(sargs)),
+      SYS_ERR_STALE);
+}
 /*
  * Two processes in one protection domain, per section 18.
  *
@@ -3559,6 +3719,7 @@ user_slice(void)
     trespass_checks(root3);
 
     move_checks();
+    reap_checks();
     cohort_checks();
 }
 
@@ -3728,6 +3889,22 @@ kernel_main(void)
         }
 #endif
     }
+
+    /*
+     * And the frames, which are the other thing a run consumes and the
+     * one reaping does not give back. A slot returns to its pool when
+     * nothing can ask about the process any more; the megabyte it was
+     * loaded into does not, so used and held are the same number and
+     * that is the point of printing both.
+     *
+     * Here rather than in the compared report because the two ports do
+     * not spend the same: they map their kernels differently and their
+     * page tables are shaped differently, so this is a number per
+     * configuration where that file is one per tier.
+     */
+    cnprintf("frames: %u of %u used at most, %u still held\n",
+      (unsigned int)page_highwater(), (unsigned int)page_count(),
+      (unsigned int)page_used());
 
     object_report_usage();
     cnputs("stage 9 complete\n");

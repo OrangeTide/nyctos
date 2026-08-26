@@ -150,6 +150,19 @@ struct proc {
      * parent to make the decision properly.
      */
     bool                p_watched;
+
+    /*
+     * What still makes this process a thing that can be asked about:
+     * handles naming it, plus its own threads that have not been
+     * reaped. The slot goes back to the pool when this reaches zero
+     * and the process has finished, and not when it finishes.
+     *
+     * Section 10.4 is why the exit is not the event. A status stays
+     * readable through a handle after the object has ended, so a
+     * process that ended is not a process nobody can ask about; it
+     * becomes one when the last thing that could ask lets go.
+     */
+    uint32_t            p_refs;
 };
 
 /*
@@ -222,6 +235,20 @@ void proc_watch(struct proc *p);
  * every address space.
  */
 bool proc_slot(const struct proc *p, uintptr_t *base, size_t *len);
+
+/*
+ * A handle naming this process was made, or destroyed. The second one
+ * reaps the process if that was the last thing that could ask about it
+ * and it has already finished.
+ */
+void proc_ref(struct proc *p);
+void proc_unref(struct proc *p);
+
+/*
+ * A thread of this process has been reaped, so it is one fewer reason
+ * the process still has to exist.
+ */
+void proc_thread_reaped(struct proc *p);
 
 /*
  * How many bytes from this address the caller can reach, and whether it
