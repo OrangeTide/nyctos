@@ -3747,6 +3747,100 @@ process runs on frames that belong to its pager's grant and freeing those
 would take memory from whoever granted it. That is a stage of its own and
 it is not this one.
 
+*Reviewing it found two pointers that reaping can leave naming the wrong
+object, one of them specified in the design and unbuilt, and confirmed a
+hazard M6 predicted.*
+
+**A channel keeps a pointer to its owner and takes no reference for it.**
+Every other way of naming a process is either a handle, which now holds
+the process alive, or an identifier, which the generation counters
+protect. `c_owner` is neither. A reaped owner leaves it naming a freed
+slot, and a reused one leaves it naming somebody else entirely, which no
+generation helps with because a generation protects identifiers and this
+is a pointer.
+
+It is not reachable as things stand, because there is no operation for
+making a channel and every one belongs to a process the kernel built.
+But that is a fact about who calls `channel_create()` today rather than a
+rule, and the check sequence already builds one for a process it has
+finished with: the paging checks make a channel owned by a program they
+have already joined, in order to have a pager that is not one. That
+process stays alive only because the handle the spawn returned is never
+closed.
+
+`proc_reap` now refuses to reap a process any channel still names.
+Closing that one handle, so the process really is reaped, makes it fire,
+and what it says is the whole point:
+
+```
+panic: proc status: reaped while a channel still says it owns one
+```
+
+`status` is not the process the channel was made for. It is the program
+that took the slot afterwards, and the guard caught the pointer naming
+it. That is the aliasing hazard happening, on the second occupant,
+exactly as a pointer with no generation behind it fails.
+
+The real answer is teardown. A channel whose owner dies should go,
+releasing its senders and telling its receivers, which is stage four and
+stage six. Until then this makes the hazard stop the machine rather than
+corrupt it quietly, which is what a stub is for.
+
+**And the thing M6 said this milestone would create, it created.** M6's
+stage one recorded that a cohort's member table holds process pointers
+which nothing could make stale, because nothing could reuse a process
+slot, and that the teardown owns that array as much as spawn does.
+Reaping is what makes them able to go stale, and `proc_reap` gives the
+place back before it frees the slot. Removing that one call fails the
+cohort check with `a second copy of one that has exited: expected OK,
+got WOULDBLOCK`: the place stays occupied by a pointer to a process that
+is not there any more, and a legitimate restart is refused. The check
+that catches it was written in M6's own review, against a hazard that
+could not yet happen.
+
+
+**And a completion handle pointed into the object it reported on.** This
+is the one the review should have found first, because section 10.4
+already specifies it: "when the last handle to a thread or process
+closes, the object is reaped and its resources released, but any
+completion-timeline handle still held remains valid and still reports the
+exit."
+
+A completion timeline is embedded in its thread or process per section 8,
+so the handle is a pointer into a pool slot, and it took no reference for
+it. Drop every other handle, keep the completion, and the object is
+reaped underneath: the next spawn takes the slot and the handle now names
+a timeline that has been zeroed and reused. Nothing before this stage
+could reach it, because nothing was reaped, and the comment beside the
+status operation said as much in as many words.
+
+A timeline now says what it is embedded in, and a handle naming an
+embedded one holds that object. The check holds a completion handle
+across the closing of every other handle to a program that has already
+finished, and the wait afterwards is still satisfied by the exit that
+already happened. Making the completion hold nothing fails at once, with
+`proc exiter: a thread outlived every reference to it`, which is the
+count going negative rather than the corruption it was heading for.
+
+**This is short of what section 10.4 asks, and the difference is
+recorded rather than papered over.** The section wants the object reaped
+and the completion still reporting from a value frozen into each
+holder's slot. That needs the reap to find its holders, and nothing here
+can: a handle table belongs to a process and there is no list the other
+way. What is built keeps the object until the last handle of either kind
+goes. The same holders are told the same exit; what it costs is the
+object's memory held for longer, and what it gives up is the claim that
+a reaped object is really gone.
+
+*What the review did not find.* Duplication and transfer keep the count:
+both go through insert and then close, and the insert comes first, so
+the count never dips through zero in the middle of a move. A dead thread
+can be parked only once between two scheduling decisions, because a
+switch is only ever reached through a dispatch and a dispatch collects
+before it switches. And the process's own handle table can be taken
+apart while closing one of its handles wakes something, because by then
+nothing names the process and its threads are all gone.
+
 **2. Cancellation.** Section 10.5: releasing a thread from whatever it is
 blocked on, without the caller knowing which mechanism blocked it.
 

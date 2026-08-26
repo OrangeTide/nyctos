@@ -31,6 +31,8 @@ timeline_init(struct timeline *tl, const char *name)
     tl->tl_waiters = NULL;
     tl->tl_signalers = 0;
     tl->tl_error = false;
+    tl->tl_owner_type = 0;      /* SYS_OBJ_NONE, without the include */
+    tl->tl_owner = NULL;
 }
 
 struct timeline *
@@ -261,4 +263,35 @@ timeline_drop_signaler(struct timeline *tl)
     sched_undefer();
 
     md_intr_restore(s);
+}
+
+/*
+ * A completion timeline is inside its thread or process, so a handle
+ * naming it is a pointer into that object. Saying so here is what lets
+ * the handle hold the object: without it, dropping the last process
+ * handle reaps the process and leaves every completion handle pointing
+ * at a slot the next spawn takes.
+ *
+ * Section 10.4 asks for something stronger, which is that the object be
+ * reaped and the completion handle keep reporting the exit from a value
+ * frozen into the holder's slot. That needs the reap to find its
+ * holders, and nothing here can: a handle table is per process and
+ * there is no list the other way. What is built instead keeps the
+ * object until the last handle of either kind goes, which reports the
+ * same exit to the same holders and costs the object's memory for
+ * longer.
+ */
+void
+timeline_embed(struct timeline *tl, uint32_t type, void *owner)
+{
+    tl->tl_owner_type = type;
+    tl->tl_owner = owner;
+}
+
+uint32_t
+timeline_owner(const struct timeline *tl, void **out)
+{
+    *out = tl->tl_owner;
+
+    return tl->tl_owner_type;
 }

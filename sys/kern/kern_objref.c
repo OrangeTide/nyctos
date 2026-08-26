@@ -30,6 +30,28 @@ handle_object_retain(uint32_t type, void *obj, uint32_t rights)
     }
 
     /*
+     * A completion timeline lives inside its thread or process, so a
+     * handle naming it is a pointer into that object and has to hold
+     * it. Section 10.4 wants the object reaped with the handle still
+     * reporting the exit; what a reap can find is the difference, and
+     * it can find nothing, so the object stays instead.
+     */
+    if (type == SYS_OBJ_TIMELINE) {
+        void *owner;
+
+        switch (timeline_owner(obj, &owner)) {
+        case SYS_OBJ_PROCESS:
+            proc_ref(owner);
+            break;
+        case SYS_OBJ_THREAD:
+            thread_ref(owner);
+            break;
+        default:
+            break;
+        }
+    }
+
+    /*
      * A handle to a process claims its exit. Section 10.4 keeps the
      * status readable through the handle after the object has
      * finished, so holding one is what makes an exit something
@@ -56,6 +78,22 @@ handle_object_release(const struct handle_table *ht, uint32_t type,
 {
     if (type == SYS_OBJ_TIMELINE && (rights & SYS_RIGHT_SIGNAL) != 0) {
         timeline_drop_signaler(obj);
+    }
+
+    if (type == SYS_OBJ_TIMELINE) {
+        void *owner;
+        uint32_t of = timeline_owner(obj, &owner);
+
+        /*
+         * Last, for the same reason the process case below is: this
+         * can reap the object the timeline is inside, and nothing may
+         * touch it afterwards.
+         */
+        if (of == SYS_OBJ_PROCESS) {
+            proc_unref(owner);
+        } else if (of == SYS_OBJ_THREAD) {
+            thread_unref(owner);
+        }
     }
 
     /*

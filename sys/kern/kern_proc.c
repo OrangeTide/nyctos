@@ -4,6 +4,7 @@
  */
 
 #include <sys/bootarch.h>
+#include <sys/channel.h>
 #include <sys/cohort.h>
 #include <sys/page.h>
 #include <sys/handle.h>
@@ -52,6 +53,7 @@ proc_bootstrap(const char *name)
     p->p_id = pool_id_of(proc_pool(), p);
     proc_set_name(p, name);
     timeline_init(&p->p_completion, p->p_name);
+    timeline_embed(&p->p_completion, SYS_OBJ_PROCESS, p);
     p->p_nthreads = 0;
     handle_table_init(&p->p_handles, p);
     p->p_cohort = NULL;
@@ -93,6 +95,7 @@ proc_init(struct proc *p, const char *name)
     p->p_cohort = NULL;
     p->p_entry = 0;
     timeline_init(&p->p_completion, p->p_name);
+    timeline_embed(&p->p_completion, SYS_OBJ_PROCESS, p);
     p->p_nthreads = 0;
     p->p_exit_code = 0;
     p->p_exited = false;
@@ -1263,6 +1266,11 @@ proc_reap(struct proc *p)
      * M6 left this pointer for whatever made process slots reusable,
      * which is this.
      */
+    if (channel_owned_by(p)) {
+        panic("proc %s: reaped while a channel still says it owns one",
+          p->p_name);
+    }
+
     if (p->p_cohort != NULL) {
         cohort_release(p->p_cohort, p);
     }

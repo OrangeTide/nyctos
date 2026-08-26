@@ -244,6 +244,7 @@ thread_bootstrap(const char *name, uint8_t prio, struct proc *p)
     t->t_prio = prio;
     t->t_base_prio = prio;
     timeline_init(&t->t_completion, name);
+    timeline_embed(&t->t_completion, SYS_OBJ_THREAD, t);
     thread_set_proc(t, p);
     t->t_state = THREAD_RUNNING;
 
@@ -288,6 +289,7 @@ thread_alloc(const char *name, uint8_t prio, void (*entry)(void *),
     t->t_base_prio = prio;
     t->t_proc = NULL;
     timeline_init(&t->t_completion, name);
+    timeline_embed(&t->t_completion, SYS_OBJ_THREAD, t);
     t->t_state = THREAD_NEW;
     thread_set_proc(t,
       thread_current() != NULL ? thread_current()->t_proc : NULL);

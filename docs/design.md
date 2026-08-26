@@ -494,6 +494,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Identifier layout | One machine word: index low, generation high, split sized to the pools per word size. |
 | Mount table | In the C library, not the kernel. |
 | Naming | Handle-relative only. No global namespace, no absolute paths, no ambient root. |
+| Reaping | A slot returns when the object has finished and no handle names it. A completion handle holds its object rather than outliving it. |
 | Path resolution | Lexical reduction first, then the longest mount name that matches on a component boundary. |
 | Union directories | Several entries at one name, tried in the order the parent wrote them. Only the same name, never a shorter one. |
 | Climbing out | The library reduces `..` for correctness; the server refuses it for confinement. Both, and neither alone. |
@@ -821,6 +822,8 @@ A timeline value is a monotonic counter and cannot carry an exit code, so the co
 **The completion timeline outlives the object.** When the last handle to a thread or process closes, the object is reaped and its resources released, but any completion-timeline handle still held remains valid and still reports the exit.
 
 This is not the same as keeping the object alive, and it costs nothing to arrange. Once reaped, the timeline can never change again, so its final value and error state are complete information. They are frozen into the handle-table slot of each holder rather than allocated anywhere: the slot already exists and is already accounted to that process, so the detachment cannot fail. A supervisor holding only the completion timeline therefore always receives the death it is waiting for, which is what the whole supervision model in section 18.3 depends on, and section 8's guarantee that `sys_object_completion()` is infallible survives intact.
+
+**What is built is weaker than this, and knowingly.** Finding a reaped object's holders means a list from the object back to every handle table naming it, and there is none: a handle table belongs to a process and points one way. So a handle to an embedded completion timeline holds its thread or process, and the object is reaped when the last handle of either kind goes. The same holders learn the same exit. What it costs is the object's memory held until they let go, and what it gives up is the claim that a reaped object is entirely gone.
 
 ### 10.5 Cancellation
 

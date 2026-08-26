@@ -857,3 +857,45 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
 
     return err;
 }
+
+/*
+ * Whether any channel still says it belongs to this process.
+ *
+ * A channel keeps a pointer to its owner and takes no reference for it,
+ * so a reaped owner would leave that pointer naming a freed slot, and a
+ * reused one would leave it naming somebody else entirely. Nothing in
+ * the generation counters helps here: they protect identifiers, and
+ * this is a pointer.
+ *
+ * Not reachable as things stand. There is no operation for making a
+ * channel, so every one belongs to a process the kernel built, and the
+ * kernel's own process never exits. This exists because that is a fact
+ * about who calls channel_create() today rather than a rule, and the
+ * check sequence already builds one channel for a process it has
+ * finished with.
+ *
+ * The real answer is teardown: a channel whose owner dies should go,
+ * releasing its senders and telling its receivers, which is stage four
+ * and stage six. Until then this makes the hazard stop the machine
+ * rather than corrupt it quietly.
+ */
+bool
+channel_owned_by(const struct proc *p)
+{
+    const struct pool *pool = channel_pool();
+    uint32_t i;
+
+    for (i = 0; i < pool->count; i++) {
+        const struct channel *ch;
+
+        if (!pool->slots[i].inuse) {
+            continue;
+        }
+        ch = pool_lookup(pool, sys_id_make(i, pool->slots[i].gen));
+        if (ch != NULL && ch->c_owner == p) {
+            return true;
+        }
+    }
+
+    return false;
+}

@@ -49,6 +49,13 @@ struct channel {
 
 extern uint64_t channel_rendezvous;
 
+/*
+ * Whether any channel still names this process as its owner. A channel
+ * keeps that pointer and takes no reference for it, so reaping an owner
+ * would leave it naming a freed slot. See the implementation.
+ */
+bool channel_owned_by(const struct proc *p);
+
 struct channel *channel_create(const char *name, struct proc *owner);
 
 /*

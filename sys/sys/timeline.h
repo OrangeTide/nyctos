@@ -55,6 +55,20 @@ struct timeline {
     uint32_t        tl_signalers;
 
     bool            tl_error;
+
+    /*
+     * The object this timeline is embedded in, if it is embedded in
+     * one. A completion timeline lives inside its thread or process
+     * per section 8, so a handle naming it is a pointer into that
+     * object, and reaping the object under it would leave the handle
+     * naming a slot somebody else now has.
+     *
+     * SYS_OBJ_NONE, which is zero, for a timeline drawn from the pool:
+     * it is its own object and needs none of this. The type is a bare
+     * word rather than the enum because object.h reaches back here.
+     */
+    uint32_t        tl_owner_type;
+    void           *tl_owner;
 };
 
 /*
@@ -65,6 +79,16 @@ struct timeline {
  * reached through the object that owns it.
  */
 void timeline_init(struct timeline *tl, const char *name);
+
+/*
+ * Say which object this embedded timeline lives inside, so that a
+ * handle naming it holds that object rather than pointing into a slot
+ * that can be reused underneath it.
+ */
+void timeline_embed(struct timeline *tl, uint32_t type, void *owner);
+
+/* What it lives inside, or SYS_OBJ_NONE. */
+uint32_t timeline_owner(const struct timeline *tl, void **out);
 
 struct timeline *timeline_create(const char *name);
 

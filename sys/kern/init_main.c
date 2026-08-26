@@ -3413,6 +3413,54 @@ reap_checks(void)
     expect("its handle, used after the join closed it",
       run(SYS_OP_PROC_STATUS, c.c_handle, &sargs, sizeof(sargs)),
       SYS_ERR_STALE);
+
+    /*
+     * And a completion handle held past everything else, which is
+     * section 10.4: what reports an exit outlives the object that
+     * exited. A completion timeline lives inside its process, so the
+     * handle is a pointer into a pool slot, and without something
+     * holding the object this would be reading whatever spawned next.
+     *
+     * Every other handle goes first, and the wait afterwards has to
+     * still be satisfied by the exit that already happened rather than
+     * blocking on a timeline that has been reused and reset.
+     */
+    sched_defer();
+    if (proc_spawn_op(proc_current(), "status", PRIO_BOOT, NULL, 0,
+      NULL, 0, &h) != SYS_OK) {
+        panic("reap: could not start the third program");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("reap: the third spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    {
+        struct sys_op_fence_args fargs;
+        sys_handle_t keep = c.c_completion;
+        uint32_t spin;
+
+        fargs.value = SYS_COMPLETION_EXITED;
+        fargs.deadline = time_now() + time_from_ms(1000);
+        expect("waiting for it to finish",
+          run(SYS_OP_FENCE_WAIT, keep, &fargs, sizeof(fargs)), SYS_OK);
+
+        if (handle_close(ht, c.c_handle) != SYS_OK ||
+          handle_close(ht, h) != SYS_OK) {
+            panic("reap: could not let go of the third program");
+        }
+        for (spin = 0; spin < 8; spin++) {
+            sched_yield();
+        }
+
+        fargs.value = SYS_COMPLETION_EXITED;
+        fargs.deadline = time_now() + time_from_ms(1000);
+        expect("its completion, with nothing else holding it",
+          run(SYS_OP_FENCE_WAIT, keep, &fargs, sizeof(fargs)), SYS_OK);
+
+        (void)handle_close(ht, keep);
+    }
 }
 /*
  * Two processes in one protection domain, per section 18.
