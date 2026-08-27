@@ -681,6 +681,28 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 }
 
 /*
+ * Say, once, that user pulses were dropped since the last receive.
+ *
+ * On any receive and not only on a pulse, which section 13.1 asks for:
+ * the flag is what the receiver observes on its next receive, and a
+ * server that took a message in between would otherwise learn late or
+ * not at all.
+ *
+ * Reported once and then forgotten. The question it answers is whether
+ * anything was missed, not how much: a count would be a number a
+ * receiver could do nothing with, and leaving the flag set would make
+ * every later receive claim a loss that had already been reported.
+ */
+static void
+pulse_lost_flag(struct channel *ch, struct sys_msg *out)
+{
+    if (ch->c_pulse_lost) {
+        out->flags |= SYS_MSG_PULSE_LOST;
+        ch->c_pulse_lost = false;
+    }
+}
+
+/*
  * Take the oldest pulse, if there is one. Called with interrupts off.
  */
 static bool
@@ -713,10 +735,7 @@ pulse_take(struct channel *ch, struct sys_msg *out)
      * would make every later receive claim a loss that had already been
      * reported.
      */
-    if (ch->c_pulse_lost) {
-        out->flags |= SYS_MSG_PULSE_LOST;
-        ch->c_pulse_lost = false;
-    }
+    pulse_lost_flag(ch, out);
 
     return true;
 }
@@ -732,108 +751,134 @@ channel_recv(struct channel *ch, struct sys_msg *out,
     s = md_intr_disable();
 
     /*
-     * A pulse first, per section 13.1: one receive point for both, and
-     * a notification about something that has already happened should
-     * not wait behind work. The queue is bounded and drains, so this
-     * cannot starve messages: there are at most SYS_PULSE_SLOTS of
-     * them and nothing refills it faster than this empties it.
+     * A loop, and not because anything here retries. A receiver woken
+     * for a pulse can find it gone, because the wake and the taking are
+     * two steps and another receiver can run between them, and a
+     * receiver that then read its staging message would be handed
+     * whatever the last message on this channel happened to be. So the
+     * question is asked again rather than assumed.
      */
-    if (pulse_take(ch, out)) {
-        if (out_peer != NULL) {
-            *out_peer = 0;
+    for (;;) {
+        /*
+         * A pulse first, per section 13.1: one receive point for both,
+         * and a notification about something that has already happened
+         * should not wait behind work. The queue is bounded and drains,
+         * so this cannot starve messages: there are at most
+         * SYS_PULSE_SLOTS of them and nothing refills it faster than
+         * this empties it.
+         */
+        if (pulse_take(ch, out)) {
+            if (out_peer != NULL) {
+                *out_peer = 0;
+            }
+            if (out_cookie != NULL) {
+                *out_cookie = 0;
+            }
+            md_intr_restore(s);
+            return SYS_OK;
         }
-        if (out_cookie != NULL) {
-            *out_cookie = 0;
+
+        client = list_pop(&ch->c_senders);
+        if (client != NULL) {
+            sys_err_t lend;
+
+            msg_copy(out, &client->t_stage);
+            vm_charge_begin();
+            lend = msg_buf_hand_over(self, client, out);
+            vm_charge_end();
+            if (lend != SYS_OK) {
+                /*
+                 * The buffer could not be put where this thread could
+                 * reach it, so there is no message to serve. The
+                 * client is told, rather than left blocked on a
+                 * rendezvous that did not happen, and this thread goes
+                 * on to wait like one that found nothing queued.
+                 *
+                 * Not replied to, which is the field that says whether
+                 * there is a reply to copy out. Setting it here would
+                 * hand the client its own request back, dressed as an
+                 * answer to it.
+                 */
+                client->t_replied = false;
+                client->t_waitres = lend;
+                client->t_blocked_on = NULL;
+                client->t_wait = THREAD_WAIT_NONE;
+                sched_ready(client);
+                client = NULL;
+            }
         }
-        md_intr_restore(s);
-        return SYS_OK;
-    }
+        if (client != NULL) {
+            channel_rendezvous++;
+            self->t_client = thread_id(client);
+            self->t_cookie = client->t_cookie;
+            self->t_donor = client;
+            client->t_donee = self;
 
-    client = list_pop(&ch->c_senders);
-    if (client != NULL) {
-        sys_err_t lend;
+            donate(self, client->t_prio);
 
-        msg_copy(out, &client->t_stage);
-        vm_charge_begin();
-        lend = msg_buf_hand_over(self, client, out);
-        vm_charge_end();
-        if (lend != SYS_OK) {
             /*
-             * The buffer could not be put where this thread could
-             * reach it, so there is no message to serve. The client
-             * is told, rather than left blocked on a rendezvous that
-             * did not happen, and this thread goes on to wait like
-             * one that found nothing queued.
-             *
-             * Not replied to, which is the field that says whether
-             * there is a reply to copy out. Setting it here would
-             * hand the client its own request back, dressed as an
-             * answer to it.
+             * The client moves from SEND-blocked to REPLY-blocked
+             * without running. It was queued and is now being served.
              */
-            client->t_replied = false;
-            client->t_waitres = lend;
-            client->t_blocked_on = NULL;
-            client->t_wait = THREAD_WAIT_NONE;
-            sched_ready(client);
-            client = NULL;
-        }
-    }
-    if (client != NULL) {
-        channel_rendezvous++;
-        self->t_client = thread_id(client);
-        self->t_cookie = client->t_cookie;
-        self->t_donor = client;
-        client->t_donee = self;
+            client->t_wait = THREAD_WAIT_REPLY;
+            trace_wait(client, THREAD_WAIT_REPLY);
 
-        donate(self, client->t_prio);
+            self->t_wait = THREAD_WAIT_NONE;
+
+            pulse_lost_flag(ch, out);
+            *out_peer = self->t_client;
+            *out_cookie = self->t_cookie;
+            md_intr_restore(s);
+
+            return SYS_OK;
+        }
 
         /*
-         * The client moves from SEND-blocked to REPLY-blocked without
-         * running. It was queued and is now being served.
+         * Nothing records where the message will go: a sender writes
+         * this thread's staging message, and this thread copies it out
+         * when it runs again and its own memory is mapped.
+         *
+         * The client id is cleared first, because after the block it is
+         * what says which kind of wake this was. A sender fills it in;
+         * a pulse does not, and leaves it zero.
          */
-        client->t_wait = THREAD_WAIT_REPLY;
-        trace_wait(client, THREAD_WAIT_REPLY);
+        self->t_msg = &self->t_stage;
+        self->t_client = 0;
+        self->t_snext = ch->c_receivers;
+        ch->c_receivers = self;
 
-        self->t_wait = THREAD_WAIT_NONE;
+        self->t_wait = THREAD_WAIT_RECV;
+        trace_wait(self, THREAD_WAIT_RECV);
 
-        *out_peer = self->t_client;
-        *out_cookie = self->t_cookie;
-        md_intr_restore(s);
+        self->t_blocked_on = ch;
+        self->t_unwait = channel_unwait_thread;
+        sched_block();
 
-        return SYS_OK;
+        if (self->t_waitres != SYS_OK) {
+            *out_peer = self->t_client;
+            *out_cookie = self->t_cookie;
+            md_intr_restore(s);
+
+            return self->t_waitres;
+        }
+
+        /*
+         * A sender filled this thread's staging message while this
+         * thread was blocked. Copy it out now that this thread's memory
+         * is what is mapped.
+         */
+        if (self->t_client != 0) {
+            msg_copy(out, &self->t_stage);
+            pulse_lost_flag(ch, out);
+            *out_peer = self->t_client;
+            *out_cookie = self->t_cookie;
+            md_intr_restore(s);
+
+            return SYS_OK;
+        }
+
+        /* Woken for a pulse. Round again to take it, or to wait anew. */
     }
-
-    /*
-     * Nothing records where the message will go: a sender writes
-     * this thread's staging message, and this thread copies it out
-     * when it runs again and its own memory is mapped.
-     */
-    self->t_msg = &self->t_stage;
-    self->t_snext = ch->c_receivers;
-    ch->c_receivers = self;
-
-    self->t_wait = THREAD_WAIT_RECV;
-    trace_wait(self, THREAD_WAIT_RECV);
-
-    self->t_blocked_on = ch;
-    self->t_unwait = channel_unwait_thread;
-    sched_block();
-
-    /*
-     * A sender filled this thread's staging message while this
-     * thread was blocked. Copy it out now that this thread's memory
-     * is what is mapped.
-     */
-    if (self->t_waitres == SYS_OK) {
-        msg_copy(out, &self->t_stage);
-    }
-
-    *out_peer = self->t_client;
-    *out_cookie = self->t_cookie;
-
-    md_intr_restore(s);
-
-    return self->t_waitres;
 }
 
 /*
@@ -1103,6 +1148,16 @@ channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
         waiter->t_blocked_on = NULL;
         waiter->t_wait = THREAD_WAIT_NONE;
         waiter->t_waitres = SYS_OK;
+
+        /*
+         * Nothing is set to say this was a pulse. What tells the
+         * receiver apart is the client identifier, which channel_recv
+         * clears before it blocks and a sender fills in before it
+         * readies anybody, so a wake with it still clear is a wake
+         * that no sender caused. Clearing it here as well would be a
+         * second place keeping the same invariant, which is one place
+         * too many.
+         */
         sched_ready(waiter);
     }
 

@@ -1165,6 +1165,8 @@ What needs specifying is not cost but **capacity**. Under static pools a channel
 **The pulse dropped is the oldest user one, wherever it sits.** A system pulse may be in front of it, and taking the head instead would be user pulses displacing a death notice by a longer route. One queue with a reservation rather than two, so that a server learns of a death in the order it happened rather than ahead of or behind everything around it.
 
 **A pulse is collected before a message.** A notification is about something that has already happened and should not wait behind work. It cannot starve messages, because the queue is bounded and a receiver empties it faster than anything can fill it.
+
+**A receiver woken for a pulse asks again rather than assuming.** The wake and the taking are two steps, and another receiver can run between them, so a receiver that read its staging message on being woken would be handed whatever the last message on that channel was. What tells a pulse wake from a sender's is that a sender fills in the client identifier before readying anybody and a pulse does not.
 The reservation is required for correctness, not politeness. A dropped death notification leaks the resources of a dead client permanently, and a process that floods a channel with user pulses must not be able to cause that.
 
 Pulses are delivered to a channel and collected by `sys_msg_recv()`, which reports through a flag whether it received a message or a pulse, so a server has one receive point for both.

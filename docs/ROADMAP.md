@@ -4026,6 +4026,45 @@ exercise the reservation. Section 10.5 step 2 has a server learn that its
 client was cancelled, and that is stage four, which is why the queue is
 built before the thing that fills it.
 
+*Reviewing it found the half of the queue the check never touched.*
+
+**A pulse to a receiver that was already blocked handed it a stale
+message.** Everything the stage checked enqueued first and received
+afterwards, so no receiver was ever waiting when a pulse arrived. Waking
+one went through the path a sender's wake goes through, which copies out
+the thread's staging message and returns without `SYS_MSG_IS_PULSE`: the
+receiver got whatever the last message on that channel happened to be,
+dressed as a new one, and the pulse stayed in the queue.
+
+The receive is a loop now, and not because anything retries. A receiver
+woken for a pulse can find it gone, because the wake and the taking are
+two steps and another receiver can run between them, so the question is
+asked again rather than assumed. What tells a pulse wake from a sender's
+is the client identifier: `channel_recv` clears it before it blocks and a
+sender fills it in before readying anybody, so a wake with it still clear
+is a wake no sender caused.
+
+**The check that found it did not work the first two times, and both
+failures were the check and not the code.** A fresh thread blocked in
+receive has nothing stale to be handed, so the first version passed with
+the fix removed. Making it serve a message first was not enough either,
+because replying clears the same field. What catches it is asking the
+receiver whether what it got was a pulse: with every wake treated as a
+message the check stops with `a waiting receiver was handed a message`.
+
+That also showed a second place keeping the same invariant. The pulse
+wake was clearing the client identifier itself, which `channel_recv`
+already guarantees, so removing it changed nothing and could not be
+falsified. One place keeps it now.
+
+**And the overflow flag was reported on the next pulse rather than the
+next receive.** Section 13.1 says the receiver observes it on its next
+receive, and a server that took a message in between would have learned
+late or not at all. It is on both paths now. Not reachable as things
+stand, because a loss means pulses are queued and the first one taken
+carries the flag, but the rule is about receives and the code was about
+pulses.
+
 **4. Death notification.** Section 12.5 in both directions.
 
 - A client blocked on a dead server is released with

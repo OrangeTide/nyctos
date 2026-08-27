@@ -3307,6 +3307,54 @@ never_replies(void *arg)
  * for good, and the process that would like that to happen is exactly
  * the one sending the flood.
  */
+/*
+ * A thread that blocks in receive before anything is queued, so that a
+ * pulse has to wake it rather than being found waiting.
+ */
+static struct channel *pulse_waiter_ch;
+static sys_err_t pulse_waiter_saw;
+static uint32_t pulse_waiter_value;
+
+static void
+pulse_waiter(void *arg)
+{
+    struct sys_msg got, reply;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+
+    (void)arg;
+
+    /*
+     * A message first, and answered, so that this thread has served
+     * somebody before it waits for the pulse. A receiver that had never
+     * served anybody has nothing stale to be handed, and the first
+     * version of this check used one: it passed with the wake unmarked,
+     * because the field that says which kind of wake it was happened to
+     * be zero already.
+     */
+    if (channel_recv(pulse_waiter_ch, &got, &peer, &cookie) != SYS_OK) {
+        panic("pulse: the waiter could not receive");
+    }
+    if ((got.flags & SYS_MSG_IS_PULSE) != 0) {
+        panic("pulse: that should have been a message");
+    }
+    memset(&reply, 0, sizeof(reply));
+    reply.handle = SYS_HANDLE_INVALID;
+    if (channel_reply(peer, &reply) != SYS_OK) {
+        panic("pulse: the waiter could not reply");
+    }
+
+    pulse_waiter_saw = channel_recv(pulse_waiter_ch, &got, &peer, &cookie);
+    if (pulse_waiter_saw == SYS_OK) {
+        if ((got.flags & SYS_MSG_IS_PULSE) == 0) {
+            panic("pulse: a waiting receiver was handed a message");
+        }
+        pulse_waiter_value = ((const sys_pulse_t *)got.inline_data)->value;
+    }
+
+    thread_exit(0);
+}
+
 static void
 pulse_checks(void)
 {
@@ -3395,6 +3443,60 @@ pulse_checks(void)
       channel_recv(ch, &got, &peer, &cookie), SYS_OK);
     if ((got.flags & SYS_MSG_PULSE_LOST) != 0) {
         panic("pulse: the loss was reported twice");
+    }
+
+    /*
+     * And a pulse to a receiver that is already blocked, which is the
+     * other half of the queue and the one the first version of this
+     * check did not have. Everything above enqueues first and receives
+     * afterwards, so the receiver is never waiting when a pulse
+     * arrives, and a wake that handed it a stale message would have
+     * gone unnoticed.
+     */
+    {
+        struct child pc;
+
+        pulse_waiter_ch = ch;
+        pulse_waiter_saw = SYS_ERR_TIMEOUT;
+
+        sched_defer();
+        child_watch(&pc, proc_spawn("pulse-waiter", PRIO_BOOT + 1,
+          pulse_waiter, NULL, 0));
+        sched_undefer();
+
+        /*
+         * It outranks this thread, so it has run and is blocked in
+         * receive by the time this line is reached. One message first,
+         * so that it has served somebody, and then the pulse into the
+         * wait it goes back to.
+         */
+        {
+            struct sys_op_connect_args ccargs;
+            struct sys_msg req, rep;
+
+            memset(&ccargs, 0, sizeof(ccargs));
+            ccargs.rights = SYS_RIGHT_SEND;
+            expect("a way to send it one message first",
+              run(SYS_OP_CHAN_CONNECT, h, &ccargs, sizeof(ccargs)),
+              SYS_OK);
+
+            memset(&req, 0, sizeof(req));
+            req.handle = SYS_HANDLE_INVALID;
+            expect("and sending it",
+              channel_send(ch, 0, &req, &rep), SYS_OK);
+        }
+
+        channel_pulse(ch, SYS_PULSE_USER_BASE, 0xbeef);
+        (void)child_join(&pc, 1000);
+
+        expect("a pulse to a receiver already waiting",
+          pulse_waiter_saw, SYS_OK);
+        cnprintf("    %-38s 0x%lx\n", "and what it was handed",
+          (unsigned long)pulse_waiter_value);
+        if (pulse_waiter_value != 0xbeef) {
+            panic("pulse: a waiting receiver was handed 0x%lx",
+              (unsigned long)pulse_waiter_value);
+        }
     }
 
     /*
