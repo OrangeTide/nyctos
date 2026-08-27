@@ -45,3 +45,31 @@ connection_owner(const struct connection *cn)
 
     return cn->cn_channel->c_owner;
 }
+
+/*
+ * A connection is named by handles and by nothing else, so a handle
+ * going is the whole of its lifetime.
+ *
+ * Nothing freed one before this. The kernel destroyed a connection only
+ * when the handle it was being put into could not be made, so every
+ * connection anybody ever held leaked its slot when the handle closed,
+ * and the pool was a count of connections ever made rather than
+ * connections open at once. Section 25.2 says that pool is a build-time
+ * bound on every file open at once, which it could not be.
+ */
+void
+connection_ref(struct connection *cn)
+{
+    cn->cn_refs++;
+}
+
+void
+connection_unref(struct connection *cn)
+{
+    if (cn->cn_refs == 0) {
+        panic("connection: unreferenced more often than referenced");
+    }
+    if (--cn->cn_refs == 0) {
+        connection_destroy(cn);
+    }
+}

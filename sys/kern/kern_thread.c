@@ -499,6 +499,16 @@ thread_cancel(struct thread *t)
     }
 
     /*
+     * Deferred, because releasing this thread is several steps and
+     * one of them can make something else runnable: telling a server
+     * its client has gone wakes the server, and a server that outranks
+     * whoever is cancelling would run before the rest of this had
+     * happened. The deferral is what makes a run of readies one step,
+     * which is what it was built for.
+     */
+    sched_defer();
+
+    /*
      * Off the object's list first, and off the deadline list with it.
      * Section 10.6's closed unblock list is what makes this possible
      * without knowing which object it is: whatever blocked the thread
@@ -509,26 +519,31 @@ thread_cancel(struct thread *t)
      * released. That is the same reason the deadline path does both,
      * which is where this hook came from.
      */
+    /*
+     * What the blocking call was holding on this thread's behalf. A
+     * client cancelled between the rendezvous and the reply has its
+     * buffer in the server, and the pages are gone from its own memory
+     * until something puts them back: releasing it without that is a
+     * program running again with a hole where its buffer was. M4 left
+     * a panic on the far side of that block saying this is where it
+     * would be found. It is.
+     *
+     * Before the unwait, because taking a thread off what it was
+     * blocked on is what forgets which object that was, and the
+     * channel needs to know in order to tell the server at the other
+     * end that this client has gone.
+     */
+    channel_thread_cancelled(t);
+
     if (t->t_unwait != NULL && t->t_blocked_on != NULL) {
         t->t_unwait(t->t_blocked_on, t);
     }
     time_sleep_cancel(t);
 
-    /*
-     * And whatever the blocking call was holding on this thread's
-     * behalf. A client cancelled between the rendezvous and the reply
-     * has its buffer in the server, and the pages are gone from its own
-     * memory until something puts them back: releasing it without that
-     * is a program running again with a hole where its buffer was.
-     *
-     * M4 left a panic on the far side of that block saying this is
-     * where it would be found. It is.
-     */
-    channel_thread_cancelled(t);
-
     t->t_waitres = SYS_ERR_INTERRUPTED;
     sched_ready(t);
 
+    sched_undefer();
     md_intr_restore(s);
 
     return SYS_OK;

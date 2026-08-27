@@ -1032,6 +1032,9 @@ channel_owned_by(const struct proc *p)
 void
 channel_thread_cancelled(struct thread *t)
 {
+    struct channel *ch = t->t_blocked_on;
+    bool tell = t->t_donee != NULL;
+
     /*
      * The priority it lent goes back first. A server serving a client
      * that has been cancelled has no reason to keep running at that
@@ -1050,6 +1053,7 @@ channel_thread_cancelled(struct thread *t)
             undonate(t->t_donee);
         }
         t->t_donee = NULL;
+
     }
 
     vm_charge_begin();
@@ -1059,6 +1063,31 @@ channel_thread_cancelled(struct thread *t)
     t->t_msg = NULL;
     t->t_reply = NULL;
     t->t_replied = false;
+
+    /*
+     * And the server is told, per section 10.5 step 2 and section
+     * 12.5. A server is at a receive point and can collect a pulse,
+     * where this thread is not and has to be failed instead: that
+     * asymmetry is the whole reason both mechanisms exist rather than
+     * one. Without it a server learns only when it replies and is
+     * refused, and a server that does not check its replies leaks
+     * whatever it allocated for the request for good.
+     *
+     * Last, after everything above. Leaving a pulse can make a server
+     * runnable, and a server that outranks whoever is cancelling runs
+     * at once: it must not find this thread still looking like a
+     * client waiting for a reply, because it would send one and
+     * release a thread that is in the middle of being released.
+     *
+     * The value is the identifier truncated, per section 7.1, not a
+     * bare index. A bare index would let the slot be recycled between
+     * the enqueue and the collection and have the server match the
+     * notice against somebody else's request.
+     */
+    if (tell && ch != NULL) {
+        channel_pulse(ch, SYS_PULSE_DEAD_OWNER,
+          SYS_ID_TAG32(thread_id(t)));
+    }
 }
 
 /*
@@ -1164,3 +1193,99 @@ channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
     md_intr_restore(s);
 }
 
+
+/*
+ * Release one client blocked on a channel whose server is gone.
+ * Interrupts are already off.
+ */
+static void
+release_dead(struct thread *t)
+{
+    /*
+     * Its buffer first, for the reason cancellation has: the pages are
+     * in the server and gone from here, the reply that would have given
+     * them back is not coming, and a thread released into its own
+     * memory with a hole in it is worse than the wait it was in.
+     */
+    channel_thread_cancelled(t);
+
+    t->t_waitres = SYS_ERR_OWNER_DEAD;
+    t->t_blocked_on = NULL;
+    t->t_wait = THREAD_WAIT_NONE;
+    sched_ready(t);
+}
+
+/*
+ * A process that owned channels has terminated, per section 12.5.
+ *
+ * A client blocked in send is not at a receive point and cannot collect
+ * a pulse, so it is released with an error instead. That is the whole
+ * of why the two directions need different mechanisms: the party that
+ * can be told is told, and the party that cannot is failed.
+ *
+ * Both blocked states, which the section is explicit about. A queued
+ * sender is waiting for a server that will never take it, and a
+ * reply-blocked client is waiting for a reply that will never come; the
+ * first is on the channel's sender list and the second is not on any
+ * list at all, which is why this walks the threads for it.
+ *
+ * At termination and not at reaping. A process that has exited still
+ * holds its slot for as long as anything can ask about it, and leaving
+ * its clients blocked for that long would make how promptly they are
+ * released depend on when an unrelated supervisor let go of a handle.
+ */
+void
+channel_owner_died(struct proc *p)
+{
+    const struct pool *chans = channel_pool();
+    struct pool *threads = thread_pool();
+    intr_state_t s = md_intr_disable();
+    uint32_t i;
+
+    for (i = 0; i < chans->count; i++) {
+        struct channel *ch;
+        struct thread *t;
+        uint32_t j;
+
+        if (!chans->slots[i].inuse) {
+            continue;
+        }
+        ch = pool_lookup(chans, sys_id_make(i, chans->slots[i].gen));
+        if (ch == NULL || ch->c_owner != p) {
+            continue;
+        }
+
+        while ((t = list_pop(&ch->c_senders)) != NULL) {
+            release_dead(t);
+        }
+
+        for (j = 0; j < threads->count; j++) {
+            if (!threads->slots[j].inuse) {
+                continue;
+            }
+            t = pool_lookup(threads, sys_id_make(j, threads->slots[j].gen));
+            if (t == NULL || t->t_blocked_on != ch ||
+              t->t_wait != THREAD_WAIT_REPLY) {
+                continue;
+            }
+            release_dead(t);
+        }
+
+        /*
+         * And the channel stops naming a process that has gone. M6
+         * left this pointer taking no reference and M7 stage one
+         * guarded a reap against it, because a reaped owner would
+         * leave it naming a freed slot and a reused one would leave it
+         * naming somebody else. Clearing it here is what that guard
+         * was waiting for: the pointer is only interesting while the
+         * owner is alive, and this is the moment it stops being.
+         *
+         * The channel itself stays. Anything still holding a receive
+         * handle can still receive on it, and tearing one down with
+         * its owner is section 18.2's teardown, which is stage six.
+         */
+        ch->c_owner = NULL;
+    }
+
+    md_intr_restore(s);
+}

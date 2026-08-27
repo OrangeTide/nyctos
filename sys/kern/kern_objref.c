@@ -70,6 +70,10 @@ handle_object_retain(uint32_t type, void *obj, uint32_t rights)
     if (type == SYS_OBJ_THREAD) {
         thread_ref(obj);
     }
+
+    if (type == SYS_OBJ_CONNECTION) {
+        connection_ref(obj);
+    }
 }
 
 void
@@ -124,5 +128,9 @@ handle_object_release(const struct handle_table *ht, uint32_t type,
 
     if (type == SYS_OBJ_THREAD) {
         thread_unref(obj);
+    }
+
+    if (type == SYS_OBJ_CONNECTION) {
+        connection_unref(obj);
     }
 }

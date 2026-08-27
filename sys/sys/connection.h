@@ -40,6 +40,14 @@ struct connection {
      * message on this connection and attaches no meaning to it.
      */
     uint64_t         cn_cookie;
+
+    /*
+     * Handles naming this connection. It goes back to its pool when
+     * the last one closes, which is the rule stage one gave processes
+     * and threads and did not give this: a connection is named by
+     * nothing else, so a handle going is the whole of its lifetime.
+     */
+    uint32_t         cn_refs;
 };
 
 struct connection *connection_create(struct channel *ch, uint64_t cookie);
@@ -51,5 +59,12 @@ struct connection *connection_create(struct channel *ch, uint64_t cookie);
  */
 struct proc *connection_owner(const struct connection *cn);
 void connection_destroy(struct connection *cn);
+
+/*
+ * A handle naming this connection was made, or destroyed. The second
+ * one returns it to its pool if that was the last.
+ */
+void connection_ref(struct connection *cn);
+void connection_unref(struct connection *cn);
 
 #endif /* _SYS_CONNECTION_H_ */

@@ -88,6 +88,13 @@ void channel_thread_cancelled(struct thread *t);
  */
 void channel_pulse(struct channel *ch, uint16_t code, uint32_t value);
 
+/*
+ * A process that owned channels has terminated, so anything blocked
+ * sending to one of them is released with SYS_ERR_OWNER_DEAD rather
+ * than left waiting for a server that is gone. Section 12.5.
+ */
+void channel_owner_died(struct proc *p);
+
 struct channel *channel_create(const char *name, struct proc *owner);
 
 /*

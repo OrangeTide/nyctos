@@ -497,6 +497,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Reaping | A slot returns when the object has finished and no handle names it. A completion handle holds its object rather than outliving it. |
 | Cancellation | One call for every wait, through the unblock hook of section 10.6. Refused, not ignored, when the thread is not blocked. |
 | Pulses | One bounded queue per channel with slots reserved for system codes, sent through a connection, collected before messages. |
+| Peer death | A server is told with a pulse because it is at a receive point. A client is failed with OWNER_DEAD because it is not. |
 | Path resolution | Lexical reduction first, then the longest mount name that matches on a component boundary. |
 | Union directories | Several entries at one name, tried in the order the parent wrote them. Only the same name, never a shorter one. |
 | Climbing out | The library reduces `..` for correctness; the server refuses it for confinement. Both, and neither alone. |
@@ -1108,6 +1109,10 @@ A rendezvous has two sides and they fail differently, because they are waiting o
 
 Both directions are therefore covered, and neither depends on a timeout. This matters most during cohort restart (section 18.2), where a supervisor is deliberately destroying processes that may have clients blocked on them and requires those clients to be released promptly rather than at the expiry of whatever deadline each happened to pass.
 
+
+**A channel stops naming its owner when that process terminates.** The pointer is what section 12.5 asks about and it is interesting only while the owner is alive; leaving it would have it name a freed slot, or a reused one, and no generation protects a pointer. The channel itself outlives the process. Anything still holding a receive handle can still receive on it, and destroying a channel with its owner is the teardown of section 18.2.
+
+**A connection returns to its pool when its last handle closes.** It is named by handles and by nothing else, so that is the whole of its lifetime. Nothing freed one before: a connection was destroyed only when the handle it was going into could not be made, so the pool counted connections ever created rather than connections open at once, which is not the bound section 25.2 says it is.
 **A server learns nothing when a client merely closes a connection.** Destroying the connection object is a local operation in the client's table and tells the server nothing, so per-connection state is reclaimed on an explicit protocol close (section 25.2) and not before. `PROPOSALS.md` describes what changing that would cost, and section 25.7 describes the shape that avoids needing to.
 
 ### 12.6 The Shape of a Server

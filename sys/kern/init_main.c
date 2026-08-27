@@ -3296,6 +3296,238 @@ never_replies(void *arg)
     }
 }
 
+
+/*
+ * The two sides of a rendezvous fail differently, per section 12.5,
+ * because they are waiting on different things.
+ *
+ * A server is at a receive point, so it can be told: it collects a
+ * pulse and goes on serving. A client is not at one and has nothing to
+ * collect with, so it is failed instead. Neither direction depends on a
+ * deadline, which is what makes this usable during a cohort restart
+ * where a supervisor is destroying processes with clients blocked on
+ * them.
+ */
+static struct channel *dying_ch;
+static sys_handle_t dying_recv;
+static sys_thread_id_t dying_client;
+static uint32_t dying_pulse_value;
+static bool dying_saw_pulse;
+static sys_err_t dying_reply_said;
+
+/*
+ * A server that serves one request, is left holding it when its client
+ * goes, and finds out by receiving.
+ */
+static void
+attentive(void *arg)
+{
+    struct sys_msg got, reply;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+
+    (void)arg;
+
+    if (channel_recv(dying_ch, &got, &peer, &cookie) != SYS_OK) {
+        panic("death: the server could not receive");
+    }
+    dying_client = peer;
+
+    /*
+     * And now it waits, holding an unanswered request. Its client is
+     * about to be cancelled, and the next thing this receive returns
+     * should be the notice rather than another request.
+     */
+    if (channel_recv(dying_ch, &got, &peer, &cookie) != SYS_OK) {
+        panic("death: the server could not receive again");
+    }
+    if ((got.flags & SYS_MSG_IS_PULSE) != 0) {
+        const sys_pulse_t *p = (const sys_pulse_t *)got.inline_data;
+
+        if (p->code == SYS_PULSE_DEAD_OWNER) {
+            dying_saw_pulse = true;
+            dying_pulse_value = p->value;
+        }
+    }
+
+    /*
+     * A server that replies anyway is told the client has moved on,
+     * per section 10.5 step 3. A server that ignored this would be one
+     * that never learned, which is what the pulse is for.
+     */
+    memset(&reply, 0, sizeof(reply));
+    reply.handle = SYS_HANDLE_INVALID;
+    dying_reply_said = channel_reply(dying_client, &reply);
+
+    thread_exit(0);
+}
+
+static void
+death_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_connect_args cargs;
+    struct child c;
+    struct thread *t;
+    int32_t code;
+
+    cnputs("death: the party that can be told, and the party that cannot\n");
+
+    /*
+     * A client cancelled while a server holds its request. The server
+     * is a thread of this process, so nothing here is dying; what dies
+     * is the client, and the server has to find out.
+     */
+    dying_ch = channel_create("attentive", self);
+    if (dying_ch == NULL) {
+        panic("death: no channel");
+    }
+    expect("a receive handle for the attentive server",
+      handle_insert(ht, dying_ch, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
+        &dying_recv), SYS_OK);
+    sched_ready(thread_create("attentive", 5, attentive, NULL));
+
+    {
+        sys_ns_spec_t ns[4];
+        const char *argv[2];
+
+        memset(&cargs, 0, sizeof(cargs));
+        cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+        expect("a connection to it",
+          run(SYS_OP_CHAN_CONNECT, dying_recv, &cargs, sizeof(cargs)),
+          SYS_OK);
+
+        memset(ns, 0, sizeof(ns));
+        ns[0].id = SYS_NS_PRIVATE + 2;
+        ns[0].handle = cargs.out_handle;
+
+        argv[0] = "wedged";
+        argv[1] = "reply";
+
+        sched_defer();
+        child_watch(&c, proc_spawn_image("wedged", 20, ns, 1, argv, 2));
+        sched_undefer();
+
+        t = proc_threads(c.c_proc);
+        while (t->t_state != THREAD_BLOCKED) {
+            sched_yield();
+        }
+        if (thread_cancel(t) != SYS_OK) {
+            panic("death: the client would not be released");
+        }
+
+        code = child_join(&c, 1000);
+        if (code != 0) {
+            panic("death: the cancelled client reported %d", code);
+        }
+    }
+
+    /* The server had to run to collect it and to try its reply. */
+    {
+        uint32_t spin;
+
+        for (spin = 0; spin < 64 && !dying_saw_pulse; spin++) {
+            sched_yield();
+        }
+    }
+
+    if (!dying_saw_pulse) {
+        panic("death: the server was never told its client had gone");
+    }
+    if (dying_pulse_value != SYS_ID_TAG32(dying_client)) {
+        panic("death: the notice named 0x%lx, the client was 0x%lx",
+          (unsigned long)dying_pulse_value,
+          (unsigned long)SYS_ID_TAG32(dying_client));
+    }
+    expect("its reply afterwards", dying_reply_said, SYS_ERR_STALE);
+    cnprintf("    %-38s 0x%lx\n", "the server was told, and by name",
+      (unsigned long)dying_pulse_value);
+
+    /*
+     * And the other direction: a client queued on a channel whose
+     * owning process goes. It is not at a receive point, so there is
+     * nothing it could collect and it is failed instead.
+     *
+     * The owner is a program, because ownership is a process and every
+     * channel this system has otherwise belongs to the kernel, which
+     * does not exit. It is blocked on a timeline nothing will signal
+     * and leaves when it is cancelled.
+     */
+    {
+        sys_ns_spec_t ns[2];
+        const char *argv[2];
+        struct child oc, cc;
+        struct channel *owned;
+        sys_handle_t owned_recv;
+        struct thread *ot;
+
+        memset(&cargs, 0, sizeof(cargs));
+        argv[0] = "wedged";
+        argv[1] = "fence";
+
+        {
+            struct timeline *tl = timeline_create("never-again");
+            sys_handle_t hf;
+
+            if (tl == NULL) {
+                panic("death: no timeline");
+            }
+            expect("a timeline for the owner to wait on",
+              handle_insert(ht, tl, SYS_OBJ_TIMELINE,
+                SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &hf), SYS_OK);
+            memset(ns, 0, sizeof(ns));
+            ns[0].id = SYS_NS_PRIVATE + 0;
+            ns[0].handle = hf;
+        }
+
+        sched_defer();
+        child_watch(&oc, proc_spawn_image("wedged", 20, ns, 1, argv, 2));
+        sched_undefer();
+
+        /* Its channel, now that there is a process to own it. */
+        owned = channel_create("abandoned", oc.c_proc);
+        if (owned == NULL) {
+            panic("death: no channel for the owner");
+        }
+        expect("a channel belonging to that program",
+          handle_insert(ht, owned, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
+            &owned_recv), SYS_OK);
+
+        memset(&cargs, 0, sizeof(cargs));
+        cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+        expect("a connection to it, for somebody else",
+          run(SYS_OP_CHAN_CONNECT, owned_recv, &cargs, sizeof(cargs)),
+          SYS_OK);
+
+        memset(ns, 0, sizeof(ns));
+        ns[0].id = SYS_NS_PRIVATE + 1;
+        ns[0].handle = cargs.out_handle;
+
+        sched_defer();
+        child_watch(&cc, proc_spawn_image("orphan", 20, ns, 1, NULL, 0));
+        sched_undefer();
+
+        /* The client is queued on it, and now the owner leaves. */
+        ot = proc_threads(oc.c_proc);
+        while (ot->t_state != THREAD_BLOCKED) {
+            sched_yield();
+        }
+        if (thread_cancel(ot) != SYS_OK) {
+            panic("death: the owner would not be released");
+        }
+
+        (void)child_join(&oc, 1000);
+        code = child_join(&cc, 1000);
+        if (code != 0) {
+            panic("death: the abandoned client reported %d", code);
+        }
+        cnprintf("    %-38s %s\n", "its client was failed, not told",
+          "OWNER_DEAD");
+
+        (void)handle_close(ht, owned_recv);
+    }
+}
 /*
  * Pulses, and the reservation that is the whole reason they are
  * specified rather than assumed, per section 13.1.
@@ -4253,6 +4485,7 @@ user_slice(void)
     reap_checks();
     cancel_checks();
     pulse_checks();
+    death_checks();
     cohort_checks();
 }
 

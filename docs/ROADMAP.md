@@ -4065,7 +4065,8 @@ stand, because a loss means pulses are queued and the first one taken
 carries the flag, but the rule is about receives and the code was about
 pulses.
 
-**4. Death notification.** Section 12.5 in both directions.
+**4. Death notification.** *Built.* The party that can be told is told,
+the party that cannot is failed, and neither waits on a deadline.
 
 - A client blocked on a dead server is released with
   `SYS_ERR_OWNER_DEAD`, because it is not at a receive point and cannot
@@ -4074,14 +4075,77 @@ pulses.
   `SYS_PULSE_DEAD_OWNER`, because it is at one, and its later reply is
   refused as stale rather than delivered to whoever holds the id now.
 
-*Check.* The filesystem server killed mid-read releases its client with
-`SYS_ERR_OWNER_DEAD` rather than hanging it, and the client's memory is
-its own again. A client killed mid-call leaves the server able to
-discover it, finish, and have its reply refused; the connection record
-the server was holding goes back to the pool, which is the observation
-`PROPOSALS.md` gates connection death notification on. Both directions
-have to be tried with a buffer outstanding, because that is the case M4
-and M6 made possible and neither had to unwind.
+*Check.*
+
+```
+    the server was told, and by name       0x40000e
+    its reply afterwards                   STALE
+    its client was failed, not told        OWNER_DEAD
+```
+
+The first two are one run: a client cancelled while a server holds its
+request, the server discovering it by receiving rather than by replying,
+and the reply it makes anyway refused. The notice carries the client's
+identifier truncated, per section 7.1, and the check compares it against
+the identifier the server already held, which is what a real server
+would do. Not telling the server fails with `the server was never told
+its client had gone`.
+
+The third is the other direction, and it needs a channel owned by a
+program rather than by the kernel, because the kernel never exits.
+Section 12.5's trigger is the process owning the channel terminating.
+
+**The stage entry named the filesystem server and a kill, and neither
+was available.** Killing a process is stage five. What is available is
+cancellation, so the client is cancelled and the channel's owner is
+cancelled out of a wait it then leaves. The mechanism under test is the
+same one either way: what releases the clients is the owner's
+termination, not what caused it.
+
+**The client and the server it loses have to be two images.** Both roles
+were `wedged` at first, which works at Tier 2 and cannot work at Tier 0,
+where every image is loaded at the address it was linked for: two live
+copies of one image are one program written over another. `orphan` is
+the client now. That is the same fact M6 stage one found for cohorts,
+arriving from the other side.
+
+**Telling the server has to be the last thing the cancel does.** The
+first version sent the notice in the middle of dismantling the client,
+and a server that outranks whoever is cancelling runs the moment it is
+made runnable: it found a client that still looked like one waiting for
+a reply, replied to it, and released a thread that was halfway through
+being released. Cancellation is deferred now, so a run of readies is one
+step, which is what the deferral was built for.
+
+**And the notice needs the channel, which the unwait forgets.** Taking a
+thread off what it was blocked on is what clears the record of which
+object that was, so the channel is told before the unwait rather than
+after. That ordering is the whole of why the first attempt delivered
+nothing at all.
+
+**A channel stops naming an owner that has gone.** M6 left `c_owner`
+taking no reference and stage one guarded a reap against it. This is
+what that guard was waiting for: the pointer is interesting only while
+the owner is alive, and termination is when it stops being. The guard
+now cannot fire, and removing the release makes it fire again, which is
+how the two are checked against each other. The channel itself stays,
+because tearing one down with its owner is section 18.2's teardown and
+that is stage six.
+
+*Not built: a server acting on the notice.* The check's server collects
+it and confirms it names the right client; nothing yet uses it to let go
+of per-connection state. That is the observation `PROPOSALS.md` gates
+connection death notification on and it wants a real server to do it, so
+it waits for one that has state worth reclaiming.
+
+*Not checked: a client reply-blocked on a program that owns its own
+channel.* Section 12.5 covers both blocked states and this covers the
+queued one against a dying owner, plus the reply-blocked one against a
+cancelled client. The remaining corner needs a program to own a channel
+it also receives on, and nothing can arrange that: a channel is created
+by the kernel and a program learns its handles at spawn, so the process
+has to exist before the channel and the handle has to exist before the
+process. Stage six needs it and will have to break that circle.
 
 **5. Kill and restart.** A supervisor waiting on a child's completion
 timeline and relaunching it, bounded and escalating per section 24.3.

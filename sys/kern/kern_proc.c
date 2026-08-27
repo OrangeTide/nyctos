@@ -654,6 +654,14 @@ proc_thread_exited(struct proc *p, int32_t code)
     }
 
     /*
+     * Anything blocked on a channel this process owned is released
+     * now, per section 12.5. A server that has gone is not going to
+     * receive or reply, and a client waiting on one is waiting for
+     * something that cannot happen.
+     */
+    channel_owner_died(p);
+
+    /*
      * An exit nobody was waiting for stops the system, named. This is the
      * placeholder for supervision that M2 introduced, now asking a better
      * question: not whether the kernel remembered to set a flag, but
