@@ -177,6 +177,13 @@ sys_err_t sys_thread_cancel(sys_handle_t thread);
  */
 sys_err_t sys_pulse_send(sys_handle_t chan, const sys_pulse_t *pulse);
 
+/*
+ * End a process, per section 10.5. Every thread of it is unblocked as
+ * if cancelled and leaves at its next return from the kernel. Needs
+ * SYS_RIGHT_WRITE on the handle.
+ */
+sys_err_t sys_proc_kill(sys_handle_t proc, int32_t code);
+
 /* What ended a thread, when the hardware ended it. See sys_proc_fault. */
 sys_err_t sys_thread_fault(sys_handle_t thread, sys_fault_t *out);
 

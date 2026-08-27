@@ -538,6 +538,39 @@ op_thread_create(struct proc *p, struct sys_op *op)
  * notice safe from a program filling the queue, so a code below the
  * user base is refused rather than quietly renumbered.
  */
+/*
+ * End a process, per section 10.5.
+ *
+ * SYS_RIGHT_WRITE and not SYS_RIGHT_STAT, for the reason cancelling a
+ * thread needs it: a supervisor that may look at a process is not
+ * thereby one that may end it.
+ *
+ * A supervisor holds a handle to the process and none at all to the
+ * threads inside it, which the section is explicit about, and is why
+ * this is a process operation rather than a loop of thread ones in the
+ * caller.
+ */
+static sys_err_t
+op_proc_kill(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_kill_args *args;
+    void *obj;
+    sys_err_t err;
+
+    args = (struct sys_op_kill_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_PROCESS,
+      SYS_RIGHT_WRITE, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    return proc_kill(obj, args->code);
+}
+
 static sys_err_t
 op_pulse_send(struct proc *p, struct sys_op *op)
 {
@@ -730,6 +763,9 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_PULSE_SEND:
         err = op_pulse_send(p, op);
+        break;
+    case SYS_OP_PROC_KILL:
+        err = op_proc_kill(p, op);
         break;
     case SYS_OP_GRANT_MAP:
         err = op_grant_map(p, op);

@@ -189,6 +189,21 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_PULSE_SEND        22
 
 /*
+ * End a process, per section 10.5. target names it and carries
+ * SYS_RIGHT_WRITE, because this changes what it does rather than asking
+ * about it.
+ *
+ * Every thread of the target is unblocked exactly as if each had been
+ * cancelled, which is what the section asks for and includes telling
+ * every server holding one of their requests. A thread then leaves at
+ * its next return from the kernel: unblocking is prompt, and stopping a
+ * thread that is running in user mode and never calls in is not
+ * something this kernel can do without a hook in the trap path it does
+ * not have.
+ */
+#define SYS_OP_PROC_KILL         23
+
+/*
  * Put a grant's region where the caller can reach it, and say where that
  * is. target names the grant and carries SYS_RIGHT_MAP; the access the
  * mapping permits comes from the other rights on the same handle, so a
@@ -232,7 +247,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             23
+#define SYS_OP_COUNT             24
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the
@@ -403,6 +418,12 @@ typedef struct sys_op_fence_args {
  */
 #define SYS_DEADLINE_NOW        ((uint64_t)0)
 #define SYS_DEADLINE_NEVER      (~(uint64_t)0)
+
+/* Argument structure for SYS_OP_PROC_KILL. target names the process. */
+typedef struct sys_op_kill_args {
+    int32_t         code;       /* what its status will report */
+    uint32_t        _pad;
+} sys_op_kill_args_t;
 
 /* Argument structure for SYS_OP_PULSE_SEND. target names the channel. */
 typedef struct sys_op_pulse_args {

@@ -4188,8 +4188,9 @@ defect this stage found in cancellation and fixed there, in code written
 the same afternoon, and it was reintroduced twenty lines away. Both are
 deferred now.
 
-**5. Kill and restart.** A supervisor waiting on a child's completion
-timeline and relaunching it, bounded and escalating per section 24.3.
+**5. Kill and restart.** *Built.* A server ended, its client released
+rather than hung, another put on the same channel, and a supervisor that
+stops trying.
 
 - The kernel holds no restart policy, per section 18.3. What is built
   here is the mechanism a supervisor uses and one supervisor that uses
@@ -4198,11 +4199,76 @@ timeline and relaunching it, bounded and escalating per section 24.3.
   time is a configuration mistake, and a supervisor that relaunched it
   for ever would hide one.
 
-*Check.* The filesystem server is killed, restarted, and the client's
-next walk and read succeed against the replacement, with the client
-never knowing which one answered. A server that dies on every start is
-given up on rather than restarted for ever, and the give-up is reported
-rather than silent.
+*Check.*
+
+```
+    its client was released                OWNER_DEAD
+    and the next client was answered       OK
+    a child that always dies, given up on  3
+```
+
+`echoes` is a server with nothing to serve, so that ending it is the
+only interesting thing about it, and `orphan` is the client, sent twice
+with different expectations. The replacement receives on the same
+channel, which is what makes the second client unable to tell there was
+a first: a channel outlives the process serving it, and the connection
+the client holds names the channel.
+
+**Killing is not cancelling every thread, though it starts by doing
+that.** Section 10.5 asks for the threads of the target to be unblocked
+exactly as if each had been cancelled. Unblocking is prompt; leaving is
+not the same act. A thread released with an error would otherwise come
+back into its program and carry on, so the process is marked, and each
+thread leaves at its next return from the kernel. Every blocked thread
+is released straight into that point, because being blocked is being
+inside a system call. A thread computing in user mode reaches it at its
+next call, and one that never calls in is not stopped at all, which is
+worth saying plainly rather than implying: what section 10.5 asks to be
+prompt is the unblocking.
+
+Removing the leaving makes the killed server exit with the code it chose
+rather than the one it was given, which is the check noticing that
+nothing ended it.
+
+**A spawn handle now carries the right to end the child.** It carried
+wait and stat, so a parent could watch a child wedge and do nothing
+about it, and section 7.2 would not let it add the right afterwards
+because duplication only attenuates. Section 10.5 says a supervisor
+holds a handle to the process and none at all to the threads inside it,
+which makes the process handle the only thing it could use.
+
+**The supervisor is a program, because the policy is not the kernel's.**
+Section 18.3 says restart policy varies per deployment and does not
+belong in a kernel trying to stay small enough to analyse. What the
+kernel provides is section 10.4's completion timeline; `supervise` is
+one policy over it and not the policy. Its bound is the part worth
+having: given a child that exits at once every time, it makes three
+starts and reports three, and taking the bound out makes fifty-six
+before something else runs out. A supervisor that relaunched for ever
+would turn a configuration mistake into a system that looks busy and
+never works.
+
+**A channel belongs to whoever may receive on it, which is a correction
+to what stage four built.** Section 12.5 releases clients when the
+process owning the channel terminates, and ownership was whoever created
+the object. That cannot be a server: a program learns its handles at
+spawn, so a channel it receives on has to exist before it does. Stage
+four called that a circle stage six would have to break, and stage five
+needed it broken first.
+
+Ownership follows the receive right now, both ways: putting a handle
+that carries it into a table makes that process the owner, and dropping
+the last one leaves the channel owned by nobody. Section 24.5 already
+described the arrangement, which is root creating a channel and handing
+the receive end to a server, and this is only that arrangement being
+what the kernel believes as well.
+
+Two checks were relying on the old meaning and now say what they meant.
+The pager chain check builds a channel whose pager is an ordinary
+program, and had to put a receive handle in that program's own table
+rather than in the kernel's; without it the pager was the kernel, which
+is a valid chain terminator, and the check passed for the wrong reason.
+Stage four's abandoned client needed the same.
 
 **6. Cohort recovery.** The half of M6 that was deferred, and the case
 that forced this milestone to sit here.

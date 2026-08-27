@@ -28,12 +28,31 @@
 #include <string.h>
 #include <sys/fs.h>
 
+static int
+same(const char *a, const char *b)
+{
+    while (*a != '\0' && *a == *b) {
+        a++;
+        b++;
+    }
+
+    return *a == '\0' && *b == '\0';
+}
+
 int
-main(void)
+main(int argc, char **argv)
 {
     fs_request_t *req;
     sys_msg_t message, reply;
     sys_handle_t to;
+    sys_err_t want;
+
+    /*
+     * Which answer this run is for. The same image serves both because
+     * at Tier 0 two live copies of one image are one program written
+     * over another, and these two never run at the same time.
+     */
+    want = (argc > 1 && same(argv[1], "ok")) ? SYS_OK : SYS_ERR_OWNER_DEAD;
 
     to = ns_lookup(SYS_NS_PRIVATE + 1);
     if (to == SYS_HANDLE_INVALID) {
@@ -46,5 +65,5 @@ main(void)
     req = (fs_request_t *)message.inline_data;
     req->fr_op = FS_OP_READ;
 
-    return sys_msg_send(to, &message, &reply) == SYS_ERR_OWNER_DEAD ? 0 : 2;
+    return sys_msg_send(to, &message, &reply) == want ? 0 : 2;
 }

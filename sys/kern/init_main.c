@@ -3093,6 +3093,23 @@ paging_checks(void)
           SYS_RIGHT_RECV, &bh) != SYS_OK) {
             panic("paging: no handle for it");
         }
+
+        /*
+         * And one in the program's own table, because a channel
+         * belongs to whoever may receive on it and the point of this
+         * one is that the pager it names is an ordinary program with
+         * no pager of its own. The kernel keeps its handle in order
+         * to mint the connection below; the last insert is what says
+         * whose channel it is.
+         */
+        {
+            sys_handle_t owned;
+
+            if (handle_insert(&((struct proc *)obj)->p_handles, bch,
+              SYS_OBJ_CHANNEL, SYS_RIGHT_RECV, &owned) != SYS_OK) {
+                panic("paging: the program cannot hold its own channel");
+            }
+        }
         memset(&bad, 0, sizeof(bad));
         bad.cookie = 0;
         bad.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
@@ -3297,6 +3314,208 @@ never_replies(void *arg)
 }
 
 
+
+/*
+ * Killing a server, and putting one back, per sections 10.5 and 24.3.
+ *
+ * The kernel holds no restart policy and section 18.3 says it must not,
+ * so what is checked here is in two pieces. The mechanism is a kill and
+ * a completion timeline. The policy is a program, and one that gives up
+ * after a bound rather than relaunching for ever, because a child that
+ * dies immediately every time is a configuration mistake and hiding one
+ * is worse than stopping.
+ */
+static void
+kill_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_connect_args cargs;
+    struct sys_op_kill_args kargs;
+    sys_ns_spec_t ns[2];
+    const char *argv[2];
+    struct channel *ch;
+    struct child sc, cc;
+    sys_handle_t recv, h;
+    int32_t code;
+    void *obj;
+
+    cnputs("killing: a server ended, and another put in its place\n");
+
+    ch = channel_create("echoes", self);
+    if (ch == NULL) {
+        panic("kill: no channel");
+    }
+    expect("a channel for the server",
+      handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+        SYS_RIGHT_RECV | SYS_RIGHT_DUPLICATE | SYS_RIGHT_TRANSFER,
+        &recv), SYS_OK);
+
+    /*
+     * Its receive end goes to the server and comes back when the server
+     * dies, because a handle moves. So the kernel keeps a duplicate to
+     * hand to the replacement, which is what root does when it restarts
+     * a server: the channel outlives the process serving it and the
+     * clients never learn there was a second one.
+     */
+    {
+        struct timeline *never = timeline_create("deaf");
+        sys_handle_t give, hn;
+
+        if (never == NULL) {
+            panic("kill: no timeline");
+        }
+        if (handle_insert(ht, never, SYS_OBJ_TIMELINE,
+          SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &hn) != SYS_OK) {
+            panic("kill: no handle for it");
+        }
+        if (handle_dup(ht, recv, SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER,
+          &give) != SYS_OK) {
+            panic("kill: cannot hand the channel on");
+        }
+        memset(ns, 0, sizeof(ns));
+        ns[0].id = SYS_NS_SERVICE;
+        ns[0].handle = give;
+        ns[1].id = SYS_NS_PRIVATE + 0;
+        ns[1].handle = hn;
+
+        argv[0] = "echoes";
+        argv[1] = "deaf";
+
+        sched_defer();
+        if (proc_spawn_op(self, "echoes", PRIO_BOOT, ns, 2, argv, 2,
+          &h) != SYS_OK) {
+            panic("kill: could not start the server");
+        }
+        if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+            panic("kill: the spawn returned no process");
+        }
+        child_watch(&sc, obj);
+        sched_undefer();
+    }
+
+    /* A client, to have something blocked on it when it goes. */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to it", run(SYS_OP_CHAN_CONNECT, recv, &cargs,
+      sizeof(cargs)), SYS_OK);
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_PRIVATE + 1;
+    ns[0].handle = cargs.out_handle;
+    argv[0] = "orphan";
+    argv[1] = "dead";
+
+    sched_defer();
+    child_watch(&cc, proc_spawn_image("orphan", 20, ns, 1, argv, 2));
+    sched_undefer();
+
+    /*
+     * The client is waiting on the server. Ending the server releases
+     * it with an error rather than leaving it there, which is section
+     * 12.5 reached by a kill rather than by a cancel.
+     */
+    memset(&kargs, 0, sizeof(kargs));
+    kargs.code = 9;
+    expect("ending the server", run(SYS_OP_PROC_KILL, h, &kargs,
+      sizeof(kargs)), SYS_OK);
+
+    code = child_join(&cc, 1000);
+    if (code != 0) {
+        panic("kill: the client reported %d", code);
+    }
+    code = child_join(&sc, 1000);
+    if (code != 9) {
+        panic("kill: the server exited %d, not the code it was given",
+          code);
+    }
+    if (handle_close(ht, h) != SYS_OK) {
+        panic("kill: the spawn handle was already gone");
+    }
+    cnprintf("    %-38s %s\n", "its client was released", "OWNER_DEAD");
+
+    /*
+     * And another in its place, on the same channel, answering a client
+     * that cannot tell there was ever a first one.
+     */
+    {
+        sys_handle_t give;
+
+        if (handle_dup(ht, recv, SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER,
+          &give) != SYS_OK) {
+            panic("kill: cannot hand the channel to the replacement");
+        }
+        memset(ns, 0, sizeof(ns));
+        ns[0].id = SYS_NS_SERVICE;
+        ns[0].handle = give;
+
+        sched_defer();
+        if (proc_spawn_op(self, "echoes", PRIO_BOOT, ns, 1, NULL, 0,
+          &h) != SYS_OK) {
+            panic("kill: could not start the replacement");
+        }
+        if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+            panic("kill: the replacement returned no process");
+        }
+        child_watch(&sc, obj);
+        sched_undefer();
+    }
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to the replacement",
+      run(SYS_OP_CHAN_CONNECT, recv, &cargs, sizeof(cargs)), SYS_OK);
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_PRIVATE + 1;
+    ns[0].handle = cargs.out_handle;
+    argv[1] = "ok";
+
+    sched_defer();
+    child_watch(&cc, proc_spawn_image("orphan", 20, ns, 1, argv, 2));
+    sched_undefer();
+
+    code = child_join(&cc, 1000);
+    if (code != 0) {
+        panic("kill: the second client reported %d", code);
+    }
+    cnprintf("    %-38s %s\n", "and the next client was answered", "OK");
+
+    /* Tidy: the replacement is not needed after this. */
+    memset(&kargs, 0, sizeof(kargs));
+    kargs.code = 0;
+    expect("ending the replacement", run(SYS_OP_PROC_KILL, h, &kargs,
+      sizeof(kargs)), SYS_OK);
+    (void)child_join(&sc, 1000);
+    (void)handle_close(ht, h);
+    (void)handle_close(ht, recv);
+
+    /*
+     * And a supervisor that runs out of patience. The child it is given
+     * exits at once every time, so the only thing that stops the
+     * supervisor is its own bound, and the status says how many starts
+     * it made rather than leaving that to be inferred from silence.
+     */
+    {
+        const char *sargv[3];
+
+        sargv[0] = "supervise";
+        sargv[1] = "status";
+        sargv[2] = "3";
+
+        sched_defer();
+        child_watch(&sc,
+          proc_spawn_image("supervise", 20, NULL, 0, sargv, 3));
+        sched_undefer();
+    }
+
+    code = child_join(&sc, 2000);
+    if (code != 3) {
+        panic("kill: the supervisor made %d starts, not three", code);
+    }
+    cnprintf("    %-38s %d\n", "a child that always dies, given up on",
+      code);
+}
 /*
  * The two sides of a rendezvous fail differently, per section 12.5,
  * because they are waiting on different things.
@@ -3493,6 +3712,20 @@ death_checks(void)
         expect("a channel belonging to that program",
           handle_insert(ht, owned, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
             &owned_recv), SYS_OK);
+
+        /*
+         * And a handle in its own table, which is what makes it the
+         * owner: a channel belongs to whoever may receive on it. The
+         * kernel keeps one too, to mint the connection below.
+         */
+        {
+            sys_handle_t its;
+
+            if (handle_insert(&oc.c_proc->p_handles, owned,
+              SYS_OBJ_CHANNEL, SYS_RIGHT_RECV, &its) != SYS_OK) {
+                panic("death: it cannot hold its own channel");
+            }
+        }
 
         memset(&cargs, 0, sizeof(cargs));
         cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
@@ -4502,6 +4735,7 @@ user_slice(void)
     cancel_checks();
     pulse_checks();
     death_checks();
+    kill_checks();
     cohort_checks();
 }
 

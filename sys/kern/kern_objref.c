@@ -16,6 +16,7 @@
  */
 
 #include <sys/grant.h>
+#include <sys/channel.h>
 #include <sys/handle.h>
 #include <sys/proc.h>
 #include <sys/systm.h>
@@ -23,7 +24,8 @@
 #include <sys/timeline.h>
 
 void
-handle_object_retain(uint32_t type, void *obj, uint32_t rights)
+handle_object_retain(const struct handle_table *ht, uint32_t type,
+  void *obj, uint32_t rights)
 {
     if (type == SYS_OBJ_TIMELINE && (rights & SYS_RIGHT_SIGNAL) != 0) {
         timeline_add_signaler(obj);
@@ -73,6 +75,22 @@ handle_object_retain(uint32_t type, void *obj, uint32_t rights)
 
     if (type == SYS_OBJ_CONNECTION) {
         connection_ref(obj);
+    }
+
+    /*
+     * A channel belongs to whoever may receive on it, per section 12.5
+     * read against section 24.5: root creates a channel and hands the
+     * receive end to a server, and the process whose death matters to
+     * a blocked client is the one that was going to answer it, not the
+     * one that made the object.
+     *
+     * Which is also the only way round the circle. A program learns
+     * its handles at spawn, so a channel it receives on has to exist
+     * before it does, so it cannot be the creator; and until this, the
+     * creator was the owner and a server dying released nobody.
+     */
+    if (type == SYS_OBJ_CHANNEL && (rights & SYS_RIGHT_RECV) != 0) {
+        channel_set_owner(obj, ht->ht_proc);
     }
 }
 
@@ -132,5 +150,17 @@ handle_object_release(const struct handle_table *ht, uint32_t type,
 
     if (type == SYS_OBJ_CONNECTION) {
         connection_unref(obj);
+    }
+
+    /*
+     * And losing the receive right is no longer being the one who
+     * answers. Both ways round, because ownership is the right and not
+     * a record of who once had it: a channel whose server has handed
+     * the right on belongs to whoever has it now, and one whose server
+     * has dropped it belongs to nobody.
+     */
+    if (type == SYS_OBJ_CHANNEL && (rights & SYS_RIGHT_RECV) != 0 &&
+      channel_owner(obj) == ht->ht_proc) {
+        channel_set_owner(obj, NULL);
     }
 }

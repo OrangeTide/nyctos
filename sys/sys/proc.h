@@ -130,6 +130,15 @@ struct proc {
     uint64_t            p_faults;
 
     /*
+     * Killed, per section 10.5. Its threads are unblocked at once and
+     * each leaves at its next return from the kernel, because that is
+     * the point where a thread can be stopped without unwinding it
+     * from wherever it happens to be.
+     */
+    bool                p_dying;
+    int32_t             p_kill_code;
+
+    /*
      * Memory-locked, per section 15.4 rule 2. Everything on a paging
      * path is locked, and rule 3 makes a fault in one fatal rather than
      * recoverable: it is a configuration mistake, and a system that
@@ -233,6 +242,14 @@ sys_err_t proc_spawn_op(struct proc *parent, const char *image,
   const char *const *argv, uint32_t argc, sys_handle_t *out_handle);
 
 void proc_watch(struct proc *p);
+
+/*
+ * End a process, per section 10.5: unblock every thread of it exactly
+ * as if each had been cancelled, and have each leave at its next return
+ * from the kernel. Returns SYS_ERR_WOULDBLOCK for a process that has
+ * already finished, which is not the same as having ended one.
+ */
+sys_err_t proc_kill(struct proc *p, int32_t code);
 
 /*
  * Whether a range of addresses is memory this process owns, per section

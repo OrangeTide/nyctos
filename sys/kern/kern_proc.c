@@ -1076,8 +1076,17 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
      * authority back where it came from with no way to say whether that
      * is where it started.
      */
+    /*
+     * With the right to end it. A parent that started a process is
+     * what section 24.3 calls a supervisor, and section 10.5 says a
+     * supervisor holds a handle to the process and none at all to the
+     * threads inside it, so the process handle is the only thing it
+     * could use. Without this a parent could watch a child wedge and
+     * do nothing about it, and section 7.2 would not let it add the
+     * right afterwards: duplication only attenuates.
+     */
     err = handle_insert(&parent->p_handles, p, SYS_OBJ_PROCESS,
-      SYS_RIGHT_WAIT | SYS_RIGHT_STAT, &h);
+      SYS_RIGHT_WAIT | SYS_RIGHT_STAT | SYS_RIGHT_WRITE, &h);
     if (err != SYS_OK) {
         thread_set_proc(t, NULL);
         pool_free(thread_pool(), t->t_id);
@@ -1357,4 +1366,46 @@ struct thread *
 proc_threads(struct proc *p)
 {
     return p->p_threads;
+}
+
+sys_err_t
+proc_kill(struct proc *p, int32_t code)
+{
+    struct thread *t;
+
+    if (p->p_exited || p->p_nthreads == 0) {
+        return SYS_ERR_WOULDBLOCK;
+    }
+
+    /*
+     * The mark first, so that a thread released below and running
+     * before this returns finds it. Section 10.5 makes the unblocking
+     * prompt and this is what makes the leaving certain: without the
+     * mark a cancelled thread would come back with an error and carry
+     * on with whatever it was doing.
+     */
+    p->p_dying = true;
+    p->p_kill_code = code;
+
+    /*
+     * Deferred, because unblocking several threads is several steps
+     * and any of them can run at once if it outranks this one. The
+     * list being walked is the process's own, and a thread that ran
+     * and exited would be taken out of it mid-walk.
+     */
+    sched_defer();
+
+    for (t = p->p_threads; t != NULL; t = t->t_sibling) {
+        /*
+         * Exactly as if each had been cancelled, which is the
+         * section's phrase and also the implementation: a thread that
+         * is not blocked has nothing to be released from and will find
+         * the mark on its own.
+         */
+        (void)thread_cancel(t);
+    }
+
+    sched_undefer();
+
+    return SYS_OK;
 }

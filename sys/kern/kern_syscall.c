@@ -64,7 +64,31 @@ syscall_handler(struct sys_op *op, unsigned long count)
         return SYS_ERR_FAULT;
     }
 
-    return sys_op_exec(op);
+    {
+        long r = sys_op_exec(op);
+        struct proc *p = proc_current();
+
+        /*
+         * And out, if this process has been killed. Here because it
+         * is the one place a thread is certainly in the kernel with
+         * nothing of its own left on the stack: unwinding a thread
+         * from wherever it happened to be would mean knowing what
+         * every kernel path holds, and this knows that it holds
+         * nothing.
+         *
+         * Every blocked thread of a killed process is released into
+         * this line, because being blocked is being inside a system
+         * call. A thread computing in user mode reaches it at its
+         * next call, and one that never calls in is not stopped,
+         * which section 10.5 does not ask for: what it asks is that
+         * the unblocking be prompt.
+         */
+        if (p != NULL && p->p_dying) {
+            thread_exit(p->p_kill_code);
+        }
+
+        return r;
+    }
 }
 
 void

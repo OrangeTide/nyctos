@@ -82,7 +82,7 @@ handle_insert(struct handle_table *ht, void *obj, uint32_t type,
     s->h_inuse = true;
     ht->ht_used++;
 
-    handle_object_retain(type, obj, rights);
+    handle_object_retain(ht, type, obj, rights);
 
     *out = sys_id_make(index, s->h_gen);
 

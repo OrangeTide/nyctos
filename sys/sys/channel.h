@@ -95,6 +95,14 @@ void channel_pulse(struct channel *ch, uint16_t code, uint32_t value);
  */
 void channel_owner_died(struct proc *p);
 
+/*
+ * Say who may receive on this channel, and so whose death leaves its
+ * clients with nobody to answer them. Called when a handle carrying
+ * SYS_RIGHT_RECV is put into a table.
+ */
+void channel_set_owner(struct channel *ch, struct proc *p);
+struct proc *channel_owner(const struct channel *ch);
+
 struct channel *channel_create(const char *name, struct proc *owner);
 
 /*

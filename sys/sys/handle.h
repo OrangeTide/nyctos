@@ -61,7 +61,8 @@ struct handle_table {
  * still holds authority over it can find out. A timeline that loses its
  * last signal-righted handle enters the error state, per section 9.3.
  */
-void handle_object_retain(uint32_t type, void *obj, uint32_t rights);
+void handle_object_retain(const struct handle_table *ht, uint32_t type,
+  void *obj, uint32_t rights);
 void handle_object_release(const struct handle_table *ht, uint32_t type,
   void *obj, uint32_t rights);
 

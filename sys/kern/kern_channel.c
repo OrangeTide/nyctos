@@ -1313,3 +1313,15 @@ channel_owner_died(struct proc *p)
     sched_undefer();
     md_intr_restore(s);
 }
+
+void
+channel_set_owner(struct channel *ch, struct proc *p)
+{
+    ch->c_owner = p;
+}
+
+struct proc *
+channel_owner(const struct channel *ch)
+{
+    return ch->c_owner;
+}

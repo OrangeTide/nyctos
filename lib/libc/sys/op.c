@@ -430,6 +430,17 @@ sys_thread_cancel(sys_handle_t thread)
 }
 
 sys_err_t
+sys_proc_kill(sys_handle_t proc, int32_t code)
+{
+    sys_op_kill_args_t args;
+
+    memset(&args, 0, sizeof(args));
+    args.code = code;
+
+    return submit(SYS_OP_PROC_KILL, proc, &args, sizeof(args));
+}
+
+sys_err_t
 sys_pulse_send(sys_handle_t chan, const sys_pulse_t *pulse)
 {
     sys_op_pulse_args_t args;
