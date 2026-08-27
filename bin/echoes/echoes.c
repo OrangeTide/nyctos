@@ -53,6 +53,26 @@ main(int argc, char **argv)
      * like from outside when it has wedged, and it is the state a
      * client has to be in for its release to be worth watching.
      */
+    /*
+     * Holds: receives one request and never answers it, so the client
+     * is reply-blocked with its buffer here rather than queued with
+     * its buffer still its own. That is the state a kill has to unwind
+     * as well as release.
+     */
+    if (argc > 1 && same(argv[1], "holds")) {
+        if (sys_msg_recv(chan, &message, &peer, &cookie) != SYS_OK) {
+            return 6;
+        }
+        for (;;) {
+            sys_handle_t never = ns_lookup(SYS_NS_PRIVATE + 0);
+
+            if (never == SYS_HANDLE_INVALID) {
+                return 4;
+            }
+            (void)sys_fence_wait(never, 1, SYS_DEADLINE_NEVER);
+        }
+    }
+
     if (argc > 1 && same(argv[1], "deaf")) {
         sys_handle_t never = ns_lookup(SYS_NS_PRIVATE + 0);
 

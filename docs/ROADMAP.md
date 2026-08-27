@@ -4270,6 +4270,35 @@ rather than in the kernel's; without it the pager was the kernel, which
 is a valid chain terminator, and the check passed for the wrong reason.
 Stage four's abandoned client needed the same.
 
+*Reviewing it found the check killing a server that had never received.*
+
+**The case the stage was about did not happen.** A server ending while it
+holds a client's buffer has to give the pages back as well as release
+the thread, because the pages are gone from the client's own memory and
+a client released into a hole is worse than the wait it was in. The
+server ran at the same priority as the thread spawning it, so readying
+it did not run it, and by the time the kill arrived it had never reached
+its receive: the client was queued with its buffer still its own, and
+the unwinding the stage was written for never took place.
+
+The server holds the request now and never answers it, the client sends
+a buffer and writes to it the moment it is released, and the check waits
+for the client to reach reply-blocked rather than assuming it. The
+buffer count says the pages moved: sixteen halves became twenty, which
+is the crossing that was missing and the one the second client makes.
+
+**Waited for rather than assumed** is the shape of every one of these.
+Three checks in this milestone have now been written against a state the
+system reached later than the check looked, and each passed while
+testing something else. What they have in common is a program spawned at
+the checking thread's own priority, which does not run when it is
+readied, only when the checker blocks or yields.
+
+*And one thing tidied rather than fixed.* The supervisor asked for a
+thread status on a process handle and fell back to a process status when
+that failed with the wrong type. It knew which it had; trying one and
+then the other is the shape of code that does not.
+
 **6. Cohort recovery.** The half of M6 that was deferred, and the case
 that forced this milestone to sit here.
 

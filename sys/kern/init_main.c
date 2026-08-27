@@ -3380,7 +3380,7 @@ kill_checks(void)
         ns[1].handle = hn;
 
         argv[0] = "echoes";
-        argv[1] = "deaf";
+        argv[1] = "holds";
 
         sched_defer();
         if (proc_spawn_op(self, "echoes", PRIO_BOOT, ns, 2, argv, 2,
@@ -3411,9 +3411,34 @@ kill_checks(void)
     sched_undefer();
 
     /*
-     * The client is waiting on the server. Ending the server releases
-     * it with an error rather than leaving it there, which is section
-     * 12.5 reached by a kill rather than by a cancel.
+     * Until the client is actually being served, which is the state
+     * this is about: its buffer is in the server and gone from its own
+     * memory, so ending the server has to give the pages back as well
+     * as release the thread.
+     *
+     * Waited for rather than assumed. The server runs at this thread's
+     * own priority, so readying it does not run it, and the first
+     * version of this killed a server that had never received: the
+     * client was queued with its buffer still its own and the case it
+     * was written for never happened.
+     */
+    {
+        struct thread *ct = proc_threads(cc.c_proc);
+        uint32_t spin;
+
+        for (spin = 0; spin < 64 && ct->t_wait != THREAD_WAIT_REPLY;
+          spin++) {
+            sched_yield();
+        }
+        if (ct->t_wait != THREAD_WAIT_REPLY) {
+            panic("kill: the client never reached the server");
+        }
+    }
+
+    /*
+     * The client is being served by the server. Ending the server
+     * releases it with an error rather than leaving it there, which is
+     * section 12.5 reached by a kill rather than by a cancel.
      */
     memset(&kargs, 0, sizeof(kargs));
     kargs.code = 9;

@@ -28,6 +28,11 @@
 #include <string.h>
 #include <sys/fs.h>
 
+/* Where the buffer goes, and the mark written after it comes home. */
+static unsigned char lent[64];
+
+#define MARK    0x5a
+
 static int
 same(const char *a, const char *b)
 {
@@ -62,8 +67,30 @@ main(int argc, char **argv)
     memset(&message, 0, sizeof(message));
     message.handle = SYS_HANDLE_INVALID;
     message.inline_len = sizeof(*req);
+
+    /*
+     * With a buffer, so that a server ending while it holds this has
+     * to give the pages back as well as release the thread. A client
+     * released into its own memory with a hole in it is worse than the
+     * wait it was in.
+     */
+    message.buf = (uintptr_t)lent;
+    message.buf_len = sizeof(lent);
+    message.buf_flags = SYS_BUF_WRITE;
+
     req = (fs_request_t *)message.inline_data;
     req->fr_op = FS_OP_READ;
 
-    return sys_msg_send(to, &message, &reply) == want ? 0 : 2;
+    if (sys_msg_send(to, &message, &reply) != want) {
+        return 2;
+    }
+
+    /* Its own memory, the instant it is running again. */
+    lent[0] = MARK;
+    lent[sizeof(lent) - 1] = MARK;
+    if (lent[0] != MARK || lent[sizeof(lent) - 1] != MARK) {
+        return 3;
+    }
+
+    return 0;
 }

@@ -81,9 +81,13 @@ main(int argc, char **argv)
           SYS_DEADLINE_NEVER) != SYS_OK) {
             break;
         }
-        if (sys_thread_status(child, &code, &state) != SYS_OK) {
-            (void)sys_proc_status(child, &code, &state);
-        }
+        /*
+         * What it exited with. A real supervisor would decide
+         * something from this; this one only has to have asked, so
+         * that the wait above is a wait for an answer rather than a
+         * wait for a while.
+         */
+        (void)sys_proc_status(child, &code, &state);
 
         (void)sys_handle_close(done);
         (void)sys_handle_close(child);
