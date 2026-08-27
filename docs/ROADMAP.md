@@ -4147,6 +4147,47 @@ by the kernel and a program learns its handles at spawn, so the process
 has to exist before the channel and the handle has to exist before the
 process. Stage six needs it and will have to break that circle.
 
+*Reviewing it found a pointer the stage's own fix had just made
+dangerous, and two things it did to a server that was already gone.*
+
+**The pager is a connection pointer and took no reference.** A process
+keeps the connection object rather than the handle, because the kernel is
+what sends a fault message and it does not send one from a table. That
+was safe for as long as nothing freed a connection, which was until this
+stage. A program that closed the handle it was given at spawn would now
+have its pager naming a freed slot, and the next page fault would send
+through whatever took it.
+
+This is the third pointer of exactly this shape: the completion timeline
+in stage one, the channel owner in stages one and four, and now this.
+Every one was made dangerous by something being reclaimed, and none of
+them is protected by a generation, because a generation protects an
+identifier and these are pointers. The process holds the connection now
+and gives it back when it is reaped.
+
+Not falsifiable by the suite, and recorded as such: no program closes its
+pager handle, so nothing reaches it. What is checked is the other half,
+that a connection goes back at all. The four cancellation runs are each
+given three connections, and the pool returns to what it was afterwards;
+never giving one back fails with `24 connections in use, started with
+16`.
+
+**A client released because its server died was told to tell that
+server.** The teardown a cancel does ends with a death notice, and
+releasing a client whose server has terminated went through the same
+path, so it left a `SYS_PULSE_DEAD_OWNER` on a channel whose owner was
+the thing that had gone. Nobody would ever collect it, and enough of them
+would fill the slots reserved for the notices that do have a reader,
+which is the one thing the reservation exists to prevent. Cancelling
+tells; releasing does not.
+
+**And releasing was not one step.** Making a client runnable can run it,
+and one that outranks the thread doing the releasing runs at once, in the
+middle of a walk over every channel and every thread. That is the same
+defect this stage found in cancellation and fixed there, in code written
+the same afternoon, and it was reintroduced twenty lines away. Both are
+deferred now.
+
 **5. Kill and restart.** A supervisor waiting on a child's completion
 timeline and relaunching it, bounded and escalating per section 24.3.
 

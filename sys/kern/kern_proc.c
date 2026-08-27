@@ -6,6 +6,7 @@
 #include <sys/bootarch.h>
 #include <sys/channel.h>
 #include <sys/cohort.h>
+#include <sys/connection.h>
 #include <sys/page.h>
 #include <sys/handle.h>
 #include <sys/object.h>
@@ -734,6 +735,23 @@ proc_set_pager(struct proc *p, sys_handle_t h)
         return err;
     }
 
+    /*
+     * Held, and not merely pointed at. The kernel keeps the object
+     * because it is what sends a fault message and it does not send
+     * one from a table, but a connection now goes back to its pool
+     * when its last handle closes: a process that closed the handle
+     * it was given would leave this naming a freed slot, and the next
+     * page fault would send its message through whatever took it.
+     *
+     * Nothing before stage four could reach that, because nothing
+     * freed a connection. This is the same shape as the completion
+     * timeline and the channel owner: a pointer that no generation
+     * protects, made reachable by something being reclaimed.
+     */
+    if (p->p_pager != NULL) {
+        connection_unref(p->p_pager);
+    }
+    connection_ref(obj);
     p->p_pager = obj;
 
     return SYS_OK;
@@ -1281,6 +1299,15 @@ proc_reap(struct proc *p)
 
     if (p->p_cohort != NULL) {
         cohort_release(p->p_cohort, p);
+    }
+
+    /*
+     * Before the handles, because it is a reference of its own and
+     * closing the handle it came from is not what releases it.
+     */
+    if (p->p_pager != NULL) {
+        connection_unref(p->p_pager);
+        p->p_pager = NULL;
     }
 
     handle_table_close_all(&p->p_handles);

@@ -1029,11 +1029,12 @@ channel_owned_by(const struct proc *p)
  * pointer to a live thread and is refused, rather than writing into a
  * thread that has moved on.
  */
-void
-channel_thread_cancelled(struct thread *t)
+static void
+channel_thread_release(struct thread *t, bool tell)
 {
     struct channel *ch = t->t_blocked_on;
-    bool tell = t->t_donee != NULL;
+
+    tell = tell && t->t_donee != NULL;
 
     /*
      * The priority it lent goes back first. A server serving a client
@@ -1088,6 +1089,12 @@ channel_thread_cancelled(struct thread *t)
         channel_pulse(ch, SYS_PULSE_DEAD_OWNER,
           SYS_ID_TAG32(thread_id(t)));
     }
+}
+
+void
+channel_thread_cancelled(struct thread *t)
+{
+    channel_thread_release(t, true);
 }
 
 /*
@@ -1198,6 +1205,8 @@ channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
  * Release one client blocked on a channel whose server is gone.
  * Interrupts are already off.
  */
+static void channel_thread_release(struct thread *t, bool tell);
+
 static void
 release_dead(struct thread *t)
 {
@@ -1206,8 +1215,14 @@ release_dead(struct thread *t)
      * in the server and gone from here, the reply that would have given
      * them back is not coming, and a thread released into its own
      * memory with a hole in it is worse than the wait it was in.
+     *
+     * And no notice. The server is the thing that has gone, so there
+     * is nobody to tell: leaving a death notice on a channel whose
+     * owner has terminated is a pulse nothing will ever collect, and
+     * enough of them would fill the slots reserved for the notices
+     * that do have a reader.
      */
-    channel_thread_cancelled(t);
+    channel_thread_release(t, false);
 
     t->t_waitres = SYS_ERR_OWNER_DEAD;
     t->t_blocked_on = NULL;
@@ -1241,6 +1256,14 @@ channel_owner_died(struct proc *p)
     struct pool *threads = thread_pool();
     intr_state_t s = md_intr_disable();
     uint32_t i;
+
+    /*
+     * Deferred, for the reason cancellation is: releasing a client
+     * makes it runnable, one that outranks the thread doing the
+     * releasing would run at once, and the walk below is not finished.
+     * A run of readies is one step.
+     */
+    sched_defer();
 
     for (i = 0; i < chans->count; i++) {
         struct channel *ch;
@@ -1287,5 +1310,6 @@ channel_owner_died(struct proc *p)
         ch->c_owner = NULL;
     }
 
+    sched_undefer();
     md_intr_restore(s);
 }

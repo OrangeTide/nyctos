@@ -3780,6 +3780,7 @@ cancel_checks(void)
     struct channel *idle;
     sys_ns_spec_t ns[4];
     sys_handle_t h_idle, h_fence, h_nobody, h_towedge, h_own;
+    uint32_t conns_before = connection_pool()->used;
     uint32_t i;
     bool donated = false;
     void *obj;
@@ -3980,6 +3981,21 @@ cancel_checks(void)
 
     expect("cancelling something that is not blocked",
       thread_cancel(thread_current()), SYS_ERR_WOULDBLOCK);
+
+    /*
+     * And the connections those four runs were given have gone back.
+     * Each was moved into the program at spawn and closed with its
+     * handle table when it was reaped, which is the only thing that
+     * frees one: nothing did before stage four, and the pool was a
+     * count of connections ever made rather than open at once.
+     */
+    if (connection_pool()->used != conns_before) {
+        panic("cancel: %u connections in use, started with %u",
+          (unsigned int)connection_pool()->used,
+          (unsigned int)conns_before);
+    }
+    cnprintf("    %-38s %u\n", "connections in use, back to",
+      (unsigned int)conns_before);
 }
 
 /*
