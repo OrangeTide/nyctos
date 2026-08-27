@@ -1639,6 +1639,10 @@ The cost is real and should be stated plainly: a bug in a minor driver takes dow
 
 On teardown the kernel revokes every handle held by every member, force-signals their timelines in error state, releases clients blocked sending to them with `SYS_ERR_OWNER_DEAD`, and delivers `SYS_PULSE_DEAD_OWNER` to every channel with an outstanding rendezvous. Section 12.5 covers why the two directions need different mechanisms.
 
+**A member that goes with its cohort reports `SYS_EXIT_COHORT`, not `SYS_EXIT_FAULT`.** It did not fault, and its fault kind says so; a supervisor reading the statuses of a torn-down cohort tells which member was the reason from which one reports a fault. One code for both would make the reason unfindable.
+
+**The kernel ends the members and stops there.** Section 18.3 keeps restart policy out of it, so what happens next is a supervisor's decision. What the teardown leaves behind is a cohort with every place free and its address space intact, so a restart maps each member's slot over the one its predecessor left.
+
 ```{=typst}
 #figure(include "fig/cohortfault.typ", caption: [A cohort fault. Member B is torn down although it did not fault, every outside party is released with an error rather than a timeout, and the supervisor decides what happens next.])
 ```

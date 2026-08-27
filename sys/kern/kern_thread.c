@@ -406,6 +406,24 @@ thread_reap(struct thread *t)
         panic("thread %s: reaped while still alive", t->t_name);
     }
 
+    /*
+     * Off its process's list before the slot goes back. Leaving it
+     * there would leave the list naming a freed slot, and killing a
+     * process walks that list: the pointer would be read, and once
+     * slots are reused it would be somebody else.
+     */
+    {
+        struct thread **link = &p->p_threads;
+
+        while (*link != NULL && *link != t) {
+            link = &(*link)->t_sibling;
+        }
+        if (*link == t) {
+            *link = t->t_sibling;
+        }
+        t->t_sibling = NULL;
+    }
+
     t->t_proc = NULL;
 
     if (!pool_free(thread_pool(), t->t_id)) {

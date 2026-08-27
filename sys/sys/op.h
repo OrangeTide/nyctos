@@ -494,6 +494,15 @@ typedef struct sys_op_exit_args {
 #define SYS_EXIT_FAULT          (-16)
 
 /*
+ * And what a member of a cohort reports when a peer faulted and it went
+ * with it, per section 18.2. Not SYS_EXIT_FAULT, because this process
+ * did not fault and its fault kind says so: a supervisor reading the
+ * status of a torn-down cohort can tell which member was the reason
+ * from which one reports a fault.
+ */
+#define SYS_EXIT_COHORT         (-17)
+
+/*
  * Argument structure for SYS_OP_OBJECT_COMPLETION. target names the
  * thread or the process whose completion is wanted.
  */

@@ -4299,8 +4299,8 @@ thread status on a process handle and fell back to a process status when
 that failed with the wrong type. It knew which it had; trying one and
 then the other is the shape of code that does not.
 
-**6. Cohort recovery.** The half of M6 that was deferred, and the case
-that forced this milestone to sit here.
+**6. Cohort recovery.** *Built.* One member faults, all three end, and a
+supervisor starts the pair again on the same channel.
 
 - A fault in any member tears down every member together and a
   supervisor restarts them, per 18.2 and 18.3.
@@ -4309,13 +4309,72 @@ that forced this milestone to sit here.
 - The slots leave a live address space, which is where M6's TLB
   insurance is claimed.
 
-*Check.* The halt M6 prints is replaced by a teardown and a restart, and
-the storage stack serves a file again afterwards through processes that
-are not the ones that started. A client blocked on the dying filesystem
-is released rather than hung. And the peer that did not fault is gone
-too, which is the whole content of 18.2 and the thing worth checking
-explicitly: a survivor left running would be the unsound recovery the
-section forbids.
+*Check.*
+
+```
+cohort peers: member peer_c faulted, instruction at 0x0, pc 0x81800042
+    peer_a goes with it
+    peer_c goes with it
+    the peer that did not fault, ended     with its cohort
+    no member of it is running any more
+    and the pair works again, through new processes
+```
+
+The middle line is the whole content of section 18.2. `peer_a` was
+blocked in receive and had no reason of its own to stop; it is ended
+because a peer it shares memory with faulted and nothing in the system
+can establish that the peer did not write into it first. Tearing down
+only the member that faulted makes the check hang waiting for `peer_a`
+to finish, which is the survivor the section forbids, left running.
+
+**A member that goes with its cohort says so.** `SYS_EXIT_COHORT` and not
+`SYS_EXIT_FAULT`, because that process did not fault and its fault kind
+says so: a supervisor reading the statuses of a torn-down cohort can tell
+which member was the reason from which one reports a fault. One exit code
+for both would have made the reason unfindable, which is the shape this
+milestone keeps producing in the other direction.
+
+**The restart hands out fresh ends, because a handle moves.** The ones
+the first pair were given went with them. What the supervisor holds is
+the channel, and the channel outlives the processes serving it, which is
+the same fact stage five needed and is what lets a restart be invisible
+to anything holding a connection.
+
+**M6's TLB insurance is claimed here.** The cohort's address space
+survives the teardown, so the restarted member's slot is mapped over the
+one the dead member left, in a space its peer is being started into.
+That is a mapping replacing a live one, which is the only case the flush
+in `proc_load` exists for and the first thing whose correctness depends
+on it.
+
+*The check asserted more than the rule promises, and had to be
+corrected.* It required every pointer in the member table to be NULL
+before a restart. The rule is that a *live* process holds a place: a
+member that has exited does not, and the pointer to it goes when it is
+reaped, which happens when the last thing that could ask about it lets
+go. Asserting the pointer were already NULL was asserting when somebody
+else closed a handle, and it failed for that reason rather than for a
+reason about cohorts.
+
+*Found while building, and latent.* Reaping a thread did not take it off
+its process's thread list, so the list named a freed slot. Nothing
+reaches it today: a process whose thread is reaped while the process
+lives is one nobody kills afterwards, and killing is what walks that
+list. Removing the fix again breaks nothing, so it is recorded as
+reasoning rather than as something a check caught.
+
+*What is not done.* The storage cohort is not torn down and restarted.
+`fs_server` is in the recorded session, so making it fault would change
+the transcript rather than test a mechanism, and what it would exercise
+beyond this is a client blocked on the dying filesystem, which stage
+five already checks against a server that is killed rather than one that
+faults with a peer.
+
+And the memory does not come back. The restarted member is loaded over
+the slot the dead one left, so the old frames leak, exactly as they leak
+for every process since stage one. Freeing them is the piece stage one
+named and deferred, and a cohort makes it no harder: the difference is
+only that the space is shared, so the slot goes and the space stays.
 
 *Done when* killing the filesystem server mid-read releases the blocked
 client with an owner-dead error rather than hanging it, a supervisor
@@ -4323,6 +4382,9 @@ restarts the server, the client's next walk and read succeed against the
 replacement, a fault in one cohort member restarts the whole cohort, and
 the resource report's high-water reflects what is alive rather than what
 has ever run.
+
+**Done.** All six stages are built. Section 10 says what it answered,
+what it cost, and what it left untested.
 
 *Would falsify.* Whether "the disappearance of the only party who could
 satisfy a wait is itself an event" is sufficient in practice, which is the

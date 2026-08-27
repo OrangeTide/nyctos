@@ -4472,6 +4472,142 @@ reap_checks(void)
  * because the two tiers disagree about it and one transcript covers all
  * four configurations.
  */
+
+/* Kept, because the recovery check has to watch it end. */
+static struct child peer_a_child;
+
+/*
+ * A member faults, the cohort goes with it, and a supervisor puts it
+ * back. Sections 18.2 and 18.3.
+ *
+ * M6 built the domain and stopped at the fault, printing what was
+ * missing. This is the missing part, and the interesting half of it is
+ * not the restart: it is that the peer which did nothing wrong is ended
+ * too. A survivor left running would be the per-process recovery
+ * section 18.2 forbids, and the reason it forbids it is that a member
+ * that faulted may have written anything into any peer before it did.
+ */
+static void
+recovery_checks(struct channel *ch)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct cohort *peers = cohort_of_image("peer_a");
+    struct sys_op_connect_args cargs;
+    sys_ns_spec_t ns[2];
+    sys_handle_t h_recv;
+    struct child c, bc;
+    int32_t code;
+
+    cnputs("cohort recovery: one faults and all of them go\n");
+
+    if (peers == NULL) {
+        panic("recovery: the peers are in no cohort");
+    }
+
+    /*
+     * peer_c exists to die. Watched, because everything that ends here
+     * has to be: an exit nobody asked about halts the machine, and the
+     * whole point of this check is that three processes end.
+     */
+    sched_defer();
+    child_watch(&c, proc_spawn_image("peer_c", 20, NULL, 0, NULL, 0));
+    sched_undefer();
+
+    code = child_join(&c, 1000);
+    if (code != SYS_EXIT_FAULT) {
+        panic("recovery: peer_c exited %d, not of a fault", code);
+    }
+
+    /*
+     * And the peer that did nothing. It was blocked in receive and had
+     * no reason of its own to stop.
+     */
+    code = child_join(&peer_a_child, 1000);
+    if (code != SYS_EXIT_COHORT) {
+        panic("recovery: peer_a exited %d, not with its cohort", code);
+    }
+    cnprintf("    %-38s %s\n", "the peer that did not fault, ended",
+      "with its cohort");
+
+    /*
+     * No place is held by anything still running, which is what a
+     * restart needs. The rule is about live processes and not about
+     * pointers: a member that has exited does not hold its place, and
+     * the pointer to it is cleared when it is reaped, which happens
+     * when the last thing that could ask about it lets go. Asserting
+     * the pointer were already NULL would be asserting when somebody
+     * else closed a handle.
+     */
+    {
+        uint32_t j;
+
+        for (j = 0; j < peers->c_nmembers; j++) {
+            struct proc *m = peers->c_running[j];
+
+            if (m != NULL && !m->p_exited) {
+                panic("recovery: %s is still running", m->p_name);
+            }
+        }
+    }
+    cnputs("    no member of it is running any more\n");
+
+    /*
+     * And a supervisor puts it back. The kernel is root here, per
+     * section 24.5, and section 18.3 is clear that what it does with
+     * the fact is not the kernel's business: this is one policy, which
+     * is to start the members again once.
+     */
+    /*
+     * Fresh ends, because a handle moves: the ones the first pair were
+     * given went with them. The channel is what outlives the processes
+     * serving it, which is what lets a restart be invisible to anybody
+     * holding a connection, and holding it is what makes this thread a
+     * supervisor rather than a bystander.
+     */
+    expect("a receive handle for the replacement",
+      handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+        SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_recv), SYS_OK);
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = 0;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("and a connection to it",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = h_recv;
+
+    sched_defer();
+    child_watch(&peer_a_child,
+      proc_spawn_image("peer_a", 15, ns, 1, NULL, 0));
+    sched_undefer();
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_ROOT;
+    ns[0].handle = cargs.out_handle;
+
+    /* And an outsider again, for the half of its check that needs one. */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("something outside the cohort, again",
+      run(SYS_OP_CHAN_CONNECT, h_fs_recv, &cargs, sizeof(cargs)), SYS_OK);
+    ns[1].id = PEER_NS_OUTSIDER;
+    ns[1].handle = cargs.out_handle;
+
+    sched_defer();
+    child_watch(&bc, proc_spawn_image("peer_b", 20, ns, 2, NULL, 0));
+    sched_undefer();
+
+    code = child_join(&bc, 1000);
+    if (code != 0) {
+        panic("recovery: after the restart peer_b stopped at step %d",
+          code);
+    }
+    cnputs("    and the pair works again, through new processes\n");
+}
 static void
 cohort_checks(void)
 {
@@ -4507,7 +4643,17 @@ cohort_checks(void)
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = h_recv;
+    /*
+     * Watched, which it was not before. A server that never exits
+     * needs nobody to be waiting; a member of a cohort does, because
+     * section 18.2 has it end when a peer faults and an exit nobody
+     * asked about halts the machine.
+     */
+    sched_defer();
     p = proc_spawn_image("peer_a", 15, ns, 1, NULL, 0);
+    child_watch(&peer_a_child, p);
+    sched_undefer();
+
     if (p->p_cohort == NULL) {
         panic("cohort check: peer_a is in no cohort");
     }
@@ -4594,6 +4740,24 @@ cohort_checks(void)
     sched_undefer();
     expect("a second copy of one that has exited", err, SYS_OK);
     (void)child_join(&c, 1000);
+
+    /*
+     * And the handle the spawn returned, which the join does not
+     * close because it did not open it. Until it goes the process is
+     * not reaped, and until the process is reaped its place in the
+     * cohort is held by a program that has finished.
+     */
+    if (err == SYS_OK && handle_close(&self->p_handles, h_second) !=
+      SYS_OK) {
+        panic("cohort check: the second spawn handle was already gone");
+    }
+    /*
+     * And what M6 left for this milestone: a member faults, the whole
+     * cohort goes, and a supervisor starts it again. Here rather than
+     * in a check of its own because it needs the pair that is already
+     * running and the handles they were given.
+     */
+    recovery_checks(ch);
 
 }
 

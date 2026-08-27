@@ -223,6 +223,7 @@ void
 cohort_fault_halt(const struct cohort *c, const char *who, uint32_t kind,
   uintptr_t addr, uintptr_t pc)
 {
+    struct cohort *self = (struct cohort *)c;
     uint32_t i;
 
     /*
@@ -230,37 +231,43 @@ cohort_fault_halt(const struct cohort *c, const char *who, uint32_t kind,
      * recovery is unsound for a member. The members share a protection
      * domain, so one that faults may have written anything into any
      * peer before it did, and nothing in the system can establish that
-     * it did not. The survivors are in a state no one can vouch for.
+     * it did not. Restarting only the faulting member would leave the
+     * survivors in a state no one can vouch for.
      *
-     * So this halts, and it halts even when something was waiting for
-     * the process. A supervisor holding a member's handle can be told
-     * that member died; what it cannot do is anything useful about it,
-     * because putting the domain right means tearing down every member
-     * together and there is nothing here that can. Continuing would
-     * mean running peers that may already be wrong, which is the one
-     * outcome section 18.2 rules out.
-     *
-     * The message says what is missing rather than leaving it to a
-     * document. What M7 has to build is in section 18.2 and 12.5:
-     * revoke every handle every member holds, force-signal their
-     * timelines in error state, release clients blocked sending to
-     * them with SYS_ERR_OWNER_DEAD, and deliver SYS_PULSE_DEAD_OWNER
-     * to every channel with an outstanding rendezvous. Then a
-     * supervisor relaunches the cohort, per section 18.3.
+     * So every member goes, including the ones that did nothing wrong,
+     * and that is the whole content of the rule rather than a side
+     * effect of it. M6 printed this and stopped, because there was
+     * nothing then that could end a process.
      */
     cnprintf("cohort %s: member %s faulted, %s at 0x%lx, pc 0x%lx\n",
       c->c_name, who, fault_name(kind), (unsigned long)addr,
       (unsigned long)pc);
 
-    cnputs("  the whole cohort is the recovery unit, per section 18.2:");
     for (i = 0; i < c->c_nmembers; i++) {
-        cnprintf(" %s", c->c_members[i]);
+        struct proc *m = self->c_running[i];
+
+        if (m == NULL || m->p_exited) {
+            continue;
+        }
+
+        /*
+         * Ended exactly as a supervisor would end it, per section
+         * 10.5, which is what the section already asks for: every
+         * thread unblocked as if cancelled, every server holding one
+         * of their requests told, and every client blocked on a
+         * channel they answered released rather than left waiting.
+         * None of that is special to a cohort; what is special is
+         * that it happens to a member that did nothing.
+         */
+        cnprintf("    %s goes with it\n", m->p_name);
+        (void)proc_kill(m, SYS_EXIT_COHORT);
     }
-    cnputs("\n");
 
-    cnputs("  tearing them down together and restarting them is M7, "
-      "and is not built\n");
-
-    panic("cohort %s cannot be recovered and must not be left running",
-      c->c_name);
+    /*
+     * And what does not happen here. The places in the table are given
+     * back as each member is reaped, so a restart can take them, but
+     * nothing restarts anything: section 18.3 keeps restart policy out
+     * of the kernel, so what happens next is a supervisor's decision
+     * and this has only made it possible.
+     */
 }
