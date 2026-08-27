@@ -200,6 +200,19 @@ struct thread {
     struct sys_msg     *t_reply;        /* where the reply is to be written */
     sys_thread_id_t     t_client;       /* the client this thread owes */
     struct thread      *t_donor;        /* who raised this thread priority */
+
+    /*
+     * And the other end of that: whose priority this thread raised, so
+     * that a thread leaving a call by a route other than the reply can
+     * put it back.
+     *
+     * The server records its donor and nothing recorded the donee,
+     * because the only way a donation ever ended was the reply, and the
+     * reply runs in the server and already has both. Cancellation ends
+     * one from the other side, where the client is the only thread with
+     * anything to go on.
+     */
+    struct thread      *t_donee;
     uint64_t            t_cookie;       /* connection the request arrived on */
     bool                t_replied;
 

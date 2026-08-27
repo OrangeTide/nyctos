@@ -606,6 +606,7 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         server->t_client = thread_id(self);
         server->t_cookie = cookie;
         server->t_donor = self;
+        self->t_donee = server;
         server->t_blocked_on = NULL;
         server->t_waitres = SYS_OK;
 
@@ -723,6 +724,7 @@ channel_recv(struct channel *ch, struct sys_msg *out,
         self->t_client = thread_id(client);
         self->t_cookie = client->t_cookie;
         self->t_donor = client;
+        client->t_donee = self;
 
         donate(self, client->t_prio);
 
@@ -849,6 +851,7 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
     if (self->t_donor == client) {
         undonate(self);
     }
+    client->t_donee = NULL;
     self->t_client = 0;
 
     sched_ready(client);
@@ -925,6 +928,26 @@ channel_owned_by(const struct proc *p)
 void
 channel_thread_cancelled(struct thread *t)
 {
+    /*
+     * The priority it lent goes back first. A server serving a client
+     * that has been cancelled has no reason to keep running at that
+     * client's priority, and nothing else will ever take it away: the
+     * reply is the only place a donation was ever undone, and the reply
+     * is not coming. Section 12.3 says nothing about this because
+     * nothing before cancellation could reach it.
+     *
+     * Only if the donation is still this thread's. A server that has
+     * already moved on to somebody else is at a priority it owes to
+     * them, and taking it away would be this thread reaching into a
+     * call it is not part of.
+     */
+    if (t->t_donee != NULL) {
+        if (t->t_donee->t_donor == t) {
+            undonate(t->t_donee);
+        }
+        t->t_donee = NULL;
+    }
+
     vm_charge_begin();
     msg_buf_take_back(t);
     vm_charge_end();

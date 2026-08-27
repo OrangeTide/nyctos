@@ -3273,6 +3273,7 @@ briefly(void *arg)
  */
 static struct channel *ch_wedge;
 static sys_handle_t h_wedge_recv;
+static struct thread *wedge_server;
 
 static void
 never_replies(void *arg)
@@ -3316,8 +3317,8 @@ cancel_checks(void)
     struct channel *idle;
     sys_ns_spec_t ns[4];
     sys_handle_t h_idle, h_fence, h_nobody, h_towedge, h_own;
-    sys_handle_t h;
     uint32_t i;
+    bool donated = false;
     void *obj;
 
     cnputs("cancellation: out of every wait, by the same call\n");
@@ -3350,7 +3351,20 @@ cancel_checks(void)
     expect("a channel for a server that never replies",
       handle_insert(ht, ch_wedge, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
         &h_wedge_recv), SYS_OK);
-    sched_ready(thread_create("wedge", 15, never_replies, NULL));
+    {
+        /*
+         * Below the programs that will wedge it, so that serving one
+         * raises it. Every server this system already had is at
+         * fifteen and every program is spawned below that, so no
+         * donation ever happened on a path a cancel could reach, and
+         * the priority a cancelled client leaves behind was invisible.
+         * The check below asserts the donation happened before it
+         * asserts it was undone, because a test of undoing something
+         * that never happened passes for the wrong reason.
+         */
+        wedge_server = thread_create("wedge", 5, never_replies, NULL);
+        sched_ready(wedge_server);
+    }
 
     for (i = 0; i < 4; i++) {
         const char *argv[2];
@@ -3416,14 +3430,14 @@ cancel_checks(void)
          * lets it run and reach its wait. Below this one it would not
          * run at all while there is anything to do here.
          */
+        /*
+         * Above the server it is about to wedge, which the operation
+         * form cannot do: a child may not outrank its parent and this
+         * thread is the lowest thing running. The loader path has no
+         * such rule because it is the loader.
+         */
         sched_defer();
-        if (proc_spawn_op(self, "wedged", PRIO_BOOT, ns, 4, argv, 2,
-          &h) != SYS_OK) {
-            panic("cancel: could not start it");
-        }
-        if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
-            panic("cancel: the spawn returned no process");
-        }
+        obj = proc_spawn_image("wedged", 20, ns, 4, argv, 2);
         child_watch(&c, obj);
         sched_undefer();
 
@@ -3442,8 +3456,40 @@ cancel_checks(void)
             sys_thread_id_t victim = thread_id(t);
             struct sys_msg late;
 
-            while (thread_cancel(t) == SYS_ERR_WOULDBLOCK) {
+            while (t->t_state != THREAD_BLOCKED) {
                 sched_yield();
+            }
+
+            /*
+             * That the donation happened, before asserting it was
+             * undone. A test of undoing something that never happened
+             * passes for the wrong reason, and this one did: every
+             * server in this system is at fifteen and every program
+             * below it, so nothing on a cancellable path had ever
+             * raised anybody.
+             */
+            donated = wedge_server->t_prio > wedge_server->t_base_prio;
+            if (i == 3 && !donated) {
+                panic("cancel: the client never raised the server, so "
+                  "putting it back proves nothing");
+            }
+
+            if (thread_cancel(t) != SYS_OK) {
+                panic("cancel: it was blocked and would not be released");
+            }
+
+            /*
+             * The priority it lent is back. A client cancelled while
+             * a server is holding its donation leaves that server at
+             * a priority it has no reason for and nothing else will
+             * ever take away, because the reply is where a donation
+             * was always undone and there is not going to be one.
+             */
+            if (i == 3 && wedge_server->t_prio !=
+              wedge_server->t_base_prio) {
+                panic("cancel: the server is still at %u, base %u",
+                  (unsigned int)wedge_server->t_prio,
+                  (unsigned int)wedge_server->t_base_prio);
             }
 
             /*
@@ -3463,9 +3509,6 @@ cancel_checks(void)
         }
 
         code = child_join(&c, 1000);
-        if (handle_close(ht, h) != SYS_OK) {
-            panic("cancel: the spawn handle was already gone");
-        }
         if (code != 0) {
             panic("cancel: blocked in %s, it reported %d", cases[i], code);
         }

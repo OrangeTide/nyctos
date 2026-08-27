@@ -3910,6 +3910,56 @@ spawned, and stage five needs it more: killing a process unblocks every
 thread of the target, and there is no doing that to a set nothing can
 enumerate.
 
+*Reviewing it found the thing the milestone entry had already listed, and
+a check that could not have seen it.*
+
+**A cancelled client leaves its donation behind.** The entry says
+donation has to unwind through death, that a client killed while its
+donation is held leaves a priority with no reason to exist, and that
+nothing in section 12.3 says what happens because nothing in M1 could
+reach it. Cancellation is what reaches it, and the stage shipped without
+doing anything about it.
+
+A server takes its client's priority at the rendezvous and gives it back
+in the reply, and the reply is the only place it was ever given back. A
+cancelled client is not going to be replied to, so the server keeps
+running at that client's priority for ever. Worse with reaping in the
+stage before: the server holds a pointer to the thread that donated, and
+once slots come back that pointer can name whoever took the slot, so the
+comparison that decides whether to give the priority back can match the
+wrong thread.
+
+The client records who it raised now, which is the half nothing had,
+because the only way a donation ever ended was the reply and the reply
+runs in the server and already had both ends. Cancellation ends one from
+the other side, where the client is the only thread with anything to go
+on. Removing the fix fails with `cancel: the server is still at 20, base
+5`.
+
+**The check could not have caught it, and would have passed for ever.**
+Every server in this system is at priority fifteen and every program is
+spawned below that, so `donate()` never raised anybody on a path a
+cancel could reach: the reply-blocked case ran with no donation to undo,
+and undoing nothing looks exactly like undoing it correctly. The check
+now asserts the donation happened before asserting it was undone, and
+that assertion fired the moment it was written, which is what said the
+test had been passing for the wrong reason.
+
+Making it real needed the server put below the client rather than above
+it, and the client spawned through the loader rather than the operation,
+because a child may not outrank its parent and the boot thread is the
+lowest thing running.
+
+**And the reply-blocked case had been testing something else for part of
+its life.** Putting the server at priority zero, so that the client would
+certainly outrank it, meant the server never ran at all: nothing yielded
+below the boot thread, so it never reached its receive, and the client
+queued as a sender instead of rendezvousing. The case would have been
+the queued-send case twice over. Five was the answer, which is below
+every program and above nothing that matters, and the waiting loop now
+waits for the thread to be blocked rather than cancelling until the
+answer changes.
+
 **3. Pulses.** Section 13.1: a fixed-size queued notification with a
 region reserved for the system's own.
 
