@@ -430,6 +430,21 @@ sys_thread_cancel(sys_handle_t thread)
 }
 
 sys_err_t
+sys_pulse_send(sys_handle_t chan, const sys_pulse_t *pulse)
+{
+    sys_op_pulse_args_t args;
+
+    if (pulse == NULL) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    memset(&args, 0, sizeof(args));
+    args.pulse = *pulse;
+
+    return submit(SYS_OP_PULSE_SEND, chan, &args, sizeof(args));
+}
+
+sys_err_t
 sys_irq_unmask(sys_handle_t irq)
 {
     return submit(SYS_OP_IRQ_UNMASK, irq, NULL, 0);

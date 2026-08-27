@@ -3297,6 +3297,135 @@ never_replies(void *arg)
 }
 
 /*
+ * Pulses, and the reservation that is the whole reason they are
+ * specified rather than assumed, per section 13.1.
+ *
+ * The queue is bounded because the pools are, so a policy is needed
+ * when it fills, and the policy has to distinguish two kinds. A user
+ * pulse that is lost costs its receiver a notification it can ask about
+ * again. A death notice that is lost leaks a dead client's resources
+ * for good, and the process that would like that to happen is exactly
+ * the one sending the flood.
+ */
+static void
+pulse_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct channel *ch;
+    struct sys_msg got;
+    sys_thread_id_t peer;
+    sys_handle_t h;
+    uint64_t cookie;
+    uint32_t i, users, systems;
+
+    cnputs("pulses: a notice that cannot be crowded out\n");
+
+    ch = channel_create("pulses", self);
+    if (ch == NULL) {
+        panic("pulse: no channel");
+    }
+    expect("a receive handle for it",
+      handle_insert(ht, ch, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV, &h), SYS_OK);
+
+    /*
+     * More user pulses than the queue will hold, so that dropping is
+     * what happens rather than something the check has to arrange.
+     */
+    for (i = 0; i < SYS_PULSE_SLOTS * 2; i++) {
+        channel_pulse(ch, SYS_PULSE_USER_BASE, i);
+    }
+
+    /* And a death notice, into a queue user pulses have filled. */
+    channel_pulse(ch, SYS_PULSE_DEAD_OWNER, 0x1234);
+
+    users = 0;
+    systems = 0;
+    for (;;) {
+        const sys_pulse_t *p;
+
+        if (channel_recv(ch, &got, &peer, &cookie) != SYS_OK) {
+            panic("pulse: receiving one failed");
+        }
+        if ((got.flags & SYS_MSG_IS_PULSE) == 0) {
+            panic("pulse: that was not a pulse");
+        }
+
+        p = (const sys_pulse_t *)got.inline_data;
+        if (p->code == SYS_PULSE_DEAD_OWNER) {
+            systems++;
+            if (p->value != 0x1234) {
+                panic("pulse: the death notice says 0x%lx",
+                  (unsigned long)p->value);
+            }
+        } else {
+            users++;
+        }
+
+        if (ch->c_pulse_count == 0) {
+            break;
+        }
+    }
+
+    /*
+     * The notice arrived, and the user pulses did not all fit. Both
+     * halves matter: a queue that held everything would say nothing
+     * about the reservation, and a notice that was dropped would be
+     * the leak the reservation exists to prevent.
+     */
+    if (systems != 1) {
+        panic("pulse: %u death notices, expected one",
+          (unsigned int)systems);
+    }
+    if (users >= SYS_PULSE_SLOTS * 2) {
+        panic("pulse: %u user pulses survived a queue of %u",
+          (unsigned int)users, (unsigned int)SYS_PULSE_SLOTS);
+    }
+    cnprintf("    %-38s %u of %u kept, the notice too\n",
+      "a flood, and a death notice", (unsigned int)users,
+      (unsigned int)(SYS_PULSE_SLOTS * 2));
+
+    /*
+     * And the receiver was told it missed something. Reported once,
+     * because the question is whether anything was lost and not how
+     * much: the next receive must not claim a loss already reported.
+     */
+    channel_pulse(ch, SYS_PULSE_USER_BASE, 7);
+    expect("a receive after the loss was reported",
+      channel_recv(ch, &got, &peer, &cookie), SYS_OK);
+    if ((got.flags & SYS_MSG_PULSE_LOST) != 0) {
+        panic("pulse: the loss was reported twice");
+    }
+
+    /*
+     * A program may not send a system pulse. The reserved slots are
+     * kept from exactly the program that would like to fill them, and
+     * a refusal here is what says so.
+     */
+    {
+        struct sys_op_pulse_args pargs;
+        struct sys_op_connect_args cargs;
+
+        memset(&cargs, 0, sizeof(cargs));
+        cargs.rights = SYS_RIGHT_SEND;
+        expect("a send handle on the pulse channel",
+          run(SYS_OP_CHAN_CONNECT, h, &cargs, sizeof(cargs)), SYS_OK);
+
+        memset(&pargs, 0, sizeof(pargs));
+        pargs.pulse.code = SYS_PULSE_DEAD_OWNER;
+        expect("a program asking for a system pulse",
+          run(SYS_OP_PULSE_SEND, cargs.out_handle, &pargs, sizeof(pargs)),
+          SYS_ERR_INVALID_ARG);
+
+        memset(&pargs, 0, sizeof(pargs));
+        pargs.pulse.code = SYS_PULSE_USER_BASE;
+        pargs.pulse.value = 99;
+        expect("and a user one", run(SYS_OP_PULSE_SEND, cargs.out_handle,
+          &pargs, sizeof(pargs)), SYS_OK);
+    }
+}
+
+/*
  * Every way this system can block, and a thread broken out of each.
  *
  * Section 10.6 closes the list of ways to block, and section 10.5 says
@@ -4021,6 +4150,7 @@ user_slice(void)
     move_checks();
     reap_checks();
     cancel_checks();
+    pulse_checks();
     cohort_checks();
 }
 

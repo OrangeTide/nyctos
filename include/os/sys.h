@@ -169,6 +169,14 @@ sys_err_t sys_thread_status(sys_handle_t thread, int32_t *out_code,
  */
 sys_err_t sys_thread_cancel(sys_handle_t thread);
 
+/*
+ * Leave a pulse on a channel, per section 13.1. Never blocks. A program
+ * may send only user codes, at or above SYS_PULSE_USER_BASE: the codes
+ * below it reach the reserved slots that keep a death notice from being
+ * the pulse that is dropped.
+ */
+sys_err_t sys_pulse_send(sys_handle_t chan, const sys_pulse_t *pulse);
+
 /* What ended a thread, when the hardware ended it. See sys_proc_fault. */
 sys_err_t sys_thread_fault(sys_handle_t thread, sys_fault_t *out);
 

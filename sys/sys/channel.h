@@ -27,6 +27,7 @@
 
 #include <sys/config.h>
 #include <sys/op.h>
+#include <sys/config.h>
 #include <sys/pool.h>
 
 #include <stdbool.h>
@@ -45,6 +46,22 @@ struct channel {
 
     /* Threads blocked in receive, in no particular order. */
     struct thread  *c_receivers;
+
+    /*
+     * Pulses waiting to be collected, per section 13.1, oldest first.
+     *
+     * One array with a reservation rather than two queues, so that
+     * order between a system pulse and the user pulses around it is
+     * kept: a server that is told a client died wants that in the
+     * sequence it happened in, not ahead of or behind everything.
+     * What the reservation buys is that the user region cannot grow
+     * into the last SYS_PULSE_RESERVED slots.
+     */
+    sys_pulse_t     c_pulses[SYS_PULSE_SLOTS];
+    uint32_t        c_pulse_head;   /* next to collect */
+    uint32_t        c_pulse_count;
+    uint32_t        c_pulse_users;  /* how many of those are user pulses */
+    bool            c_pulse_lost;
 };
 
 extern uint64_t channel_rendezvous;
@@ -62,6 +79,14 @@ bool channel_owned_by(const struct proc *p);
  * of a reply. See the implementation.
  */
 void channel_thread_cancelled(struct thread *t);
+
+/*
+ * Leave a pulse for whoever receives on this channel, per section 13.1.
+ * Never blocks and never fails: a full user region costs an older user
+ * pulse, and the reserved slots keep a system pulse from being the one
+ * that is lost.
+ */
+void channel_pulse(struct channel *ch, uint16_t code, uint32_t value);
 
 struct channel *channel_create(const char *name, struct proc *owner);
 

@@ -680,6 +680,47 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
     return err;
 }
 
+/*
+ * Take the oldest pulse, if there is one. Called with interrupts off.
+ */
+static bool
+pulse_take(struct channel *ch, struct sys_msg *out)
+{
+    const sys_pulse_t *p;
+
+    if (ch->c_pulse_count == 0) {
+        return false;
+    }
+
+    p = &ch->c_pulses[ch->c_pulse_head];
+
+    memset(out, 0, sizeof(*out));
+    out->handle = SYS_HANDLE_INVALID;
+    out->flags = SYS_MSG_IS_PULSE;
+    out->inline_len = sizeof(*p);
+    memcpy(out->inline_data, p, sizeof(*p));
+
+    if (p->code >= SYS_PULSE_USER_BASE) {
+        ch->c_pulse_users--;
+    }
+    ch->c_pulse_head = (ch->c_pulse_head + 1) % SYS_PULSE_SLOTS;
+    ch->c_pulse_count--;
+
+    /*
+     * Reported once and then forgotten. The question it answers is
+     * whether anything was missed, not how much: a count would be a
+     * number a receiver could do nothing with, and leaving the flag set
+     * would make every later receive claim a loss that had already been
+     * reported.
+     */
+    if (ch->c_pulse_lost) {
+        out->flags |= SYS_MSG_PULSE_LOST;
+        ch->c_pulse_lost = false;
+    }
+
+    return true;
+}
+
 sys_err_t
 channel_recv(struct channel *ch, struct sys_msg *out,
   sys_thread_id_t *out_peer, uint64_t *out_cookie)
@@ -689,6 +730,24 @@ channel_recv(struct channel *ch, struct sys_msg *out,
     intr_state_t s;
 
     s = md_intr_disable();
+
+    /*
+     * A pulse first, per section 13.1: one receive point for both, and
+     * a notification about something that has already happened should
+     * not wait behind work. The queue is bounded and drains, so this
+     * cannot starve messages: there are at most SYS_PULSE_SLOTS of
+     * them and nothing refills it faster than this empties it.
+     */
+    if (pulse_take(ch, out)) {
+        if (out_peer != NULL) {
+            *out_peer = 0;
+        }
+        if (out_cookie != NULL) {
+            *out_cookie = 0;
+        }
+        md_intr_restore(s);
+        return SYS_OK;
+    }
 
     client = list_pop(&ch->c_senders);
     if (client != NULL) {
@@ -956,3 +1015,97 @@ channel_thread_cancelled(struct thread *t)
     t->t_reply = NULL;
     t->t_replied = false;
 }
+
+/*
+ * Enqueue a pulse, per section 13.1. Never blocks, and never fails for
+ * want of room: what a full queue costs is an older pulse, not this one.
+ *
+ * The rule is one line and the reason is the whole of why pulses are
+ * specified at all. User pulses may fill the queue up to the reserved
+ * slots and no further; when they are at that limit the oldest user
+ * pulse is dropped to make room and the channel remembers that it
+ * happened. A system pulse may use the reserved slots, so a process
+ * that floods a channel with pulses of its own cannot push a death
+ * notice out, and a dropped death notice leaks a dead client's
+ * resources for good.
+ *
+ * The oldest goes rather than the newest, which is worth stating
+ * because it is a choice. A notification is about something that has
+ * happened, and the older one is the one whose news has had longest to
+ * be overtaken.
+ */
+void
+channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
+{
+    intr_state_t s = md_intr_disable();
+    bool system = code < SYS_PULSE_USER_BASE;
+    uint32_t limit = SYS_PULSE_SLOTS - SYS_PULSE_RESERVED;
+    struct thread *waiter;
+    uint32_t at;
+
+    if (!system && ch->c_pulse_users >= limit) {
+        /*
+         * Drop the oldest user pulse. It need not be at the head: a
+         * system pulse can be in front of it, and taking that instead
+         * would be user pulses displacing a death notice by a longer
+         * route.
+         */
+        uint32_t i;
+
+        for (i = 0; i < ch->c_pulse_count; i++) {
+            uint32_t k = (ch->c_pulse_head + i) % SYS_PULSE_SLOTS;
+            uint32_t j;
+
+            if (ch->c_pulses[k].code < SYS_PULSE_USER_BASE) {
+                continue;
+            }
+            for (j = i; j + 1 < ch->c_pulse_count; j++) {
+                uint32_t a = (ch->c_pulse_head + j) % SYS_PULSE_SLOTS;
+                uint32_t b = (ch->c_pulse_head + j + 1) % SYS_PULSE_SLOTS;
+
+                ch->c_pulses[a] = ch->c_pulses[b];
+            }
+            ch->c_pulse_count--;
+            ch->c_pulse_users--;
+            ch->c_pulse_lost = true;
+            break;
+        }
+    }
+
+    if (ch->c_pulse_count == SYS_PULSE_SLOTS) {
+        /*
+         * Only reachable for a system pulse against a queue of system
+         * pulses, which means more deaths are outstanding than the
+         * reservation was sized for. Losing one of those is the thing
+         * the reservation exists to prevent, so it stops rather than
+         * being silently absorbed.
+         */
+        panic("channel %s: the reserved pulse slots are full", ch->c_name);
+    }
+
+    at = (ch->c_pulse_head + ch->c_pulse_count) % SYS_PULSE_SLOTS;
+    ch->c_pulses[at].code = code;
+    ch->c_pulses[at]._reserved = 0;
+    ch->c_pulses[at].value = value;
+    ch->c_pulse_count++;
+    if (!system) {
+        ch->c_pulse_users++;
+    }
+
+    /*
+     * And somebody to collect it, if anybody is waiting. A receiver
+     * blocked on this channel is woken exactly as a message would wake
+     * it, because section 13.1 gives a server one receive point for
+     * both and the wait is the same wait.
+     */
+    waiter = list_pop(&ch->c_receivers);
+    if (waiter != NULL) {
+        waiter->t_blocked_on = NULL;
+        waiter->t_wait = THREAD_WAIT_NONE;
+        waiter->t_waitres = SYS_OK;
+        sched_ready(waiter);
+    }
+
+    md_intr_restore(s);
+}
+

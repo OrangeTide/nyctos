@@ -175,6 +175,20 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_THREAD_CANCEL     21
 
 /*
+ * Leave a pulse on a channel, per section 13.1. target names a
+ * connection to it and carries SYS_RIGHT_SEND, which is how a message
+ * reaches a channel too. Never blocks and does not fail
+ * for want of room: a full user region costs an older user pulse and
+ * the receiver is told it happened.
+ *
+ * A program may only send user pulses. A code below SYS_PULSE_USER_BASE
+ * is refused with SYS_ERR_INVALID_ARG, because the reserved slots exist
+ * to keep a death notice safe from exactly the program that would like
+ * to fill them.
+ */
+#define SYS_OP_PULSE_SEND        22
+
+/*
  * Put a grant's region where the caller can reach it, and say where that
  * is. target names the grant and carries SYS_RIGHT_MAP; the access the
  * mapping permits comes from the other rights on the same handle, so a
@@ -218,7 +232,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             22
+#define SYS_OP_COUNT             23
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the
@@ -260,6 +274,42 @@ typedef struct sys_op {
 #define SYS_BUF_WRITE           (1u << 1)
 
 typedef uint64_t sys_thread_id_t;
+
+/*
+ * The low half of an identifier, which is the index and as much
+ * generation as fits beside it, per section 7.1. A pulse value is 32
+ * bits and an identifier may be 64, so a pulse that named a thread by
+ * bare index would be an ABA hazard: the slot is recycled between the
+ * enqueue and the collection and a server matches the notice against
+ * somebody else's request. Twelve generation bits mean a false match
+ * needs four thousand recycles of one slot in that window.
+ */
+#define SYS_ID_TAG32(id)        ((uint32_t)((id) & 0xffffffffu))
+
+/*
+ * A pulse: a code and a value, no payload and no reply, per section
+ * 13.1. Sending one never blocks, which is what makes it safe from
+ * places where blocking is not permitted.
+ */
+#define SYS_PULSE_DEAD_OWNER    1       /* system; uses the reserved slots */
+#define SYS_PULSE_USER_BASE     1024
+
+typedef struct sys_pulse {
+    uint16_t        code;
+    uint16_t        _reserved;
+    uint32_t        value;
+} sys_pulse_t;
+
+/*
+ * What a receive found. A server has one receive point for messages and
+ * pulses both, and these are how it tells them apart.
+ *
+ * SYS_MSG_PULSE_LOST says user pulses were dropped since the last
+ * receive. It is reported once and cleared, because it answers "did I
+ * miss anything" and not "how much".
+ */
+#define SYS_MSG_IS_PULSE        (1u << 0)
+#define SYS_MSG_PULSE_LOST      (1u << 3)
 
 typedef struct sys_msg {
     uint32_t        flags;
@@ -353,6 +403,11 @@ typedef struct sys_op_fence_args {
  */
 #define SYS_DEADLINE_NOW        ((uint64_t)0)
 #define SYS_DEADLINE_NEVER      (~(uint64_t)0)
+
+/* Argument structure for SYS_OP_PULSE_SEND. target names the channel. */
+typedef struct sys_op_pulse_args {
+    sys_pulse_t     pulse;
+} sys_op_pulse_args_t;
 
 /* Argument structure for SYS_OP_THREAD_EXIT. target is unused. */
 typedef struct sys_op_exit_args {

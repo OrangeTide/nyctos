@@ -81,6 +81,21 @@
 #define SYS_MAX_PROCESSES         24
 #define SYS_MAX_THREADS           32
 #define SYS_MAX_CHANNELS          32
+
+/*
+ * A channel's pulse queue, per section 13.1, and the part of it user
+ * pulses may not touch.
+ *
+ * The reservation is correctness rather than politeness. A dropped
+ * death notice leaks a dead client's resources for good, and a process
+ * that floods a channel with pulses of its own must not be able to
+ * cause that. Two is enough for what can be outstanding at once: a
+ * server serves one client at a time, so it can be owed one death
+ * notice, and the second is slack for a notice that arrives while the
+ * first is being collected.
+ */
+#define SYS_PULSE_SLOTS            8
+#define SYS_PULSE_RESERVED         2
 #define SYS_MAX_GRANTS            64
 #define SYS_MAX_TIMELINES         64
 #define SYS_MAX_TIMERS            32

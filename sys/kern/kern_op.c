@@ -530,6 +530,50 @@ op_thread_create(struct proc *p, struct sys_op *op)
  * blocked on left behind the one function that takes it off again, so
  * the caller never has to know which of the waits it is sitting in.
  */
+/*
+ * Leave a pulse on a channel, per section 13.1.
+ *
+ * A program may only send user pulses. Letting it send a system one
+ * would let it reach the reserved slots, which exist to keep a death
+ * notice safe from a program filling the queue, so a code below the
+ * user base is refused rather than quietly renumbered.
+ */
+static sys_err_t
+op_pulse_send(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_pulse_args *args;
+    struct connection *cn;
+    void *obj;
+    sys_err_t err;
+
+    args = (struct sys_op_pulse_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    if (args->pulse.code < SYS_PULSE_USER_BASE) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    /*
+     * Through a connection, the way a message goes. Section 13.1 says
+     * a pulse is delivered to a channel, and the way a program reaches
+     * one is the same way it reaches one to send a message: a channel
+     * handle carries the right to receive, and a program that could
+     * name a channel directly to pulse it could pulse any channel it
+     * could name.
+     */
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_CONNECTION,
+      SYS_RIGHT_SEND, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+    cn = obj;
+
+    channel_pulse(cn->cn_channel, args->pulse.code, args->pulse.value);
+
+    return SYS_OK;
+}
+
 static sys_err_t
 op_thread_cancel(struct proc *p, struct sys_op *op)
 {
@@ -683,6 +727,9 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_THREAD_CANCEL:
         err = op_thread_cancel(p, op);
+        break;
+    case SYS_OP_PULSE_SEND:
+        err = op_pulse_send(p, op);
         break;
     case SYS_OP_GRANT_MAP:
         err = op_grant_map(p, op);

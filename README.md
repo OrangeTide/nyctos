@@ -148,7 +148,7 @@ carries no deadline. A wedged server hangs its client until something
 cancels it, and nothing yet notices on its own that something should.
 
 The figures obtained so far are footprints rather than speeds, with one
-exception. Kernel object memory is 226496 bytes, of which 143872 is
+exception. Kernel object memory is 232192 bytes, of which 143872 is
 thread stacks. Those pools were sized by the boot check sequence for six
 milestones, because nothing was reaped and a process that exited kept
 its slot for ever; they are sized by what runs at the same time now,

@@ -3960,19 +3960,71 @@ every program and above nothing that matters, and the waiting loop now
 waits for the thread to be blocked rather than cancelling until the
 answer changes.
 
-**3. Pulses.** Section 13.1: a fixed-size queued notification with a
-region reserved for the system's own.
+**3. Pulses.** *Built.* Sixteen user pulses into a queue of eight leave
+six, and the death notice sent after them arrives anyway.
 
 - The reservation is correctness. A flood of user pulses that displaced a
   death notice would leak a dead client's resources for good.
 - The overflow flag a receiver observes, so that a receiver knows it
   missed something rather than inferring it.
 
-*Check.* A queue filled with user pulses still delivers a system pulse,
-and the sender of the one that did not fit is told. Removing the
-reservation makes the death notice the thing that is dropped, which is
-the check for why the reservation exists rather than for whether the
-queue works.
+*Check.*
+
+```
+    a flood, and a death notice            6 of 16 kept, the notice too
+    a receive after the loss was reported  OK
+    a program asking for a system pulse    INVALID_ARG
+    and a user one                         OK
+```
+
+Both halves of the first line matter. A queue that held everything would
+say nothing about the reservation, and a notice that was dropped would be
+the leak the reservation exists to prevent. Removing the reservation, so
+that user pulses may fill the whole queue, stops the machine with
+`channel pulses: the reserved pulse slots are full`, which is the notice
+having nowhere to go.
+
+**The stage entry had the reporting backwards and the design was right.**
+It said the sender of the pulse that did not fit is told. Section 13.1
+says the oldest is dropped and an overflow flag is set on the channel,
+which the receiver observes on its next receive, and that is what is
+built. The sender is not told because a sender that never blocks has
+nowhere to be told: the point of a pulse is that sending it cannot fail
+or wait.
+
+**The flag is reported once and cleared.** The question it answers is
+whether anything was missed, not how much. A count would be a number a
+receiver could do nothing with, and leaving it set would have every later
+receive claim a loss that had already been reported. Not clearing it
+fails with `the loss was reported twice`.
+
+**The oldest user pulse goes, and it need not be at the head.** A system
+pulse can be in front of it, and taking the head instead would be user
+pulses displacing a death notice by a longer route. One array with a
+reservation rather than two queues, so that a server told a client died
+learns it in the order it happened rather than ahead of or behind
+everything else.
+
+**A pulse goes through a connection, the way a message does.** The first
+version took a channel handle, which was wrong twice: a channel handle
+is the right to receive, and a program that could name a channel to pulse
+it could pulse any channel it could name. A program may also only send
+user codes; a code below `SYS_PULSE_USER_BASE` is refused rather than
+renumbered, because the reserved slots are kept from exactly the program
+that would like to fill them.
+
+**A pulse is taken before a message.** Section 13.1 gives a server one
+receive point for both and does not say which comes first. A
+notification is about something that has already happened, so it should
+not wait behind work, and the queue is bounded and drains: there are at
+most eight of them and nothing refills it faster than a receiver empties
+it, so this cannot starve messages.
+
+*What is not wired here is the sender of the notice.* Nothing yet emits
+`SYS_PULSE_DEAD_OWNER` on its own; the check sends one from the kernel to
+exercise the reservation. Section 10.5 step 2 has a server learn that its
+client was cancelled, and that is stage four, which is why the queue is
+built before the thing that fills it.
 
 **4. Death notification.** Section 12.5 in both directions.
 

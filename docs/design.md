@@ -496,6 +496,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Naming | Handle-relative only. No global namespace, no absolute paths, no ambient root. |
 | Reaping | A slot returns when the object has finished and no handle names it. A completion handle holds its object rather than outliving it. |
 | Cancellation | One call for every wait, through the unblock hook of section 10.6. Refused, not ignored, when the thread is not blocked. |
+| Pulses | One bounded queue per channel with slots reserved for system codes, sent through a connection, collected before messages. |
 | Path resolution | Lexical reduction first, then the longest mount name that matches on a component boundary. |
 | Union directories | Several entries at one name, tried in the order the parent wrote them. Only the same name, never a shorter one. |
 | Climbing out | The library reduces `..` for correctness; the server refuses it for confinement. Both, and neither alone. |
@@ -1158,6 +1159,12 @@ What needs specifying is not cost but **capacity**. Under static pools a channel
 * **User pulses** occupy the general region. When it is full, the oldest is dropped and an overflow flag is set on the channel, which the receiver observes on its next receive.
 * **System pulses** (`SYS_PULSE_DEAD_OWNER`) occupy a reserved region that user pulses cannot displace.
 
+
+**A pulse reaches a channel through a connection**, which is how a message reaches one. A channel handle is the right to receive on it, so a program able to name a channel in order to pulse it could pulse any channel it could name. A program may send only user codes; one below `SYS_PULSE_USER_BASE` is refused rather than renumbered, because the reserved slots are kept from exactly the program that would like to fill them.
+
+**The pulse dropped is the oldest user one, wherever it sits.** A system pulse may be in front of it, and taking the head instead would be user pulses displacing a death notice by a longer route. One queue with a reservation rather than two, so that a server learns of a death in the order it happened rather than ahead of or behind everything around it.
+
+**A pulse is collected before a message.** A notification is about something that has already happened and should not wait behind work. It cannot starve messages, because the queue is bounded and a receiver empties it faster than anything can fill it.
 The reservation is required for correctness, not politeness. A dropped death notification leaks the resources of a dead client permanently, and a process that floods a channel with user pulses must not be able to cause that.
 
 Pulses are delivered to a channel and collected by `sys_msg_recv()`, which reports through a flag whether it received a message or a pulse, so a server has one receive point for both.
