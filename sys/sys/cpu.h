@@ -1,0 +1,144 @@
+/*
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ *
+ * PUBLIC DOMAIN (CC0-1.0)
+ */
+
+/*
+ * Cores, and the state that belongs to one rather than to the system.
+ *
+ * Section 11.4 gives each core its own run queue and its own scheduling
+ * decisions, so everything the scheduler reads on the way to a decision
+ * has to be reachable without asking anybody else. That is what this
+ * structure is: found through a register the port sets once, so finding
+ * it costs no memory reference and no lock.
+ *
+ * Which fields are here is not a matter of taste. They are the ones that
+ * answer "what is this core doing", and every one of them was a global
+ * until there were two cores to disagree about it.
+ *
+ * Section 13.3 puts multiprocessing at Tier 2 only: Tier 0 disables
+ * interrupts inside the kernel and bounds latency by where the
+ * preemption points are, on the argument that such parts are simple and
+ * often uniprocessor. So a Tier 0 build has one of these and never looks
+ * for a second.
+ */
+
+#ifndef _SYS_CPU_H_
+#define _SYS_CPU_H_
+
+#include <sys/config.h>
+#include <sys/op.h>
+
+#include <stdbool.h>
+#include <stdint.h>
+
+struct thread;
+
+struct cpu {
+    uint32_t        cp_index;
+
+    /* What is running here, and the space it is running in. */
+    struct thread  *cp_current;
+    uintptr_t       cp_as_root;
+
+    /*
+     * The deferral of section 11: a short run of readies made atomic.
+     * Per core because that is what it always meant. Its comment said
+     * "one counter for the system, not one per thread", and per system
+     * is per core the moment there are two.
+     */
+    uint32_t        cp_defer;
+    bool            cp_defer_pending;
+
+    /*
+     * A dead thread waiting to be collected, per M7 stage one: its slot
+     * holds the stack it was running on, so it cannot be freed until
+     * something else is running. Per core because two cores switch at
+     * once, and one slot for the system would lose one of them.
+     */
+    struct thread  *cp_reap;
+
+    /* How many times this core has had nothing to do. */
+    uint64_t        cp_idle;
+
+    /* Whether it has answered at all. */
+    bool            cp_up;
+};
+
+/*
+ * This core's state, from the register the port set. Cheap enough to
+ * call anywhere, which is what lets the fields above be read on the
+ * scheduling path.
+ */
+struct cpu *cpu_self(void);
+
+/* By index, for a caller arranging something on another core. */
+struct cpu *cpu_at(uint32_t index);
+
+/* How many the port found, which is one unless this is Tier 2. */
+uint32_t cpu_count(void);
+
+/*
+ * Prepare the array and claim the first entry for the core running this.
+ * Called once, before anything else here.
+ */
+void cpu_init(void);
+
+/*
+ * Claim an entry for a core that has just arrived, and point its
+ * register at it. Called on that core.
+ */
+void cpu_claim(uint32_t index);
+
+/* Bring up every core the port can find, and wait for them to answer. */
+void cpu_start_others(void);
+
+/* What each core is doing, beside the other object reports. */
+void cpu_report(void);
+
+/* And how much of the run each of them spent with nothing to do. */
+void cpu_idle_report(void);
+
+/*
+ * Where a core with nothing to do goes. Section 11.4 has no global run
+ * queue, so a core with an empty one has nothing to look at anywhere
+ * else and waits for an interrupt rather than for a lock.
+ */
+void cpu_idle_loop(void) __attribute__((noreturn));
+
+/*
+ * What a port provides.
+ *
+ * md_cpu_set_self and md_cpu_get_self are one register between them:
+ * tp on RISC-V and TPIDR_EL1 on AArch64, both of which supervisor mode
+ * owns and neither of which this kernel used for anything else.
+ *
+ * md_cpu_start asks the hardware to run a core that is not running.
+ * How differs completely: the RISC-V harts all arrive at the reset
+ * vector because there is no firmware under this kernel, so starting
+ * one is releasing it from a wait, and the AArch64 secondaries are held
+ * off by the platform and are started with the same PSCI interface the
+ * port already uses to power the machine down.
+ */
+void md_cpu_set_self(struct cpu *c);
+struct cpu *md_cpu_get_self(void);
+sys_err_t md_cpu_start(uint32_t index, uintptr_t entry);
+
+/* How many the hardware says it has, at most SYS_MAX_CORES. */
+uint32_t md_cpu_available(void);
+
+/* A hint that this core is spinning, and a wait for an interrupt. */
+void md_cpu_relax(void);
+void md_cpu_wait(void);
+
+/* Where a core that has just started arrives. Defined by the kernel. */
+void cpu_secondary_entry(void);
+
+/*
+ * Which core this is, asked on a core that has just arrived and has no
+ * register set yet. The one thing here that cannot go through cpu_self.
+ */
+uint32_t md_cpu_arriving(void);
+
+#endif /* _SYS_CPU_H_ */

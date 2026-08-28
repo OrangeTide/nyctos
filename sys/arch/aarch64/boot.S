@@ -3,11 +3,20 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
+#include <sys/config.h>
+
+#define SECONDARY_STACK_BYTES   4096
+
 .section ".text.boot"
 .global _start
 
 _start:
-    /* Park all secondary cores; only core 0 continues. */
+    /*
+     * Only core zero arrives here at reset. The platform holds the
+     * others powered off until asked for one by name, which is the
+     * opposite of the other port, where every hart arrives together
+     * and has to be told to wait.
+     */
     mrs     x0, mpidr_el1
     and     x0, x0, #3
     cbz     x0, primary_core
@@ -50,3 +59,52 @@ zero_done:
 
     bl      kernel_main
     b       hang
+
+/*
+ * Where a core the platform has just started arrives.
+ *
+ * It has nothing: no stack, no vector table, and whatever exception
+ * level the firmware left it at. All three have to be arranged before it
+ * can enter C, which is why the entry point the kernel asks for is not
+ * the one the platform is given.
+ */
+.global secondary_entry
+secondary_entry:
+    mrs     x0, CurrentEL
+    lsr     x0, x0, #2
+    cmp     x0, #2
+    b.ne    secondary_at_el1
+    msr     sctlr_el1, xzr
+    movz    x0, #0x8000, lsl #16    /* HCR_EL2.RW: EL1 is AArch64 */
+    msr     hcr_el2, x0
+    mov     x0, #0x3c5              /* EL1h, DAIF masked */
+    msr     spsr_el2, x0
+    adr     x0, secondary_at_el1
+    msr     elr_el2, x0
+    eret
+
+secondary_at_el1:
+    /*
+     * Its own stack, indexed by which core it is. The .bss this reads
+     * was zeroed by the core that booted, long before this one was
+     * asked for.
+     */
+    mrs     x0, mpidr_el1
+    and     x0, x0, #3
+    ldr     x1, =secondary_stacks
+    add     x0, x0, #1
+    mov     x2, #SECONDARY_STACK_BYTES
+    madd    x1, x0, x2, x1
+    mov     sp, x1
+
+    ldr     x0, =vectors
+    msr     vbar_el1, x0
+    isb
+
+    bl      cpu_secondary_entry
+    b       hang
+
+.section .bss
+.balign 16
+secondary_stacks:
+    .space  SECONDARY_STACK_BYTES * SYS_MAX_CORES

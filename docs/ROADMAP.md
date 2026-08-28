@@ -4514,7 +4514,9 @@ still assumes the yield is what let the other program run.
 cores, the middle two are the milestone's actual subject, and the last
 two are the measurement and the question.
 
-**1. A second core that runs nothing.**
+**1. A second core that runs nothing.** *Built.* Two cores at Tier 2, one
+of them idle with an empty queue, and the recorded session identical in
+all four configurations.
 
 - Bring-up on both ports at Tier 2: the RISC-V harts arrive together at
   the reset vector because this kernel has no SBI beneath it, and the
@@ -4526,13 +4528,59 @@ two are the measurement and the question.
 - The second core runs an idle loop over an empty ready queue and takes
   no lock, because there is nothing yet for it to take one for.
 
-*Check.* The recorded session does not move, in any of the four
-configurations, which is the whole point of a partitioned system with
-nothing migrated. The boot report says how many cores answered and what
-each is doing, and the second one has an empty queue and a rising idle
-count. Starting the second core and giving it the first core's per-core
-state, rather than its own, fails: the two disagree about which thread
-is running and the check says which.
+*Check.*
+
+```
+cores: 2 of 2
+    core 0: up, nothing running
+    core 1: up, nothing running
+```
+
+and the transcript does not move, which is the whole point of a
+partitioned system with nothing migrated. Giving the second core the
+first core's state rather than its own fails at once with `cpu 1:
+claimed somebody else's state`, which is the two of them agreeing about
+which thread is running and is the one thing they must never do.
+
+**The two ports start a core in opposite directions.** There is no
+firmware under the RISC-V kernel, so every hart arrives at the reset
+vector together and the boot hart's problem is holding the others back;
+starting one is releasing it from a wait. The AArch64 secondaries are
+held powered off by the platform and are started by asking for one by
+name, through the same PSCI interface the port already used to power the
+machine down. Both end in the same place, which is a core with a stack,
+a vector table and a translation of its own.
+
+**The handshake cannot live in `.bss`.** A parked hart writes its
+presence at the same moment the boot hart is zeroing that section, so a
+word there is a word the boot hart erases just after it is written, and
+the kernel counted one core. It is in `.data` now, which the image
+carries already zeroed and nothing rewrites. This is the only piece of
+memory in the system that two cores touch before there is a kernel.
+
+**Four globals became four fields.** The running thread, the address
+space root, the deferral counter and the parked-thread slot were each
+justified in a comment by there being one core, and each is now found
+through `tp` on one port and `TPIDR_EL1` on the other. Reading them
+costs one instruction and no agreement with anybody, which is what
+section 11.4 needs: a scheduling decision that had to be agreed is not
+a decision that decomposes per core.
+
+*The idle count is one, and that is the right number.* The stage entry
+predicted a rising count. Nothing is routed to a core with an empty
+queue, so it goes round once and waits for an interrupt that does not
+come. A large number would mean an idle core spinning and taking memory
+bandwidth from the one doing the work, so the check asserts it moved at
+all and prints it outside the compared file, where numbers about the
+host belong.
+
+**A core that cannot be found is not used, and that had to stop being
+quiet.** Removing the line where a hart says it is there left the kernel
+counting one core and passing every check it has, which is the failure
+M7 ended on: a check passing while the thing it tests did not happen.
+The emulator and the kernel are configured together here, so fewer cores
+than the build asked for is a build mistake, and it stops the boot with
+`cores: 1 answered, and this build is for 2`.
 
 **2. One lock, and interrupt disabling stops being exclusion.**
 

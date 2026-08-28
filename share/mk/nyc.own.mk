@@ -99,6 +99,16 @@ QEMU            := qemu-system-riscv64
 QEMU_FLAGS      := -M virt -bios none -nographic
 endif
 
+# How many cores the emulator offers, which follows the tier because
+# section 13.3 does: Tier 0 disables interrupts inside the kernel and
+# bounds latency by where the preemption points are, on the argument
+# that such parts are simple and often uniprocessor, and Tier 2 enables
+# them and locks instead because multiprocessing forces locking anyway.
+# The kernel is built for the same number, in sys/config.h.
+ifeq ($(TIER),2)
+QEMU_FLAGS      += -smp 2
+endif
+
 # Every build product for this architecture lives under its own directory,
 # keyed by target triplet, so architectures never collide. The tree below
 # OBJTOP mirrors the source tree.

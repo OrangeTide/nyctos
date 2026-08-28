@@ -78,6 +78,25 @@
  * are now is a property of how much runs at the same time, which is a
  * far better thing for them to be and is what section 8 wanted.
  */
+/*
+ * How many cores this kernel will use, per section 11.4.
+ *
+ * Two, because two is enough to falsify everything a partitioned
+ * scheduler claims and small enough that what each core did fits in a
+ * report a person reads. Nothing here assumes the number: a core is
+ * found, claims an entry, and is scheduled on its own.
+ *
+ * One at Tier 0, per section 13.3. That tier disables interrupts inside
+ * the kernel and bounds latency by where the preemption points are, on
+ * the argument that such parts are simple and often uniprocessor, and a
+ * second core would need the locking the argument is avoiding.
+ */
+#if SYS_TIER == 2
+#define SYS_MAX_CORES              2
+#else
+#define SYS_MAX_CORES              1
+#endif
+
 #define SYS_MAX_PROCESSES         24
 #define SYS_MAX_THREADS           32
 #define SYS_MAX_CHANNELS          32

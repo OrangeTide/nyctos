@@ -17,7 +17,9 @@
 #include <sys/intr.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
+#include <sys/cpu.h>
 #include <sys/thread.h>
+#include <sys/cpu.h>
 #include <sys/thread.h>
 
 #include <stdbool.h>
@@ -31,8 +33,15 @@ static struct runq runq[SYS_PRIO_COUNT];
 static uint32_t ready_bits;
 
 /* Preemption held off; see sched_defer. */
-static unsigned int defer_depth;
-static bool defer_pending;
+/*
+ * The deferral, per core. Its comment used to say one counter for the
+ * system and not one per thread, because it exists to make a short run
+ * of readies atomic and never spans a switch. Per system is per core
+ * once there are two, and the runs it makes atomic happen on whichever
+ * core is making them.
+ */
+#define defer_depth         (cpu_self()->cp_defer)
+#define defer_pending       (cpu_self()->cp_defer_pending)
 
 _Static_assert(SYS_PRIO_COUNT <= 32,
   "the ready bitmap is one 32-bit word; see section 11.1");

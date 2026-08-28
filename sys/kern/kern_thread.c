@@ -21,15 +21,17 @@
 #include <sys/proc.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
+#include <sys/cpu.h>
 #include <sys/thread.h>
 #include <sys/vm.h>
 
-static struct thread *current;
-
-#if SYS_TIER == 2
-/* The space the hardware is currently translating through. */
-static uintptr_t current_as_root;
-#endif
+/*
+ * What is running here, and the space it is running in, per section
+ * 11.4. Both were globals and both are per core the moment there are
+ * two: a core cannot be told what it is doing by another one.
+ */
+#define current             (cpu_self()->cp_current)
+#define current_as_root     (cpu_self()->cp_as_root)
 
 /* Written by the linker script, at the low end of the boot stack. */
 extern char _stack_bottom[];
@@ -395,7 +397,7 @@ thread_switch_to(struct thread *next)
  * switching away from it and a switch cannot begin before the last one
  * finished.
  */
-static struct thread *reap_parked;
+#define reap_parked         (cpu_self()->cp_reap)
 
 static void
 thread_reap(struct thread *t)

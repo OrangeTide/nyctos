@@ -18,10 +18,27 @@
  * which is why the two are separated here rather than run together.
  */
 
+#include <sys/config.h>
+
+#define SECONDARY_STACK_BYTES   4096
+
 .section .text.boot
 .global _start
 
 _start:
+    /*
+     * Which hart this is. Every one of them arrives here, because
+     * there is no firmware under this kernel to hold the others back,
+     * so the first thing any of them does is find out whether it is
+     * the one that boots.
+     *
+     * Hart zero by identity rather than by arrival: the parking loop
+     * below writes a word the boot hart reads, and a race over who
+     * zeroes the .bss is not a race worth having.
+     */
+    csrr    s0, mhartid
+    bnez    s0, secondary_park
+
     /* Zero the .bss section before entering C code. */
     la      t0, _bss_start
     la      t1, _bss_end
@@ -126,6 +143,89 @@ hang:
     j       hang
 
 /*
+ * Every hart that is not the boot hart, waiting to be wanted.
+ *
+ * It says it is here and then spins, in machine mode, touching nothing:
+ * the .bss it would write is being zeroed by the other hart and the
+ * kernel it would enter does not exist yet. Saying it is here is the
+ * only way this port can count cores, because without firmware there is
+ * nothing to ask.
+ */
+secondary_park:
+    la      t0, hart_present
+    slli    t1, s0, 3
+    add     t0, t0, t1
+    li      t2, 1
+    sd      t2, 0(t0)
+    fence   w, w
+
+    la      t0, hart_release
+    add     t0, t0, t1
+1:
+    ld      t2, 0(t0)
+    beqz    t2, 1b
+    fence   r, r
+
+    /*
+     * Its own stack, from the array the linker reserved, and then the
+     * same handover to supervisor mode the boot hart made. Everything
+     * between here and the mret is per hart: the delegation registers,
+     * the PMP and the trap vector are all machine-mode state and every
+     * hart has its own.
+     */
+    la      sp, secondary_stacks
+    addi    t1, s0, 1
+    li      t2, SECONDARY_STACK_BYTES
+    mul     t1, t1, t2
+    add     sp, sp, t1
+
+    la      t0, machine_fatal
+    csrw    mtvec, t0
+    csrw    sscratch, zero
+
+    li      t0, -1
+    csrw    medeleg, t0
+    csrw    mideleg, t0
+
+    li      t0, -1
+    srli    t0, t0, 10
+    csrw    pmpaddr0, t0
+    li      t0, 0x1f
+    csrw    pmpcfg0, t0
+
+    li      t0, -1
+    csrw    mcounteren, t0
+
+    li      t0, 1
+    slli    t0, t0, 63
+    csrs    menvcfg, t0
+
+    la      t0, trap_entry
+    csrw    stvec, t0
+
+    li      t0, (3 << 11)
+    csrc    mstatus, t0
+    li      t0, (1 << 11)
+    csrs    mstatus, t0
+
+    la      t0, supervisor_secondary
+    csrw    mepc, t0
+    mret
+
+supervisor_secondary:
+    /*
+     * Its identity, in the register it is about to keep its own state
+     * in. Supervisor mode cannot read mhartid, so the one chance to
+     * pass this is on the way down, and the kernel reads it once and
+     * then owns the register.
+     */
+    mv      tp, s0
+
+    la      t0, hart_entry
+    ld      t0, 0(t0)
+    jr      t0
+
+/*
  * A machine-mode trap, which is a trap nothing expected.
  *
  * It cannot use the kernel's panic path: that runs in supervisor mode and
@@ -155,3 +255,30 @@ machine_fatal:
 .section .rodata
 machine_fatal_msg:
     .asciz "\r\npanic: a machine-mode trap in the boot window; see boot.S\r\n"
+
+/*
+ * The words the harts and the kernel say things to each other with.
+ *
+ * In .data and not .bss, which is the whole of what makes this work.
+ * Every hart arrives at once, so a parked hart writes its presence at
+ * the same moment the boot hart is zeroing the .bss, and a word in
+ * there is a word that gets erased by the core it was written for. The
+ * image carries these already zeroed and nothing rewrites them.
+ */
+.section .data
+.balign 16
+.global hart_present
+hart_present:
+    .space  8 * SYS_MAX_CORES
+.global hart_release
+hart_release:
+    .space  8 * SYS_MAX_CORES
+.global hart_entry
+hart_entry:
+    .space  8
+
+/* The stacks the started ones run on, which nothing touches until then. */
+.section .bss
+.balign 16
+secondary_stacks:
+    .space  SECONDARY_STACK_BYTES * SYS_MAX_CORES

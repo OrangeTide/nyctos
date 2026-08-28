@@ -499,6 +499,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Reaping | A slot returns when the object has finished and no handle names it. A completion handle holds its object rather than outliving it. |
 | Cancellation | One call for every wait, through the unblock hook of section 10.6. Refused, not ignored, when the thread is not blocked. |
 | Pulses | One bounded queue per channel with slots reserved for system codes, sent through a connection, collected before messages. |
+| Cores | Per-core state through a register, at Tier 2 only. A core the build asked for and did not get stops the boot. |
 | Peer death | A server is told with a pulse because it is at a receive point. A client is failed with OWNER_DEAD because it is not. |
 | Killing | Unblocks every thread as if cancelled; each leaves at its next return from the kernel. A spawn handle carries the right. |
 | Path resolution | Lexical reduction first, then the longest mount name that matches on a component boundary. |
@@ -928,6 +929,10 @@ Everything else, including the whole of the IPC path and the whole of the schedu
 ### 11.4 Multicore: Partitioned With Explicit Migration
 
 Each core has its own run queue and makes its own scheduling decisions. A thread has affinity to exactly one core at a time. There is no global run queue and no global scheduler lock.
+
+**Per-core state is found through a register**, so that reading what this core is doing costs one instruction and no agreement with another core. A scheduling decision that had to be agreed is not one that decomposes per core, which is the whole of the analysability argument. What lives there is the running thread, the address space it is in, the deferral counter and the slot a dead thread is parked in: each was a global, and each was justified in its own comment by there being one core.
+
+**Starting a core is a port's problem and the two ports solve opposite ones.** A port with no firmware beneath it has every core arrive at the reset vector together, so the boot core's difficulty is holding the others back and starting one is releasing it. A port whose platform holds the others powered off starts one by asking for it by name. Both end with a core that has a stack, a vector table and a translation of its own, which is the only thing anything above cares about.
 
 This is chosen for analyzability. Response time analysis on a partitioned system decomposes into an independent per-core problem. Global scheduling gives better average responsiveness and automatic balancing, but puts a contended lock on every scheduling decision and makes worst-case analysis substantially harder.
 

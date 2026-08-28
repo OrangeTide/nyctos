@@ -15,6 +15,7 @@ SRCS := arch/$(ARCH)/boot.S \
         arch/$(ARCH)/intr.c \
         arch/$(ARCH)/machdep.S \
         arch/$(ARCH)/mem_md.c \
+        arch/$(ARCH)/cpu_md.c \
         arch/$(ARCH)/pmap.c \
         arch/$(ARCH)/swtch.S \
         arch/$(ARCH)/thread_md.c \
@@ -23,6 +24,7 @@ SRCS := arch/$(ARCH)/boot.S \
         kern/init_main.c \
         kern/kern_channel.c \
         kern/kern_cohort.c \
+        kern/kern_cpu.c \
         kern/kern_connection.c \
         kern/kern_grant.c \
         kern/kern_handle.c \

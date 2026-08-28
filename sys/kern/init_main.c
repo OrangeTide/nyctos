@@ -7,6 +7,7 @@
 #include <sys/bootarch.h>
 #include <sys/channel.h>
 #include <sys/cohort.h>
+#include <sys/cpu.h>
 #include <sys/config.h>
 #include <sys/connection.h>
 #include <sys/fs.h>
@@ -4946,6 +4947,14 @@ kernel_main(void)
       SYS_DEBUG_CONSOLE_INIT ? "live" : "dormant");
 #endif
 
+    /*
+     * The core running this claims its own state before anything
+     * reads what it is doing, which is everything below: the scheduler
+     * and the thread paths now find the running thread through the
+     * register this sets rather than through a global.
+     */
+    cpu_init();
+
     object_init();
     object_check();
     object_report();
@@ -4980,6 +4989,17 @@ kernel_main(void)
     }
 
     sched_init();
+
+    /*
+     * And the others, once there is a kernel for them to arrive into:
+     * a core that starts before the frame allocator and the page
+     * tables exist has nothing to run on. They idle from here, because
+     * section 11.4 gives each one a queue of its own and nothing has
+     * been put in theirs.
+     */
+    cpu_start_others();
+    cpu_report();
+
     kproc = proc_bootstrap("kernel");
     thread_bootstrap("boot", PRIO_BOOT, kproc);
 
@@ -5107,6 +5127,8 @@ kernel_main(void)
      * page tables are shaped differently, so this is a number per
      * configuration where that file is one per tier.
      */
+    cpu_idle_report();
+
     cnprintf("frames: %u of %u used at most, %u still held\n",
       (unsigned int)page_highwater(), (unsigned int)page_count(),
       (unsigned int)page_used());
