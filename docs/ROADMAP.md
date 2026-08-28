@@ -4454,16 +4454,182 @@ joined them.
 migration rather than automatic balancing. Cross-core priority donation via
 inter-processor interrupt.
 
-*Done when* threads run pinned across cores, a donation chain crosses a core
-boundary and is honoured, and no scheduling decision takes a shared lock.
+**Tier 2 only, which section 13.3 already decided and this entry did not
+say.** Tier 0 disables interrupts inside the kernel and bounds latency by
+where the preemption points are, on the argument that such cores are
+simple and often uniprocessor. Tier 2 enables them and locks instead,
+because multiprocessing forces internal locking regardless. So a second
+core belongs to one tier, and the four configurations stay four: two of
+them keep exactly the system M7 finished.
+
+*What M7 leaves for this milestone, and it is more than a warning.* Its
+retrospective says every ordering argument so far is about one core with
+interrupts disabled and a deferral counter. Here is the list, because a
+list can be worked through and a warning cannot.
+
+**`md_intr_disable()` is being used as mutual exclusion.** It appears in
+the rendezvous, the scheduler, the thread paths and the timer, and on one
+core it is exclusion because nothing else can be running. On two it
+excludes an interrupt handler on this core and nothing at all on the
+other. Every one of those regions needs a lock, and interrupt disabling
+keeps only the job its name describes.
+
+**`sched_defer` is one counter for the system, and says so.** Its comment
+explains that it is not per thread because it exists to make a short run
+of readies atomic and never spans a switch. Per system is per core the
+moment there are two, and the runs it makes atomic are exactly the ones
+M7 found being interleaved.
+
+**`reap_parked` is one slot**, justified by a switch not being able to
+begin before the last one finished. Two cores switch at once.
+
+**Reference counts are plain increments.** `p_refs`, `t_refs` and
+`cn_refs` decide when an object is freed, and M7's whole lesson was that
+a freed object turns every pointer to it into a way of naming its
+replacement. A racing decrement makes that a use-after-free rather than a
+stale read, which is the same defect with the timing removed.
+
+**`current`, `current_as_root` and the counters are globals.** The first
+two are per core by definition. The counters are measurements, and a
+measurement that loses increments is worse than one that is absent,
+because it looks like an answer.
+
+*What the plan gets wrong until this is built.* The recorded session is
+compared exactly, and three milestones have now had to move a number out
+of it for being timing-dependent. Partitioned scheduling is what keeps
+this tractable: nothing runs on the second core until something is put
+there, so a check that does not migrate anything is a check that cannot
+see one. The compared file stays exact for as long as placement is
+explicit, and the first stage that migrates something has to say what
+became of that.
+
+*And what M7's checks will do here.* Several of them wait for a program
+to reach a state by yielding until it does, because a program spawned at
+the checking thread's own priority does not run when it is readied. On
+two cores it may already be running. Those loops become genuine waits
+rather than no-ops, which is fine; what is not fine is any check that
+still assumes the yield is what let the other program run.
+
+*Stages.* Six. The first two are about being able to run at all on two
+cores, the middle two are the milestone's actual subject, and the last
+two are the measurement and the question.
+
+**1. A second core that runs nothing.**
+
+- Bring-up on both ports at Tier 2: the RISC-V harts arrive together at
+  the reset vector because this kernel has no SBI beneath it, and the
+  AArch64 secondaries are started with the PSCI call the port already
+  uses to power the machine off.
+- Per-core state, reached through a register rather than a global: the
+  running thread, the address space it is in, the deferral counter and
+  the slot a dead thread is parked in.
+- The second core runs an idle loop over an empty ready queue and takes
+  no lock, because there is nothing yet for it to take one for.
+
+*Check.* The recorded session does not move, in any of the four
+configurations, which is the whole point of a partitioned system with
+nothing migrated. The boot report says how many cores answered and what
+each is doing, and the second one has an empty queue and a rising idle
+count. Starting the second core and giving it the first core's per-core
+state, rather than its own, fails: the two disagree about which thread
+is running and the check says which.
+
+**2. One lock, and interrupt disabling stops being exclusion.**
+
+- A spinlock, and one of them held across every entry into the kernel.
+  Sound, small, and a bottleneck: what it buys is that the rest of this
+  milestone is about scheduling rather than about auditing seven
+  thousand lines for shared state.
+- Section 11.4 forbids a global *scheduler* lock and says nothing about
+  the rest, which is what makes this a legitimate resting place rather
+  than a shortcut. Whether anything beyond the scheduler needs breaking
+  out is a measurement, and measurement is late by section 2.
+
+*Check.* Two cores each running a thread that hammers the same kernel
+path complete without corrupting the object they share, and the object's
+own invariant check passes afterwards. Taking the lock recursively is
+refused rather than deadlocking silently, and releasing one that is not
+held stops the machine.
+
+**3. A ready queue per core, and threads that stay where they are put.**
+
+- Each core dispatches from its own queue and takes no lock the other
+  core could be holding. That is section 11.4's requirement and the only
+  part of the big lock this milestone is obliged to undo.
+- `sys_thread_migrate()` moves a thread to a named core. Nothing moves on
+  its own, so where a thread runs is a fact about the program rather than
+  about load.
+
+*Check.* A thread migrated to the second core runs there and says which
+core it ran on, and the first core's queue never held it. A thread that
+is not migrated never runs anywhere but where it started, over a run long
+enough for a balancer to have moved it if there were one. And the
+dispatch path is checked for what it does not do: a counter of lock
+acquisitions on that path, asserted at zero for locks another core could
+hold.
+
+**4. Donation across a core boundary.**
+
+- A donating core raises the target's inherited priority and sends an
+  inter-processor interrupt; the target's core reschedules on receiving
+  it. Section 11.4 is explicit that this is the mechanism.
+- The chain bound of section 12.3 still applies, and a chain that crosses
+  a boundary twice is still one chain.
+
+*Check.* A client on one core sends to a server pinned to the other, and
+the server runs at the client's priority rather than its own, which the
+server reports. Dropping the inter-processor interrupt leaves the server
+at its base priority until something else happens to reschedule that
+core, and the check sees the priority rather than the eventual delivery,
+because a donation that arrives late is a donation that did not work.
+
+**5. What two cores did to the measurements.**
+
+- Every counter this system prints is a plain increment on a shared word.
+  Some are per core by nature and some are not, and the ones that are not
+  need saying so.
+- The compared file has to stay exact or stop containing the number, and
+  M6 stage four settled which of those to do.
+
+*Check.* The paced and burst runs agree, in all four configurations, on
+everything the check compares. Anything that stops agreeing moves out of
+the compared file and into the report above it, with the relation that
+does hold checked in its place.
+
+**6. Whether partitioned scheduling is usable.**
+
+- The milestone's own question, and the only stage whose outcome could
+  delete a section.
+- What would answer it is a workload placed by hand that a balancer would
+  have placed better, and the difference stated.
+
+*Check.* The storage stack is pinned across two cores, with the
+filesystem on one and the block store on the other, and a read still
+works. What it costs is a number: the inter-processor interrupts and the
+donations that a single core did not need. If placing them by hand is
+obviously wrong and no rule of thumb helps, that is the answer section
+11.4 asked for.
+
+*Done when* threads run pinned across cores, a donation chain crosses a
+core boundary and is honoured, no scheduling decision takes a shared
+lock, and the recorded session is identical in all four configurations
+with two cores running.
 
 *Would falsify.* Whether partitioned scheduling with no load balancing is
 usable, or whether the absence of automatic placement is intolerable in
-practice. The design chose it for analysability, which is a real-time argument;
-if real time is one subsystem rather than the thesis, the argument is weaker
-than it was when it was made.
+practice. The design chose it for analysability, which is a real-time
+argument; if real time is one subsystem rather than the thesis, the
+argument is weaker than it was when it was made.
 
-*Size.* Medium to large.
+*Watch for.* The lesson M7 ended on, which is that a check written
+against a state the system reached later than the check looked passes
+while testing something else. On one core that needed a program spawned
+at the checker's own priority. On two, anything the checker does not
+explicitly wait for is a race, and the ones that pass are the ones that
+will pass again on a faster host and fail on a slower one.
+
+*Size.* Large. The original estimate of medium to large predated knowing
+that interrupt disabling was carrying the exclusion for the whole kernel.
 
 ### M9. Real Time
 
