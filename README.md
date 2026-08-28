@@ -29,6 +29,42 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 7 is done: things can end, and something else finds out.** A
+slot goes back to its pool when its object has finished and nothing can
+ask about it any more. A thread can be broken out of any wait it can be
+in. A process can be ended, and the two sides of a rendezvous it was
+part of fail differently, because they are waiting on different things:
+a server is at a receive point and collects a notice, a client is not
+and is failed with an error. Nothing in the system uses a deadline to
+discover a death.
+
+The pools stopped tracking how long the boot sequence is, which is what
+they had tracked for six milestones:
+
+| | before | after |
+|---|---|---|
+| processes at once | 46 of 56 | 13 of 24 |
+| threads at once | 65 of 96 | 16 of 32 |
+| kernel object memory | 606976 | 232640 |
+
+And a cohort recovers, which is what made this milestone sit where it
+does. A member faults, every member goes with it including the ones that
+did nothing wrong, and a supervisor starts them again on the same
+channel:
+
+```
+cohort peers: member peer_c faulted, instruction at 0x0, pc 0x81800042
+    peer_a goes with it
+    peer_c goes with it
+    the peer that did not fault, ended     with its cohort
+    and the pair works again, through new processes
+```
+
+The restart policy is a program, because the kernel holds none. Given a
+child that dies immediately every time it makes three starts and says
+so, rather than relaunching for ever and turning a configuration mistake
+into a system that looks busy.
+
 **Milestone 6 is done: there are driver cohorts, and measuring them says
 the mechanism is aimed at the wrong cost.** A cohort is a set of images
 the build names, running in one address space. The storage stack is one:
@@ -140,20 +176,20 @@ rather than a hole in the capability model.
 like a person typing and once as a burst like a pipe, and compares the
 transcript against a recorded one.
 
-What does not exist: multicore, the submission engine, and everything to
-do with death beyond reaping, cancellation, killing and restart. What
-is missing is the cohort teardown of section 18.2: a member that faults
-still halts the machine. No address space is ever torn down and a
+What does not exist: multicore and the submission engine. Memory is
+still never reclaimed, so a slot comes back and the megabyte a process
+was loaded into does not, and no address space is ever torn down. A
 rendezvous carries no deadline, so a wedged server hangs its client
 until a supervisor ends it, and nothing yet notices on its own that one
 should.
 
 The figures obtained so far are footprints rather than speeds, with one
-exception. Kernel object memory is 232192 bytes, of which 143872 is
+exception. Kernel object memory is 232640 bytes, of which 143872 is
 thread stacks. Those pools were sized by the boot check sequence for six
 milestones, because nothing was reaped and a process that exited kept
 its slot for ever; they are sized by what runs at the same time now,
-which is thirteen processes and fifteen threads.
+which is thirteen processes and sixteen threads.
+
 Having no wait-set costs this system one thread, the console's second,
 at eight and a half kilobytes with both its stacks. An address space
 costs a handful of frames per process, because the kernel is mapped into
@@ -304,10 +340,11 @@ is the userland libraries, `bin` is the userland programs, `include` is the
 headers those programs compile against, and `share/mk` holds the make
 fragments that tie it all together.
 
-`bin` holds twenty-three programs: the shell, its utilities, the console
-driver, the filesystem server and the block store under it, and the ones
-written to break a rule on purpose or to die on purpose. `lib` builds
-the C library they link against.
+`bin` holds twenty-seven programs: the shell, its utilities, the console
+driver, the filesystem server and the block store under it, a
+supervisor, and the ones written to break a rule on purpose, to block on
+purpose, or to die on purpose. `lib` builds the C library they link
+against.
 
 ```
 .
@@ -339,9 +376,9 @@ the C library they link against.
     │   ├── kern_object.c    # the pool instances
     │   ├── kern_syscall.c   # the trap path and what a fault means
     │   ├── kern_channel.c   # send, receive, reply, and the move contract
-    │   ├── kern_proc.c      # processes, spawn, and the loader
+    │   ├── kern_proc.c      # processes, spawn, the loader, and reaping
     │   ├── kern_pager.c     # a page fault, sent as a message
-    │   ├── kern_cohort.c    # the build-time membership table, and the halt
+    │   ├── kern_cohort.c    # membership, and tearing a cohort down
     │   ├── subr_page.c      # the frame allocator
     │   ├── subr_vm.c        # the kernel's own address space, and what a
     │   │                   #   boundary crossing costs
@@ -516,10 +553,14 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - A rendezvous carries no deadline, so a server that stops answering
   hangs its client until something cancels it. Cancellation exists;
   nothing yet notices on its own that it is needed.
-- A cohort cannot be recovered. Section 18.2 makes the cohort the unit of
-  recovery, and tearing one down and restarting it is milestone 7, so a
-  member that faults halts the machine rather than being restarted with
-  its peers. The halt says what is missing.
+- Killing a process unblocks every thread of it and each leaves at its
+  next return from the kernel. A thread computing in user mode and
+  calling nothing is not stopped, and there is no hook in the trap path
+  that would stop it.
+- Nothing consumes a death notice. The kernel delivers one to a server
+  whose client has gone, and no server here holds state per client, so
+  whether a restarted server leaks its own per-connection records is
+  still an open question rather than an answered one.
 - Neither port assigns address space identifiers, so every dispatch into
   a different address space discards the whole translation cache. That is
   the largest cost the milestone 6 measurements turned up and the one
@@ -527,11 +568,11 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is death:
-reclamation, cancellation, deadlines, and the cohort teardown that
-milestone 6 stubbed and named. It is the one thing every milestone so
-far has deferred, and three of them in a row have paid for it by raising
-a pool size instead.
+See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is multicore:
+per-core ready queues with no global scheduler lock, and explicit
+migration. It is where every ordering argument made so far has to be
+made again, because all of them are about one core with interrupts
+disabled and a deferral counter.
 
 The ordering that got here is in the same file, along with what each
 milestone answered and what it left untested. The one choice most likely

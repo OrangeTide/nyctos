@@ -267,10 +267,45 @@ The same program outside a cohort is `sh: peer_c: instruction fault`,
 and the shell carries on. A bug in the block driver takes down the
 filesystem, and that is what section 18.2 is for.
 
-What does not exist: multicore, the submission engine, and anything at
-all to do with death beyond reaping. Pool slots come back, but nothing
-is cancelled, no address space is ever torn down, no cohort is ever
-restarted, and a rendezvous still carries no deadline.
+**Milestone 7 is done: things can end, and something else finds out.**
+A slot goes back to its pool when the object has finished and nothing
+can ask about it any more. A thread can be broken out of any wait it can
+be in. A process can be ended, and the two sides of a rendezvous it was
+part of fail differently, because they are waiting on different things:
+a server is at a receive point and collects a notice, a client is not
+and is failed with an error. Neither depends on a deadline, and nothing
+in the system uses one to discover a death.
+
+The pools stopped tracking how long the boot sequence is, which is what
+they had tracked for six milestones:
+
+| | before | after |
+|---|---|---|
+| processes at once | 46 of 56 | 13 of 24 |
+| threads at once | 65 of 96 | 16 of 32 |
+| kernel object memory | 606976 | 232640 |
+
+And a cohort recovers, which is what made this milestone sit where it
+does. A member faults, every member goes with it including the ones that
+did nothing wrong, and a supervisor starts them again on the same
+channel:
+
+```
+cohort peers: member peer_c faulted, instruction at 0x0, pc 0x81800042
+    peer_a goes with it
+    peer_c goes with it
+    the peer that did not fault, ended     with its cohort
+    and the pair works again, through new processes
+```
+
+The restart policy is a program, because section 18.3 keeps it out of
+the kernel. Given a child that dies immediately every time, it makes
+three starts and says so, rather than relaunching for ever and turning a
+configuration mistake into a system that looks busy.
+
+What does not exist: multicore and the submission engine. Memory is
+still never reclaimed: a slot comes back and the megabyte a process was
+loaded into does not, and a rendezvous still carries no deadline.
 
 ---
 
@@ -5230,7 +5265,171 @@ and context switching is a property of that session as much as of the
 system. What does not depend on it is the rate: four entries and two TLB
 operations to move one page across a boundary and back.
 
-## 10. Bring-Up Order Within M1
+## 10. Milestone 7, in Retrospect
+
+M7 asked what happens when an exit was not the program's own idea. It
+had been deferred five times, and three milestones running had paid for
+that by raising a pool size instead of reclaiming a slot. This is what
+it settled, what it cost, and what it found so often that the pattern is
+worth more than any of the instances.
+
+### 10.1 The Question
+
+**Is "the disappearance of the only party who could satisfy a wait is
+itself an event" sufficient in practice?**
+
+Yes, and the evidence is that nothing anywhere in this milestone uses a
+deadline to discover a death. The two sides of a rendezvous fail
+differently because they are waiting on different things: a server is at
+a receive point and collects a pulse, a client is not and is failed with
+`SYS_ERR_OWNER_DEAD`. Both directions were built and both were broken on
+purpose. A supervisor destroying a server does not have to guess how
+long its clients should wait, which is the property section 18.2's
+restart depends on and the one a timeout could not have given.
+
+**Do the generation counters close the recycling hazard under real
+reuse?**
+
+Yes, and this milestone is the first thing that could ask. Nothing had
+ever recycled a pool slot before stage one: the counters had been tried
+only against slots freed by hand. A thread exits, its slot goes back,
+the next thread takes the same index with a bumped generation, and a
+reply addressed by the old name is refused rather than delivered to
+whoever inherited the slot.
+
+**Does a restarted server leak per-connection records?**
+
+Not answered, and the reason is worth more than the answer would have
+been. `PROPOSALS.md` gates connection death notification on that
+observation, and to make it a server has to hold state per client and
+act on `SYS_PULSE_DEAD_OWNER` to let it go. Nothing here does: the check
+collects the notice and confirms it names the right client, and no
+server in this tree has state worth reclaiming.
+
+What was found instead is larger and was not being asked about. **The
+kernel never freed a connection at all.** One was destroyed only when
+the handle it was going into could not be made, so the connection pool
+counted connections ever created rather than connections open at once,
+which is not the bound section 25.2 says it is. It was found by
+exhausting it: a check added four more connections than the boot
+sequence used to make, and `cat` reported `-4` on the second half of a
+union.
+
+### 10.2 What It Cost, and What It Gave Back
+
+Thirteen commits, thirty-eight files, about 4600 lines added and 310
+removed. Fifteen hundred of those are the check sequence, which is the
+honest shape of a milestone about failure: most of the work is arranging
+for something to go wrong on purpose and at a known moment.
+
+**The pools stopped tracking how long the boot sequence is.** They were
+raised in M5, M6 and M6 again because nothing was reaped, and stood at
+56 processes and 96 threads. They are 24 and 32 now, which is about
+twice what runs at once, and kernel object memory fell from 606976 bytes
+to 232640.
+
+| | before M7 | after |
+|---|---|---|
+| processes at once | 46 of 56 | 13 of 24 |
+| threads at once | 65 of 96 | 16 of 32 |
+| kernel object memory | 606976 | 232640 |
+
+The prediction written before the building was under fifteen processes
+and twenty-five threads. It holds.
+
+**What does not come back is memory.** A slot returns to its pool; the
+megabyte a process was loaded into does not, nor do its page tables. The
+report says so with the two numbers equal:
+
+```
+frames: 23843 of 32768 used at most, 23843 still held
+```
+
+Closing that needs the loader to record which pages it allocated,
+because a demand-paged process runs on frames belonging to its pager's
+grant and freeing those would take memory from whoever granted it. It is
+a stage of its own and was named as one rather than half-done.
+
+### 10.3 What the Building Kept Finding
+
+**Reclaiming an object turns every unreferenced pointer to it into a
+hazard, all at once.** Four times, and it is one finding rather than
+four. A completion timeline lives inside its process, so a handle to it
+is a pointer into a pool slot. A channel keeps its owner. A process
+keeps its pager as a connection object. A process keeps a list of its
+threads. Every one of them was safe for as long as nothing was ever
+freed, and every one became a way to name whoever took the slot the
+moment something was. The generation counters do not help: they protect
+identifiers, and these are pointers.
+
+The rule that came out of it is that anything the kernel keeps a pointer
+to, it holds. That is now true of processes, threads, connections and
+the objects embedded in them, and it is written into the design beside
+the mechanism rather than left to be rediscovered a fifth time.
+
+**A check written against a state the system reached later than the
+check looked.** Four times, and always passing while testing something
+else. A cancelled client that never raised the server it was supposed to
+have raised. A pulse delivered to a receiver that was not yet waiting. A
+server killed before it had received the buffer the kill was supposed to
+unwind. A place asserted free before the thing holding it had been
+reaped. They have one cause: a program spawned at the checking thread's
+own priority does not run when it is readied, only when the checker
+blocks or yields, so a check that spawns and then acts is acting on a
+program that has not started.
+
+Every one of them was found by asserting the *precondition* rather than
+only the result. A test of undoing something that never happened passes
+for the wrong reason, and the way to find out is to say what must have
+happened first and check that too.
+
+**Ordering inside a teardown, twice, twenty lines apart.** Telling a
+server that its client had gone woke the server in the middle of
+dismantling that client, and a server that outranks the thread doing the
+dismantling runs at once: it found a client that still looked like one
+waiting for a reply, replied to it, and released a thread that was
+halfway through being released. The fix was to defer, so that a run of
+readies is one step. The same defect was then reintroduced in the code
+released clients go through, written the same afternoon.
+
+**And the answer that has to be two answers.** `SYS_EXIT_COHORT` rather
+than `SYS_EXIT_FAULT` for a member that goes with its cohort, because
+that process did not fault and a supervisor has to be able to tell which
+one was the reason. `SYS_ERR_WOULDBLOCK` rather than `SYS_OK` for
+cancelling a thread that is not blocked, because a caller told `SYS_OK`
+may assume the thread is on its way out of a call. Both were decided the
+right way this time, which is a change: the same question was got wrong
+in M6 and had to be corrected.
+
+### 10.4 What Is Still Untested
+
+**Memory.** Frames, page tables and address spaces. The number is in the
+report and nothing moves it.
+
+**A server that acts on a death notice.** The mechanism delivers it and
+nothing consumes it, so the observation `PROPOSALS.md` waits on is still
+waiting.
+
+**The storage cohort torn down and restarted.** `fs_server` is in the
+recorded session, so making it fault would change the transcript rather
+than test a mechanism. What that leaves untried is a cohort whose
+members hold state for clients outside it.
+
+**A thread that never enters the kernel.** Killing unblocks every thread
+of a process and each leaves at its next return from the kernel, which
+is what section 10.5 asks to be prompt. A thread computing in user mode
+and calling nothing is not stopped, and there is no hook in the trap
+path that would stop it.
+
+**Two processes holding the receive right on one channel.** Ownership
+follows the right and the last insert wins, which is arbitrary. Section
+12.5 speaks of the owner as if there were one.
+
+**Everything about concurrency.** Every ordering argument in this
+milestone is about one core with interrupts disabled and a deferral
+counter. M8 is where each of them has to be made again.
+
+## 11. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -5274,7 +5473,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 11. Ordering: What Is Forced and What Is Chosen
+## 12. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -5305,7 +5504,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 12. What Would Change This Plan
+## 13. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -5342,7 +5541,7 @@ reason, so nothing else moves.
 
 ---
 
-## 13. Deliberately Not Scheduled
+## 14. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

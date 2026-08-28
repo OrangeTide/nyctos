@@ -84,6 +84,8 @@ bought with address space identifiers, which cost no isolation at all.
 Section 18 stands as written and its argument does not. What would
 settle it is in the roadmap.
 
+
+**And section 9.3's claim has been tested.** The disappearance of the only party that could satisfy a wait is delivered as an event rather than left to a timeout, and building death showed that sufficient in practice: a server is told with a pulse because it is at a receive point, a client is failed with an error because it is not, and nothing anywhere uses a deadline to discover that a peer has gone. A supervisor destroying a server does not have to guess how long its clients should wait, which is the property section 18.2's restart rests on.
 **What building it has already corrected is marked where it happened.**
 Sections 9.2, 9.3, 11.6, 13.2 and 14.1 carry notes of that kind: an
 ambiguity that only became visible when something had to resolve it, a
