@@ -152,6 +152,16 @@ hang:
  * nothing to ask.
  */
 secondary_park:
+    /*
+     * A hart the build has no room for parks here and touches nothing.
+     * The words below are indexed by hart number, and a hart numbered
+     * past the end of them would write its presence into the array
+     * that follows: hart three saying it is here is hart one being
+     * released, before there is an address for it to be released to.
+     */
+    li      t0, SYS_MAX_CORES
+    bgeu    s0, t0, hart_unusable
+
     la      t0, hart_present
     slli    t1, s0, 3
     add     t0, t0, t1
@@ -211,6 +221,10 @@ secondary_park:
     la      t0, supervisor_secondary
     csrw    mepc, t0
     mret
+
+hart_unusable:
+    wfi
+    j       hart_unusable
 
 supervisor_secondary:
     /*

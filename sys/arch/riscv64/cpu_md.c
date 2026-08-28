@@ -54,8 +54,23 @@ md_cpu_available(void)
      * is one this kernel cannot use and must not count, and counting
      * from the board's own description would be counting harts that
      * exist rather than harts that answered.
+     *
+     * Waited for rather than sampled. Every hart leaves reset at the
+     * same moment and this runs on the one that went on into C, so a
+     * hart that has not stored its word yet has not gone missing, it
+     * is a few instructions behind. Reading once would make the count
+     * depend on how long the boot hart spent zeroing memory, which is
+     * a number that has nothing to do with how many cores there are.
      */
-    while (n < SYS_MAX_CORES && hart_present[n] != 0) {
+    while (n < SYS_MAX_CORES) {
+        uint32_t spin;
+
+        for (spin = 0; spin < 1000000 && hart_present[n] == 0; spin++) {
+            md_cpu_relax();
+        }
+        if (hart_present[n] == 0) {
+            break;
+        }
         n++;
     }
 
@@ -63,17 +78,23 @@ md_cpu_available(void)
 }
 
 sys_err_t
-md_cpu_start(uint32_t index, uintptr_t entry)
+md_cpu_start(uint32_t index)
 {
     if (index >= SYS_MAX_CORES || hart_present[index] == 0) {
         return SYS_ERR_NO_ENT;
     }
 
-    hart_entry = entry;
+    hart_entry = (uintptr_t)cpu_secondary_entry;
     __asm__ volatile ("fence w, w" ::: "memory");
     hart_release[index] = 1;
 
     return SYS_OK;
+}
+
+void
+md_cpu_fence(void)
+{
+    __asm__ volatile ("fence rw, rw" ::: "memory");
 }
 
 void

@@ -59,11 +59,15 @@ struct cpu {
      */
     struct thread  *cp_reap;
 
-    /* How many times this core has had nothing to do. */
-    uint64_t        cp_idle;
-
-    /* Whether it has answered at all. */
-    bool            cp_up;
+    /*
+     * How many times this core has had nothing to do, and whether it
+     * has answered at all. These two are the only fields one core
+     * writes and another reads, so they are read every time rather
+     * than once into a register: a spin on a value the compiler is
+     * allowed to cache is a spin that never ends.
+     */
+    volatile uint64_t   cp_idle;
+    volatile bool       cp_up;
 };
 
 /*
@@ -120,16 +124,31 @@ void cpu_idle_loop(void) __attribute__((noreturn));
  * one is releasing it from a wait, and the AArch64 secondaries are held
  * off by the platform and are started with the same PSCI interface the
  * port already uses to power the machine down.
+ *
+ * Where it arrives is not the caller's to choose. A core that has just
+ * started has no stack, no vector table and no translation, so each port
+ * sends it somewhere of its own that establishes all three, and that
+ * place enters cpu_secondary_entry when it is done. This took an entry
+ * point as an argument once, which one port honoured and the other
+ * quietly discarded.
  */
 void md_cpu_set_self(struct cpu *c);
 struct cpu *md_cpu_get_self(void);
-sys_err_t md_cpu_start(uint32_t index, uintptr_t entry);
+sys_err_t md_cpu_start(uint32_t index);
 
 /* How many the hardware says it has, at most SYS_MAX_CORES. */
 uint32_t md_cpu_available(void);
 
 /* A hint that this core is spinning, and a wait for an interrupt. */
 void md_cpu_relax(void);
+
+/*
+ * Everything this core wrote is visible to another core before anything
+ * it writes next. Both ports order memory weakly, so the word that says
+ * a core has arrived can be seen before the state that word describes,
+ * and a reader would find a core that is up and has nothing in it.
+ */
+void md_cpu_fence(void);
 void md_cpu_wait(void);
 
 /* Where a core that has just started arrives. Defined by the kernel. */

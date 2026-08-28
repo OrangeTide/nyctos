@@ -68,10 +68,8 @@ md_cpu_available(void)
 }
 
 sys_err_t
-md_cpu_start(uint32_t index, uintptr_t entry)
+md_cpu_start(uint32_t index)
 {
-    (void)entry;
-
     if (index >= SYS_MAX_CORES) {
         return SYS_ERR_NO_ENT;
     }
@@ -80,7 +78,7 @@ md_cpu_start(uint32_t index, uintptr_t entry)
      * The entry point is this port's own, not the caller's: a core
      * arriving from firmware has no stack, no vector table and no
      * translation, and has to have all three before it can enter C.
-     * What the caller asked for is where boot.S sends it afterwards.
+     * boot.S enters cpu_secondary_entry once it has.
      */
     if (psci_call(PSCI_CPU_ON, index, (uint64_t)(uintptr_t)secondary_entry,
       0) != 0) {
@@ -88,6 +86,12 @@ md_cpu_start(uint32_t index, uintptr_t entry)
     }
 
     return SYS_OK;
+}
+
+void
+md_cpu_fence(void)
+{
+    __asm__ volatile ("dmb ish" ::: "memory");
 }
 
 void
@@ -111,6 +115,12 @@ md_cpu_arriving(void)
      * The affinity register, masked to the field this board uses. A
      * core here can read its own identity at any time, where the other
      * port cannot: mhartid is machine mode's and this is not.
+     *
+     * Masked to the affinity field this board numbers its cores in,
+     * and not to the number of cores this build has room for. A core
+     * outside that range has to arrive with the identity it really
+     * has, so that claiming it is refused rather than folded onto a
+     * core that already exists.
      */
     __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (id));
 

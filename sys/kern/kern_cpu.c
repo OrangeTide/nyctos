@@ -51,9 +51,30 @@ cpu_count(void)
 void
 cpu_claim(uint32_t index)
 {
-    struct cpu *c = &cpus[index];
+    struct cpu *c;
 
+    /*
+     * Checked here and not by the caller, because the caller is a core
+     * that has just started and the number is one the hardware chose.
+     * A machine with more cores than the build has slots for hands one
+     * of them an index past the end of this array, and the write that
+     * follows would land in whatever the linker put next.
+     */
+    if (index >= SYS_MAX_CORES) {
+        panic("cpu %u: the hardware has more cores than this build has",
+          (unsigned int)index);
+    }
+
+    c = &cpus[index];
     c->cp_index = index;
+
+    /*
+     * Said last, and after everything it describes. Another core spins
+     * on this word and then reads the rest of this structure, so a
+     * machine free to reorder the two would show it a core that is up
+     * before it is filled in.
+     */
+    md_cpu_fence();
     c->cp_up = true;
     md_cpu_set_self(c);
 }
@@ -70,8 +91,16 @@ cpu_init(void)
     cpu_claim(0);
 
     ncores = md_cpu_available();
+
+    /*
+     * A port that answers nonsense is a broken port and not a small
+     * machine. Substituting what the build asked for would be writing
+     * down the answer that makes the count below agree, which is the
+     * one number here worth having.
+     */
     if (ncores == 0 || ncores > SYS_MAX_CORES) {
-        ncores = SYS_MAX_CORES;
+        panic("cores: the port says %u, and this build has room for %u",
+          (unsigned int)ncores, (unsigned int)SYS_MAX_CORES);
     }
 }
 
@@ -83,7 +112,7 @@ cpu_start_others(void)
     for (i = 1; i < ncores; i++) {
         uint32_t spin;
 
-        if (md_cpu_start(i, (uintptr_t)cpu_secondary_entry) != SYS_OK) {
+        if (md_cpu_start(i) != SYS_OK) {
             panic("cpu %u: the port could not start it", (unsigned int)i);
         }
 
@@ -99,6 +128,13 @@ cpu_start_others(void)
         if (!cpus[i].cp_up) {
             panic("cpu %u: started and never answered", (unsigned int)i);
         }
+
+        /*
+         * Read after the word that announced it, so that what that
+         * core wrote about itself before saying it was up is what this
+         * one sees below.
+         */
+        md_cpu_fence();
     }
 }
 

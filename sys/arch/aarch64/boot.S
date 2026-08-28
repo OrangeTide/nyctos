@@ -91,6 +91,18 @@ secondary_at_el1:
      */
     mrs     x0, mpidr_el1
     and     x0, x0, #3
+
+    /*
+     * A core the build has no room for parks here and touches nothing.
+     * The stacks below are indexed by which core this is, and a core
+     * numbered past the end of them would take its stack from whatever
+     * the linker put next.
+     */
+    cmp     x0, #SYS_MAX_CORES
+    b.lo    1f
+0:  wfi
+    b       0b
+1:
     ldr     x1, =secondary_stacks
     add     x0, x0, #1
     mov     x2, #SECONDARY_STACK_BYTES

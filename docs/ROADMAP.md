@@ -4582,6 +4582,50 @@ The emulator and the kernel are configured together here, so fewer cores
 than the build asked for is a build mistake, and it stops the boot with
 `cores: 1 answered, and this build is for 2`.
 
+*Reviewed.* The review looked for the thing this stage is most likely to
+get wrong, which is not the mechanism but what the mechanism assumes
+about numbers the hardware chooses.
+
+**Every index came from the hardware and none of them was checked.** A
+core arriving says which one it is, and that number indexed three arrays
+in two languages: the presence and release words in assembly, the stack
+array, and the per-core structures in C. All four indexings trusted it.
+A build for two cores on a machine with four is not an exotic case, it
+is one flag, and the layout makes it specific: the presence array is
+followed immediately by the release array, so hart three saying it is
+here is hart one being released, before there is an address to release
+it to. That machine now prints nothing at all. With the bound in place
+it boots and reports two cores, and the extra ones park having touched
+nothing. The C side got the same treatment: claiming a core's state
+checks the index rather than trusting that assembly already did.
+
+**The word that says a core is up was published without ordering.** Both
+of these architectures order memory weakly. A core filled in its own
+state and then set the flag another core spins on, with nothing between
+them, so the reader was entitled to see the flag before the state it
+describes. Nothing failed, because what the reader goes on to read
+happens to be zero either way, which is exactly the kind of correctness
+that stops holding in the stage that adds a field. There is a fence on
+each side now. The two fields one core writes and another reads are
+read every time rather than once into a register: the spin worked only
+because the relax hint happens to tell the compiler memory changed.
+
+**The count of cores was a race with a comfortable margin.** Presence
+was sampled once, and a hart that had not stored its word yet was
+counted as absent. It always had, because the boot hart spends the
+interval zeroing memory, so the answer depended on how much memory this
+kernel has. That is a number with nothing to do with how many cores
+there are, and the stage had just made a wrong count fatal. It waits
+for each hart now.
+
+**And an argument one port honoured and the other discarded.** Starting
+a core took the entry point to start it at. The RISC-V port passed it
+through; the AArch64 port cast it to void and went somewhere of its
+own, because a core arriving from firmware has no stack and no vector
+table and cannot enter C. Both were right about their own machine and
+the interface was wrong to ask. It is gone, and where a core arrives is
+each port's own business up to the point where it enters the kernel.
+
 **2. One lock, and interrupt disabling stops being exclusion.**
 
 - A spinlock, and one of them held across every entry into the kernel.
