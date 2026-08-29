@@ -315,6 +315,14 @@ void
 vm_cost_read_core(struct vm_cost *out, uint32_t core)
 {
     if (core >= SYS_MAX_CORES) {
+        /*
+         * Zeroed rather than left as the caller had it. A read that
+         * answers nothing and says nothing hands back whatever the
+         * caller's structure held before it asked.
+         */
+        struct vm_cost none = { 0, 0, 0, 0, 0, 0, 0 };
+
+        *out = none;
         return;
     }
 

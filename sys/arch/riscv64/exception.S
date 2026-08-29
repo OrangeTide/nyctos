@@ -28,13 +28,38 @@ trap_entry:
     csrrw   sp, sscratch, sp
     bnez    sp, 1f
     csrrw   sp, sscratch, sp
+
+    /*
+     * A trap taken in the kernel. tp is already this core's and is
+     * saved only so that both paths leave through the same restore.
+     */
+    addi    sp, sp, -176
+    sd      tp, 152(sp)
+    j       2f
 1:
+    /*
+     * A trap taken in user mode, where tp is whatever the program put
+     * there. The kernel keeps this core's own state pointer in that
+     * register, and a program that writes to it would otherwise have
+     * the kernel read its per-core state through an address the
+     * program chose. One instruction in a program was enough to stop
+     * the machine dead.
+     *
+     * So the program's value is saved and the kernel's is loaded back
+     * from the word parked below its stack on the way out. That word
+     * is inside the frame this is about to build, at an offset nothing
+     * else uses, which is what makes it reachable without already
+     * having the register it restores.
+     */
+    addi    sp, sp, -176
+    sd      tp, 152(sp)
+    ld      tp, 168(sp)
+2:
     /*
      * The frame stays on the stack of the thread that took the trap, which
      * is what lets the handler switch threads: the context is saved where
      * it will still be when something switches back to it.
      */
-    addi    sp, sp, -160
     sd      ra, 0(sp)
     sd      t0, 8(sp)
 
@@ -133,10 +158,19 @@ trap_restore:
      * this thread's kernel stack for the next trap. That is the invariant
      * the entry path above reads.
      */
+    /*
+     * The kernel's own pointer parked below this thread's kernel stack
+     * for the next trap to find, and the program's given back. Nothing
+     * touches that word while the thread is in user mode, because it
+     * is that thread's kernel stack.
+     */
+    sd      tp, 168(sp)
+    ld      tp, 152(sp)
+
     ld      t0, 144(sp)
     csrw    sscratch, t0
     ld      t0, 8(sp)
-    addi    sp, sp, 160
+    addi    sp, sp, 176
     csrrw   sp, sscratch, sp
     sret
 
@@ -156,10 +190,11 @@ trap_restore:
  * what an interrupt landing in a two-instruction window looks like.
  */
 trap_restore_kernel:
+    ld      tp, 152(sp)
     ld      t0, 144(sp)
     csrw    sscratch, t0
     ld      t0, 8(sp)
-    addi    sp, sp, 160
+    addi    sp, sp, 176
     sret
 
 /*

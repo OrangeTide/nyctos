@@ -8,6 +8,7 @@
  * for the reasoning.
  */
 
+#include <sys/lock.h>
 #include <sys/cpu.h>
 #include <sys/intr.h>
 #include <sys/object.h>
@@ -16,6 +17,59 @@
 #include <sys/thread.h>
 #include <sys/time.h>
 #include <sys/timeline.h>
+
+/*
+ * The lists below are one set for the machine and are reached from
+ * every core: a thread on any core can arm a timer, destroy one or
+ * sleep, and the core that owns the hardware walks them when it fires.
+ *
+ * Section 11.4 forbids a global scheduler lock and this is not one.
+ * Nothing under it decides what runs. What it does hold together is a
+ * pair of ordered lists, which is the same argument the pools got, and
+ * this stage locked those while leaving these because they are counted
+ * by nothing.
+ *
+ * Held across the walk and put down before anything can switch away.
+ * The deferral in time_interrupt is what makes that possible: a waiter
+ * released mid-pass is queued rather than dispatched, so nothing leaves
+ * this file holding the lock.
+ */
+#if SYS_TIER == 2
+
+static struct spinlock time_lock = { 0, 0, "timers" };
+
+static intr_state_t
+time_enter(void)
+{
+    intr_state_t s = md_intr_disable();
+
+    spin_lock(&time_lock);
+
+    return s;
+}
+
+static void
+time_leave(intr_state_t s)
+{
+    spin_unlock(&time_lock);
+    md_intr_restore(s);
+}
+
+#else
+
+static intr_state_t
+time_enter(void)
+{
+    return md_intr_disable();
+}
+
+static void
+time_leave(intr_state_t s)
+{
+    md_intr_restore(s);
+}
+
+#endif /* SYS_TIER == 2 */
 
 /* Pending timers and sleeping threads, each ordered earliest first. */
 static struct timer *timers;
@@ -130,9 +184,9 @@ time_rearm_if_asked(void)
         return;
     }
 
-    s = md_intr_disable();
+    s = time_enter();
     arm_here();
-    md_intr_restore(s);
+    time_leave(s);
 }
 #endif
 
@@ -199,10 +253,10 @@ timer_create(const char *name, struct timeline *tl, sys_time_t first,
      */
     timeline_add_signaler(tl);
 
-    s = md_intr_disable();
+    s = time_enter();
     timer_link(tm);
     reprogram();
-    md_intr_restore(s);
+    time_leave(s);
 
     return tm;
 }
@@ -215,14 +269,14 @@ timer_create(const char *name, struct timeline *tl, sys_time_t first,
 void
 timer_destroy(struct timer *tm)
 {
-    intr_state_t s = md_intr_disable();
+    intr_state_t s = time_enter();
 
     if (tm->tm_active) {
         tm->tm_active = false;
         timer_unlink(tm);
         reprogram();
     }
-    md_intr_restore(s);
+    time_leave(s);
 
     timeline_drop_signaler(tm->tm_timeline);
     (void)pool_free(timer_pool(), tm->tm_id);
@@ -309,6 +363,7 @@ void
 time_interrupt(void)
 {
     struct thread *t;
+    intr_state_t s;
     sys_time_t now;
 
     /*
@@ -317,6 +372,16 @@ time_interrupt(void)
      * timers have been serviced and the hardware re-armed.
      */
     sched_defer();
+
+    /*
+     * And the lists held, which they were not. This walks and rewrites
+     * both of them, and another core arming or destroying a timer
+     * rewrites the same links. The deferral above is what lets the
+     * lock be held across the whole pass: a waiter released here is
+     * queued rather than dispatched, so nothing switches away while
+     * this core holds it.
+     */
+    s = time_enter();
 
     now = md_time_now();
 
@@ -332,6 +397,8 @@ time_interrupt(void)
     }
 
     reprogram();
+
+    time_leave(s);
 
     sched_undefer();
 }

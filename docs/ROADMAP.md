@@ -5067,6 +5067,54 @@ times the answer has been to stop keeping one of something for the
 machine; this time the thing being kept for the machine was right and
 what was wrong was assuming the hardware under it was too.
 
+*Reviewed.* Four findings, and the first one is the worst thing this
+milestone has produced.
+
+**A program could steer the kernel's per-core pointer, and one
+instruction was enough.** Stage one put that pointer in `tp` on the port
+where `tp` is an ordinary register, and nothing on the way into the
+kernel put the kernel's own value back. A program that writes to `tp`
+and then takes any trap has the kernel read its per-core state through
+an address the program chose: the running thread, the deferral counter,
+the counters this stage was auditing. A program with `li tp, 0x41` in it
+stops the machine dead at its first interrupt, with no panic, because
+the panic path reads the same pointer.
+
+The other port never had this. `TPIDR_EL1` cannot be written from user
+mode at all, which is why it was the obvious register there and why the
+same choice on the other port needed something the obvious one does not.
+
+The frame carries both pointers now. The program's value is saved on the
+way in and given back on the way out, so a program that uses that
+register keeps it, and the kernel's is parked in a word below the
+thread's kernel stack on the way out and loaded back on the way in.
+Below the stack rather than anywhere else because it has to be reachable
+without already holding the register it restores. A program that starts
+gets a cleared register rather than a kernel address, which is the same
+hole in its smaller form.
+
+**The check that was supposed to catch two cores holding one slot could
+not fail.** It wrote a mark into the slot and compared it against what it
+had just written, through an ordinary member, which the compiler is
+entitled to fold away and does. It is a volatile read with a gap before
+it now, and the gap is on purpose for the same reason the lock check has
+one. In practice the free list gives way first, so what actually reports
+the failure is the slot that would not go back, and the mark is the
+second witness rather than the first.
+
+**The lists the timer keeps are the pools' sibling and were left
+unlocked.** This stage locked a free list reached from both cores and
+left, in the file it was editing, two ordered lists reached from both
+cores in exactly the same way: any core can arm a timer, destroy one or
+sleep, and the core that owns the hardware walks both when it fires.
+They are held now, across the whole pass and put down before anything
+can switch away, which the deferral already in that pass is what makes
+possible.
+
+**And a read that answered nothing said nothing.** Asking for the
+counters of a core that does not exist left the caller's structure
+holding whatever it did before. It is zeroed.
+
 **6. Whether partitioned scheduling is usable.**
 
 - The milestone's own question, and the only stage whose outcome could

@@ -5026,7 +5026,14 @@ xc_client(void *arg)
 #define PS_ROUNDS       4096
 
 struct ps_obj {
-    uint64_t    ps_mark;
+    /*
+     * Written by the core holding the slot and read back by it. Marked
+     * so that the reading back actually happens: a plain member
+     * written and then compared against what was just written is a
+     * comparison the compiler is entitled to delete, and it does, so
+     * the first version of this check could not fail.
+     */
+    volatile uint64_t   ps_mark;
 };
 
 POOL_STORAGE(ps, struct ps_obj, PS_SLOTS);
@@ -5041,6 +5048,7 @@ ps_round(void)
 {
     struct ps_obj *o;
     sys_id_t id;
+    uint32_t i;
     uint64_t mark = (uint64_t)cpu_self()->cp_index + 1;
 
     o = pool_alloc(&ps_pool, &id);
@@ -5049,12 +5057,19 @@ ps_round(void)
     }
 
     /*
-     * The slot is this core's alone from the moment it left the list.
-     * A mark that is not the one just written means the other core was
-     * handed the same slot, which is the failure this is looking for
-     * and not a lost count.
+     * The slot is this core's alone from the moment it left the list,
+     * so what was written here is what is here. A mark that is not the
+     * one just written means the other core was handed the same slot,
+     * which is the failure this is looking for and not a lost count.
+     *
+     * The gap between writing and reading is on purpose. Two cores
+     * have to be inside at once for this to see anything, and a window
+     * a few instructions wide is one they would have to hit exactly.
      */
     o->ps_mark = mark;
+    for (i = 0; i < 16; i++) {
+        md_cpu_relax();
+    }
     if (o->ps_mark != mark) {
         ps_clash++;
     }

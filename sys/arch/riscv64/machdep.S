@@ -36,6 +36,16 @@
 .section .text
 .global enter_user
 enter_user:
+    /*
+     * This core's own pointer parked below the kernel stack, where the
+     * trap path finds it, and the register handed to the program
+     * cleared. A program starts with no thread pointer rather than
+     * with a kernel address in the register the kernel keeps its
+     * per-core state in.
+     */
+    sd      tp, -8(sp)
+    mv      tp, zero
+
     csrw    sscratch, sp
 
     li      t0, (1 << 8)           /* sstatus.SPP = 0: return to U-mode */

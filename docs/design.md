@@ -937,6 +937,16 @@ Each core has its own run queue and makes its own scheduling decisions. A thread
 
 **Per-core state is found through a register**, so that reading what this core is doing costs one instruction and no agreement with another core. A scheduling decision that had to be agreed is not one that decomposes per core, which is the whole of the analysability argument. What lives there is the running thread, the address space it is in, the deferral counter and the slot a dead thread is parked in: each was a global, and each was justified in its own comment by there being one core.
 
+**Where a core keeps its own pointer is a question about user mode.**
+One port has a register only the kernel can write, and it is the obvious
+choice there. The other port's equivalent is an ordinary register a
+program can set with one instruction, so the kernel's value is parked
+below the running thread's kernel stack when it leaves for user mode and
+loaded back when it returns, and the program's own value is saved and
+given back around that. Reloading it is not a nicety. Without it a
+program chooses the address through which the kernel reads what is
+running on this core.
+
 **A thread another core makes runnable arrives through a list rather
 than a queue.** The obvious way to put a thread on another core's queue
 is a lock around that queue, and it is the wrong way, because the core
