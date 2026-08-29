@@ -162,9 +162,10 @@ static void irq_dispatch_body(void);
 void
 irq_dispatch(void)
 {
-    klock_enter();
+    intr_state_t s = klock_enter();
+
     irq_dispatch_body();
-    klock_exit();
+    klock_exit(s);
 }
 
 static void

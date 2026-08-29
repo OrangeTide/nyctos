@@ -47,11 +47,10 @@ static long syscall_body(struct sys_op *op, unsigned long count);
 long
 syscall_handler(struct sys_op *op, unsigned long count)
 {
-    long r;
+    intr_state_t s = klock_enter();
+    long r = syscall_body(op, count);
 
-    klock_enter();
-    r = syscall_body(op, count);
-    klock_exit();
+    klock_exit(s);
 
     return r;
 }
@@ -122,7 +121,7 @@ trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
      * A core that stops the machine while another is spinning for this
      * lock is a core that stops the machine, which is what was wanted.
      */
-    klock_enter();
+    (void)klock_enter();
     t = thread_current();
 
     /*
@@ -153,9 +152,10 @@ static void trap_user_body(unsigned long cause, unsigned long pc,
 void
 trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
 {
-    klock_enter();
+    intr_state_t s = klock_enter();
+
     trap_user_body(cause, pc, addr);
-    klock_exit();
+    klock_exit(s);
 }
 
 static void

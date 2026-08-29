@@ -4699,6 +4699,55 @@ because the lock was a static that nothing had initialised, and a lock
 that cannot say which lock it is answers half of the one question it
 exists to answer. It is named where it is declared now, because an
 initialiser that has to be called is one that can be forgotten.
+
+*Reviewed.* The stage wrote a claim into a comment and the review tested
+it, which is the only reason it was found.
+
+**Kernel entries nest, and the comment said they could not.** The
+interrupt state a core entered the kernel with was kept in one slot per
+core, justified by there being no nesting: interrupts are off while the
+lock is held, so a core inside the kernel cannot reach a second way in.
+Counting outstanding entries says otherwise, two deep, within a second of
+booting. The path is the one this stage built: a thread blocks, reaches
+the idle wait, and the idle wait puts the lock down and enables
+interrupts on purpose, so the interrupt that arrives there enters the
+kernel inside an entry that has not left. The inner entry overwrote the
+outer one's saved state.
+
+Nothing had gone wrong, and the reason is worth stating because it is not
+a reason to keep the arrangement. Every entry to this kernel is from a
+vector that has already masked interrupts, so every state saved was the
+same state, and an overwrite with an identical value is invisible. The
+state is returned to the caller and handed back now, which is one slot on
+a stack that already exists per entry by construction, and the comment
+that was wrong is replaced by the account of how it was wrong.
+
+**Three functions had no callers.** The lock's initialiser, because the
+stage had just moved to naming the lock where it is declared; the
+assertion that a core holds the lock, because the design it belonged to
+was the one that carried the lock across a context switch and was
+replaced; and the two predicates, which are used only by the lock's own
+code. The first two are gone and the last two are internal. A constructor
+with no caller is a thing the next stage will call by habit rather than
+because it needs to.
+
+**And the whole spinlock is Tier 2 only now.** It compiled at Tier 0,
+where nothing calls it, because the file was written before the tier
+question was settled. Section 13.3 buys that tier a kernel with no
+internal locking at all, and a lock that exists there is a lock somebody
+can use there.
+
+**What the review confirmed rather than changed.** Asserting that the
+lock is held at the top of the system call body and the interrupt body,
+and running the whole recorded session, gives no failure in any of the
+four configurations: the lock is genuinely held on every entry, not only
+in the check that hammers it. The one window left is known and belongs to
+the next stage. A switch sets the current thread of this core before
+dropping the lock, so there is an instant where another core could read a
+thread as current on a core it is not yet running on. Nothing reads
+another core's current thread yet, and the stage that puts work on the
+second core is the stage that makes it readable.
+
 **3. A ready queue per core, and threads that stay where they are put.**
 
 - Each core dispatches from its own queue and takes no lock the other

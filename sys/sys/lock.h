@@ -41,6 +41,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#if SYS_TIER == 2
+
 struct spinlock {
     /*
      * Free, or held. Written with an atomic exchange and read on the
@@ -58,8 +60,6 @@ struct spinlock {
     const char         *sl_name;
 };
 
-void spin_init(struct spinlock *l, const char *name);
-
 /*
  * Take it, spinning until it is free. Taking one this core already
  * holds is refused: the alternative is spinning forever on a word only
@@ -75,24 +75,27 @@ void spin_lock(struct spinlock *l);
  */
 void spin_unlock(struct spinlock *l);
 
-/* Whether this core is the one holding it. */
-bool spin_held(const struct spinlock *l);
-
-#if SYS_TIER == 2
-
 /*
  * The kernel lock, held from the moment a core enters the kernel until
  * it leaves. There are four ways in, all of them from the port's
  * exception vectors, and each one is a pair of these.
  *
- * Interrupts are disabled for the duration, which is what keeps a core
- * from arriving at a second entry point while it is still inside the
- * first. Two cores are kept apart by the lock and one core is kept out
- * of its own way by the mask, and the two jobs were the same job while
- * there was one core.
+ * Two cores are kept apart by the lock and one core is kept out of its
+ * own way by the mask it holds the lock under. Those were the same job
+ * while there was one core, and they are not.
+ *
+ * The interrupt state is returned and handed back rather than kept
+ * anywhere, because these do nest. A thread that blocks reaches the
+ * idle path, which puts the lock down and enables interrupts on
+ * purpose, and the interrupt that arrives there enters the kernel
+ * inside an entry that has not left yet. One slot per core held the
+ * first state until the second entry overwrote it, and the only reason
+ * nothing broke is that every entry to this kernel is from a vector
+ * that already masked interrupts, so every state saved was the same
+ * one.
  */
-void klock_enter(void);
-void klock_exit(void);
+intr_state_t klock_enter(void);
+void klock_exit(intr_state_t saved);
 
 /*
  * Put down where this core stops running and picked up where it starts
@@ -113,23 +116,12 @@ void klock_exit(void);
 bool klock_drop(void);
 void klock_regain(bool had);
 
-/*
- * That this core is inside the kernel lock, for the regions that used to
- * establish that by disabling interrupts. Compiled out at Tier 0, where
- * disabling interrupts is still what those regions do.
- */
-void klock_assert(const char *what);
-
-bool klock_held(void);
-
 #else
 
-#define klock_enter()           ((void)0)
-#define klock_exit()            ((void)0)
+#define klock_enter()           ((intr_state_t)0)
+#define klock_exit(saved)       ((void)(saved))
 #define klock_drop()            (false)
 #define klock_regain(had)       ((void)(had))
-#define klock_assert(what)      ((void)0)
-#define klock_held()            (true)
 
 #endif /* SYS_TIER == 2 */
 

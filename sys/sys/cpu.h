@@ -61,15 +61,6 @@ struct cpu {
     struct thread  *cp_reap;
 
     /*
-     * The interrupt state this core entered the kernel with, restored
-     * when it leaves. Per core rather than per entry because nothing
-     * nests: interrupts are off for as long as the kernel lock is
-     * held, so a core inside the kernel cannot arrive at a second way
-     * in and find this word still holding the first one.
-     */
-    intr_state_t        cp_klock_saved;
-
-    /*
      * How many times this core has had nothing to do, and whether it
      * has answered at all. These two are the only fields one core
      * writes and another reads, so they are read every time rather

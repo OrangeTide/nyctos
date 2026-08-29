@@ -19,15 +19,10 @@
 #include <sys/lock.h>
 #include <sys/systm.h>
 
-void
-spin_init(struct spinlock *l, const char *name)
-{
-    l->sl_locked = 0;
-    l->sl_owner = 0;
-    l->sl_name = name;
-}
+#if SYS_TIER == 2
 
-bool
+/* Whether this core is the one holding it. */
+static bool
 spin_held(const struct spinlock *l)
 {
     return l->sl_locked != 0 && l->sl_owner == cpu_self()->cp_index + 1;
@@ -76,7 +71,6 @@ spin_unlock(struct spinlock *l)
     __atomic_store_n(&l->sl_locked, 0u, __ATOMIC_RELEASE);
 }
 
-#if SYS_TIER == 2
 
 /*
  * Named where it is declared, because the first thing it ever said
@@ -86,42 +80,25 @@ spin_unlock(struct spinlock *l)
  */
 static struct spinlock kernel_lock = { 0, 0, "kernel" };
 
-bool
+static bool
 klock_held(void)
 {
     return spin_held(&kernel_lock);
 }
 
-void
-klock_assert(const char *what)
-{
-    if (!klock_held()) {
-        panic("%s: reached without the kernel lock", what);
-    }
-}
-
-void
+intr_state_t
 klock_enter(void)
 {
     intr_state_t s = md_intr_disable();
 
     spin_lock(&kernel_lock);
 
-    /*
-     * Kept per core rather than per entry, which is sound only because
-     * there is no nesting: interrupts are off for as long as this is
-     * held, so a core inside the kernel cannot arrive at a second way
-     * in. Every entry is from the port's exception vectors and every
-     * one of them found interrupts in the same state.
-     */
-    cpu_self()->cp_klock_saved = s;
+    return s;
 }
 
 void
-klock_exit(void)
+klock_exit(intr_state_t s)
 {
-    intr_state_t s = cpu_self()->cp_klock_saved;
-
     spin_unlock(&kernel_lock);
     md_intr_restore(s);
 }
@@ -175,10 +152,11 @@ static volatile uint32_t hammer_done;
 static void
 hammer_once(void)
 {
+    intr_state_t s;
     uint64_t n;
     uint32_t i;
 
-    klock_enter();
+    s = klock_enter();
 
     if (hammer.hm_inside != 0) {
         panic("lock check: two cores inside the region at once");
@@ -202,7 +180,7 @@ hammer_once(void)
 
     hammer.hm_inside = 0;
 
-    klock_exit();
+    klock_exit(s);
 }
 
 void
