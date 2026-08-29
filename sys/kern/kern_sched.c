@@ -13,25 +13,25 @@
  * reason to prefer this over a sorted list.
  */
 
-#include <sys/lock.h>
 #include <sys/config.h>
+#include <sys/cpu.h>
 #include <sys/intr.h>
+#include <sys/lock.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
-#include <sys/cpu.h>
-#include <sys/thread.h>
-#include <sys/cpu.h>
 #include <sys/thread.h>
 
 #include <stdbool.h>
 
-struct runq {
-    struct thread *head;
-    struct thread *tail;
-};
-
-static struct runq runq[SYS_PRIO_COUNT];
-static uint32_t ready_bits;
+/*
+ * The queues and the bitmap belong to the core reading them, per
+ * section 11.4. They were one set for the system, which was the same
+ * thing while there was one core and is not now: a core dispatching
+ * from a queue another core is enqueueing to would be taking the
+ * decision jointly, and a jointly taken decision needs a lock.
+ */
+#define my_runq             (cpu_self()->cp_runq)
+#define ready_bits          (cpu_self()->cp_ready)
 
 /* Preemption held off; see sched_defer. */
 /*
@@ -47,12 +47,102 @@ static uint32_t ready_bits;
 _Static_assert(SYS_PRIO_COUNT <= 32,
   "the ready bitmap is one 32-bit word; see section 11.1");
 
+
+/*
+ * Link a thread onto this core's queue for its level. No state is
+ * decided here: a thread arriving from another core was already made
+ * ready by the core that sent it, and this is the moment it stops
+ * being on its way and starts being runnable somewhere.
+ */
+static void
+queue_link(struct thread *t)
+{
+    struct runq *q = &my_runq[t->t_prio];
+
+    t->t_qnext = NULL;
+    if (q->rq_tail == NULL) {
+        q->rq_head = t;
+    } else {
+        q->rq_tail->t_qnext = t;
+    }
+    q->rq_tail = t;
+
+    ready_bits |= (uint32_t)1 << t->t_prio;
+
+    /*
+     * Which cores have ever had this thread on a queue. A thread that
+     * was put on the other core is supposed never to have been on this
+     * one, and that is a claim about history rather than about now.
+     */
+    t->t_linked_on |= (uint32_t)1 << cpu_self()->cp_index;
+}
+
+/*
+ * A thread this core does not own, left where the core that owns it
+ * will find it. One compare and exchange and no lock, because a lock
+ * here is a lock the other core would have to take to dispatch, and
+ * section 11.4 is precisely that it should not have to.
+ */
+static void
+push_arriving(struct thread *t)
+{
+    struct cpu *target = cpu_at(t->t_core);
+    struct thread *head;
+
+    for (;;) {
+        head = __atomic_load_n(&target->cp_incoming, __ATOMIC_RELAXED);
+        t->t_inext = head;
+        if (__atomic_compare_exchange_n(&target->cp_incoming, &head, t,
+              false, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+            return;
+        }
+    }
+}
+
+/*
+ * Everything that has arrived since the last look, put on the queues.
+ * One exchange takes the whole list, so a core sending while this runs
+ * simply starts a new one and nothing waits for anything.
+ *
+ * The order threads arrived in is not preserved and is not a scheduling
+ * decision. Each one goes on the queue its priority names, and section
+ * 11.2 is where the order comes from.
+ */
+static void
+take_arriving(void)
+{
+    struct thread *list;
+
+    list = __atomic_exchange_n(&cpu_self()->cp_incoming,
+      (struct thread *)NULL, __ATOMIC_ACQUIRE);
+
+    while (list != NULL) {
+        struct thread *t = list;
+
+        list = t->t_inext;
+        t->t_inext = NULL;
+        queue_link(t);
+    }
+}
 /* Take a specific thread off whatever run queue it is on. */
 static void
 dequeue_specific(struct thread *t)
 {
-    struct runq *q = &runq[t->t_prio];
-    struct thread **link = &q->head;
+    struct runq *q;
+
+    /*
+     * This core's queues, because those are the only ones it may
+     * touch. A thread queued on another core is reached by asking that
+     * core, which is what the stage after this one builds.
+     */
+    if (t->t_core != cpu_self()->cp_index) {
+        panic("sched: %s is queued on core %u and this is core %u",
+          t->t_name, (unsigned int)t->t_core,
+          (unsigned int)cpu_self()->cp_index);
+    }
+
+    q = &my_runq[t->t_prio];
+    struct thread **link = &q->rq_head;
     struct thread *prev = NULL;
 
     while (*link != NULL && *link != t) {
@@ -64,12 +154,12 @@ dequeue_specific(struct thread *t)
     }
 
     *link = t->t_qnext;
-    if (q->tail == t) {
-        q->tail = prev;
+    if (q->rq_tail == t) {
+        q->rq_tail = prev;
     }
     t->t_qnext = NULL;
 
-    if (q->head == NULL) {
+    if (q->rq_head == NULL) {
         ready_bits &= ~((uint32_t)1 << t->t_prio);
     }
 }
@@ -94,8 +184,8 @@ sched_init(void)
     defer_depth = 0;
     defer_pending = false;
     for (i = 0; i < SYS_PRIO_COUNT; i++) {
-        runq[i].head = NULL;
-        runq[i].tail = NULL;
+        my_runq[i].rq_head = NULL;
+        my_runq[i].rq_tail = NULL;
     }
 }
 
@@ -111,8 +201,6 @@ sched_init(void)
 static void
 enqueue(struct thread *t)
 {
-    struct runq *q = &runq[t->t_prio];
-
     switch (t->t_state) {
     case THREAD_NEW:
     case THREAD_RUNNING:
@@ -126,16 +214,14 @@ enqueue(struct thread *t)
         panic("thread %s: made runnable from an unbuilt slot", t->t_name);
     }
 
-    t->t_qnext = NULL;
-    if (q->tail == NULL) {
-        q->head = t;
-    } else {
-        q->tail->t_qnext = t;
-    }
-    q->tail = t;
-
-    ready_bits |= (uint32_t)1 << t->t_prio;
     t->t_state = THREAD_READY;
+
+    if (cpu_at(t->t_core) == cpu_self()) {
+        queue_link(t);
+        return;
+    }
+
+    push_arriving(t);
 }
 
 /*
@@ -150,17 +236,25 @@ dequeue_highest(void)
     struct thread *t;
     unsigned int prio;
 
+    /*
+     * What another core sent here is looked at exactly once per
+     * decision, and before the decision. A thread that arrived after
+     * this waits for the next one, which is the same thing that
+     * happens to a thread readied a moment after a dispatch.
+     */
+    take_arriving();
+
     if (ready_bits == 0) {
         return NULL;
     }
 
     prio = (unsigned int)highest_ready();
-    q = &runq[prio];
+    q = &my_runq[prio];
 
-    t = q->head;
-    q->head = t->t_qnext;
-    if (q->head == NULL) {
-        q->tail = NULL;
+    t = q->rq_head;
+    q->rq_head = t->t_qnext;
+    if (q->rq_head == NULL) {
+        q->rq_tail = NULL;
         ready_bits &= ~((uint32_t)1 << prio);
     }
     t->t_qnext = NULL;
@@ -232,6 +326,7 @@ static void
 dispatch(void)
 {
     struct thread *next;
+    uint64_t took;
 
     /*
      * Whatever the last switch left for collection, freed here rather
@@ -244,6 +339,19 @@ dispatch(void)
      * exactly that.
      */
     thread_reap_parked();
+
+    /*
+     * The decision itself, with a count around it of every lock taken
+     * that another core could be holding. Section 11.4 requires that
+     * number to be zero: a core waiting on a lock to find out what to
+     * run next is a core waiting on a decision another core is making,
+     * and the queues are per core precisely so that it does not.
+     *
+     * The bracket covers the choosing and not the switching. Switching
+     * away is where this thread stops running, and what the thread
+     * that runs next does with locks is its own business.
+     */
+    took = spin_take_count();
 
     next = dequeue_highest();
     if (next == NULL) {
@@ -258,6 +366,18 @@ dispatch(void)
         if (next == NULL) {
             panic("sched: left idle with nothing runnable");
         }
+
+        /*
+         * Sampled again after idling, because idling is where this
+         * core gives the lock up and takes it back, and that is not
+         * part of the decision.
+         */
+        took = spin_take_count();
+    }
+
+    if (spin_take_count() != took) {
+        panic("sched: the decision took %lu locks another core could hold",
+          (unsigned long)(spin_take_count() - took));
     }
 
     next->t_state = THREAD_RUNNING;
@@ -445,4 +565,95 @@ sched_reprioritise(struct thread *t, uint8_t prio)
     }
 
     md_intr_restore(s);
+}
+
+/*
+ * What a core other than the first one does with itself.
+ *
+ * It is a thread, at the lowest priority there is, that offers the core
+ * back at every turn. Anything migrated here outranks it and runs; when
+ * that thread blocks or ends, this is what is left and the core comes
+ * back here.
+ *
+ * It spins rather than waiting for an interrupt, which is temporary and
+ * is the shape of the hole the next stage fills. A core waiting on
+ * md_cpu_wait is woken by an interrupt, and the interrupt that would say
+ * "something arrived for you" is the inter-processor one that section
+ * 11.4 has donation use and that this stage does not have yet. Until
+ * then a core with nothing to do looks at its arriving list rather than
+ * sleeping, and the count it reports says how many times it looked.
+ */
+void
+sched_secondary(void)
+{
+    struct cpu *self = cpu_self();
+
+    for (;;) {
+        self->cp_idle++;
+        sched_yield();
+    }
+}
+
+/*
+ * Move a thread to a named core, per section 11.4.
+ *
+ * Explicit, and the only way anything moves. Nothing balances, nothing
+ * steals, and no thread drifts: where a thread runs is a fact about the
+ * program that placed it, which is the property that makes a per-core
+ * analysis of timing mean anything.
+ *
+ * A running thread cannot be moved from under itself, and a thread
+ * running on another core cannot be moved at all yet: doing that means
+ * telling that core to stop running it, which is the inter-processor
+ * interrupt the next stage builds.
+ */
+sys_err_t
+sched_migrate(struct thread *t, uint32_t core)
+{
+    intr_state_t s;
+    bool queued;
+
+    if (core >= cpu_count()) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    s = md_intr_disable();
+
+    if (t->t_core == core) {
+        md_intr_restore(s);
+        return SYS_OK;
+    }
+    if (t == thread_current() || t->t_state == THREAD_RUNNING) {
+        md_intr_restore(s);
+        return SYS_ERR_WOULDBLOCK;
+    }
+    if (t->t_state == THREAD_DEAD) {
+        md_intr_restore(s);
+        return SYS_ERR_STALE;
+    }
+
+    /*
+     * Taken off the queue it is on before its core changes, because the
+     * queue it is on is named by the core it is on. Doing it the other
+     * way round looks for it on the queues of a core it has not been on.
+     */
+    queued = t->t_state == THREAD_READY;
+    if (queued) {
+        if (t->t_core != cpu_self()->cp_index) {
+            md_intr_restore(s);
+            return SYS_ERR_WOULDBLOCK;
+        }
+        dequeue_specific(t);
+        t->t_state = THREAD_BLOCKED;
+    }
+
+    t->t_core = core;
+
+    if (queued) {
+        enqueue(t);
+    }
+
+    md_intr_restore(s);
+
+    return SYS_OK;
 }

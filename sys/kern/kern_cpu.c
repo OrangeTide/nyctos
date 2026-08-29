@@ -20,6 +20,8 @@
 
 #include <sys/cpu.h>
 #include <sys/lock.h>
+#include <sys/proc.h>
+#include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
 #include <sys/vm.h>
@@ -259,13 +261,16 @@ cpu_secondary_entry(void)
     md_mmu_enable(vm_kernel());
 #endif
 
-    /*
-     * The only kernel work this core does until the next stage gives
-     * it a run queue. It is here rather than in a thread because there
-     * is no way to put a thread here yet, and a lock that has never had
-     * two cores in it is a lock nothing has tested.
-     */
     lock_check_secondary();
 
-    cpu_idle_loop();
+    /*
+     * Its own queues, and something to be while it has nothing to run.
+     * Section 11.6 has idle be a state of the core rather than a
+     * thread, and this is not a thread in that sense: it is the
+     * context the core dispatches away from and comes back to.
+     */
+    sched_init();
+    thread_bootstrap("idle", 0, proc_kernel());
+
+    sched_secondary();
 }

@@ -41,6 +41,14 @@ proc_set_name(struct proc *p, const char *name)
     p->p_name[i] = '\0';
 }
 
+static struct proc *kernel_proc;
+
+struct proc *
+proc_kernel(void)
+{
+    return kernel_proc;
+}
+
 struct proc *
 proc_bootstrap(const char *name)
 {
@@ -56,6 +64,15 @@ proc_bootstrap(const char *name)
     timeline_init(&p->p_completion, p->p_name);
     timeline_embed(&p->p_completion, SYS_OBJ_PROCESS, p);
     p->p_nthreads = 0;
+
+    /*
+     * The first one built is the kernel's own, which every core needs
+     * to reach: a core other than the first bootstraps a context of
+     * its own to dispatch away from, and that context belongs here.
+     */
+    if (kernel_proc == NULL) {
+        kernel_proc = p;
+    }
     handle_table_init(&p->p_handles, p);
     p->p_cohort = NULL;
 

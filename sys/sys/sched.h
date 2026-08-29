@@ -75,4 +75,18 @@ void sched_reprioritise(struct thread *t, uint8_t prio);
 void sched_defer(void);
 void sched_undefer(void);
 
+/*
+ * Move a thread to a named core, per section 11.4. Refuses a thread
+ * that is running, because stopping a thread on another core is the
+ * inter-processor interrupt of the stage after this one.
+ */
+sys_err_t sched_migrate(struct thread *t, uint32_t core);
+
+/*
+ * The scheduling loop of a core that is not the first one. Does not
+ * return: the core is either running something migrated to it or is
+ * offering itself.
+ */
+void sched_secondary(void);
+
 #endif /* _SYS_SCHED_H_ */

@@ -501,6 +501,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Pulses | One bounded queue per channel with slots reserved for system codes, sent through a connection, collected before messages. |
 | Cores | Per-core state through a register, at Tier 2 only. A core the build asked for and did not get stops the boot. |
 | Kernel lock | One lock for the whole kernel at Tier 2, taken at every entry from the exception vectors and held with interrupts off. Put down at a context switch and around the idle wait. A stated deviation from section 13.3. |
+| Placement | A run queue per core, and a thread runs where it was put. Threads arrive from another core through a list pushed with one compare and exchange, so no core takes a lock to dispatch. |
 | Peer death | A server is told with a pulse because it is at a receive point. A client is failed with OWNER_DEAD because it is not. |
 | Killing | Unblocks every thread as if cancelled; each leaves at its next return from the kernel. A spawn handle carries the right. |
 | Path resolution | Lexical reduction first, then the longest mount name that matches on a component boundary. |
@@ -932,6 +933,29 @@ Everything else, including the whole of the IPC path and the whole of the schedu
 Each core has its own run queue and makes its own scheduling decisions. A thread has affinity to exactly one core at a time. There is no global run queue and no global scheduler lock.
 
 **Per-core state is found through a register**, so that reading what this core is doing costs one instruction and no agreement with another core. A scheduling decision that had to be agreed is not one that decomposes per core, which is the whole of the analysability argument. What lives there is the running thread, the address space it is in, the deferral counter and the slot a dead thread is parked in: each was a global, and each was justified in its own comment by there being one core.
+
+**A thread another core makes runnable arrives through a list rather
+than a queue.** The obvious way to put a thread on another core's queue
+is a lock around that queue, and it is the wrong way, because the core
+that owns the queue takes the same lock to dispatch from it. That is a
+core waiting on a decision another core is making, which is the thing a
+per-core queue exists to prevent. So a core pushes onto the owner's
+arriving list with one compare and exchange, and the owner takes the
+whole list in one exchange when it next decides. Neither side waits for
+the other.
+
+What arrives is not ordered. A thread goes on the queue its priority
+names as the owning core takes it off the list, and section 11.2 is
+where order comes from; the sequence in which threads happened to arrive
+from elsewhere is not a scheduling decision and is not preserved.
+
+**A core has to be something before it can dispatch.** Section 11.6
+makes idle a state of the core rather than a thread, and dispatching is
+still switching away from something. Each core therefore has a context
+of its own in the kernel's process, at the lowest priority, which offers
+the core back at every turn. It is not an idle thread in the sense 11.6
+rejects: it occupies no priority anything else uses and nothing waits on
+it, and a core running it is a core that is idle.
 
 **Starting a core is a port's problem and the two ports solve opposite ones.** A port with no firmware beneath it has every core arrive at the reset vector together, so the boot core's difficulty is holding the others back and starting one is releasing it. A port whose platform holds the others powered off starts one by asking for it by name. Both end with a core that has a stack, a vector table and a translation of its own, which is the only thing anything above cares about.
 

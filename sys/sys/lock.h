@@ -126,6 +126,17 @@ void klock_regain(bool had);
 #endif /* SYS_TIER == 2 */
 
 /*
+ * How many times any core has taken a lock another core could hold.
+ * Zero across a scheduling decision is section 11.4's requirement, and
+ * it is checked rather than asserted in prose.
+ */
+#if SYS_TIER == 2
+uint64_t spin_take_count(void);
+#else
+#define spin_take_count()       ((uint64_t)0)
+#endif
+
+/*
  * Two cores through the same kernel path at once, which is the only way
  * to find out whether the lock above does anything. Nothing is scheduled
  * on the second core until the next stage, so the two cores here are the

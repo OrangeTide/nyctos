@@ -117,6 +117,29 @@ struct thread {
     struct thread      *t_qnext;
 
     /*
+     * Which core this thread runs on, per section 11.4. Fixed when the
+     * thread is created and changed only by an explicit migration:
+     * nothing moves on its own, so where a thread runs is a fact about
+     * the program rather than about load.
+     */
+    uint32_t            t_core;
+
+    /*
+     * Link for the list of threads another core has made runnable on
+     * this one's. Separate from the queue link above because the two
+     * are live at once: a thread is on the arriving list until the core
+     * that owns it takes it off and puts it on a queue.
+     */
+    struct thread      *t_inext;
+
+    /*
+     * Which cores this thread has ever been queued on, one bit each.
+     * Section 11.4 has nothing move on its own, and the way to check
+     * that is to ask where a thread has been rather than where it is.
+     */
+    uint32_t            t_linked_on;
+
+    /*
      * Wait state. A thread is blocked on at most one object at a time per
      * section 5, so one link and one awaited value is all any of this ever
      * needs, however many kinds of thing become waitable.
@@ -407,5 +430,8 @@ void thread_set_current(struct thread *t);
 /* Machine-dependent, in sys/arch/<arch>. */
 void md_thread_init(struct thread *t, void (*entry)(void *), void *arg);
 void md_switch(void **old_sp, void *new_sp);
+
+/* Which cores this thread has ever been queued on, one bit each. */
+uint32_t thread_linked_cores(const struct thread *t);
 
 #endif /* _SYS_THREAD_H_ */

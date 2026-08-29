@@ -262,6 +262,16 @@ thread_bootstrap(const char *name, uint8_t prio, struct proc *p)
     t->t_name = name;
     t->t_prio = prio;
     t->t_base_prio = prio;
+
+    /*
+     * On the core that made it, per section 11.4. Nothing moves on its
+     * own, so a thread that is never migrated runs where it was
+     * created for as long as it exists.
+     */
+    t->t_core = cpu_self()->cp_index;
+    t->t_linked_on = 0;
+    t->t_inext = NULL;
+
     timeline_init(&t->t_completion, name);
     timeline_embed(&t->t_completion, SYS_OBJ_THREAD, t);
     thread_set_proc(t, p);
@@ -306,6 +316,9 @@ thread_alloc(const char *name, uint8_t prio, void (*entry)(void *),
     t->t_name = name;
     t->t_prio = prio;
     t->t_base_prio = prio;
+    t->t_core = cpu_self()->cp_index;
+    t->t_linked_on = 0;
+    t->t_inext = NULL;
     t->t_proc = NULL;
     timeline_init(&t->t_completion, name);
     timeline_embed(&t->t_completion, SYS_OBJ_THREAD, t);
@@ -578,4 +591,10 @@ thread_cancel(struct thread *t)
     md_intr_restore(s);
 
     return SYS_OK;
+}
+
+uint32_t
+thread_linked_cores(const struct thread *t)
+{
+    return t->t_linked_on;
 }

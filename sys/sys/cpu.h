@@ -36,6 +36,17 @@
 
 struct thread;
 
+/*
+ * A FIFO per priority level, per section 11.2, and one set of them per
+ * core. Section 11.4 has each core decide from its own queue and take no
+ * lock another core could be holding, which is the whole of why this is
+ * here rather than a static in the scheduler.
+ */
+struct runq {
+    struct thread  *rq_head;
+    struct thread  *rq_tail;
+};
+
 struct cpu {
     uint32_t        cp_index;
 
@@ -59,6 +70,38 @@ struct cpu {
      * once, and one slot for the system would lose one of them.
      */
     struct thread  *cp_reap;
+
+    /*
+     * This core's run queues and the bitmap of which are not empty.
+     * Touched by this core only, with interrupts disabled, and never
+     * by another: a thread another core wants to run here arrives
+     * through the list below instead.
+     */
+    struct runq         cp_runq[SYS_PRIO_COUNT];
+    uint32_t            cp_ready;
+
+    /*
+     * Threads another core has made runnable here, newest first,
+     * pushed with a compare and exchange and taken off in one
+     * exchange. A list and not a queue because the order threads
+     * arrive in from elsewhere is not a scheduling decision: this core
+     * puts each one on the queue its priority names, and that is where
+     * the order comes from.
+     *
+     * Section 11.4 is the reason this is not simply a lock around the
+     * queues. A core that had to take one to dispatch would be waiting
+     * on a decision another core is making, which is exactly what a
+     * per-core queue is for avoiding.
+     */
+    struct thread      *cp_incoming;
+
+    /*
+     * How many times this core has taken a lock another core could be
+     * holding. Per core because the question is what this core's
+     * dispatch path did, and a system-wide count answers what the
+     * machine did.
+     */
+    uint64_t            cp_locks;
 
     /*
      * How many times this core has had nothing to do, and whether it

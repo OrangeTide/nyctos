@@ -4748,7 +4748,7 @@ thread as current on a core it is not yet running on. Nothing reads
 another core's current thread yet, and the stage that puts work on the
 second core is the stage that makes it readable.
 
-**3. A ready queue per core, and threads that stay where they are put.**
+**3. A ready queue per core, and threads that stay where they are put.** *Built.*
 
 - Each core dispatches from its own queue and takes no lock the other
   core could be holding. That is section 11.4's requirement and the only
@@ -4764,6 +4764,69 @@ enough for a balancer to have moved it if there were one. And the
 dispatch path is checked for what it does not do: a counter of lock
 acquisitions on that path, asserted at zero for locks another core could
 hold.
+
+*Built.* The queues and the bitmap moved from statics in the scheduler
+into the per-core structure, which is the whole of the mechanism. A
+thread carries the core it belongs to, fixed when it is created and
+changed only by `sched_migrate`, and the enqueue path routes by it: onto
+this core's queue directly, or onto the owning core's arriving list with
+one compare and exchange.
+
+**The arriving list is what makes the decision lock-free, and it exists
+because a lock here would be the wrong lock.** Putting a thread on
+another core's queue under a lock means that core takes the same lock to
+dispatch, which is a core waiting on a decision another core is making.
+That is exactly what section 11.4 says a per-core queue is for avoiding.
+One exchange takes the whole list, so a core sending while the owner
+drains simply starts a new one and nothing waits for anything. The order
+of arrival is not preserved and is not a scheduling decision: each
+thread goes on the queue its priority names, and section 11.2 is where
+order comes from.
+
+**The claim that dispatch takes no such lock is a counter and not a
+reading of the source.** Every acquisition of a lock another core could
+hold is counted, and the count is sampled either side of the decision
+and asserted unchanged. Making the decision take the kernel lock fails
+with `the decision took 1 locks another core could hold`.
+
+That counter was wrong the first time in a way worth recording, because
+it was wrong in the direction that hides nothing and cries wolf: one
+counter for the system counts the other core's locks as well as this
+one's, so a decision taken here failed because a system call was made
+there. It fired within a second of the check session starting. A claim
+about what this core's path does needs a number about this core.
+
+**A second core needs something to be before it can dispatch.** Section
+11.6 has idle be a state of the core rather than a thread, and
+dispatching still means switching away from something. So each core
+bootstraps a context of its own in the kernel's process, at the lowest
+priority, which offers the core back at every turn. Anything migrated
+there outranks it and runs. That is one more thread at Tier 2 and the
+resource file says so; the recorded session is unchanged, which is the
+point of a partitioned system.
+
+**It spins, and that is the shape of the hole the next stage fills.** A
+core waiting on `md_cpu_wait` is woken by an interrupt, and the interrupt
+that would say something arrived for you is the inter-processor one that
+stage four builds. Until then a core with nothing to do looks at its
+arriving list instead of sleeping. Stage one recorded that an idle count
+of one was the right answer; it is millions now, and it will be one
+again when there is something to wake it.
+
+**Two checks, and the failing case had to be made to fail properly.** A
+thread migrated before it was ever runnable runs on the second core and
+says so, and the bitmap of cores it was ever queued on holds only the
+second: the claim is that the first core never had it, which is a
+question about history rather than about now. A thread nothing migrates
+takes two thousand turns and every one is on the core it started on.
+
+The first version of the migration check waited by spinning, and when
+migration was disabled to see it fail, it hung instead of reporting.
+A thread that was not migrated sits on this core's queue behind a thread
+that never yields. Waiting by yielding, at the priority the migrated
+thread has, turns that silence into `it ran on core 0` followed by the
+panic that says so. A check whose failure mode is a hang is a check that
+has not been read.
 
 **4. Donation across a core boundary.**
 

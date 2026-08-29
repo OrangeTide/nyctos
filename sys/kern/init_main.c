@@ -4767,6 +4767,117 @@ cohort_checks(void)
  * checks that created them. Root will hold both when there is a root;
  * until then the kernel is what assembles the system. */
 
+
+#if SYS_TIER == 2
+/*
+ * Section 11.4: a thread runs on the core it was put on, and nothing
+ * puts it anywhere else.
+ */
+static volatile uint32_t migrant_core = 0xffffffffu;
+static volatile uint32_t migrant_links;
+static volatile uint32_t migrant_done;
+static volatile uint32_t stayer_cores;
+static volatile uint32_t stayer_rounds;
+static volatile uint32_t stayer_stop;
+
+static void
+migrant_thread(void *arg)
+{
+    (void)arg;
+
+    migrant_core = cpu_self()->cp_index;
+
+    /*
+     * Read from inside the thread because it is the only place the
+     * thread is certainly still there to be asked. A slot goes back to
+     * the pool when the last thing that could ask about it lets go.
+     */
+    migrant_links = thread_linked_cores(thread_current());
+    migrant_done = 1;
+}
+
+static void
+stayer_thread(void *arg)
+{
+    (void)arg;
+
+    while (stayer_stop == 0) {
+        stayer_cores |= (uint32_t)1 << cpu_self()->cp_index;
+        stayer_rounds++;
+        sched_yield();
+    }
+}
+
+static void
+core_checks(void)
+{
+    struct thread *t;
+    uint32_t spin;
+
+    cnputs("cores: where a thread runs, section 11.4\n");
+
+    /*
+     * Migrated before it has ever been runnable, so that the core it
+     * started on never has it on a queue at all. Migrating it after
+     * would work and would prove less: the check is that a thread put
+     * on the other core was never on this one.
+     */
+    t = thread_create("migrant", PRIO_BOOT, migrant_thread, NULL);
+    expect("moving it to the second core", sched_migrate(t, 1), SYS_OK);
+    expect("moving it to a core that is not there",
+      sched_migrate(t, SYS_MAX_CORES), SYS_ERR_INVALID_ARG);
+    expect("moving the thread that is running",
+      sched_migrate(thread_current(), 1), SYS_ERR_WOULDBLOCK);
+    sched_ready(t);
+
+    /*
+     * Offered the core while waiting, and at the same priority the
+     * migrated thread has. A wait that spun instead would prove less
+     * and say less: a thread that was never migrated would sit on this
+     * core's queue behind a thread that never yields, and the check
+     * would hang rather than report where it ran.
+     */
+    for (spin = 0; spin < 2000000u && migrant_done == 0; spin++) {
+        sched_yield();
+    }
+    if (migrant_done == 0) {
+        panic("cores: the migrated thread never ran");
+    }
+
+    cnprintf("    it ran on core %u                       %s\n",
+      (unsigned int)migrant_core, migrant_core == 1 ? "OK" : "WRONG");
+    if (migrant_core != 1) {
+        panic("cores: migrated to core 1 and ran on core %u",
+          (unsigned int)migrant_core);
+    }
+    if (migrant_links != ((uint32_t)1 << 1)) {
+        panic("cores: it was queued on 0x%lx and only core 1 was asked",
+          (unsigned long)migrant_links);
+    }
+    cnputs("    and core 0 never had it queued         OK\n");
+
+    /*
+     * And one that is not migrated, over a run long enough that a
+     * balancer would have had every chance to move it.
+     */
+    t = thread_create("stayer", PRIO_BOOT, stayer_thread, NULL);
+    sched_ready(t);
+
+    while (stayer_rounds < 2000) {
+        sched_yield();
+    }
+    stayer_stop = 1;
+    sched_yield();
+
+    cnprintf("    %lu turns, all on core %u              OK\n",
+      (unsigned long)stayer_rounds,
+      (unsigned int)(31u - (unsigned int)__builtin_clz(stayer_cores)));
+    if (stayer_cores != 1u) {
+        panic("cores: a thread nothing moved ran on 0x%lx",
+          (unsigned long)stayer_cores);
+    }
+}
+#endif /* SYS_TIER == 2 */
 static void
 user_slice(void)
 {
@@ -4991,19 +5102,22 @@ kernel_main(void)
 
     sched_init();
 
+    kproc = proc_bootstrap("kernel");
+    thread_bootstrap("boot", PRIO_BOOT, kproc);
+
     /*
-     * And the others, once there is a kernel for them to arrive into:
-     * a core that starts before the frame allocator and the page
-     * tables exist has nothing to run on. They idle from here, because
-     * section 11.4 gives each one a queue of its own and nothing has
-     * been put in theirs.
+     * The other cores, once there is a kernel process for each of them
+     * to bootstrap a thread of its own in. A core arriving before that
+     * has queues but nothing to be: dispatching means switching away
+     * from something, and section 11.6 has idle be a state of the core
+     * rather than a thread, which is a state something has to be in.
      */
     cpu_start_others();
     cpu_report();
     lock_check();
-
-    kproc = proc_bootstrap("kernel");
-    thread_bootstrap("boot", PRIO_BOOT, kproc);
+#if SYS_TIER == 2
+    core_checks();
+#endif
 
     cnputs("ops: the entry point\n");
     expect("nop", run(SYS_OP_NOP, 0, NULL, 0), SYS_OK);

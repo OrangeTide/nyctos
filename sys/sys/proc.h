@@ -198,6 +198,13 @@ struct proc *proc_bootstrap(const char *name);
 struct proc *proc_current(void);
 
 /*
+ * The kernel's own process, which every core reaches: a core other than
+ * the first bootstraps a context of its own to dispatch away from, and
+ * that context belongs to no program.
+ */
+struct proc *proc_kernel(void);
+
+/*
  * Create a process, move the listed handles into it, and start a thread in
  * it. Authority flows downward: the child reaches exactly what is placed
  * here and the kernel grants nothing on request, so an empty list is a

@@ -28,10 +28,30 @@ spin_held(const struct spinlock *l)
     return l->sl_locked != 0 && l->sl_owner == cpu_self()->cp_index + 1;
 }
 
+/*
+ * How many times this core has taken a lock another core could be
+ * holding. Section 11.4 has a core dispatch without doing that, and a
+ * claim about what a path does not do is worth a counter rather than a
+ * reading of the source.
+ *
+ * Per core, and it was not at first. One counter for the system counts
+ * the other core's locks as well as this one's, so a decision taken
+ * here failed because a system call was made there, which is a check
+ * that reports the thing it is watching for whenever the machine is
+ * busy.
+ */
+uint64_t
+spin_take_count(void)
+{
+    return cpu_self()->cp_locks;
+}
+
 void
 spin_lock(struct spinlock *l)
 {
     uint32_t self = cpu_self()->cp_index + 1;
+
+    cpu_self()->cp_locks++;
 
     /*
      * Asked before spinning and not after. A core that already holds
