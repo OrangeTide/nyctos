@@ -104,6 +104,13 @@ push_arriving(struct thread *t)
         t->t_inext = head;
         if (__atomic_compare_exchange_n(&target->cp_incoming, &head, t,
               false, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+            /*
+             * And told, per section 11.4. Leaving it on the list is
+             * leaving it until that core happens to decide again for
+             * some other reason, and a donation that arrives when the
+             * core next feels like it is a donation that did not work.
+             */
+            md_cpu_ipi(t->t_core);
             return;
         }
     }
@@ -315,6 +322,8 @@ sched_idle(void)
      * to deliver itself. A core asleep with the lock held is a core
      * holding the door shut against the only thing that would wake it.
      */
+    cpu_self()->cp_idle++;
+
     had = klock_drop();
 
     for (;;) {
@@ -618,11 +627,18 @@ sched_reprioritise(struct thread *t, uint8_t prio)
 void
 sched_secondary(void)
 {
-    struct cpu *self = cpu_self();
-
+    /*
+     * It leaves the run set and nothing ever makes it runnable again,
+     * so the core drops into the idle wait and stays there until
+     * something arrives. That is section 11.6 exactly: idle is a state
+     * of the core, and this context exists only to be the thing the
+     * core dispatches away from.
+     *
+     * It span, before there was an inter-processor interrupt to wake
+     * it. What it cost was a core at full tilt looking at a list.
+     */
     for (;;) {
-        self->cp_idle++;
-        sched_yield();
+        sched_block();
     }
 }
 
@@ -694,4 +710,44 @@ uint64_t
 sched_decisions(void)
 {
     return cpu_self()->cp_dispatches;
+}
+
+/*
+ * Another core has put something here and said so.
+ *
+ * The interrupt itself is the whole message: there is nothing to read,
+ * because what arrived is on the list and the list is what is looked
+ * at. What this adds over waiting is promptness, which is the entire
+ * point of section 11.4 sending one.
+ */
+void
+sched_ipi(void)
+{
+    struct thread *cur = thread_current();
+    int best;
+
+    take_arriving();
+
+    /*
+     * Preempt only for something that outranks what is running, which
+     * is section 11.3 applied to a thread that arrived rather than to
+     * one this core made runnable. A core running nothing is already on
+     * its way to a decision and needs no help from here.
+     */
+    if (cur == NULL) {
+        return;
+    }
+
+    best = highest_ready();
+    if (best < 0 || (uint8_t)best <= cur->t_prio) {
+        return;
+    }
+
+    if (defer_depth > 0) {
+        defer_pending = true;
+        return;
+    }
+
+    enqueue(cur);
+    dispatch();
 }

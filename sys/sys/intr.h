@@ -48,6 +48,21 @@ void md_intr_enable(void);
 /* Set up the interrupt controller. Interrupts stay masked until enabled. */
 void md_intr_init(void);
 
+/*
+ * The part of that which is per core. One machine has one controller
+ * and each core has its own way in to it, so a core that has not done
+ * this receives nothing however well the machine is set up.
+ */
+void md_intr_init_core(void);
+
+/*
+ * Poke another core, per section 11.4: donation across a boundary
+ * raises the target thread's priority and tells the core running it to
+ * decide again. md_cpu_ipi_irq names the interrupt that arrives.
+ */
+void md_cpu_ipi(uint32_t index);
+unsigned int md_cpu_ipi_irq(void);
+
 /* Wait for an interrupt. Used only by the idle path. */
 void md_idle_wait(void);
 

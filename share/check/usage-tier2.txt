@@ -1,4 +1,4 @@
-used at most: 17 of 32 threads, 13 of 24 processes
-  kernel stacks under those threads: 69632 bytes
+used at most: 18 of 32 threads, 13 of 24 processes
+  kernel stacks under those threads: 73728 bytes
   buffer remapping: 20 pages in 20 halves, 40 entries, 4 tables, 20 invalidations, 0 flushes
 stage 9 complete

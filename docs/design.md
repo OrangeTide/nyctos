@@ -502,6 +502,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Cores | Per-core state through a register, at Tier 2 only. A core the build asked for and did not get stops the boot. |
 | Kernel lock | One lock for the whole kernel at Tier 2, taken at every entry from the exception vectors and held with interrupts off. Put down at a context switch and around the idle wait. A stated deviation from section 13.3. |
 | Placement | A run queue per core, and a thread runs where it was put. Threads arrive from another core through a list pushed with one compare and exchange, so no core takes a lock to dispatch. |
+| Cross-core donation | The priority is set where the thread is, which is on no queue because it is blocked at a rendezvous. The interrupt says something arrived, not what priority it has. |
 | Peer death | A server is told with a pulse because it is at a receive point. A client is failed with OWNER_DEAD because it is not. |
 | Killing | Unblocks every thread as if cancelled; each leaves at its next return from the kernel. A spawn handle carries the right. |
 | Path resolution | Lexical reduction first, then the longest mount name that matches on a component boundary. |
@@ -956,6 +957,19 @@ of its own in the kernel's process, at the lowest priority, which offers
 the core back at every turn. It is not an idle thread in the sense 11.6
 rejects: it occupies no priority anything else uses and nothing waits on
 it, and a core running it is a core that is idle.
+
+**Donation across a boundary sets the priority where the thread is and
+sends the interrupt to say so.** A server is blocked at a receive when
+its client sends, so it is on no core's run queue, and a thread on no
+queue can have its priority written by whoever holds the rendezvous.
+The interrupt is not carrying the donation; it is carrying the news that
+something runnable has arrived. Without it the target core sits in the
+idle wait with work on its list, which is a thread that never runs
+rather than a thread that runs at the wrong priority.
+
+Raising the priority of a thread that is already queued on another core
+is a different problem and is refused rather than attempted, because
+moving it between that core's queues is that core's business.
 
 **Starting a core is a port's problem and the two ports solve opposite ones.** A port with no firmware beneath it has every core arrive at the reset vector together, so the boot core's difficulty is holding the others back and starting one is releasing it. A port whose platform holds the others powered off starts one by asking for it by name. Both end with a core that has a stack, a vector table and a translation of its own, which is the only thing anything above cares about.
 

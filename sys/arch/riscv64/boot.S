@@ -22,6 +22,9 @@
 
 #define SECONDARY_STACK_BYTES   4096
 
+/* The core-local interruptor. Its first words are one per hart. */
+#define CLINT_MSIP              0x02000000
+
 .section .text.boot
 .global _start
 
@@ -59,9 +62,13 @@ zero_done:
      * does not have, and menvcfg below is the candidate, traps to
      * mtvec, and an mtvec nobody set is address zero: the machine
      * stops with nothing printed, which is how this was found.
+     *
+     * One machine interrupt is enabled now and is handled rather than
+     * fatal. See machine_trap.
      */
-    la      t0, machine_fatal
+    la      t0, machine_trap
     csrw    mtvec, t0
+    call    machine_ipi_setup
 
     /*
      * The invariant the trap path reads: sscratch holds a parked
@@ -189,8 +196,9 @@ secondary_park:
     mul     t1, t1, t2
     add     sp, sp, t1
 
-    la      t0, machine_fatal
+    la      t0, machine_trap
     csrw    mtvec, t0
+    call    machine_ipi_setup
     csrw    sscratch, zero
 
     li      t0, -1
@@ -238,6 +246,79 @@ supervisor_secondary:
     la      t0, hart_entry
     ld      t0, 0(t0)
     jr      t0
+
+/*
+ * There is no firmware under this kernel, so the job firmware would do
+ * for an inter-processor interrupt is done here.
+ *
+ * A hart is poked by writing its word in the CLINT, and that word
+ * raises a machine software interrupt, which is one of the interrupts
+ * that cannot be delegated: the machine mode bits in mideleg are
+ * read-only zero however hard the line above writes ones into it. So
+ * the poke lands here, in a mode the kernel left and does not return
+ * to, and what this does is hand it to the mode the kernel is in.
+ *
+ * That is exactly what an SBI implementation does with the same
+ * interrupt. This kernel is its own.
+ */
+.balign 4
+machine_trap:
+    /*
+     * Somewhere to put three registers without disturbing the mode this
+     * interrupted. mscratch holds this hart's own area, which is what
+     * makes this safe with two harts in here at once.
+     */
+    csrrw   sp, mscratch, sp
+    sd      t0, 0(sp)
+    sd      t1, 8(sp)
+    sd      t2, 16(sp)
+
+    csrr    t0, mcause
+    li      t1, 3                   /* machine software interrupt */
+    li      t2, 1
+    slli    t2, t2, 63              /* the interrupt bit */
+    or      t1, t1, t2
+    bne     t0, t1, machine_trap_fatal
+
+    /*
+     * Taken back before it is passed on. The CLINT word stays raised
+     * until it is written, and a hart that returns without clearing it
+     * arrives back here immediately and forever.
+     */
+    csrr    t0, mhartid
+    slli    t0, t0, 2
+    li      t1, CLINT_MSIP
+    add     t1, t1, t0
+    sw      zero, 0(t1)
+
+    /* And raised for supervisor mode, which is where the kernel is. */
+    li      t1, 2                   /* mip.SSIP */
+    csrs    mip, t1
+
+    ld      t0, 0(sp)
+    ld      t1, 8(sp)
+    ld      t2, 16(sp)
+    csrrw   sp, mscratch, sp
+    mret
+
+machine_trap_fatal:
+    j       machine_fatal
+
+/*
+ * The save area this hart's machine-mode trap uses, and the one machine
+ * interrupt this kernel enables.
+ */
+.balign 4
+machine_ipi_setup:
+    csrr    t0, mhartid
+    slli    t0, t0, 5               /* thirty-two bytes each */
+    la      t1, mtrap_save
+    add     t1, t1, t0
+    csrw    mscratch, t1
+
+    li      t0, 8                   /* mie.MSIE */
+    csrs    mie, t0
+    ret
 
 /*
  * A machine-mode trap, which is a trap nothing expected.
@@ -296,3 +377,12 @@ hart_entry:
 .balign 16
 secondary_stacks:
     .space  SECONDARY_STACK_BYTES * SYS_MAX_CORES
+
+/*
+ * Where each hart puts three registers while it is in machine mode
+ * handing an inter-processor interrupt to supervisor mode. One area per
+ * hart, because two of them can be in there at once.
+ */
+.balign 16
+mtrap_save:
+    .space  32 * SYS_MAX_CORES

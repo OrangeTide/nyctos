@@ -4934,6 +4934,146 @@ core_checks(void)
     }
 }
 #endif /* SYS_TIER == 2 */
+
+#if SYS_TIER == 2
+/*
+ * Section 11.4: donation crosses a core boundary. The server is pinned
+ * to the second core and the client runs on the first, so the priority
+ * the server serves at had to travel with an inter-processor interrupt
+ * to get there.
+ */
+#define XC_SERVER_PRIO  4
+#define XC_CLIENT_PRIO  9
+
+static struct channel *ch_xc;
+static sys_handle_t h_xc_recv;
+static volatile uint32_t xc_served;
+static volatile uint8_t xc_prio_serving;
+static volatile uint8_t xc_prio_after;
+static volatile uint32_t xc_core;
+
+static void
+xc_server(void *arg)
+{
+    struct sys_op_recv_args rx;
+    struct sys_op_reply_args tx;
+
+    (void)arg;
+
+    for (;;) {
+        memset(&rx, 0, sizeof(rx));
+        if (run(SYS_OP_IPC_RECV, h_xc_recv, &rx, sizeof(rx)) != SYS_OK) {
+            panic("xc server: receive failed");
+        }
+
+        /*
+         * What it is running at while it serves, and which core it is
+         * on. The first is the donation and the second is what makes
+         * it a donation that crossed.
+         */
+        xc_prio_serving = thread_current()->t_prio;
+        xc_core = cpu_self()->cp_index;
+
+        memset(&tx, 0, sizeof(tx));
+        tx.peer = rx.peer;
+        tx.reply.inline_len = 3;
+        memcpy(tx.reply.inline_data, "ok", 3);
+        if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
+            panic("xc server: reply failed");
+        }
+
+        /* And what it drops back to once the reply has undone it. */
+        xc_prio_after = thread_current()->t_prio;
+        xc_served++;
+    }
+}
+
+static void
+xc_client(void *arg)
+{
+    struct sys_op_send_args tx;
+    int i;
+
+    for (i = 0; i < 3; i++) {
+        memset(&tx, 0, sizeof(tx));
+        tx.request.inline_len = 3;
+        memcpy(tx.request.inline_data, "xc", 3);
+        if (run(SYS_OP_IPC_SEND, (sys_handle_t)(uintptr_t)arg, &tx,
+          sizeof(tx)) != SYS_OK) {
+            panic("xc client: send failed");
+        }
+    }
+
+    thread_exit(0);
+}
+
+static void
+cross_core_donation_checks(void)
+{
+    struct proc *p = proc_current();
+    struct thread *server;
+    sys_handle_t send_h;
+    uint32_t spin;
+    sys_err_t err;
+
+    cnputs("donation: across a core boundary, section 11.4\n");
+
+    ch_xc = channel_create("xc", p);
+    if (ch_xc == NULL) {
+        panic("xc: no channel");
+    }
+    err = handle_insert(&p->p_handles, ch_xc, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_xc_recv);
+    expect("a receive handle on the crossing channel", err, SYS_OK);
+    err = handle_insert(&p->p_handles, ch_xc, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND, &send_h);
+    expect("a send handle on it", err, SYS_OK);
+
+    /*
+     * The server below the client and on the other core. Both halves
+     * matter: below, or there is nothing to donate, and elsewhere, or
+     * the donation never leaves this core.
+     */
+    server = thread_create("xc-server", XC_SERVER_PRIO, xc_server, NULL);
+    expect("pinning the server to the second core",
+      sched_migrate(server, 1), SYS_OK);
+    sched_ready(server);
+
+    sched_ready(thread_create("xc-client", XC_CLIENT_PRIO, xc_client,
+      (void *)(uintptr_t)send_h));
+
+    for (spin = 0; spin < 2000000u && xc_served < 3; spin++) {
+        sched_yield();
+    }
+    if (xc_served < 3) {
+        panic("donation: the server on the other core served %lu of 3",
+          (unsigned long)xc_served);
+    }
+
+    cnprintf("    a server based at %u served at %u          %s\n",
+      (unsigned int)XC_SERVER_PRIO, (unsigned int)xc_prio_serving,
+      xc_prio_serving == XC_CLIENT_PRIO ? "OK" : "WRONG");
+    if (xc_prio_serving != XC_CLIENT_PRIO) {
+        panic("donation: served at %u and the client was at %u",
+          (unsigned int)xc_prio_serving, (unsigned int)XC_CLIENT_PRIO);
+    }
+
+    cnprintf("    on core %u, which is not the client's    OK\n",
+      (unsigned int)xc_core);
+    if (xc_core != 1) {
+        panic("donation: the server ran on core %u",
+          (unsigned int)xc_core);
+    }
+
+    cnprintf("    and back to %u once the reply undid it   %s\n",
+      (unsigned int)xc_prio_after,
+      xc_prio_after == XC_SERVER_PRIO ? "OK" : "WRONG");
+    if (xc_prio_after != XC_SERVER_PRIO) {
+        panic("donation: left at %u after the reply",
+          (unsigned int)xc_prio_after);
+    }
+}
+#endif /* SYS_TIER == 2 */
 static void
 user_slice(void)
 {
@@ -5156,6 +5296,18 @@ kernel_main(void)
         panic("time: could not claim the timer interrupt");
     }
 
+#if SYS_TIER == 2
+    /*
+     * And the poke one core sends another, per section 11.4. It is a
+     * kernel handler and not a timeline for the same reason the timer
+     * is: nothing waits for it, and what it means is decide again.
+     */
+    if (irq_attach_handler(md_cpu_ipi_irq(), sched_ipi) != SYS_OK) {
+        panic("cores: could not claim the inter-processor interrupt");
+    }
+    md_intr_init_core();
+#endif
+
     sched_init();
 
     kproc = proc_bootstrap("kernel");
@@ -5212,6 +5364,9 @@ kernel_main(void)
     chain_checks();
     reply_error_checks();
     high_priority_server_checks();
+#if SYS_TIER == 2
+    cross_core_donation_checks();
+#endif
 
     cnputs("the slice: a file read from another process\n");
     slice_checks();

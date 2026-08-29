@@ -246,6 +246,13 @@ cpu_secondary_entry(void)
     lock_check_secondary();
 
     /*
+     * Its own way in to the interrupt controller, before it has
+     * anything to be woken for. A core that cannot be poked is a core
+     * the other one can put work on and never tell.
+     */
+    md_intr_init_core();
+
+    /*
      * Its own queues, and something to be while it has nothing to run.
      * Section 11.6 has idle be a state of the core rather than a
      * thread, and this is not a thread in that sense: it is the

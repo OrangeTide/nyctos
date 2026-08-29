@@ -4879,7 +4879,7 @@ been leaving a handle in the table: a later check asserts that table is
 empty, and a check that leaves something behind fails a check that has
 nothing to do with it.
 
-**4. Donation across a core boundary.**
+**4. Donation across a core boundary.** *Built.*
 
 - A donating core raises the target's inherited priority and sends an
   inter-processor interrupt; the target's core reschedules on receiving
@@ -4893,6 +4893,62 @@ server reports. Dropping the inter-processor interrupt leaves the server
 at its base priority until something else happens to reschedule that
 core, and the check sees the priority rather than the eventual delivery,
 because a donation that arrives late is a donation that did not work.
+
+*Built.* A server based at priority 4 and pinned to the second core
+serves a client at 9 running on the first, at 9, and drops back to 4
+when the reply undoes it.
+
+**The donation does not ride the interrupt, and the stage predicted it
+would.** The plan said dropping the inter-processor interrupt would
+leave the server at its base priority until something else rescheduled
+that core. It does not. A server is blocked at a receive when its client
+sends, which means it is on no core's run queue, and a thread on no
+queue can have its priority written by whoever is holding the
+rendezvous. The priority is set before the thread is handed over. What
+the interrupt carries is the wake.
+
+So the check that was described cannot be written, and what replaces it
+is stronger. Dropping the interrupt does not degrade the server, it
+strands it: the second core is in the idle wait and nothing else is
+going to arrive, so the thread never runs at all and the earlier check
+fails first with `the migrated thread never ran`. Breaking the donation
+instead of the interrupt gives `served at 4 and the client was at 9`.
+Two failures, two mechanisms, and they are separable, which they would
+not be if the priority travelled in the message.
+
+**The port that has no firmware had to be its own.** A hart is poked by
+writing its word in the core-local interruptor, and that raises a machine
+software interrupt, which is one of the two kinds that cannot be
+delegated: the machine-mode bits of the delegation register are read-only
+zero however hard the boot code writes ones into it. So the poke lands in
+a mode the kernel has left and does not return to. Machine mode now
+catches it, takes it back down, raises it again for supervisor mode and
+returns, which is exactly what an SBI implementation does with the same
+interrupt. This kernel is its own, and the three registers it borrows to
+do it come from an area per hart, because two harts can be in there at
+once.
+
+**The other port needed the opposite thing split apart.** Its
+distributor is one device for the machine and its CPU interface is one
+per core, and both were configured in one function called once. A core
+that never ran that half receives nothing however well the machine is
+set up, so the per-core half is its own function and every core calls
+it on the way in.
+
+**The second core stopped spinning.** Stage three had it offering the
+core back in a loop, because there was no way to wake it. It blocks now
+and never becomes runnable again, so the core falls into the idle wait
+and stays there: section 11.6 taken literally, with the context existing
+only to be the thing the core dispatches away from. Stage one predicted
+an idle count of one and got one, stage three made it millions, and it
+is five and six now on the two ports.
+
+**What is still guarded rather than solved.** Raising the priority of a
+thread that is queued on another core still stops the machine, because
+moving it between that core's queues is that core's business. Donation
+never reaches it: a server at a rendezvous is blocked, not queued. The
+stage that needs it is the one that donates to a thread that is already
+runnable somewhere else, and nothing does yet.
 
 **5. What two cores did to the measurements.**
 

@@ -203,6 +203,18 @@ md_map_devices(struct addrspace *as)
         return err;
     }
 
+    /*
+     * The core-local interruptor, one page of it. One word per hart,
+     * and writing another hart's word is how a core is poked: section
+     * 11.4 has donation cross a boundary by inter-processor interrupt,
+     * and this is the device that carries one on this port.
+     */
+    err = md_map(as, 0x02000000UL, 0x02000000UL, 0x1000UL,
+      VM_READ | VM_WRITE | VM_DEVICE);
+    if (err != SYS_OK) {
+        return err;
+    }
+
     /* The PLIC, which is four megabytes of it. */
     err = md_map(as, 0x0c000000UL, 0x0c000000UL, 0x00400000UL,
       VM_READ | VM_WRITE | VM_DEVICE);

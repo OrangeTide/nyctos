@@ -82,6 +82,9 @@ void sched_undefer(void);
  */
 sys_err_t sched_migrate(struct thread *t, uint32_t core);
 
+/* Another core has made something runnable here and said so. */
+void sched_ipi(void);
+
 /*
  * The scheduling loop of a core that is not the first one. Does not
  * return: the core is either running something migrated to it or is

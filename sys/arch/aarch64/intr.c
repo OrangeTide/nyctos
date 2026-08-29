@@ -24,6 +24,7 @@
 #define GICD_ICENABLER  0x180
 #define GICD_IPRIORITYR 0x400
 #define GICD_ITARGETSR  0x800
+#define GICD_SGIR       0xf00
 
 #define GICC_CTLR       0x000
 #define GICC_PMR        0x004
@@ -39,6 +40,13 @@
  * timer, which is per-core by construction, it has to be routed to a
  * core and given a priority the CPU interface will accept.
  */
+/*
+ * The software generated interrupt a core is poked with. Section 11.4
+ * has donation cross a boundary this way, and on this port the
+ * distributor sends one core an interrupt on behalf of another.
+ */
+#define IPI_SGI         0
+
 #define UART_SPI        1
 #define UART_INTID      (32 + UART_SPI)
 
@@ -92,10 +100,7 @@ void
 md_intr_init(void)
 {
     mmio_write(GICD_BASE, GICD_CTLR, 1);
-
-    /* Accept every priority, then let the CPU interface deliver. */
-    mmio_write(GICC_BASE, GICC_PMR, 0xff);
-    mmio_write(GICC_BASE, GICC_CTLR, 1);
+    md_intr_init_core();
 
     /*
      * A shared peripheral interrupt reaches no core until it is told
@@ -105,6 +110,41 @@ md_intr_init(void)
      */
     mmio_write8(GICD_BASE, GICD_ITARGETSR + UART_INTID, 0x01);
     mmio_write8(GICD_BASE, GICD_IPRIORITYR + UART_INTID, 0x80);
+}
+
+/*
+ * What each core has to do for itself. The distributor is one device
+ * for the machine and the CPU interface is one per core, so a core
+ * that has not done this receives nothing however well the machine is
+ * configured.
+ */
+void
+md_intr_init_core(void)
+{
+    /* Accept every priority, then let the CPU interface deliver. */
+    mmio_write(GICC_BASE, GICC_PMR, 0xff);
+    mmio_write(GICC_BASE, GICC_CTLR, 1);
+
+    /*
+     * The software generated interrupt this core is poked with. Its
+     * priority register is banked per core, so this is the core's own
+     * even though the address is not.
+     */
+    mmio_write8(GICD_BASE, GICD_IPRIORITYR + IPI_SGI, 0x80);
+    mmio_write(GICD_BASE, GICD_ISENABLER, (uint32_t)1 << IPI_SGI);
+}
+
+unsigned int
+md_cpu_ipi_irq(void)
+{
+    return IPI_SGI;
+}
+
+void
+md_cpu_ipi(uint32_t index)
+{
+    mmio_write(GICD_BASE, GICD_SGIR,
+      ((uint32_t)1 << (16 + index)) | IPI_SGI);
 }
 
 void
