@@ -5202,6 +5202,44 @@ on one. The argument that partitioning buys analysability is untouched,
 because nothing here measured latency; that is M9's question and it is
 the one that will decide whether the trade was worth making.
 
+*Reviewed.* Three findings, one of which is about how the checking was
+done rather than what it checked.
+
+**The guard that proved the crossing happened could pass without one.**
+It asserted that the pinned read cost more than zero pokes, and a poke
+is sent whenever one core has anything to tell another, including a
+timer being rearmed. A machine where the read never left the first core
+could still have a nonzero count and pass. What proves the chain crossed
+is the donation: a priority raised on a thread this core does not own
+happens for one reason. The check asserts that now, and disabling the
+migration fails with `the store moved and no donation crossed` rather
+than passing quietly.
+
+That is the fourth time this milestone that a check has been found
+asserting something adjacent to what it claimed.
+
+**A warning existed in two of the four configurations and was not seen,
+because warnings were only ever read from one.** The variable holding
+the block store's process is used only at Tier 2, and at Tier 0 it is
+set and never read, which the compiler says plainly to anyone who
+builds that configuration and looks. Every stage of this milestone has
+run the check in all four and read the compiler output from one. The
+build is clean in all four now, and the habit was the defect rather
+than the variable.
+
+**And the strongest thing this stage did was not being claimed.** The
+store is moved to the second core partway through the boot checks and
+nothing moves it back, because nothing in this system moves on its own.
+Everything after that point runs with the storage stack split across
+two cores, including the shell reading files through it, and that is the
+part of the run the check compares exactly. The whole run costs 35 pokes
+and 16 donations against the 4 and 2 the single measured read cost, and
+those numbers are what say the rest of the session kept crossing rather
+than quietly ending up back on one core.
+
+So the compared transcript is not merely identical with two cores
+running. It is identical with the storage stack split across them.
+
 *Size.* Large. The original estimate of medium to large predated knowing
 that interrupt disabling was carrying the exclusion for the whole kernel.
 

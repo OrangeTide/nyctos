@@ -5307,9 +5307,19 @@ pinned_storage_checks(struct proc *store, sys_handle_t root,
      * first core would cost nothing extra and pass every other check
      * here, which is the shape of failure this milestone keeps
      * finding.
+     *
+     * The donations are what prove it and the pokes are not. A poke is
+     * sent for any reason one core has to tell another something,
+     * including a timer being rearmed, so a nonzero count of them
+     * would let this pass on a machine where the read never left the
+     * first core. A donation raised on a thread this core does not own
+     * is the chain crossing and nothing else.
      */
+    if (donations == 0) {
+        panic("placement: the store moved and no donation crossed");
+    }
     if (pokes == 0) {
-        panic("placement: the store moved and nothing crossed");
+        panic("placement: a donation crossed and nothing was told");
     }
     if (t->t_core != 1) {
         panic("placement: the store is on core %u",
@@ -5322,8 +5332,8 @@ static void
 user_slice(void)
 {
     struct proc *self = proc_current();
-    struct proc *blk_proc;
 #if SYS_TIER == 2
+    struct proc *blk_proc;
     sys_handle_t root4;
 #endif
     struct sys_op_connect_args cargs;
@@ -5468,7 +5478,15 @@ user_slice(void)
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = h_blk;
     cnputs("    loading blk_server, which holds the bytes\n");
-    blk_proc = proc_spawn_image("blk_server", 15, ns, 1, NULL, 0);
+    {
+        struct proc *store = proc_spawn_image("blk_server", 15, ns, 1, NULL, 0);
+
+#if SYS_TIER == 2
+        blk_proc = store;
+#else
+        (void)store;
+#endif
+    }
 
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_SERVICE;
@@ -5773,6 +5791,27 @@ kernel_main(void)
     cnprintf("frames: %u of %u used at most, %u still held\n",
       (unsigned int)page_highwater(), (unsigned int)page_count(),
       (unsigned int)page_used());
+
+#if SYS_TIER == 2
+    {
+        uint64_t donations;
+        uint64_t pokes = cpu_crossings(&donations);
+
+        /*
+         * What the whole run spent on the cores being separate. It is
+         * larger than the four the placement check measured for one
+         * read, which is the shell reading files through a stack that
+         * is still split: nothing moved the store back, because
+         * nothing moves on its own.
+         */
+        cnprintf("cores: %lu pokes between them, %lu donations that "
+          "crossed\n", (unsigned long)pokes, (unsigned long)donations);
+        if (donations < 3) {
+            panic("cores: %lu donations crossed in the whole run",
+              (unsigned long)donations);
+        }
+    }
+#endif
 
     /*
      * Above the compared line, because it is about the machine that
