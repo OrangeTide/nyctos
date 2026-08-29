@@ -4828,6 +4828,57 @@ thread has, turns that silence into `it ran on core 0` followed by the
 panic that says so. A check whose failure mode is a hang is a check that
 has not been read.
 
+*Reviewed.* Four findings, and the one worth the most is that the same
+mistake was made twice in one stage.
+
+**A counter that measures one core must live on that core, and this was
+got wrong again.** The stage had already found it once: a system-wide
+count of locks taken reported the other core's system calls as this
+core's dispatch, and was made per core. Then the review added a count of
+scheduling decisions to check that readying a thread elsewhere takes
+none here, made it a global, and it reported thirty-one decisions across
+a call that takes none. The other core is dispatching the whole time.
+Two counters, the same error, minutes apart. On a machine with two
+cores, a counter is per core until there is a reason it is not.
+
+**A core that goes idle never looks at what arrived for it.** The idle
+loop waits and then tests the ready bitmap, and a thread pushed here by
+another core is on the arriving list and on no queue, so the bitmap
+knows nothing about it. The core goes back to sleep with work waiting.
+The drain belongs in that loop and is there now.
+
+This one is not fully closed and the reason is the next stage. Draining
+after waking is correct; being woken is what is missing, because the
+thing that would say something arrived for you is the inter-processor
+interrupt. Until then such a core sleeps until some other interrupt
+happens to arrive. So this is half a fix, and the half it has is the
+half that stops being wrong once the other half exists.
+
+**Readying a thread on another core preempted this one.** The
+preemption rule compared priorities and nothing else, so a thread made
+runnable on the second core stopped a thread running on the first for a
+thread that was never going to run there. Section 11.4 makes preemption
+a per-core question because the queue being competed for is per core.
+
+Showing this took three attempts and the first two proved nothing. The
+wasted decision chooses the running thread again, so removing the guard
+changed no output at all: what it costs is invisible in what ran. It is
+visible as a count of decisions taken, and with the guard removed
+readying that thread takes one decision on a core it has nothing to do
+with. The cost is not only the decision. A thread at the same priority
+as the running one would take the core from it, so an unrelated core's
+activity would reorder this core's queue.
+
+**And the stage named an operation it did not build.** The plan said
+`sys_thread_migrate()` and what was built was the kernel call under it,
+which the check reached directly. It is an operation now, opcode and
+argument structure and a wrapper, reached with a handle carrying WRITE
+because where a thread runs is authority over it rather than a question
+about it. The check goes through the operation, which found that it had
+been leaving a handle in the table: a later check asserts that table is
+empty, and a check that leaves something behind fails a check that has
+nothing to do with it.
+
 **4. Donation across a core boundary.**
 
 - A donating core raises the target's inherited priority and sends an

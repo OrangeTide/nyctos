@@ -89,4 +89,17 @@ sys_err_t sched_migrate(struct thread *t, uint32_t core);
  */
 void sched_secondary(void);
 
+/*
+ * How many times a core has made a higher-priority thread runnable on
+ * another core and declined to preempt itself for it.
+ */
+extern uint64_t sched_remote_readies;
+
+/*
+ * How many scheduling decisions this core has taken. Per core: the
+ * other one is dispatching the whole time, so a count for the system
+ * answers what the machine did rather than what this path did.
+ */
+uint64_t sched_decisions(void);
+
 #endif /* _SYS_SCHED_H_ */

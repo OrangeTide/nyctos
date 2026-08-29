@@ -4811,7 +4811,9 @@ stayer_thread(void *arg)
 static void
 core_checks(void)
 {
+    sys_op_migrate_args_t margs;
     struct thread *t;
+    sys_handle_t h;
     uint32_t spin;
 
     cnputs("cores: where a thread runs, section 11.4\n");
@@ -4822,13 +4824,55 @@ core_checks(void)
      * would work and would prove less: the check is that a thread put
      * on the other core was never on this one.
      */
-    t = thread_create("migrant", PRIO_BOOT, migrant_thread, NULL);
-    expect("moving it to the second core", sched_migrate(t, 1), SYS_OK);
+    t = thread_create("migrant", PRIO_BOOT + 1, migrant_thread, NULL);
+
+    /*
+     * Through the operation a program would use, and not only through
+     * the kernel call under it. Where a thread runs is authority over
+     * that thread, so it is reached with a handle carrying WRITE and
+     * refused without one.
+     */
+    expect("a handle to it, with the right to move it",
+      handle_insert(&proc_current()->p_handles, t, SYS_OBJ_THREAD,
+        SYS_RIGHT_READ | SYS_RIGHT_WRITE, &h), SYS_OK);
+    margs.core = 1;
+    margs.pad = 0;
+    expect("moving it to the second core",
+      run(SYS_OP_THREAD_MIGRATE, h, &margs, sizeof(margs)), SYS_OK);
+    margs.core = SYS_MAX_CORES;
     expect("moving it to a core that is not there",
-      sched_migrate(t, SYS_MAX_CORES), SYS_ERR_INVALID_ARG);
+      run(SYS_OP_THREAD_MIGRATE, h, &margs, sizeof(margs)),
+      SYS_ERR_INVALID_ARG);
+    expect("moving it with no argument structure",
+      run(SYS_OP_THREAD_MIGRATE, h, NULL, 0), SYS_ERR_INVALID_ARG);
     expect("moving the thread that is running",
       sched_migrate(thread_current(), 1), SYS_ERR_WOULDBLOCK);
-    sched_ready(t);
+
+    /*
+     * Given back before the thread runs, because the handle checks
+     * later assert that this table is empty and a check that leaves
+     * something behind fails a check that has nothing to do with it.
+     */
+    expect("giving the handle back", handle_close(&proc_current()->p_handles, h),
+      SYS_OK);
+
+    {
+        uint64_t decisions = sched_decisions();
+
+        sched_ready(t);
+
+        /*
+         * Readying it took no scheduling decision here, though it
+         * outranks what is running. The decision that would have been
+         * taken chooses this thread again, so what the guard saves is
+         * invisible in what ran and has to be counted.
+         */
+        if (sched_decisions() != decisions) {
+            panic("cores: a thread put on the other core took %lu "
+              "decisions on this one",
+              (unsigned long)(sched_decisions() - decisions));
+        }
+    }
 
     /*
      * Offered the core while waiting, and at the same priority the
@@ -4855,6 +4899,18 @@ core_checks(void)
           (unsigned long)migrant_links);
     }
     cnputs("    and core 0 never had it queued         OK\n");
+
+    /*
+     * It outranks what this core was running, and this core did not
+     * stop for it. A thread made runnable elsewhere is nothing to do
+     * with what runs here, and preempting for one would be a core
+     * giving up its turn for a thread that cannot take it.
+     */
+    if (sched_remote_readies == 0) {
+        panic("cores: nothing outranking this core was put on the other");
+    }
+    cnprintf("    %lu readied there, none preempting here  OK\n",
+      (unsigned long)sched_remote_readies);
 
     /*
      * And one that is not migrated, over a run long enough that a

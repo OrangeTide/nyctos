@@ -20,6 +20,7 @@
  * check that section 23.2 describes appears with the MMU in milestone 4.
  */
 
+#include <sys/sched.h>
 #include <sys/channel.h>
 #include <sys/config.h>
 #include <sys/connection.h>
@@ -608,6 +609,31 @@ op_pulse_send(struct proc *p, struct sys_op *op)
 }
 
 static sys_err_t
+op_thread_migrate(struct proc *p, struct sys_op *op)
+{
+    sys_op_migrate_args_t *args;
+    void *obj;
+    sys_err_t err;
+
+    args = (sys_op_migrate_args_t *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    /*
+     * Written to and not merely asked about, so the right is WRITE.
+     * Where a thread runs is done to it.
+     */
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_THREAD,
+      SYS_RIGHT_WRITE, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    return sched_migrate(obj, args->core);
+}
+
+static sys_err_t
 op_thread_cancel(struct proc *p, struct sys_op *op)
 {
     void *obj;
@@ -760,6 +786,9 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_THREAD_CANCEL:
         err = op_thread_cancel(p, op);
+        break;
+    case SYS_OP_THREAD_MIGRATE:
+        err = op_thread_migrate(p, op);
         break;
     case SYS_OP_PULSE_SEND:
         err = op_pulse_send(p, op);

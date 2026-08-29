@@ -210,24 +210,6 @@ cpu_idle_report(void)
     }
 }
 
-void
-cpu_idle_loop(void)
-{
-    struct cpu *self = cpu_self();
-
-    for (;;) {
-        self->cp_idle++;
-
-        /*
-         * Waiting for an interrupt and not for a lock. Section 11.4 has
-         * no global run queue, so a core whose own queue is empty has
-         * nothing to look at anywhere else: there is no work to steal
-         * because stealing is what partitioned scheduling does not do.
-         */
-        md_cpu_wait();
-    }
-}
-
 /*
  * Where a core that has just started arrives, on its own stack and with
  * translation not yet its own.

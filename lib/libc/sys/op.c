@@ -430,6 +430,17 @@ sys_thread_cancel(sys_handle_t thread)
 }
 
 sys_err_t
+sys_thread_migrate(sys_handle_t thread, uint32_t core)
+{
+    sys_op_migrate_args_t args;
+
+    args.core = core;
+    args.pad = 0;
+
+    return submit(SYS_OP_THREAD_MIGRATE, thread, &args, sizeof(args));
+}
+
+sys_err_t
 sys_proc_kill(sys_handle_t proc, int32_t code)
 {
     sys_op_kill_args_t args;

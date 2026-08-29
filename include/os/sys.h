@@ -170,6 +170,13 @@ sys_err_t sys_thread_status(sys_handle_t thread, int32_t *out_code,
 sys_err_t sys_thread_cancel(sys_handle_t thread);
 
 /*
+ * Move a thread to a named core, per section 11.4. Nothing moves on its
+ * own, so this is the only way anything moves: where a thread runs is a
+ * fact about the program that placed it.
+ */
+sys_err_t sys_thread_migrate(sys_handle_t thread, uint32_t core);
+
+/*
  * Leave a pulse on a channel, per section 13.1. Never blocks. A program
  * may send only user codes, at or above SYS_PULSE_USER_BASE: the codes
  * below it reach the reserved slots that keep a death notice from being

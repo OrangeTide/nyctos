@@ -33,6 +33,16 @@
 #define my_runq             (cpu_self()->cp_runq)
 #define ready_bits          (cpu_self()->cp_ready)
 
+/*
+ * How many times this core has readied a thread that outranks what it
+ * is running and belongs to another core. Preempting for one of those
+ * would stop this core for a thread that is not going to run on it, so
+ * the count exists to show the case happens rather than to be believed
+ * about.
+ */
+uint64_t sched_remote_readies;
+
+
 /* Preemption held off; see sched_defer. */
 /*
  * The deferral, per core. Its comment used to say one counter for the
@@ -312,6 +322,15 @@ sched_idle(void)
         md_idle_wait();
         (void)md_intr_disable();
 
+        /*
+         * What another core sent here counts as something to do. The
+         * bitmap alone does not know about it: a thread pushed to this
+         * core while it was asleep is on the arriving list and on no
+         * queue, so a core testing only the bitmap goes back to sleep
+         * with work waiting for it.
+         */
+        take_arriving();
+
         if (ready_bits != 0) {
             break;
         }
@@ -327,6 +346,8 @@ dispatch(void)
 {
     struct thread *next;
     uint64_t took;
+
+    cpu_self()->cp_dispatches++;
 
     /*
      * Whatever the last switch left for collection, freed here rather
@@ -417,8 +438,19 @@ sched_ready(struct thread *t)
      * the core immediately rather than waiting for a quantum. Equal
      * priority does not preempt, because within a level the policy is FIFO
      * and the running thread got there first.
+     *
+     * The core it belongs to, and not simply its priority. A thread made
+     * runnable on the other core is nothing to do with what runs here:
+     * preempting for it would stop this core for a thread that is not
+     * going to run on it. Section 11.4 makes preemption a per-core
+     * question because the queue it competes for is a per-core queue.
      */
-    if (cur != NULL && t->t_prio > cur->t_prio) {
+    if (cur != NULL && t->t_prio > cur->t_prio &&
+      t->t_core != cpu_self()->cp_index) {
+        sched_remote_readies++;
+    }
+    if (cur != NULL && t->t_prio > cur->t_prio &&
+      t->t_core == cpu_self()->cp_index) {
         if (defer_depth > 0) {
             defer_pending = true;
         } else {
@@ -656,4 +688,10 @@ sched_migrate(struct thread *t, uint32_t core)
     md_intr_restore(s);
 
     return SYS_OK;
+}
+
+uint64_t
+sched_decisions(void)
+{
+    return cpu_self()->cp_dispatches;
 }

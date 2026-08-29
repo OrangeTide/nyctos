@@ -104,6 +104,13 @@ struct cpu {
     uint64_t            cp_locks;
 
     /*
+     * How many scheduling decisions this core has taken. Per core for
+     * the same reason as the count above: the other core is taking its
+     * own the whole time.
+     */
+    uint64_t            cp_dispatches;
+
+    /*
      * How many times this core has had nothing to do, and whether it
      * has answered at all. These two are the only fields one core
      * writes and another reads, so they are read every time rather
@@ -147,13 +154,6 @@ void cpu_report(void);
 
 /* And how much of the run each of them spent with nothing to do. */
 void cpu_idle_report(void);
-
-/*
- * Where a core with nothing to do goes. Section 11.4 has no global run
- * queue, so a core with an empty one has nothing to look at anywhere
- * else and waits for an interrupt rather than for a lock.
- */
-void cpu_idle_loop(void) __attribute__((noreturn));
 
 /*
  * What a port provides.

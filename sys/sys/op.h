@@ -175,6 +175,23 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_THREAD_CANCEL     21
 
 /*
+ * Move a thread to a named core, per section 11.4. target names the
+ * thread and carries SYS_RIGHT_WRITE, because where a thread runs is
+ * something done to it rather than something asked about it. The core
+ * is the value in the argument structure.
+ *
+ * Explicit, and the only way anything moves. Nothing balances and
+ * nothing steals, so where a thread runs is a fact about the program
+ * that placed it rather than about how busy the machine was.
+ *
+ * SYS_ERR_INVALID_ARG for a core this build does not have.
+ * SYS_ERR_WOULDBLOCK for a thread that is running, because stopping a
+ * thread on another core means telling that core to stop it.
+ * SYS_ERR_STALE for a thread that has ended.
+ */
+#define SYS_OP_THREAD_MIGRATE    24
+
+/*
  * Leave a pulse on a channel, per section 13.1. target names a
  * connection to it and carries SYS_RIGHT_SEND, which is how a message
  * reaches a channel too. Never blocks and does not fail
@@ -247,7 +264,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             24
+#define SYS_OP_COUNT             25
 
 /*
  * The reg_in, reg_out and flags fields are meaningful only to the
@@ -429,6 +446,15 @@ typedef struct sys_op_kill_args {
 typedef struct sys_op_pulse_args {
     sys_pulse_t     pulse;
 } sys_op_pulse_args_t;
+
+/*
+ * Argument structure for SYS_OP_THREAD_MIGRATE. target names the
+ * thread.
+ */
+typedef struct sys_op_migrate_args {
+    uint32_t    core;
+    uint32_t    pad;
+} sys_op_migrate_args_t;
 
 /* Argument structure for SYS_OP_THREAD_EXIT. target is unused. */
 typedef struct sys_op_exit_args {
