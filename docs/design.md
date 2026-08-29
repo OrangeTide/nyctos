@@ -985,6 +985,17 @@ moving it between that core's queues is that core's business.
 
 **Starting a core is a port's problem and the two ports solve opposite ones.** A port with no firmware beneath it has every core arrive at the reset vector together, so the boot core's difficulty is holding the others back and starting one is releasing it. A port whose platform holds the others powered off starts one by asking for it by name. Both end with a core that has a stack, a vector table and a translation of its own, which is the only thing anything above cares about.
 
+**What a boundary between cores costs was measured rather than argued.**
+A read that crosses a client, a filesystem and a block store costs four
+inter-processor interrupts and two donations when the last of those is
+on another core, and none of either when all three are on one. That is
+the unit: a stack placed more finely pays it per crossing.
+
+The same read blocks in send when it crosses and does not when it does
+not, because two cores make progress independently and whether a server
+has returned to its receive point is a question about which core got
+there first. Nothing above notices, and nothing may depend on it.
+
 This is chosen for analyzability. Response time analysis on a partitioned system decomposes into an independent per-core problem. Global scheduling gives better average responsiveness and automatic balancing, but puts a contended lock on every scheduling decision and makes worst-case analysis substantially harder.
 
 Load balancing is explicit. `sys_thread_migrate()` moves a thread to a named core, so migration cost is visible in the code rather than hidden in a balancer.

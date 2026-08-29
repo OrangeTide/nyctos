@@ -8,6 +8,7 @@
  * for the reasoning.
  */
 
+#include <sys/cpu.h>
 #include <sys/channel.h>
 #include <sys/intr.h>
 #include <sys/object.h>
@@ -125,6 +126,16 @@ static void
 donate(struct thread *to, uint8_t prio)
 {
     if (to->t_prio < prio) {
+#if SYS_TIER == 2
+        /*
+         * Raised on a thread this core does not own, which is what
+         * section 11.4 has cross a boundary. Counted because it is a
+         * cost partitioning has and a single core does not.
+         */
+        if (to->t_core != cpu_self()->cp_index) {
+            cpu_self()->cp_donate_across++;
+        }
+#endif
         sched_reprioritise(to, prio);
     }
 }

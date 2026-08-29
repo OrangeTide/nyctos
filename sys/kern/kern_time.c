@@ -165,6 +165,7 @@ reprogram(void)
          * this milestone already has is what tells it.
          */
         __atomic_store_n(&owner->cp_rearm, 1u, __ATOMIC_RELEASE);
+        cpu_self()->cp_ipi++;
         md_cpu_ipi(TIMER_CORE);
         return;
     }

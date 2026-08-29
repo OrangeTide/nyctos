@@ -1964,9 +1964,13 @@ boundary_rate(const char *what, const struct vm_cost *c)
     }
 }
 
+#define SEND_BLOCK_NO       0
+#define SEND_BLOCK_YES      1
+#define SEND_BLOCK_EITHER   2
+
 static void
 run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
-  bool expect_send_block)
+  int expect_send_block)
 {
     struct pool *conns = connection_pool();
     sys_ns_spec_t ns[1];
@@ -2078,9 +2082,21 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
      * behind the store when it does, so asking whether anything at all
      * send-blocked now answers yes whatever the client did.
      */
-    if (trace_saw_thread(image, THREAD_WAIT_SEND) != expect_send_block) {
+    if (expect_send_block == SEND_BLOCK_EITHER) {
+        /*
+         * Not asserted, and that is the result rather than a gap. Two
+         * cores make progress independently, so whether the client
+         * finds its server already at the rendezvous is a question
+         * about which core got there first. Asserting either answer
+         * would be asserting a race.
+         */
+        cnprintf("    and it %s send-block\n",
+          trace_saw_thread(image, THREAD_WAIT_SEND) ? "did" : "did not");
+    } else if (trace_saw_thread(image, THREAD_WAIT_SEND) !=
+      (expect_send_block == SEND_BLOCK_YES)) {
         panic("%s: send-blocking was %sexpected and %shappened", image,
-          expect_send_block ? "" : "un", expect_send_block ? "never " : "");
+          expect_send_block == SEND_BLOCK_YES ? "" : "un",
+          expect_send_block == SEND_BLOCK_YES ? "never " : "");
     }
 }
 
@@ -5225,10 +5241,91 @@ cross_core_donation_checks(void)
     }
 }
 #endif /* SYS_TIER == 2 */
+
+#if SYS_TIER == 2
+/*
+ * The milestone's own question, asked of the storage stack.
+ *
+ * A read goes from a client into the filesystem and from there into the
+ * block store, which is two boundaries and a donation chain across
+ * them. Putting the store on the other core makes every one of those
+ * crossings a real one, and what it costs is the number this stage is
+ * for: pokes sent between cores, and donations raised on a thread the
+ * raising core does not own. Both are zero on one core by construction.
+ */
+static void
+pinned_storage_checks(struct proc *store, sys_handle_t root,
+  uint64_t base_pokes, uint64_t base_donations)
+{
+    struct thread *t;
+    uint64_t pokes, donations;
+
+    cnputs("placement: the storage stack across two cores\n");
+
+    cnprintf("    on one core it cost                    "
+      "%lu pokes, %lu donations\n",
+      (unsigned long)base_pokes, (unsigned long)base_donations);
+
+    t = proc_threads(store);
+    if (t == NULL) {
+        panic("placement: the block store has no thread");
+    }
+
+    /*
+     * Blocked at its receive point, which is why this is allowed at
+     * all: a thread on no queue can be moved by anyone, and a thread
+     * running on another core cannot be moved by this one.
+     */
+    expect("moving the block store to the second core",
+      sched_migrate(t, 1), SYS_OK);
+
+    {
+        uint64_t before_pokes, before_donations;
+        uint64_t after_pokes, after_donations;
+
+        before_pokes = cpu_crossings(&before_donations);
+
+        /*
+         * The same read again, with one boundary now crossing a core
+         * as well as an address space. Nothing above knows: the client
+         * asks for the same file and gets the same bytes.
+         */
+        run_client("fs_client", root, BLK_MOTD_BYTES, SEND_BLOCK_EITHER);
+
+        after_pokes = cpu_crossings(&after_donations);
+
+        pokes = after_pokes - before_pokes;
+        donations = after_donations - before_donations;
+    }
+
+    cnprintf("    with the store on the other core       "
+      "%lu pokes, %lu donations\n",
+      (unsigned long)pokes, (unsigned long)donations);
+
+    /*
+     * That the crossing happened at all. A read that never left the
+     * first core would cost nothing extra and pass every other check
+     * here, which is the shape of failure this milestone keeps
+     * finding.
+     */
+    if (pokes == 0) {
+        panic("placement: the store moved and nothing crossed");
+    }
+    if (t->t_core != 1) {
+        panic("placement: the store is on core %u",
+          (unsigned int)t->t_core);
+    }
+}
+#endif /* SYS_TIER == 2 */
+
 static void
 user_slice(void)
 {
     struct proc *self = proc_current();
+    struct proc *blk_proc;
+#if SYS_TIER == 2
+    sys_handle_t root4;
+#endif
     struct sys_op_connect_args cargs;
     sys_ns_spec_t ns[2];
     struct channel *ch;
@@ -5276,6 +5373,20 @@ user_slice(void)
     expect("a second one, for the second client",
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     root2 = cargs.out_handle;
+
+#if SYS_TIER == 2
+    /*
+     * And one for the same read done again with the store on the other
+     * core. A connection is handed over to the client that uses it, so
+     * reading twice means connecting twice.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("one more, for the read across two cores",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    root4 = cargs.out_handle;
+#endif
 
     /*
      * A third, for the shell, and duplicable because the shell hands a
@@ -5357,7 +5468,7 @@ user_slice(void)
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = h_blk;
     cnputs("    loading blk_server, which holds the bytes\n");
-    (void)proc_spawn_image("blk_server", 15, ns, 1, NULL, 0);
+    blk_proc = proc_spawn_image("blk_server", 15, ns, 1, NULL, 0);
 
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_SERVICE;
@@ -5374,8 +5485,27 @@ user_slice(void)
      */
     kernel_buffer_checks(h_fs_root);
 
-    run_client("fs_client", root, BLK_MOTD_BYTES, true);
-    run_client("fs_batch", root2, BLK_MOTD_BYTES, false);
+#if SYS_TIER == 2
+    {
+        uint64_t p0, d0, p1, d1;
+
+        /*
+         * The same read, measured with everything on one core, so
+         * that what putting the store on the other one costs is a
+         * difference rather than a number on its own.
+         */
+        p0 = cpu_crossings(&d0);
+        run_client("fs_client", root, BLK_MOTD_BYTES, SEND_BLOCK_YES);
+        p1 = cpu_crossings(&d1);
+
+        run_client("fs_batch", root2, BLK_MOTD_BYTES, SEND_BLOCK_NO);
+
+        pinned_storage_checks(blk_proc, root4, p1 - p0, d1 - d0);
+    }
+#else
+    run_client("fs_client", root, BLK_MOTD_BYTES, SEND_BLOCK_YES);
+    run_client("fs_batch", root2, BLK_MOTD_BYTES, SEND_BLOCK_NO);
+#endif
 
     trespass_checks(root3);
 

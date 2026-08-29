@@ -117,6 +117,15 @@ struct cpu {
     uint32_t            cp_rearm;
 
     /*
+     * What this core has spent on the other one being separate: pokes
+     * sent, and donations raised on a thread this core does not own.
+     * Both are zero on a machine with one core by construction, so
+     * they are the price of partitioning stated as a number.
+     */
+    uint64_t            cp_ipi;
+    uint64_t            cp_donate_across;
+
+    /*
      * How many times this core has had nothing to do, and whether it
      * has answered at all. These two are the only fields one core
      * writes and another reads, so they are read every time rather
@@ -157,6 +166,13 @@ void cpu_start_others(void);
 
 /* What each core is doing, beside the other object reports. */
 void cpu_report(void);
+
+/*
+ * What separating the cores has cost so far: pokes sent between them,
+ * and donations raised on a thread the raising core does not own. Both
+ * are zero on a machine with one core.
+ */
+uint64_t cpu_crossings(uint64_t *donations);
 
 /* And how much of the run each of them spent with nothing to do. */
 void cpu_idle_report(void);

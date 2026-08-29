@@ -119,6 +119,7 @@ push_arriving(struct thread *t)
              * something else, so reading a field of it here is reading
              * a slot somebody else has.
              */
+            cpu_self()->cp_ipi++;
             md_cpu_ipi(target->cp_index);
             return;
         }

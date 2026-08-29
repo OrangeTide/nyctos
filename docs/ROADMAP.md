@@ -5115,7 +5115,7 @@ possible.
 counters of a core that does not exist left the caller's structure
 holding whatever it did before. It is zeroed.
 
-**6. Whether partitioned scheduling is usable.**
+**6. Whether partitioned scheduling is usable.** *Built.*
 
 - The milestone's own question, and the only stage whose outcome could
   delete a section.
@@ -5146,6 +5146,61 @@ while testing something else. On one core that needed a program spawned
 at the checker's own priority. On two, anything the checker does not
 explicitly wait for is a race, and the ones that pass are the ones that
 will pass again on a faster host and fail on a slower one.
+
+*Built.* The storage stack runs split across the two cores and a read
+still works. The block store is moved to the second core while it is
+blocked at its receive point, which is the only reason one core is
+allowed to move it: a thread on no queue belongs to nobody, and a thread
+running on another core cannot be moved by this one at all.
+
+**The cost is four pokes and two donations, for a read that cost neither
+on one core.** The same client reads the same file twice, once with the
+whole stack on the first core and once with the store on the second, and
+the difference is the whole of what partitioning charged. Both numbers
+are measured rather than reasoned about: zero on one core is not an
+assumption, it is what the counters said.
+
+Four is a small number and it is per read. It is also the number for one
+boundary crossing one core: the chain is a client, a filesystem and a
+store, and only the last hop crosses. A stack with more hops placed more
+finely pays it more times, and this measurement is the unit rather than
+the total.
+
+**The same read send-blocks now, where it did not before.** On one core
+the client always found the filesystem already waiting, and the check
+asserted exactly that. With the store elsewhere the client blocks in
+send, because the two cores make progress independently and whether the
+server has got back to its receive point is a question about which core
+got there first.
+
+It blocked on every run of it, and the check still does not assert that
+it will. Asserting either answer is asserting a race, which is the thing
+this milestone's own note said to watch for: a check that passes on this
+host because of an ordering nothing enforces is a check that fails on a
+slower one. So the check reports which happened and asserts only what is
+guaranteed, which is that the read returned the right bytes.
+
+**What this does not answer.** The milestone asked whether partitioned
+scheduling with no balancer is usable, and whether the absence of
+automatic placement is intolerable in practice. This evidence answers
+the first and cannot answer the second.
+
+It is usable: the mechanism works, the cost is small, bounded, and
+countable, and nothing above the placement noticed. But there was
+nothing here for a balancer to have done better. The stack has one
+obvious placement, it was placed that way by hand in one call, and it
+stayed there. Answering the second question needs a workload whose right
+placement changes while it runs, and this system has no way to produce
+one: every program in it is started by the checker and does a fixed
+amount of work.
+
+So section 11.4 is neither deleted nor endorsed by this stage. What is
+established is narrower and worth having: the mechanism it specifies
+exists, costs four inter-processor interrupts per boundary crossed, and
+a hand-placed stack across two cores behaves exactly as the same stack
+on one. The argument that partitioning buys analysability is untouched,
+because nothing here measured latency; that is M9's question and it is
+the one that will decide whether the trade was worth making.
 
 *Size.* Large. The original estimate of medium to large predated knowing
 that interrupt disabling was carrying the exclusion for the whole kernel.

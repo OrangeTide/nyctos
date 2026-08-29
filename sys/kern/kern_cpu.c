@@ -263,3 +263,19 @@ cpu_secondary_entry(void)
 
     sched_secondary();
 }
+
+uint64_t
+cpu_crossings(uint64_t *donations)
+{
+    uint64_t pokes = 0;
+    uint32_t i;
+
+    *donations = 0;
+
+    for (i = 0; i < ncores; i++) {
+        pokes += cpus[i].cp_ipi;
+        *donations += cpus[i].cp_donate_across;
+    }
+
+    return pokes;
+}
