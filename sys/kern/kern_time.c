@@ -8,6 +8,7 @@
  * for the reasoning.
  */
 
+#include <sys/cpu.h>
 #include <sys/intr.h>
 #include <sys/object.h>
 #include <sys/sched.h>
@@ -65,12 +66,23 @@ next_event(void)
 }
 
 /*
- * Arm the hardware for the earliest pending event, or for nothing. This is
- * the whole of section 14.1: every change to what is pending comes back
- * here, and a core with nothing pending leaves the timer disarmed.
+ * The core whose hardware is armed for the whole machine.
+ *
+ * There is one list of pending events and the hardware is per core, so
+ * arming has to name a core. It names this one, and a core that changes
+ * the list and is not this one asks it to arm rather than arming
+ * itself: a timer armed on the wrong core still fires, and what it
+ * interrupts is a core that has nothing to do with the deadline.
+ *
+ * That is not a small difference. It was found as an interrupt check
+ * failing about one run in ten, because the event the check was
+ * counting arrived on the idle core, where it is an interrupt taken in
+ * the kernel rather than one taken from a program.
  */
+#define TIMER_CORE  0
+
 static void
-reprogram(void)
+arm_here(void)
 {
     sys_time_t when = next_event();
 
@@ -80,6 +92,49 @@ reprogram(void)
         md_timer_at(when);
     }
 }
+
+/*
+ * Arm the hardware for the earliest pending event, or for nothing. This is
+ * the whole of section 14.1: every change to what is pending comes back
+ * here, and a core with nothing pending leaves the timer disarmed.
+ */
+static void
+reprogram(void)
+{
+#if SYS_TIER == 2
+    if (cpu_self()->cp_index != TIMER_CORE) {
+        struct cpu *owner = cpu_at(TIMER_CORE);
+
+        /*
+         * Asked, not done. The list has already changed, so what that
+         * core has to be told is only that it changed, and the poke
+         * this milestone already has is what tells it.
+         */
+        __atomic_store_n(&owner->cp_rearm, 1u, __ATOMIC_RELEASE);
+        md_cpu_ipi(TIMER_CORE);
+        return;
+    }
+#endif
+
+    arm_here();
+}
+
+#if SYS_TIER == 2
+void
+time_rearm_if_asked(void)
+{
+    intr_state_t s;
+
+    if (__atomic_exchange_n(&cpu_self()->cp_rearm, 0u,
+          __ATOMIC_ACQUIRE) == 0) {
+        return;
+    }
+
+    s = md_intr_disable();
+    arm_here();
+    md_intr_restore(s);
+}
+#endif
 
 static void
 timer_link(struct timer *tm)

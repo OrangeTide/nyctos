@@ -13,6 +13,7 @@
  * reason to prefer this over a sorted list.
  */
 
+#include <sys/time.h>
 #include <sys/config.h>
 #include <sys/cpu.h>
 #include <sys/intr.h>
@@ -735,6 +736,13 @@ sched_ipi(void)
     int best;
 
     take_arriving();
+
+    /*
+     * And the hardware, if the poke was another core saying that what
+     * is pending has changed. Section 14.1 has one place decide what to
+     * arm, and section 11.4 has one core own the hardware it arms.
+     */
+    time_rearm_if_asked();
 
     /*
      * Preempt only for something that outranks what is running, which

@@ -146,6 +146,12 @@ sys_id_t pool_id_of(const struct pool *p, const void *obj);
  */
 void pool_highwater_reset(struct pool *p);
 
+/*
+ * Which cores have taken slots and given them back, and how the marks
+ * above are kept now that more than one does.
+ */
+void pool_report_cores(void);
+
 /* Identifier of the object in slot index, or SYS_ID_INVALID if it is free. */
 sys_id_t pool_id_at(const struct pool *p, uint32_t index);
 

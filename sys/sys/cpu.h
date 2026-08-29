@@ -111,6 +111,12 @@ struct cpu {
     uint64_t            cp_dispatches;
 
     /*
+     * Another core changed what is pending and this core is the one
+     * whose hardware is armed for it. See kern_time.c.
+     */
+    uint32_t            cp_rearm;
+
+    /*
      * How many times this core has had nothing to do, and whether it
      * has answered at all. These two are the only fields one core
      * writes and another reads, so they are read every time rather

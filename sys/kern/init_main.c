@@ -5007,6 +5007,142 @@ xc_client(void *arg)
     thread_exit(0);
 }
 
+
+#if SYS_TIER == 2
+/*
+ * Two cores taking slots from one pool and giving them back.
+ *
+ * The pool the system runs on is reached from both cores already, but
+ * twice in a whole session, which is a lock needed by construction and
+ * tested by nothing. This is the same argument the kernel lock got in
+ * stage two and the same answer: a pool of its own, hammered from both
+ * sides, so that the exclusion is exercised rather than assumed.
+ *
+ * What breaks without it is the free list rather than the counters. Two
+ * callers take the head, both are given the same slot, and the list is
+ * shorter than the number of things that think they hold part of it.
+ */
+#define PS_SLOTS        8
+#define PS_ROUNDS       4096
+
+struct ps_obj {
+    uint64_t    ps_mark;
+};
+
+POOL_STORAGE(ps, struct ps_obj, PS_SLOTS);
+static struct pool ps_pool;
+static volatile uint32_t ps_go;
+static volatile uint32_t ps_done;
+static volatile uint64_t ps_taken[SYS_MAX_CORES];
+static volatile uint32_t ps_clash;
+
+static void
+ps_round(void)
+{
+    struct ps_obj *o;
+    sys_id_t id;
+    uint64_t mark = (uint64_t)cpu_self()->cp_index + 1;
+
+    o = pool_alloc(&ps_pool, &id);
+    if (o == NULL) {
+        return;
+    }
+
+    /*
+     * The slot is this core's alone from the moment it left the list.
+     * A mark that is not the one just written means the other core was
+     * handed the same slot, which is the failure this is looking for
+     * and not a lost count.
+     */
+    o->ps_mark = mark;
+    if (o->ps_mark != mark) {
+        ps_clash++;
+    }
+
+    ps_taken[cpu_self()->cp_index]++;
+
+    if (!pool_free(&ps_pool, id)) {
+        panic("pool check: a slot that was taken would not go back");
+    }
+}
+
+static void
+ps_thread(void *arg)
+{
+    uint32_t i;
+
+    (void)arg;
+
+    while (ps_go == 0) {
+        md_cpu_relax();
+    }
+    for (i = 0; i < PS_ROUNDS; i++) {
+        ps_round();
+    }
+
+    md_cpu_fence();
+    ps_done = 1;
+    thread_exit(0);
+}
+
+static void
+pool_stress_checks(void)
+{
+    struct thread *t;
+    uint32_t i;
+    uint32_t spin;
+
+    cnputs("pools: two cores taking slots from one\n");
+
+    POOL_INIT(&ps_pool, ps, "stress", PS_SLOTS);
+
+    t = thread_create("ps-other", PRIO_BOOT, ps_thread, NULL);
+    expect("putting the other half on the second core",
+      sched_migrate(t, 1), SYS_OK);
+    sched_ready(t);
+
+    md_cpu_fence();
+    ps_go = 1;
+
+    for (i = 0; i < PS_ROUNDS; i++) {
+        ps_round();
+    }
+
+    for (spin = 0; spin < 2000000u && ps_done == 0; spin++) {
+        sched_yield();
+    }
+    if (ps_done == 0) {
+        panic("pool check: the other core never finished");
+    }
+    md_cpu_fence();
+
+    cnprintf("    %lu rounds, %lu on core 0 and %lu on core 1\n",
+      (unsigned long)(ps_taken[0] + ps_taken[1]),
+      (unsigned long)ps_taken[0], (unsigned long)ps_taken[1]);
+    if (ps_taken[1] == 0) {
+        panic("pool check: the second core took nothing");
+    }
+    if (ps_clash != 0) {
+        panic("pool check: one slot handed to two cores %lu times",
+          (unsigned long)ps_clash);
+    }
+
+    /*
+     * And the list is all there. Every slot taken was given back, so
+     * everything must be free and the whole pool must be available
+     * again, which a shortened list cannot manage.
+     */
+    for (i = 0; i < PS_SLOTS; i++) {
+        if (pool_alloc(&ps_pool, NULL) == NULL) {
+            panic("pool check: %u of %u slots came back",
+              (unsigned int)i, (unsigned int)PS_SLOTS);
+        }
+    }
+    cnprintf("    and all %u slots came back              OK\n",
+      (unsigned int)PS_SLOTS);
+}
+#endif /* SYS_TIER == 2 */
+
 static void
 cross_core_donation_checks(void)
 {
@@ -5366,6 +5502,7 @@ kernel_main(void)
     high_priority_server_checks();
 #if SYS_TIER == 2
     cross_core_donation_checks();
+    pool_stress_checks();
 #endif
 
     cnputs("the slice: a file read from another process\n");
@@ -5439,6 +5576,38 @@ kernel_main(void)
             panic("switching stopped dominating: %u switches, %u halves",
               (unsigned int)all.vc_switch, (unsigned int)all.vc_halves);
         }
+
+        {
+            struct vm_cost per;
+            uint64_t sum = 0;
+            uint32_t i;
+
+            /*
+             * And where they happened. Section 11.4 makes this a
+             * question worth asking: a switch is something a core
+             * does, so the number above is a sum, and a sum whose
+             * parts nobody looks at is a number that would go on
+             * looking reasonable if one core stopped contributing.
+             */
+            cnprintf("    of those,");
+            for (i = 0; i < cpu_count(); i++) {
+                vm_cost_read_core(&per, i);
+                sum += per.vc_switch;
+                cnprintf("%s %u on core %u",
+                  i == 0 ? "" : " and", (unsigned int)per.vc_switch,
+                  (unsigned int)i);
+                if (per.vc_switch == 0) {
+                    panic("core %u switched nothing at all",
+                      (unsigned int)i);
+                }
+            }
+            cnprintf("\n");
+
+            if (sum != all.vc_switch) {
+                panic("the parts come to %lu and the whole says %lu",
+                  (unsigned long)sum, (unsigned long)all.vc_switch);
+            }
+        }
 #endif
     }
 
@@ -5459,6 +5628,13 @@ kernel_main(void)
     cnprintf("frames: %u of %u used at most, %u still held\n",
       (unsigned int)page_highwater(), (unsigned int)page_count(),
       (unsigned int)page_used());
+
+    /*
+     * Above the compared line, because it is about the machine that
+     * ran rather than about what the run did, and it is the last thing
+     * said before the numbers that have to be identical everywhere.
+     */
+    pool_report_cores();
 
     object_report_usage();
     cnputs("stage 9 complete\n");

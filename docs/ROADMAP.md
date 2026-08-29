@@ -4997,7 +4997,7 @@ external interrupt. It is a limit of what has been built rather than a
 defect in it, and the stage that gives a second core a device is the
 stage that has to answer it.
 
-**5. What two cores did to the measurements.**
+**5. What two cores did to the measurements.** *Built.*
 
 - Every counter this system prints is a plain increment on a shared word.
   Some are per core by nature and some are not, and the ones that are not
@@ -5009,6 +5009,63 @@ stage that has to answer it.
 everything the check compares. Anything that stops agreeing moves out of
 the compared file and into the report above it, with the relation that
 does hold checked in its place.
+
+*Built.* The audit sorted every printed number into two kinds, and the
+kinds turned out to matter more than the numbers.
+
+**The ones that are per core by nature are per core now.** A page table
+is written by the core walking it, a translation is thrown away by the
+core holding it, and an address space switch is a core switching. All of
+those were one set of words for the machine, which was the same thing as
+per core while there was one core. Two cores incrementing one word lose
+an increment whenever they land together, and six of these are in the
+part of the report the check compares exactly. A number that is usually
+right is worse than no number, because it makes a check fail sometimes,
+and a check that fails sometimes gets deleted.
+
+They are added up when the report is read, and the parts are printed
+beside the whole: 418 switches, 417 on the first core and 1 on the
+second, with the sum checked against the total and each part asserted
+nonzero. A sum whose parts nobody looks at is a number that would go on
+looking reasonable if one core stopped contributing.
+
+**The one that is not per core by nature needed a lock, and needed it
+for something other than the number.** A high-water mark is a
+largest-ever over everything live at once, which does not decompose per
+core the way a count of events does. So the pools keep one of each, and
+they are kept under a lock.
+
+What the lock is actually for is the free list. Two callers taking the
+head both get the same slot, which is a failure that has nothing to do
+with counting. Two cores at one pool, 4096 rounds each, gives 8192 with
+every slot returned; without the lock it fails in the first few with `a
+slot that was taken would not go back`, on both cores at once. The
+system's own pools are reached from both cores already, but twice in a
+whole session, which is a lock needed by construction and tested by
+nothing, so the check hammers a pool of its own. It is not a scheduler
+lock: nothing under it decides what runs, and the dispatch path's
+existing assertion that it takes no such lock still holds, because a
+slot is given back before that assertion begins rather than inside it.
+
+**And the audit found something that is not a counter at all.** The
+check began failing about one run in ten, on one port, with `nothing
+interrupted the program while it ran`. There is one list of pending
+events and the timer hardware is per core, and arming was done by
+whichever core happened to change the list. A timer armed on the wrong
+core still fires. What it interrupts is a core that has nothing to do
+with the deadline, so the event the check was counting arrived on the
+idle core, where it is an interrupt taken in the kernel rather than one
+taken from a program.
+
+Arming names a core now, and a core that changes the list and is not
+that core asks it rather than arming itself, through the poke this
+milestone already has. Eighteen consecutive runs at Tier 2 across both
+ports after the fix, against one failure in ten before it.
+
+That is the milestone's own lesson arriving in a fourth place. Three
+times the answer has been to stop keeping one of something for the
+machine; this time the thing being kept for the machine was right and
+what was wrong was assuming the hardware under it was too.
 
 **6. Whether partitioned scheduling is usable.**
 

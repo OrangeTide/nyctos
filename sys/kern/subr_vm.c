@@ -25,6 +25,7 @@
  * those addresses except a program in its own space.
  */
 
+#include <sys/cpu.h>
 #include <sys/page.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
@@ -185,7 +186,23 @@ vm_kernel_init(void)
  * A depth rather than a flag on the thread as well, because the failure
  * paths of the move undo it by calling the other half.
  */
-static struct vm_cost vm_buffer_cost;
+/*
+ * One set per core, added up when the report is read.
+ *
+ * Every event these count happens on a core: a table is written by the
+ * core walking it, a translation is thrown away by the core holding
+ * it, and a switch is a core switching. So they are per core by nature
+ * and were one set for the machine only because there was one core.
+ *
+ * Two cores incrementing one shared word lose one of the increments
+ * whenever the two land together, and these numbers are in the part of
+ * the report the check compares exactly. A number that is usually
+ * right is worse than no number: it makes the check fail sometimes,
+ * which is the failure that gets a check deleted.
+ */
+static struct vm_cost vm_buffer_cost[SYS_MAX_CORES];
+
+#define vm_cost_self  (vm_buffer_cost[cpu_self()->cp_index])
 
 static bool
 charging(void)
@@ -217,7 +234,7 @@ void
 vm_charge_leaf(void)
 {
     if (charging()) {
-        vm_buffer_cost.vc_leaf++;
+        vm_cost_self.vc_leaf++;
     }
 }
 
@@ -225,7 +242,7 @@ void
 vm_charge_table(void)
 {
     if (charging()) {
-        vm_buffer_cost.vc_table++;
+        vm_cost_self.vc_table++;
     }
 }
 
@@ -233,7 +250,7 @@ void
 vm_charge_flush(void)
 {
     if (charging()) {
-        vm_buffer_cost.vc_flush++;
+        vm_cost_self.vc_flush++;
     }
 }
 
@@ -241,7 +258,7 @@ void
 vm_charge_inval(void)
 {
     if (charging()) {
-        vm_buffer_cost.vc_inval++;
+        vm_cost_self.vc_inval++;
     }
 }
 
@@ -253,7 +270,7 @@ vm_charge_inval(void)
 void
 vm_count_switch(void)
 {
-    vm_buffer_cost.vc_switch++;
+    vm_cost_self.vc_switch++;
 }
 
 /*
@@ -266,12 +283,40 @@ vm_count_switch(void)
 void
 vm_charge_pages(uint32_t pages)
 {
-    vm_buffer_cost.vc_pages += pages;
-    vm_buffer_cost.vc_halves++;
+    vm_cost_self.vc_pages += pages;
+    vm_cost_self.vc_halves++;
 }
 
 void
 vm_cost_read(struct vm_cost *out)
 {
-    *out = vm_buffer_cost;
+    uint32_t i;
+
+    out->vc_leaf = 0;
+    out->vc_table = 0;
+    out->vc_flush = 0;
+    out->vc_inval = 0;
+    out->vc_pages = 0;
+    out->vc_halves = 0;
+    out->vc_switch = 0;
+
+    for (i = 0; i < SYS_MAX_CORES; i++) {
+        out->vc_leaf += vm_buffer_cost[i].vc_leaf;
+        out->vc_table += vm_buffer_cost[i].vc_table;
+        out->vc_flush += vm_buffer_cost[i].vc_flush;
+        out->vc_inval += vm_buffer_cost[i].vc_inval;
+        out->vc_pages += vm_buffer_cost[i].vc_pages;
+        out->vc_halves += vm_buffer_cost[i].vc_halves;
+        out->vc_switch += vm_buffer_cost[i].vc_switch;
+    }
+}
+
+void
+vm_cost_read_core(struct vm_cost *out, uint32_t core)
+{
+    if (core >= SYS_MAX_CORES) {
+        return;
+    }
+
+    *out = vm_buffer_cost[core];
 }

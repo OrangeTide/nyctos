@@ -130,6 +130,12 @@ void vm_count_switch(void);
 /* What has been spent so far. */
 void vm_cost_read(struct vm_cost *out);
 
+/*
+ * The same, for one core alone. Every event these count happens on a
+ * core, so the sum above is a sum and this is what it is a sum of.
+ */
+void vm_cost_read_core(struct vm_cost *out, uint32_t core);
+
 /* Build an empty address space, or return SYS_ERR_NO_MEMORY. */
 sys_err_t md_as_create(struct addrspace *as);
 

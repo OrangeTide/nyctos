@@ -503,6 +503,8 @@ Four constraints shape everything that follows, and they are stated here because
 | Kernel lock | One lock for the whole kernel at Tier 2, taken at every entry from the exception vectors and held with interrupts off. Put down at a context switch and around the idle wait. A stated deviation from section 13.3. |
 | Placement | A run queue per core, and a thread runs where it was put. Threads arrive from another core through a list pushed with one compare and exchange, so no core takes a lock to dispatch. |
 | Cross-core donation | The priority is set where the thread is, which is on no queue because it is blocked at a rendezvous. The interrupt says something arrived, not what priority it has. |
+| Counters | Per core and added up when they count events, because an event happens on a core. A high-water mark does not decompose that way and is one number under the pool lock. |
+| Timer arming | One list of pending events and one core whose hardware is armed for it. A core that changes the list and does not own the hardware asks the core that does. |
 | Peer death | A server is told with a pulse because it is at a receive point. A client is failed with OWNER_DEAD because it is not. |
 | Killing | Unblocks every thread as if cancelled; each leaves at its next return from the kernel. A spawn handle carries the right. |
 | Path resolution | Lexical reduction first, then the longest mount name that matches on a component boundary. |
@@ -1342,6 +1344,16 @@ worth one place that decides what to arm and no other caller touching the
 hardware.
 
 The cost is equally specific. **Every scheduling decision that changes the earliest pending event must reprogram the timer**, which on some parts is a slow write to a peripheral. That write is on the dispatch path and must be counted in the figures of section 13.3. A port whose timer is genuinely expensive to reprogram may find a tick cheaper, and that is a real trade, but it is a divergence to be measured and stated rather than assumed: the latency statements in this document are made without a tick period in them.
+
+
+**The hardware is per core and the list of pending events is not.** One
+core's timer is armed for the whole machine, and a core that changes
+what is pending and does not own that hardware asks the core that does
+rather than arming its own. Arming the calling core looks equivalent and
+is not: the interrupt still arrives, but it arrives on a core that has
+nothing to do with the deadline, so the work it was meant to preempt
+carries on undisturbed and the interrupt is taken in the kernel of an
+idle core. That was found as a check failing about one run in ten.
 
 **The timer is a scheduling mechanism, not a clock.** Reading the current time does not involve it at all: uptime is read from the system page with no system call, per section 6.2, and the two are related only in that both derive from the same monotonic source. Nothing in section 14.5 can perturb either, which is what makes clock adjustment safe for real-time behaviour.
 

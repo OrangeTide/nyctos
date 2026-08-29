@@ -84,4 +84,25 @@ void time_sleep_cancel(struct thread *t);
 /* The timer interrupt. */
 void time_interrupt(void);
 
+#if SYS_TIER == 2
+/*
+ * Another core changed what is pending and asked this one to arm for
+ * it. Called where an inter-processor interrupt arrives, because that
+ * is the poke the other core sent to say so.
+ */
+void time_rearm_if_asked(void);
+#else
+#define time_rearm_if_asked()   ((void)0)
+#endif
+
+#if SYS_TIER == 2
+/*
+ * Another core changed what is pending and asked this one to arm for
+ * it. Called where an inter-processor interrupt arrives.
+ */
+void time_rearm_if_asked(void);
+#else
+#define time_rearm_if_asked()   ((void)0)
+#endif
+
 #endif /* _SYS_TIME_H_ */
