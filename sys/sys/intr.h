@@ -16,6 +16,14 @@
  * That is what md_intr_disable is for: the run queues and the timeline
  * waiter lists are touched by both threads and interrupt handlers, and
  * nothing else keeps them apart.
+ *
+ * At Tier 2 that sentence is now half true, and the half it lost is the
+ * one it was written for. Disabling interrupts still keeps a handler
+ * out of a region a thread is inside, because a handler runs on the
+ * core it interrupts. It no longer keeps anything else out, because
+ * the other core is not interrupted by anything this core does. What
+ * keeps the two cores apart is the lock of sys/lock.h, taken at every
+ * entry into the kernel, and the regions below sit inside it.
  */
 
 #ifndef _SYS_INTR_H_

@@ -28,6 +28,7 @@
  * port is where step 2 of section 23.2 acquires an answer.
  */
 
+#include <sys/lock.h>
 #include <sys/op.h>
 #include <sys/systm.h>
 #include <sys/page.h>
@@ -35,8 +36,28 @@
 #include <sys/thread.h>
 #include <sys/vm.h>
 
+static long syscall_body(struct sys_op *op, unsigned long count);
+
+/*
+ * Every way into this kernel is one of four functions the port's
+ * exception vectors call, and each one is a pair of these. A thread
+ * that blocks in here is switched away from still holding the lock,
+ * and the thread that runs next releases it on its own way out.
+ */
 long
 syscall_handler(struct sys_op *op, unsigned long count)
+{
+    long r;
+
+    klock_enter();
+    r = syscall_body(op, count);
+    klock_exit();
+
+    return r;
+}
+
+static long
+syscall_body(struct sys_op *op, unsigned long count)
 {
     /*
      * The count is one until the submission engine of section 17 exists.
@@ -94,7 +115,15 @@ syscall_handler(struct sys_op *op, unsigned long count)
 void
 trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
 {
-    struct thread *t = thread_current();
+    struct thread *t;
+
+    /*
+     * Taken like any other entry, though nothing here gives it back.
+     * A core that stops the machine while another is spinning for this
+     * lock is a core that stops the machine, which is what was wanted.
+     */
+    klock_enter();
+    t = thread_current();
 
     /*
      * A synchronous exception the kernel took itself. Section 16.2 is
@@ -118,8 +147,19 @@ trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
  * and the instruction is tried again. Everything else ends the thread,
  * per section 16.2, and does not return.
  */
+static void trap_user_body(unsigned long cause, unsigned long pc,
+  unsigned long addr);
+
 void
 trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
+{
+    klock_enter();
+    trap_user_body(cause, pc, addr);
+    klock_exit();
+}
+
+static void
+trap_user_body(unsigned long cause, unsigned long pc, unsigned long addr)
 {
     uint32_t kind = md_fault_kind(cause);
     uintptr_t where = md_fault_has_addr(cause) ? (uintptr_t)addr : 0;

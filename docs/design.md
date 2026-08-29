@@ -500,6 +500,7 @@ Four constraints shape everything that follows, and they are stated here because
 | Cancellation | One call for every wait, through the unblock hook of section 10.6. Refused, not ignored, when the thread is not blocked. |
 | Pulses | One bounded queue per channel with slots reserved for system codes, sent through a connection, collected before messages. |
 | Cores | Per-core state through a register, at Tier 2 only. A core the build asked for and did not get stops the boot. |
+| Kernel lock | One lock for the whole kernel at Tier 2, taken at every entry from the exception vectors and held with interrupts off. Put down at a context switch and around the idle wait. A stated deviation from section 13.3. |
 | Peer death | A server is told with a pulse because it is at a receive point. A client is failed with OWNER_DEAD because it is not. |
 | Killing | Unblocks every thread as if cancelled; each leaves at its next return from the kernel. A spawn handle carries the right. |
 | Path resolution | Lexical reduction first, then the longest mount name that matches on a component boundary. |
@@ -1248,6 +1249,33 @@ Disabling interrupts inside the kernel and bounding latency purely by preemption
 Latency is therefore tier-specific and is a measured number per port rather than a general property of the architecture. This document states no such number, because none has been obtained.
 
 Preemption points sit at batch entry boundaries, at message copy chunk boundaries, and at page table walk boundaries.
+
+**Deviation, current at M8 stage two.** Tier 2 does not yet do what the
+second bullet says. There is one lock for the whole kernel, it is taken
+at every entry from the exception vectors, and it is held with
+interrupts disabled, which is coarse in both directions at once. The
+bullet stands as the target and this is the resting place it gets built
+from: section 11.4 forbids a global scheduler lock and says nothing
+about the rest, so the next stage takes the scheduler out from under
+this one because that section requires it, and what else deserves
+taking out is a measurement rather than a guess.
+
+Two things follow from holding the lock with interrupts disabled, and
+both are properties of the resting place rather than of the design.
+
+A core cannot hold the lock and take an interrupt, so the lock is put
+down at a context switch and around the idle wait rather than carried
+across either. A thread that blocks in the kernel has already put its
+state in order by the time it blocks, so the region does not need to
+survive the block.
+
+And the kernel's own threads do not hold it. A kernel thread never
+entered the kernel, it started inside, and it runs with interrupts
+enabled for as long as it runs, which is exactly what the lock cannot
+allow. So the exclusion covers every entry from user mode and does not
+cover the kernel's own boot thread. That is sound while nothing is
+scheduled on a second core and stops being sound in the stage that
+schedules something there.
 
 ---
 

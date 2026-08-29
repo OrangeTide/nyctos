@@ -3,6 +3,7 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
+#include <sys/lock.h>
 #include <sys/blk.h>
 #include <sys/bootarch.h>
 #include <sys/channel.h>
@@ -4999,6 +5000,7 @@ kernel_main(void)
      */
     cpu_start_others();
     cpu_report();
+    lock_check();
 
     kproc = proc_bootstrap("kernel");
     thread_bootstrap("boot", PRIO_BOOT, kproc);

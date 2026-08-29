@@ -23,6 +23,7 @@
  * has drained the device.
  */
 
+#include <sys/lock.h>
 #include <sys/intr.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
@@ -156,8 +157,18 @@ irq_unmask(struct irq *ir)
  * counter has already passed the value and the wait returns at once,
  * rather than the interrupt having been missed.
  */
+static void irq_dispatch_body(void);
+
 void
 irq_dispatch(void)
+{
+    klock_enter();
+    irq_dispatch_body();
+    klock_exit();
+}
+
+static void
+irq_dispatch_body(void)
 {
     struct irq *b;
     unsigned int irq;

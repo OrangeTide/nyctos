@@ -19,6 +19,7 @@
  */
 
 #include <sys/cpu.h>
+#include <sys/lock.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
 #include <sys/vm.h>
@@ -257,6 +258,14 @@ cpu_secondary_entry(void)
 #if SYS_TIER == 2
     md_mmu_enable(vm_kernel());
 #endif
+
+    /*
+     * The only kernel work this core does until the next stage gives
+     * it a run queue. It is here rather than in a thread because there
+     * is no way to put a thread here yet, and a lock that has never had
+     * two cores in it is a lock nothing has tested.
+     */
+    lock_check_secondary();
 
     cpu_idle_loop();
 }

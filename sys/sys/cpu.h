@@ -28,6 +28,7 @@
 #define _SYS_CPU_H_
 
 #include <sys/config.h>
+#include <sys/intr.h>
 #include <sys/op.h>
 
 #include <stdbool.h>
@@ -58,6 +59,15 @@ struct cpu {
      * once, and one slot for the system would lose one of them.
      */
     struct thread  *cp_reap;
+
+    /*
+     * The interrupt state this core entered the kernel with, restored
+     * when it leaves. Per core rather than per entry because nothing
+     * nests: interrupts are off for as long as the kernel lock is
+     * held, so a core inside the kernel cannot arrive at a second way
+     * in and find this word still holding the first one.
+     */
+    intr_state_t        cp_klock_saved;
 
     /*
      * How many times this core has had nothing to do, and whether it

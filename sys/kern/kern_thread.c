@@ -12,6 +12,7 @@
  * going back on a run queue, blocking, or dead.
  */
 
+#include <sys/lock.h>
 #include <sys/config.h>
 #include <sys/object.h>
 #include <sys/proc.h>
@@ -336,6 +337,7 @@ void
 thread_switch_to(struct thread *next)
 {
     struct thread *prev = current;
+    bool had;
 
     if (next == prev) {
         return;
@@ -374,12 +376,21 @@ thread_switch_to(struct thread *next)
      */
     thread_park_if_dead(prev);
 
+    /*
+     * The kernel lock is not carried across this. Whatever brought this
+     * thread into the kernel is finished with it for now, and the local
+     * below is on prev's own stack, so it is still there when something
+     * switches back and prev picks up what it put down.
+     */
+    had = klock_drop();
+
     md_switch(&prev->t_sp, next->t_sp);
 
     /*
      * Reached when something switches back to prev, which by then is
      * current again. Everything above ran in the other thread's context.
      */
+    klock_regain(had);
     check_guard(prev);
 }
 

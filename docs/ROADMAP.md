@@ -4626,7 +4626,7 @@ table and cannot enter C. Both were right about their own machine and
 the interface was wrong to ask. It is gone, and where a core arrives is
 each port's own business up to the point where it enters the kernel.
 
-**2. One lock, and interrupt disabling stops being exclusion.**
+**2. One lock, and interrupt disabling stops being exclusion.** *Built.*
 
 - A spinlock, and one of them held across every entry into the kernel.
   Sound, small, and a bottleneck: what it buys is that the rest of this
@@ -4643,6 +4643,62 @@ own invariant check passes afterwards. Taking the lock recursively is
 refused rather than deadlocking silently, and releasing one that is not
 held stops the machine.
 
+*Built.* There is one lock, taken at every entry into the kernel from the
+port's exception vectors, and there are four of those: a system call, a
+fault taken by a program, a fault taken by the kernel, and an interrupt.
+Each is a pair of calls in C rather than anything in assembly, which is
+worth saying because the alternative was editing four exception vectors
+in two ports.
+
+**Two cores through one region, 4096 rounds each.** Nothing is scheduled
+on the second core until the next stage, so the two cores that hammer the
+lock are the boot core and the one on its way to the idle loop. The
+region carries a flag saying a core is inside it and a count with a
+shadow written from a value read at the top, so a lost update and an
+overlap are separately visible. Taking the lock out of that region fails
+on the first round with `two cores inside the region at once`, which is
+the answer arriving immediately rather than after a rare interleaving:
+the region widens its own window on purpose, because a race that needs
+an exact interleaving to show is a race this check would report as
+absent.
+
+**The lock is put down at a context switch and around the idle wait
+rather than carried across either.** The first shape tried was the other
+one, where a thread that blocks hands the lock to whatever runs next and
+that thread releases it through an exit pairing with an entry it never
+made. It is a real design and this kernel cannot have it, because a core
+holding the lock has interrupts disabled and the idle path exists to wait
+for an interrupt. Putting it down is also simply better: a thread that
+blocks has already put its state in order, so the region does not need to
+survive the block.
+
+**And the kernel's own threads hold nothing, which is a hole and is
+recorded as one.** A kernel thread never entered the kernel, it started
+inside it. The boot thread runs several thousand lines of kernel work
+with interrupts enabled, and the lock cannot be held with interrupts
+enabled, so it cannot hold the lock. What this bought is exact rather
+than complete: every entry from user mode is exclusive, and the kernel's
+own thread is not. That is sound while nothing is scheduled on the second
+core and stops being sound in the stage that schedules something there,
+which is the next one.
+
+**What interrupt disabling still does.** The seven subsystems that
+disable interrupts around their critical sections still do, and the
+reason changed underneath them without a line of theirs changing. A
+handler runs on the core it interrupts, so disabling still keeps a
+handler out of a region a thread is inside. It never kept the other core
+out of anything, and the comment in `sys/intr.h` that said it did is
+corrected rather than deleted: the sentence was true for two milestones
+and is now half true, and which half it lost is the point.
+
+**Both misuses stop the machine, and the first thing the lock ever said
+was the wrong thing.** Taking it recursively gives `lock kernel: taken
+again by the core already holding it`, and releasing one not held gives
+`lock kernel: released and not held`. Both said `lock (null)` at first,
+because the lock was a static that nothing had initialised, and a lock
+that cannot say which lock it is answers half of the one question it
+exists to answer. It is named where it is declared now, because an
+initialiser that has to be called is one that can be forgotten.
 **3. A ready queue per core, and threads that stay where they are put.**
 
 - Each core dispatches from its own queue and takes no lock the other

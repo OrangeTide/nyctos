@@ -13,6 +13,7 @@
  * reason to prefer this over a sorted list.
  */
 
+#include <sys/lock.h>
 #include <sys/config.h>
 #include <sys/intr.h>
 #include <sys/sched.h>
@@ -183,6 +184,7 @@ static void
 sched_idle(void)
 {
     struct thread *parked = thread_current();
+    bool had;
 
     /*
      * There is no current thread while the core idles. That is section
@@ -202,6 +204,15 @@ sched_idle(void)
      */
     thread_set_current(NULL);
 
+    /*
+     * The kernel lock goes down here and nowhere else in the kernel.
+     * This is the one place that waits for an interrupt on purpose,
+     * and the interrupt that ends the wait has to get into the kernel
+     * to deliver itself. A core asleep with the lock held is a core
+     * holding the door shut against the only thing that would wake it.
+     */
+    had = klock_drop();
+
     for (;;) {
         md_intr_enable();
         md_idle_wait();
@@ -211,6 +222,8 @@ sched_idle(void)
             break;
         }
     }
+
+    klock_regain(had);
 
     thread_set_current(parked);
 }
