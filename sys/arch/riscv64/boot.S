@@ -65,10 +65,21 @@ zero_done:
      *
      * One machine interrupt is enabled now and is handled rather than
      * fatal. See machine_trap.
+     *
+     * The save area is set up first. That handler borrows registers
+     * through mscratch, so pointing mtvec at it while mscratch is
+     * still whatever reset left is a window in which a machine trap
+     * writes to that address, traps again, and loops with nothing
+     * printed, which is the exact failure the paragraph above says
+     * this code exists to prevent.
      */
+    call    machine_ipi_setup
+
     la      t0, machine_trap
     csrw    mtvec, t0
-    call    machine_ipi_setup
+
+    li      t0, 8                   /* mie.MSIE, once mtvec is valid */
+    csrs    mie, t0
 
     /*
      * The invariant the trap path reads: sscratch holds a parked
@@ -196,9 +207,14 @@ secondary_park:
     mul     t1, t1, t2
     add     sp, sp, t1
 
+    call    machine_ipi_setup
+
     la      t0, machine_trap
     csrw    mtvec, t0
-    call    machine_ipi_setup
+
+    li      t0, 8                   /* mie.MSIE, once mtvec is valid */
+    csrs    mie, t0
+
     csrw    sscratch, zero
 
     li      t0, -1
@@ -305,8 +321,10 @@ machine_trap_fatal:
     j       machine_fatal
 
 /*
- * The save area this hart's machine-mode trap uses, and the one machine
- * interrupt this kernel enables.
+ * The save area this hart's machine-mode trap borrows registers
+ * through. Set before mtvec points at that handler and before the
+ * interrupt is enabled, in that order, because the handler is useless
+ * without it and worse than useless with a bad one.
  */
 .balign 4
 machine_ipi_setup:
@@ -315,9 +333,6 @@ machine_ipi_setup:
     la      t1, mtrap_save
     add     t1, t1, t0
     csrw    mscratch, t1
-
-    li      t0, 8                   /* mie.MSIE */
-    csrs    mie, t0
     ret
 
 /*

@@ -4950,6 +4950,53 @@ never reaches it: a server at a rendezvous is blocked, not queued. The
 stage that needs it is the one that donates to a thread that is already
 runnable somewhere else, and nothing does yet.
 
+*Reviewed.* Three defects, and each one is a thing that worked because
+the machine was being kind about it.
+
+**The thread was read after it had been given away.** Publishing a
+thread to another core's list and then naming the core from that
+thread's own field is reading a slot that is no longer this core's. The
+exchange is the moment it changes hands, and the other core may already
+have taken it, run it, ended it and given the slot to something else. It
+is named from the pointer taken before the exchange now. Nothing had
+gone wrong, because the field being read holds the value that would
+have to change for it to matter and the window is a few instructions
+wide, which is the description of a race that shows up on hardware
+faster than this and never here.
+
+**Acknowledging a software interrupt with the wrong sender.** On the
+port with a distributor, the same interrupt number from two different
+cores is two different interrupts, and finishing with one means saying
+which. The claim discarded that field and the acknowledgement wrote the
+bare number, so every poke from the second core to the first was
+acknowledged as though the first had sent it to itself. The check ran
+anyway because the emulator is lenient. It is not theoretical: counting
+the pokes shows five from the first core to the second and three the
+other way, so it happened on every reply that woke a client.
+
+The whole value the controller gave is kept now, per core, because two
+cores are in that path independently. That is the third time this
+milestone that the answer to a bug has been to stop keeping one of
+something for the machine.
+
+**And the port that stopped being able to say what went wrong.** The
+machine-mode handler borrows three registers through a scratch register
+holding a per-hart area, and the boot code pointed the trap vector at
+that handler before setting the scratch register up. A machine trap in
+that window writes through whatever reset left, traps again, and loops
+with nothing printed. That is word for word the failure the comment
+above those lines says the handler exists to prevent, and the stage put
+it back. The area is set first now, then the vector, then the interrupt
+enabled, in that order and for that reason.
+
+**What was checked and left alone.** The interrupt controller on the
+other port still addresses its external sources to the first hart's
+context, which is wrong for any core but the first. Nothing reaches it:
+a second core unmasks the poke and nothing else, so it never takes an
+external interrupt. It is a limit of what has been built rather than a
+defect in it, and the stage that gives a second core a device is the
+stage that has to answer it.
+
 **5. What two cores did to the measurements.**
 
 - Every counter this system prints is a plain increment on a shared word.

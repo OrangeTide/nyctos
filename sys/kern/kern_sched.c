@@ -110,7 +110,15 @@ push_arriving(struct thread *t)
              * some other reason, and a donation that arrives when the
              * core next feels like it is a donation that did not work.
              */
-            md_cpu_ipi(t->t_core);
+            /*
+             * The core is named from the pointer taken before the
+             * exchange, not from the thread. Once the exchange
+             * succeeds the thread belongs to the other core, which may
+             * already have run it, ended it and given its slot to
+             * something else, so reading a field of it here is reading
+             * a slot somebody else has.
+             */
+            md_cpu_ipi(target->cp_index);
             return;
         }
     }

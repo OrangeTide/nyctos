@@ -11,6 +11,7 @@
  * why it is the easiest first device.
  */
 
+#include <sys/cpu.h>
 #include <sys/intr.h>
 #include <sys/systm.h>
 
@@ -52,6 +53,9 @@
 
 /* GICv2 returns this from IAR when there is nothing pending. */
 #define GIC_SPURIOUS    1023
+
+/* What each core last took from the controller. See md_irq_claim. */
+static uint32_t claimed[SYS_MAX_CORES];
 
 static uint64_t timer_hz;
 
@@ -179,6 +183,19 @@ md_irq_claim(void)
         return IRQ_NONE;
     }
 
+    /*
+     * Kept whole, because finishing with a software generated
+     * interrupt means saying which core sent it. The identifier alone
+     * does not: the same interrupt number from two cores is two
+     * interrupts to this controller, and an acknowledgement naming the
+     * wrong one leaves the right one active.
+     *
+     * Per core, because two cores are in here independently, and one
+     * slot for the machine would have one of them acknowledge the
+     * other's interrupt.
+     */
+    claimed[md_cpu_get_self()->cp_index] = iar;
+
     return irq;
 }
 
@@ -193,11 +210,22 @@ md_irq_claim(void)
 void
 md_irq_eoi(unsigned int irq)
 {
+    uint32_t iar = claimed[md_cpu_get_self()->cp_index];
+
     if (irq == TIMER_PPI) {
         md_timer_disarm();
     }
 
-    mmio_write(GICC_BASE, GICC_EOIR, (uint32_t)irq);
+    /*
+     * What was claimed, if this is finishing with what was claimed,
+     * which carries the sending core for a software interrupt and is
+     * the plain number for everything else.
+     */
+    if ((iar & 0x3ff) != irq) {
+        iar = (uint32_t)irq;
+    }
+
+    mmio_write(GICC_BASE, GICC_EOIR, iar);
 }
 
 void
