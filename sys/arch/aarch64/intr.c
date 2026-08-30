@@ -11,6 +11,7 @@
  * why it is the easiest first device.
  */
 
+#include <sys/measure.h>
 #include <sys/cpu.h>
 #include <sys/intr.h>
 #include <sys/systm.h>
@@ -54,6 +55,9 @@
 /* GICv2 returns this from IAR when there is nothing pending. */
 #define GIC_SPURIOUS    1023
 
+/* The interrupt mask bit in DAIF. Set means interrupts are off. */
+#define DAIF_I          (1UL << 7)
+
 /* What each core last took from the controller. See md_irq_claim. */
 static uint32_t claimed[SYS_MAX_CORES];
 
@@ -85,18 +89,38 @@ md_intr_disable(void)
     __asm__ volatile ("mrs %0, daif" : "=r" (daif));
     __asm__ volatile ("msr daifset, #2" ::: "memory");
 
+    /*
+     * Only the call that actually turns them off begins a region. The
+     * I bit clear means they were on, which makes this the one that
+     * started the contiguous region section 13.3 asks about.
+     */
+    if ((daif & DAIF_I) == 0) {
+        intr_region_begin((uintptr_t)__builtin_return_address(0));
+    }
+
     return daif;
 }
 
 void
 md_intr_restore(intr_state_t saved)
 {
+    if ((saved & DAIF_I) == 0) {
+        intr_region_end();
+    }
+
     __asm__ volatile ("msr daif, %0" :: "r" (saved) : "memory");
 }
 
 void
 md_intr_enable(void)
 {
+    /*
+     * An explicit enable ends the region as surely as a restore does.
+     * Without this the span runs on until some later restore closes
+     * it, and the figure includes time when interrupts were on.
+     */
+    intr_region_end();
+
     __asm__ volatile ("msr daifclr, #2" ::: "memory");
 }
 

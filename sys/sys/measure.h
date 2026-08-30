@@ -93,4 +93,14 @@ void meas_report_clock(void);
 /* That it is one clock and it does not go backwards. Panics if it does. */
 void meas_check_clock(void);
 
+/*
+ * Section 13.3's first term. The ports call these at the transition
+ * into and out of interrupts being disabled, which is where a region
+ * begins and ends however deeply the calls nest inside it.
+ */
+void intr_region_begin(uintptr_t site);
+void intr_region_end(void);
+void intr_region_report(void);
+uintptr_t intr_region_worst_site(void);
+
 #endif /* _SYS_MEASURE_H_ */

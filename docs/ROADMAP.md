@@ -5470,7 +5470,7 @@ rather than of the facility, and the next stage measures a region the
 kernel really does enter, so it is the next stage's problem to solve
 rather than a defect here.
 
-**2. The longest interrupts-disabled region, per tier.**
+**2. The longest interrupts-disabled region, per tier.** *Built.*
 
 - Section 13.3's first term, instrumented where interrupts are disabled
   and restored, recording the longest region and where it began.
@@ -5480,6 +5480,54 @@ rather than a defect here.
 *Check.* A deliberately long region introduced anywhere becomes the
 reported maximum and is named as its own site. Removing it restores the
 previous maximum. The figure is reported for both tiers.
+
+*Built.* The region is measured at the transition rather than at every
+call, because section 13.3's term is a contiguous region and this kernel
+nests these freely. A call that finds interrupts already off is inside a
+region somebody else began; the one that turns them off starts the
+clock, and the restore that turns them back on stops it. The site is the
+address of whoever asked, resolved against the link map.
+
+**The first figure it produced was 480 milliseconds, and it was wrong in
+an instructive way.** A timer fires every millisecond in this check, so
+a region that long is impossible. The region was the idle wait. M8 moved
+that wait behind masked interrupts to close a lost wakeup, so the core
+really does sit there with interrupts off, and the instrument was
+counting it. But a core asleep on an empty queue is not withholding an
+interrupt from anybody: the instruction wakes on a masked interrupt and
+the next two lines take it. Counting the sleep makes the longest region
+the length of the quietest moment in the run. The measurement stops at
+the wait and starts again on the other side.
+
+**The second figure was 248 milliseconds, and it was wrong differently.**
+Returning to user mode turns interrupts back on without going through
+the restore, so a region opened in the kernel stayed open across
+everything the program then did. The figure included time when
+interrupts were on. Every path that re-enables without a restore closes
+the region now: the explicit enable, the return from a system call or a
+trap, and the drop into a new program.
+
+What is left is a figure that can be true. On this host, at Tier 2, the
+longest region is about 3800 microseconds' worth of ticks and it begins
+in `sched_block`; at Tier 0 it is the same site. That is the useful part
+of the result and it is what the site was for. Blocking disables
+interrupts and then dispatches, so the region runs from the moment a
+thread decides to block until whatever runs next re-enables. It spans a
+context switch, and it is genuinely a span in which that core cannot
+take an interrupt.
+
+**The count is not in the compared file and must not be.** How many
+regions a run has depends on how many interrupts arrived, which is a
+property of the host. The figure and the count are both above the line;
+what stage one put below it stays the only compared thing here.
+
+A deliberate region introduced before the report becomes the reported
+maximum and is named as its own site, and removing it puts the site back
+to `sched_block`. Worth noting that the deliberate one, half a million
+iterations of a busy loop, came out about the same size as the largest
+region the kernel produces on its own. That is a statement about how
+long blocking holds interrupts off, and it is the first number this
+project has that says anything about latency at all.
 
 **3. Dispatching an interrupt to a user thread.**
 

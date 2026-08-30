@@ -6044,6 +6044,8 @@ kernel_main(void)
      */
     pool_report_cores();
 
+    intr_region_report();
+
     object_report_usage();
 
     /*

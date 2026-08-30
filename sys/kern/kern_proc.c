@@ -3,6 +3,7 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
+#include <sys/measure.h>
 #include <sys/bootarch.h>
 #include <sys/channel.h>
 #include <sys/cohort.h>
@@ -429,6 +430,7 @@ proc_user_start(void *arg)
     struct proc *p = proc_current();
 
     (void)arg;
+    intr_region_end();
     enter_user(p->p_entry, (void *)p->p_startup_va, 0);
 }
 
@@ -1203,6 +1205,7 @@ proc_thread_start(void *arg)
     struct thread *t = thread_current();
 
     (void)arg;
+    intr_region_end();
     enter_user(t->t_uentry, (void *)t->t_uarg, t->t_ustack);
 }
 

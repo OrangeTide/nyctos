@@ -28,6 +28,7 @@
  * port is where step 2 of section 23.2 acquires an answer.
  */
 
+#include <sys/measure.h>
 #include <sys/lock.h>
 #include <sys/op.h>
 #include <sys/systm.h>
@@ -51,6 +52,14 @@ syscall_handler(struct sys_op *op, unsigned long count)
     long r = syscall_body(op, count);
 
     klock_exit(s);
+
+    /*
+     * The instruction that returns to user mode turns interrupts back
+     * on without going through the restore, so the region has to be
+     * closed here. Left open it runs through everything the program
+     * then does, and the figure stops being about the kernel.
+     */
+    intr_region_end();
 
     return r;
 }
@@ -156,6 +165,7 @@ trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
 
     trap_user_body(cause, pc, addr);
     klock_exit(s);
+    intr_region_end();
 }
 
 static void

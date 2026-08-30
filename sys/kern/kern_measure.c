@@ -158,3 +158,96 @@ meas_check_clock(void)
 
     panic("clock: it never moved, so it is stopped");
 }
+
+/*
+ * Section 13.3's first term: the longest region with interrupts
+ * disabled.
+ *
+ * Measured at the transition rather than at every call, because the
+ * term the section defines is a contiguous region and this kernel nests
+ * these freely. A call that finds interrupts already off is inside a
+ * region somebody else began; the one that turns them off is the one
+ * that starts the clock, and the restore that turns them back on is the
+ * one that stops it.
+ *
+ * The site is the address of whoever asked, which is a name in the
+ * sense that matters: a figure with nothing attached says a region was
+ * long and gives nobody anywhere to look. Resolve it against the link
+ * map of the build that produced it.
+ *
+ * Two clock reads per region is not free, and the figure includes them.
+ * That is the price of the term being measured at all, and it is
+ * recorded rather than netted out, because netting it out would mean
+ * claiming a number this cannot produce.
+ */
+void
+intr_region_begin(uintptr_t site)
+{
+    struct cpu *c = cpu_self();
+
+    c->cp_intr_site = site;
+    c->cp_intr_open = true;
+    c->cp_intr_start = md_time_now();
+}
+
+void
+intr_region_end(void)
+{
+    struct cpu *c = cpu_self();
+    uint64_t now;
+    uint64_t took;
+
+    if (!c->cp_intr_open) {
+        /*
+         * A region that was left open by something re-enabling
+         * interrupts without going through the restore, which the
+         * return to user mode and the idle path both do. Nothing is
+         * charged for it: what is known is that it ended, not when.
+         */
+        return;
+    }
+
+    now = md_time_now();
+    took = now >= c->cp_intr_start ? now - c->cp_intr_start : 0;
+
+    c->cp_intr_open = false;
+    c->cp_intr_regions++;
+
+    if (took > c->cp_intr_worst) {
+        c->cp_intr_worst = took;
+        c->cp_intr_worst_site = c->cp_intr_site;
+    }
+}
+
+void
+intr_region_report(void)
+{
+    uint32_t i;
+
+    cnputs("interrupts off: the longest region, per section 13.3\n");
+
+    for (i = 0; i < cpu_count(); i++) {
+        const struct cpu *c = cpu_at(i);
+
+        cnprintf("    core %u: %lu regions, longest %lu ticks, "
+          "begun at 0x%lx\n", (unsigned int)i,
+          (unsigned long)c->cp_intr_regions,
+          (unsigned long)c->cp_intr_worst,
+          (unsigned long)c->cp_intr_worst_site);
+
+        if (c->cp_intr_regions == 0) {
+            panic("interrupts off: core %u never disabled them",
+              (unsigned int)i);
+        }
+        if (c->cp_intr_worst_site == 0) {
+            panic("interrupts off: core %u has a longest region "
+              "with nobody to blame", (unsigned int)i);
+        }
+    }
+}
+
+uintptr_t
+intr_region_worst_site(void)
+{
+    return cpu_self()->cp_intr_worst_site;
+}

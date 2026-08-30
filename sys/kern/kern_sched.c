@@ -13,6 +13,7 @@
  * reason to prefer this over a sorted list.
  */
 
+#include <sys/measure.h>
 #include <sys/time.h>
 #include <sys/config.h>
 #include <sys/cpu.h>
@@ -363,7 +364,21 @@ sched_idle(void)
          * possible. Both architectures wake from this instruction on
          * an interrupt that is pending and masked, and say so.
          */
+        /*
+         * The measurement of section 13.3's first term stops here and
+         * starts again on the other side. Interrupts really are masked
+         * across the wait, but a core asleep with an empty queue is
+         * not withholding one from anybody: the instruction wakes on a
+         * masked interrupt and the next two lines take it. Counting
+         * the sleep would make the longest region the length of the
+         * quietest moment in the run, which was 480 milliseconds of a
+         * paced session and told nobody anything.
+         */
+        intr_region_end();
+
         md_idle_wait();
+
+        intr_region_begin((uintptr_t)&sched_idle);
 
         /* And let it be taken, now that there is something to take. */
         md_intr_enable();

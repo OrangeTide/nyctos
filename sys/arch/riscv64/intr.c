@@ -13,6 +13,7 @@
  * supervisor context of hart zero rather than the machine one.
  */
 
+#include <sys/measure.h>
 #include <sys/intr.h>
 #include <sys/systm.h>
 
@@ -103,13 +104,25 @@ md_intr_disable(void)
     __asm__ volatile ("csrrc %0, sstatus, %1"
       : "=r" (s) : "r" (SSTATUS_SIE) : "memory");
 
-    return s & SSTATUS_SIE;
+    s &= SSTATUS_SIE;
+
+    /*
+     * Only the call that actually turns them off begins a region.
+     * One that finds them already off is inside a region somebody
+     * else began, and section 13.3 asks about the contiguous one.
+     */
+    if (s != 0) {
+        intr_region_begin((uintptr_t)__builtin_return_address(0));
+    }
+
+    return s;
 }
 
 void
 md_intr_restore(intr_state_t saved)
 {
     if (saved != 0) {
+        intr_region_end();
         __asm__ volatile ("csrs sstatus, %0" :: "r" (SSTATUS_SIE) : "memory");
     }
 }
@@ -117,6 +130,13 @@ md_intr_restore(intr_state_t saved)
 void
 md_intr_enable(void)
 {
+    /*
+     * An explicit enable ends the region as surely as a restore does.
+     * Without this the span runs on until some later restore closes
+     * it, and the figure includes time when interrupts were on.
+     */
+    intr_region_end();
+
     __asm__ volatile ("csrs sstatus, %0" :: "r" (SSTATUS_SIE) : "memory");
 }
 

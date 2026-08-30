@@ -117,6 +117,19 @@ struct cpu {
     uint32_t            cp_rearm;
 
     /*
+     * Section 13.3's first term, measured on this core: when the
+     * current interrupts-disabled region began and who began it, and
+     * the longest one seen so far with the same. Per core because a
+     * region is disabled on a core and nowhere else.
+     */
+    uint64_t            cp_intr_start;
+    uintptr_t           cp_intr_site;
+    uint64_t            cp_intr_worst;
+    uintptr_t           cp_intr_worst_site;
+    uint64_t            cp_intr_regions;
+    bool                cp_intr_open;
+
+    /*
      * What this core has spent on the other one being separate: pokes
      * sent, and donations raised on a thread this core does not own.
      * Both are zero on a machine with one core by construction, so
