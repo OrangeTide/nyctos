@@ -5362,7 +5362,7 @@ cares about, the fifth is the one piece of mechanism still owed, and the
 sixth asks what the numbers mean for the section that motivated all of
 it.
 
-**1. A measurement that is not a measurement of the host.**
+**1. A measurement that is not a measurement of the host.** *Built.*
 
 - A cheap monotonic read on both ports, and the honest statement of what
   it counts. Its resolution is reported rather than assumed.
@@ -5375,6 +5375,57 @@ its resolution is printed with the configuration that produced it, and
 the counted unit of a deliberately doubled region doubles while the same
 region's duration on a loaded host does not have to. Anything reported
 in nanoseconds is above the compared line; anything compared is a count.
+
+*Built.* There is a clock, a statement of what it is a clock of, and a
+counted unit beside it. The two are reported in different places on
+purpose, and that separation is the whole of what this stage settles.
+
+**The unit that does not move when the host does was supposed to be
+retired instructions, and neither port can supply one.** The RISC-V
+counter is architecturally an instruction count and can be read from
+supervisor mode here, because the boot code already permits it. Asked
+for the length of a thousand-iteration loop it answered 130000, and
+asked for a loop of twice the length it answered about the same again.
+The emulator is answering an instruction counter with something
+time-shaped. That is recorded rather than worked around, because it is
+the reason every duration in this milestone comes from a clock nobody
+should trust and every compared figure is an integer instead.
+
+So the counted unit is the kernel's own arithmetic: how many times a
+region was entered. A region entered twice as often counts twice as
+often, on every host and in all four configurations, and one of those
+counts is in the compared file to prove it. Changing the work changes
+the compared line, which is what makes it a check rather than a
+decoration.
+
+**The clock is one clock and both cores read it.** Both ports take it
+from a counter the machine shares rather than from anything per core,
+and the check is an ordering rather than a duration: the first core
+stamps, the second stamps, the first stamps again, and the middle
+reading has to lie between the outer two. Giving the second core a
+counter with its own origin fails with the reading sitting outside the
+interval by a wide margin. It cannot flake, because it asserts an order
+and never a threshold.
+
+The first attempt at that check proved nothing, and how it failed is
+worth keeping. Breaking the clock by giving every core its own counter
+starting from zero left both cores reading small numbers that still
+came out in the right order, so the check passed. Two counters with the
+same origin and rate are one clock for this purpose; what actually goes
+wrong is two counters with different origins, which is what a per-core
+cycle counter would give. The break test was rewritten to be the failure
+that can happen rather than the one that was easy to write.
+
+**The resolutions differ between the ports and both are printed.** Ten
+million ticks a second on one and 62500000 on the other, 100 nanoseconds
+and 16. A figure quoted without that number beside it would be a figure
+nobody could compare with anything.
+
+And the durations are already visibly useless, which is the most useful
+thing they do here. The region entered 1024 times reported a longest
+visit of 264 ticks and the region entered 2048 times reported 117. The
+smaller job took longer, because what was being measured was the host.
+The counts beside them are 1024 and 2048 in every run.
 
 **2. The longest interrupts-disabled region, per tier.**
 

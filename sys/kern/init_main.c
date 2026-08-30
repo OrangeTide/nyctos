@@ -3,6 +3,7 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
+#include <sys/measure.h>
 #include <sys/lock.h>
 #include <sys/blk.h>
 #include <sys/bootarch.h>
@@ -4813,6 +4814,130 @@ cohort_checks(void)
  * checks that created them. Root will hold both when there is a root;
  * until then the kernel is what assembles the system. */
 
+/*
+ * Section 13.3 wants figures. Before any of them mean anything, the
+ * clock they come from has to be one clock, shared by both cores, and
+ * monotonic; and there has to be a unit that does not move when the
+ * host does.
+ */
+#define CLK_ONCE    1024u
+#define CLK_TWICE   (CLK_ONCE * 2u)
+
+static struct meas meas_once = { "once", { 0 }, { 0 }, { 0 } };
+static struct meas meas_twice = { "twice", { 0 }, { 0 }, { 0 } };
+
+#if SYS_TIER == 2
+static volatile uint64_t clk_stamp;
+static volatile uint32_t clk_go;
+static volatile uint32_t clk_done;
+
+static void
+clk_thread(void *arg)
+{
+    (void)arg;
+
+    while (clk_go == 0) {
+        md_cpu_relax();
+    }
+
+    clk_stamp = meas_now();
+    md_cpu_fence();
+    clk_done = 1;
+    thread_exit(0);
+}
+#endif
+
+static void
+clock_checks(void)
+{
+    uint32_t i;
+
+    cnputs("clocks: what a figure from here is a figure of\n");
+
+    meas_report_clock();
+    meas_check_clock();
+    cnputs("    it moves, and never backwards            OK\n");
+
+#if SYS_TIER == 2
+    {
+        struct thread *t;
+        uint64_t before, after;
+        uint32_t spin;
+
+        /*
+         * And it is the same clock on the other core. Both ports take
+         * it from a counter the whole machine shares, and a per-core
+         * one would pass every other check here while making every
+         * figure that crosses a core meaningless.
+         */
+        t = thread_create("clk", PRIO_BOOT, clk_thread, NULL);
+        expect("a reader on the second core", sched_migrate(t, 1), SYS_OK);
+        sched_ready(t);
+
+        before = meas_now();
+        md_cpu_fence();
+        clk_go = 1;
+
+        for (spin = 0; spin < 2000000u && clk_done == 0; spin++) {
+            sched_yield();
+        }
+        if (clk_done == 0) {
+            panic("clocks: the second core never read it");
+        }
+        md_cpu_fence();
+        after = meas_now();
+
+        if (clk_stamp < before || clk_stamp > after) {
+            panic("clocks: the other core read %lu, outside %lu to %lu",
+              (unsigned long)clk_stamp, (unsigned long)before,
+              (unsigned long)after);
+        }
+        cnputs("    and the other core reads the same one  OK\n");
+    }
+#endif
+
+    /*
+     * The unit that does not move. A region entered twice as often is
+     * counted twice as often, on every host and in every configuration,
+     * which is why the count is what the check compares and the
+     * duration beside it is not.
+     */
+    for (i = 0; i < CLK_ONCE; i++) {
+        uint64_t t0 = meas_enter();
+
+        meas_leave(&meas_once, t0);
+    }
+    for (i = 0; i < CLK_TWICE; i++) {
+        uint64_t t0 = meas_enter();
+
+        meas_leave(&meas_twice, t0);
+    }
+
+    if (meas_count(&meas_once) != CLK_ONCE ||
+      meas_count(&meas_twice) != CLK_TWICE) {
+        panic("clocks: counted %lu and %lu, not %u and %u",
+          (unsigned long)meas_count(&meas_once),
+          (unsigned long)meas_count(&meas_twice),
+          (unsigned int)CLK_ONCE, (unsigned int)CLK_TWICE);
+    }
+    if (meas_count(&meas_twice) != 2 * meas_count(&meas_once)) {
+        panic("clocks: twice the work did not count twice");
+    }
+
+    cnprintf("    twice the work, twice the count        %lu and %lu\n",
+      (unsigned long)meas_count(&meas_once),
+      (unsigned long)meas_count(&meas_twice));
+
+    /*
+     * And the durations beside them, which are not compared and are not
+     * asserted against anything. They are here to be looked at, and to
+     * make the point that the pair of numbers above is the same
+     * everywhere while this pair is not.
+     */
+    cnprintf("    longest visit to each, in ticks        %lu and %lu\n",
+      (unsigned long)meas_longest(&meas_once),
+      (unsigned long)meas_longest(&meas_twice));
+}
 
 #if SYS_TIER == 2
 /*
@@ -4853,6 +4978,7 @@ stayer_thread(void *arg)
         sched_yield();
     }
 }
+
 
 static void
 core_checks(void)
@@ -5652,6 +5778,7 @@ kernel_main(void)
     cpu_start_others();
     cpu_report();
     lock_check();
+    clock_checks();
 #if SYS_TIER == 2
     core_checks();
 #endif
@@ -5851,6 +5978,19 @@ kernel_main(void)
     pool_report_cores();
 
     object_report_usage();
+
+    /*
+     * Inside the compared part of the report, because it is a count.
+     * The durations these regions also produced are above the line,
+     * where they are free to differ between one host and the next.
+     * This line is the milestone's rule made visible: what is compared
+     * is a property of this kernel, and what moves with the machine is
+     * reported and not compared.
+     */
+    cnprintf("  measured regions: %lu entries and %lu\n",
+      (unsigned long)meas_count(&meas_once),
+      (unsigned long)meas_count(&meas_twice));
+
     cnputs("stage 9 complete\n");
     machine_halt(0);
 }

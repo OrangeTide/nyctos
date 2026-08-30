@@ -26,6 +26,7 @@ SRCS := arch/$(ARCH)/boot.S \
         kern/kern_cohort.c \
         kern/kern_cpu.c \
         kern/kern_lock.c \
+        kern/kern_measure.c \
         kern/kern_connection.c \
         kern/kern_grant.c \
         kern/kern_handle.c \
