@@ -130,6 +130,24 @@ struct cpu {
     bool                cp_intr_open;
 
     /*
+     * Preemption points passed on this core, per section 13.3, and
+     * whether this core is inside an interrupt handler. The second is
+     * how a thread made runnable by an interrupt is told apart from
+     * one made runnable by another thread.
+     */
+    uint64_t            cp_points;
+    bool                cp_in_irq;
+
+    /*
+     * Section 13.3's second term, measured on this core: how many
+     * interrupts have been dispatched all the way to a user thread,
+     * the longest such dispatch, and the points it passed.
+     */
+    uint64_t            cp_disp_count;
+    uint64_t            cp_disp_longest;
+    uint64_t            cp_disp_points;
+
+    /*
      * What this core has spent on the other one being separate: pokes
      * sent, and donations raised on a thread this core does not own.
      * Both are zero on a machine with one core by construction, so

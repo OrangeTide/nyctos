@@ -54,6 +54,13 @@ syscall_handler(struct sys_op *op, unsigned long count)
     klock_exit(s);
 
     /*
+     * And if this thread got here because an interrupt made it
+     * runnable, that is section 13.3's second term closing: the
+     * distance from the interrupt being taken to its program running.
+     */
+    irq_dispatch_arrived(thread_current());
+
+    /*
      * The instruction that returns to user mode turns interrupts back
      * on without going through the restore, so the region has to be
      * closed here. Left open it runs through everything the program
@@ -75,6 +82,14 @@ syscall_body(struct sys_op *op, unsigned long count)
     if (count != 1) {
         return SYS_ERR_INVALID_ARG;
     }
+
+    /*
+     * A batch entry boundary, per section 13.3. There is one entry
+     * until section 17 exists, so this is passed once per call; the
+     * point is placed where the boundary is rather than where it would
+     * be interesting.
+     */
+    preempt_point();
 
     /*
      * Section 23.2 step 2: the descriptor array has to be memory the

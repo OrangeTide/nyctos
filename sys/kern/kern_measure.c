@@ -15,6 +15,7 @@
 #include <sys/intr.h>
 #include <sys/measure.h>
 #include <sys/systm.h>
+#include <sys/thread.h>
 
 uint64_t
 meas_now(void)
@@ -264,4 +265,137 @@ uintptr_t
 intr_region_worst_site(void)
 {
     return cpu_self()->cp_intr_worst_site;
+}
+
+/*
+ * A preemption point, per section 13.3: a place where the kernel could
+ * be preempted, and therefore a boundary on how long it cannot be.
+ *
+ * The section names three of them, at batch entry boundaries, at
+ * message copy chunk boundaries and at page table walk boundaries, and
+ * until now the tree had none: the Tier 0 latency argument rested on a
+ * placement that existed only in the section. These count rather than
+ * yield, because what this milestone needs first is the number, and a
+ * point that yields is a scheduling change rather than a measurement.
+ */
+void
+preempt_point(void)
+{
+    struct cpu *c = cpu_self();
+
+    if (c != NULL) {
+        c->cp_points++;
+    }
+}
+
+uint64_t
+preempt_points(void)
+{
+    struct cpu *c = cpu_self();
+
+    return c != NULL ? c->cp_points : 0;
+}
+
+/*
+ * Section 13.3's second term: from an interrupt being taken to the user
+ * thread waiting on it running.
+ *
+ * Measured on the path the system already has rather than on one built
+ * for the purpose. An interrupt handler that makes a thread runnable
+ * stamps it; when that thread next returns to user mode the distance is
+ * closed. The console driver is a loaded program waiting on the UART
+ * interrupt's timeline, so the path is walked for real in every run.
+ */
+void
+irq_dispatch_stamp(struct thread *t)
+{
+    struct cpu *c = cpu_self();
+
+    if (c == NULL || !c->cp_in_irq) {
+        return;
+    }
+
+    t->t_irq_stamp = md_time_now();
+    t->t_irq_points = c->cp_points;
+}
+
+void
+irq_dispatch_arrived(struct thread *t)
+{
+    struct cpu *c = cpu_self();
+    uint64_t now;
+    uint64_t took;
+
+    if (c == NULL || t == NULL || t->t_irq_stamp == 0) {
+        return;
+    }
+
+    now = md_time_now();
+    took = now >= t->t_irq_stamp ? now - t->t_irq_stamp : 0;
+
+    c->cp_disp_count++;
+    if (took > c->cp_disp_longest) {
+        c->cp_disp_longest = took;
+        c->cp_disp_points = c->cp_points - t->t_irq_points;
+    }
+
+    t->t_irq_stamp = 0;
+    t->t_irq_points = 0;
+}
+
+void
+irq_dispatch_report(void)
+{
+    uint32_t i;
+    uint64_t seen = 0;
+
+    cnputs("interrupt to a program: section 13.3's second term\n");
+
+    for (i = 0; i < cpu_count(); i++) {
+        const struct cpu *c = cpu_at(i);
+
+        seen += c->cp_disp_count;
+        if (c->cp_disp_count == 0) {
+            continue;
+        }
+        cnprintf("    core %u: %lu dispatched, longest %lu ticks, "
+          "%lu points passed\n", (unsigned int)i,
+          (unsigned long)c->cp_disp_count,
+          (unsigned long)c->cp_disp_longest,
+          (unsigned long)c->cp_disp_points);
+    }
+
+    /*
+     * A run with none is a fact about the run and not about the
+     * kernel, so it is said rather than panicked over. The paced
+     * session dispatches sixteen of these because the console driver
+     * waits for a person; the burst session dispatches none, because
+     * the whole input is already there when the driver looks and it
+     * never blocks. Insisting on one would be insisting on how the
+     * input arrived.
+     *
+     * What is asserted is the thing that is about the kernel: a
+     * dispatch that happened passed no preemption point, so the path
+     * from an interrupt to the program waiting on it is straight and
+     * cannot be broken into anywhere.
+     */
+    if (seen == 0) {
+        cnputs("    none in this run, which is a fact about the input\n");
+        return;
+    }
+
+    for (i = 0; i < cpu_count(); i++) {
+        const struct cpu *c = cpu_at(i);
+
+        if (c->cp_disp_count != 0 && c->cp_disp_points != 0) {
+            panic("interrupt to a program: %lu points on the way",
+              (unsigned long)c->cp_disp_points);
+        }
+    }
+}
+
+uint64_t
+irq_dispatch_points(void)
+{
+    return cpu_self()->cp_disp_points;
 }

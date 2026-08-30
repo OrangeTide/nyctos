@@ -25,6 +25,7 @@
  * those addresses except a program in its own space.
  */
 
+#include <sys/measure.h>
 #include <sys/cpu.h>
 #include <sys/page.h>
 #include <sys/systm.h>
@@ -233,6 +234,14 @@ vm_charge_end(void)
 void
 vm_charge_leaf(void)
 {
+    /*
+     * A page table walk boundary, per section 13.3: one entry written
+     * is one step of the walk. The ports call this, and both write the
+     * same number of entries for the same work, which is what the
+     * compared report has said since M6.
+     */
+    preempt_point();
+
     if (charging()) {
         vm_cost_self.vc_leaf++;
     }

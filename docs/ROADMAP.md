@@ -5574,7 +5574,7 @@ Three subsequent bisections were run against the leftover before a
 assumption, and this milestone's whole subject is measurements taken
 against a state nobody verified.
 
-**3. Dispatching an interrupt to a user thread.**
+**3. Dispatching an interrupt to a user thread.** *Built.*
 
 - Section 13.3's second term: from the interrupt being taken to the user
   thread that waits on it running.
@@ -5585,6 +5585,46 @@ against a state nobody verified.
 actually passes, and inserting one more into that path raises the count
 by exactly one. A program that waits on an interrupt reports the same
 number on both ports.
+
+*Built.* Sixteen interrupts reach a program in the paced run, the longest
+taking 1601 ticks on one port and 10400 on the other, and every one of
+them passes no preemption point at all.
+
+**The preemption points did not exist.** Section 13.3 bounds Tier 0
+latency by where they are, section 17.6 says they sit at batch entry
+boundaries, and the tree had none: two comments referred to them and no
+code marked one. So the argument that tier rests on was resting on a
+placement that existed only in the sections. They are placed now where
+those sections say, at the batch entry boundary in the operation entry
+path, at the message copy boundary, and at each page table entry a walk
+writes. They count rather than yield, because what this stage needs is
+the number and a point that yields is a scheduling change wearing a
+measurement's clothes.
+
+**The dispatch passes none of them, and that is the result.** The path
+from an interrupt being taken to the program waiting on it running goes
+through a handler, a timeline, a scheduling decision and a context
+switch, and none of those is a boundary anybody named. So the term is a
+straight line: it cannot be broken into, and its length is its whole
+bound. Adding one point to that path makes the reported figure exactly
+one, which is the check.
+
+**The counts agree across all four configurations and the durations do
+not.** Sixteen dispatches and zero points in every one; 1601 ticks
+against 10400 for the same work on two clocks running at 10000000 and
+62500000 a second. That is the milestone's rule producing exactly what
+it predicted: the number that is about this kernel is identical
+everywhere, and the number that is about the machine is not.
+
+**And the term is unmeasurable in one of the two input regimes, which is
+a fact about the input.** The paced session dispatches sixteen because
+the console driver waits for a person between lines. The burst session
+dispatches none, because the whole input is already there when the
+driver looks and it never blocks. The first version of the check
+panicked when the count was zero, which failed the burst run and would
+have been asserting how the input arrived rather than anything about the
+kernel. It says so instead, and what it asserts is the part that is
+about the kernel: a dispatch that happened passed no point.
 
 **4. IPC round trip and donation latency.**
 

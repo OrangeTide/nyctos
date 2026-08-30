@@ -140,6 +140,15 @@ struct thread {
     uint32_t            t_linked_on;
 
     /*
+     * When an interrupt handler made this thread runnable, and how
+     * many preemption points had been passed by then. Zero means it
+     * was made runnable by something else. Section 13.3's second term
+     * is the distance from here to this thread running in user mode.
+     */
+    uint64_t            t_irq_stamp;
+    uint64_t            t_irq_points;
+
+    /*
      * Wait state. A thread is blocked on at most one object at a time per
      * section 5, so one link and one awaited value is all any of this ever
      * needs, however many kinds of thing become waitable.

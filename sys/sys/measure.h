@@ -90,6 +90,25 @@ uint64_t meas_longest(const struct meas *m);
  */
 void meas_report_clock(void);
 
+struct thread;
+
+/*
+ * A preemption point, per section 13.3. Counts rather than yields: what
+ * this milestone needs first is the number.
+ */
+void preempt_point(void);
+uint64_t preempt_points(void);
+
+/*
+ * Section 13.3's second term. The first is called where an interrupt
+ * handler makes a thread runnable, the second where a user thread
+ * returns to its program.
+ */
+void irq_dispatch_stamp(struct thread *t);
+void irq_dispatch_arrived(struct thread *t);
+void irq_dispatch_report(void);
+uint64_t irq_dispatch_points(void);
+
 /* That it is one clock and it does not go backwards. Panics if it does. */
 void meas_check_clock(void);
 

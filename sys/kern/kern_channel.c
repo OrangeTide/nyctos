@@ -8,6 +8,7 @@
  * for the reasoning.
  */
 
+#include <sys/measure.h>
 #include <sys/cpu.h>
 #include <sys/channel.h>
 #include <sys/intr.h>
@@ -157,6 +158,14 @@ static bool buf_may_deliver(struct proc *from, struct proc *to, uintptr_t va,
 static void
 msg_copy(struct sys_msg *dst, const struct sys_msg *src)
 {
+    /*
+     * A message copy chunk boundary, per section 13.3. This copy is
+     * one fixed-size structure and is not chunked, so there is exactly
+     * one boundary and it is here. A copy that grows into chunks puts
+     * a point at each of them.
+     */
+    preempt_point();
+
     memcpy(dst, src, sizeof(*dst));
 }
 

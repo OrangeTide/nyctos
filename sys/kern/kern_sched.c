@@ -478,6 +478,7 @@ sched_ready(struct thread *t)
         panic("thread %s: made itself runnable while running", t->t_name);
     }
 
+    irq_dispatch_stamp(t);
     enqueue(t);
 
     /*

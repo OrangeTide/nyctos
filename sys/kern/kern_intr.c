@@ -23,6 +23,8 @@
  * has drained the device.
  */
 
+#include <sys/cpu.h>
+#include <sys/measure.h>
 #include <sys/lock.h>
 #include <sys/intr.h>
 #include <sys/sched.h>
@@ -164,7 +166,15 @@ irq_dispatch(void)
 {
     intr_state_t s = klock_enter();
 
+    /*
+     * Marked so that a thread made runnable in here is known to have
+     * been made runnable by an interrupt, which is what section 13.3's
+     * second term is measured from.
+     */
+    cpu_self()->cp_in_irq = true;
     irq_dispatch_body();
+    cpu_self()->cp_in_irq = false;
+
     klock_exit(s);
 }
 
