@@ -29,6 +29,39 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 8 is done: it runs on two cores, and where things run is
+something you say rather than something it decides.** Each core has its
+own ready queue and takes no lock another core could be holding to
+decide what to run next. A thread runs on the core it was put on and
+nothing moves it afterwards, because nothing balances and nothing
+steals. A client on one core can raise the priority of a server on the
+other, and the poke that tells that core to look is the whole of what
+crosses.
+
+This is Tier 2 only. Tier 0 keeps one core and no internal locking at
+all, which is what buys it a latency bound you can inspect by reading
+the preemption points.
+
+The storage stack runs split across both cores, and what that costs is
+a measurement rather than a claim:
+
+```
+placement: the storage stack across two cores
+    on one core it cost                    0 pokes, 0 donations
+    with the store on the other core       4 pokes, 2 donations
+```
+
+Four inter-processor interrupts for one read, per boundary crossed. The
+recorded session is identical in all four configurations, and on two
+cores it is produced with the stack still split: the shell reads its
+files across a core boundary and the transcript does not know.
+
+What it did not answer is whether the absence of automatic placement
+would be intolerable. There was nothing here for a balancer to have done
+better, because the stack has one obvious placement and it was placed by
+hand once. That needs a workload whose right placement changes while it
+runs, and there is not one yet.
+
 **Milestone 7 is done: things can end, and something else finds out.** A
 slot goes back to its pool when its object has finished and nothing can
 ask about it any more. A thread can be broken out of any wait it can be
@@ -176,12 +209,14 @@ rather than a hole in the capability model.
 like a person typing and once as a burst like a pipe, and compares the
 transcript against a recorded one.
 
-What does not exist: multicore and the submission engine. Memory is
-still never reclaimed, so a slot comes back and the megabyte a process
-was loaded into does not, and no address space is ever torn down. A
-rendezvous carries no deadline, so a wedged server hangs its client
-until a supervisor ends it, and nothing yet notices on its own that one
-should.
+What does not exist: the submission engine. Memory is still never
+reclaimed, so a slot comes back and the megabyte a process was loaded
+into does not, and no address space is ever torn down. A rendezvous
+carries no deadline, so a wedged server hangs its client until a
+supervisor ends it, and nothing yet notices on its own that one should.
+The reference counts that decide when an object is freed are still
+plain increments, which two cores make unsafe and milestone 8 listed
+without fixing.
 
 The figures obtained so far are footprints rather than speeds, with one
 exception. Kernel object memory is 232640 bytes, of which 143872 is
@@ -568,11 +603,10 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is multicore:
-per-core ready queues with no global scheduler lock, and explicit
-migration. It is where every ordering argument made so far has to be
-made again, because all of them are about one core with interrupts
-disabled and a deferral counter.
+See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is real time:
+measuring the latency the whole design has been arranged around, which
+nothing has measured yet. Multicore was chosen for analysability, and
+whether that trade was worth making is a number nobody here has taken.
 
 The ordering that got here is in the same file, along with what each
 milestone answered and what it left untested. The one choice most likely

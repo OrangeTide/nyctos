@@ -303,9 +303,38 @@ the kernel. Given a child that dies immediately every time, it makes
 three starts and says so, rather than relaunching for ever and turning a
 configuration mistake into a system that looks busy.
 
-What does not exist: multicore and the submission engine. Memory is
-still never reclaimed: a slot comes back and the megabyte a process was
-loaded into does not, and a rendezvous still carries no deadline.
+**Milestone 8 is done.** The kernel runs on two cores at Tier 2, with a
+ready queue per core, threads that stay where they are put, and donation
+that crosses a core boundary. Tier 0 is unchanged and single-core, which
+section 13.3 decided before this milestone started.
+
+Placement is explicit and nothing moves on its own. A thread is moved by
+`sys_thread_migrate()` and by nothing else, so where it runs is a fact
+about the program that placed it.
+
+The storage stack runs split across the two cores, and what that costs
+is measured rather than argued:
+
+```
+placement: the storage stack across two cores
+    on one core it cost                    0 pokes, 0 donations
+    with the store on the other core       4 pokes, 2 donations
+```
+
+Four inter-processor interrupts per read, per boundary crossed. The
+recorded session is byte-identical in all four configurations, and at
+Tier 2 it is produced with the stack still split: the shell reads its
+files across a core boundary and the transcript does not know.
+
+No scheduling decision takes a lock another core could hold, which is a
+counter asserted at zero across the decision rather than a reading of
+the source. Threads arriving from another core come through a list
+pushed with one compare and exchange.
+
+What does not exist: the submission engine. Memory is still never
+reclaimed, a rendezvous still carries no deadline, and the reference
+counts this milestone listed as unsafe under two cores are still plain
+increments.
 
 ---
 
@@ -4450,6 +4479,9 @@ joined them.
 
 **Partitioned scheduling with explicit migration.**
 
+**Done.** All six stages are built. Section 11 says what it answered,
+what it cost, what the building kept finding, and what it left untested.
+
 *Needs.* Per-core ready queues with no global scheduler lock (11.4). Explicit
 migration rather than automatic balancing. Cross-core priority donation via
 inter-processor interrupt.
@@ -6207,7 +6239,150 @@ follows the right and the last insert wins, which is arbitrary. Section
 milestone is about one core with interrupts disabled and a deferral
 counter. M8 is where each of them has to be made again.
 
-## 11. Bring-Up Order Within M1
+## 11. Milestone 8, in Retrospect
+
+M8 asked whether this kernel could run on two cores at all, and then
+whether the way section 11.4 says to do it is a way anyone would want.
+It answered the first plainly and the second only in part. What it found
+in between it found so many times that the pattern is the milestone's
+real product.
+
+### 11.1 The Question
+
+**Is partitioned scheduling with no load balancing usable?**
+
+Yes, as far as this evidence goes. The storage stack runs split across
+two cores with the filesystem on one and the block store on the other, a
+read still works, and nothing above the placement notices. The price is
+four inter-processor interrupts and two donations per read, against none
+for the same read with both servers on one core. Those are measured, and
+the zero is measured too rather than assumed.
+
+**Is the absence of automatic placement intolerable in practice?**
+
+Not answered, and the milestone should not pretend otherwise. There was
+nothing here for a balancer to have done better: the stack has one
+obvious placement, it was placed by hand in one call, and it stayed.
+Answering this needs a workload whose right placement changes while it
+runs, and every program in this tree is started by the checker and does
+a fixed amount of work. Section 11.4 is therefore neither deleted nor
+endorsed. What is established is narrower and still worth having: the
+mechanism it specifies exists, its cost per boundary is four pokes, and
+a stack placed by hand across two cores behaves as the same stack on
+one.
+
+The analysability argument that motivated the choice is untouched,
+because nothing here measured latency. That is M9's question, and it is
+the one that will decide whether the trade was worth making.
+
+### 11.2 What It Cost, and What It Gave Back
+
+Six stages. The compared session is byte-identical in all four
+configurations, and at Tier 2 it is produced with the storage stack
+split across two cores: the shell reads its files through a boundary
+that crosses a core, and the transcript does not know.
+
+The numbers, at Tier 2 on one port:
+
+- 2 cores, and a build that asks for two and finds one stops rather
+  than running on one quietly.
+- 4 pokes and 2 donations for one read across one boundary; 0 and 0 for
+  the same read on one core. Over the whole run, 34 and 15.
+- 432 address space switches, 430 on the first core and 2 on the
+  second, with the sum checked against the parts.
+- 16844 pool slots taken and given back, 8649 on the first core and
+  8195 on the second, the second core's share being almost entirely the
+  check that hammers a pool from both.
+- 18 of 32 threads and 13 of 24 processes, against 16 and 13 at Tier 0.
+  The two extra are the second core's idle context and one client.
+- The second core went round its idle loop 19 times, having spun
+  millions of times in stage three before there was an interrupt to
+  wake it.
+
+What it gave back is smaller than what it cost, and the honest summary
+is that most of this milestone was not about two cores. It was about
+finding every place where one core had been assumed, and most of those
+places were assumptions nobody had written down.
+
+### 11.3 What the Building Kept Finding
+
+**One of something for the machine.** This is the pattern, and it turned
+up six times in six stages: the deferral counter and the parked-thread
+slot in stage one, the count of locks taken in stage three, the count of
+scheduling decisions in the same stage's review, the value the interrupt
+controller hands back on one port in stage four, and the whole set of
+cost counters in stage five. Twice it was found within minutes of the
+previous one, in the same file, by the same reasoning. The lesson is not
+that shared state needs locking, which everybody knows. It is that a
+field written by whichever core happens to be running is almost never
+the field anyone meant, and the question to ask of every one is whether
+it decomposes per core or is a property of the machine. A count of
+events decomposes. A high-water mark does not.
+
+**Checks that assert something adjacent to what they claim.** Four
+times. The count of locks taken during a scheduling decision counted the
+other core's system calls. The check that two cores never held the same
+pool slot compared a value against what it had just written, through a
+plain member, which the compiler deletes. The guard proving a read
+crossed a core boundary asserted a poke had been sent, and a poke is
+sent for any reason at all. And the first migration check waited by
+spinning, so that when migration was disabled to watch it fail, it hung
+instead of reporting. Every one of these passed. That is the point:
+a check that cannot fail is indistinguishable from a check that passes.
+
+**Windows between a test and the action it justifies.** Three: the trap
+vector pointed at a handler before the register that handler needs was
+set, the thread published to another core's list was then read to find
+out which core to poke, and the idle loop enabled interrupts before
+testing the queue rather than after. The last of these was a lost wakeup
+that hung a core, and it was found only by running the check on a loaded
+host, where it failed one run in three while passing every time on a
+quiet one.
+
+**And one hole that was not a race at all.** The per-core pointer lives
+in a register, and on one of the two ports that register is an ordinary
+one a program may write. Nothing put the kernel's value back on the way
+in, so a program with one instruction in it could make the kernel read
+its own per-core state through an address the program chose. It stopped
+the machine dead, with no panic, because the panic path reads the same
+pointer. That is the most serious defect this project has produced, it
+survived five stages, and it was found by asking what a counter in the
+exception path was indexed by.
+
+### 11.4 What Is Still Untested
+
+**The reference counts were listed and not fixed.** The milestone's own
+opening names `p_refs`, `t_refs` and `cn_refs` as plain increments that
+decide when an object is freed, and says a racing decrement turns M7's
+stale-pointer lesson into a use-after-free. They are still plain
+increments. The exposure is real rather than theoretical: a handle
+closing on one core decrements through the kernel lock, and a thread
+being reaped decrements from a dispatch path that does not always hold
+it. Nothing has been seen to go wrong, which is exactly what this
+milestone learned not to trust.
+
+**The kernel lock covers entries and not the kernel's own threads.**
+Stage two said this stops being sound in the stage that schedules
+something on the second core, and stage three scheduled something there.
+What M8 did instead of closing it was lock the two shared structures
+that were actually reachable from both cores, the object pools and the
+timer's lists. That is narrower than the claim stage two made, and the
+difference is a real gap rather than a wording problem.
+
+**Two cores, and only two.** `SYS_MAX_CORES` is 2. Nothing here has run
+with more, the interrupt controller on one port still addresses its
+external sources to the first core's context, and the arming of the
+timer names one core by a constant.
+
+**Nothing measured latency**, which is the property the whole
+partitioned design was chosen for.
+
+**And the check harness has its own limit.** Under host load heavy
+enough to starve the emulator, the paced session can be outrun by the
+pacing itself. One run failed that way with nothing in the guest to
+blame, and it is recorded here rather than explained away.
+
+## 12. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -6251,7 +6426,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 12. Ordering: What Is Forced and What Is Chosen
+## 13. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -6282,7 +6457,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 13. What Would Change This Plan
+## 14. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -6319,7 +6494,7 @@ reason, so nothing else moves.
 
 ---
 
-## 14. Deliberately Not Scheduled
+## 15. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 
