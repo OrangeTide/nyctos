@@ -5529,6 +5529,51 @@ region the kernel produces on its own. That is a statement about how
 long blocking holds interrupts off, and it is the first number this
 project has that says anything about latency at all.
 
+*Reviewed.* Two findings and one corroboration.
+
+**The measurement put a read of this core's own state inside the
+function every critical section in this kernel calls, and that register
+was never initialised.** `cpu_self()` finds the per-core structure
+through `tp` on one port and `TPIDR_EL1` on the other, and neither was
+cleared at boot: before `cpu_init` claims a core, both hold whatever
+reset left. That was harmless for as long as nothing read them early,
+which M8 stage one noticed and left alone. Putting the read inside
+`md_intr_disable` moved it from harmless to one early call away from a
+wild write, and the early calls in a boot path are exactly the ones
+somebody adds later without thinking about it.
+
+Both boot paths clear the register now, and the measurement declines
+when it finds nothing there. The read before `cpu_init` returns zero,
+which was checked rather than assumed. One residue is stated rather than
+fixed: the RISC-V secondary carries its hart number in that register for
+the few instructions between the handover and claiming its own state,
+because supervisor mode cannot read the hart number any other way.
+Nothing in that window disables interrupts.
+
+**And the idle path opened a region it immediately closed.** Waking from
+the wait began a region attributed to the idle loop, and the very next
+line enabled interrupts, which ends one. It recorded a region of almost
+no length per wakeup and added it to the count. Removed: the wait closes
+the region before it and the disable after it opens the next, with
+nothing in between to attribute.
+
+**The corroboration is worth as much as either.** Both ports name the
+same site. The other port had not been looked at when the stage was
+written, which was an omission: its clock runs at 62500000 ticks a
+second against 10000000, its longest region is a different number, and
+it resolves to the same line of `sched_block`. Two ports, two clocks,
+two figures, one answer about where the time goes. That is the first
+result in this project that two independent measurements agree on.
+
+*Also.* The break test that produced the stage's figures was reverted
+with a scratch copy rather than with the version control, and one of
+those reverts never ran because the command it was in hit a timeout.
+Three subsequent bisections were run against the leftover before a
+`git diff` showed it. The lesson is not about the code: it is that
+"is the tree what I think it is" should be one command and never an
+assumption, and this milestone's whole subject is measurements taken
+against a state nobody verified.
+
 **3. Dispatching an interrupt to a user thread.**
 
 - Section 13.3's second term: from the interrupt being taken to the user

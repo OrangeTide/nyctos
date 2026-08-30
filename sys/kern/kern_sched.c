@@ -378,8 +378,6 @@ sched_idle(void)
 
         md_idle_wait();
 
-        intr_region_begin((uintptr_t)&sched_idle);
-
         /* And let it be taken, now that there is something to take. */
         md_intr_enable();
         (void)md_intr_disable();

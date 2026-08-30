@@ -12,6 +12,15 @@
 
 _start:
     /*
+     * No per-core state yet, and the register that finds it says so.
+     * See the same line in the other port: the kernel reads this
+     * core's own structure through this register, and reading it
+     * before cpu_init has claimed one would be reading whatever reset
+     * left behind.
+     */
+    msr     tpidr_el1, xzr
+
+    /*
      * Only core zero arrives here at reset. The platform holds the
      * others powered off until asked for one by name, which is the
      * opposite of the other port, where every hart arrives together
@@ -84,6 +93,8 @@ secondary_entry:
     eret
 
 secondary_at_el1:
+    msr     tpidr_el1, xzr
+
     /*
      * Its own stack, indexed by which core it is. The .bss this reads
      * was zeroed by the core that booted, long before this one was

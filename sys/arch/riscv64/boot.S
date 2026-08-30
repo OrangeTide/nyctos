@@ -30,6 +30,16 @@
 
 _start:
     /*
+     * No per-core state yet, and the register that finds it says so.
+     * The kernel reads this core's own structure through tp, and
+     * anything that does so before cpu_init has claimed one would be
+     * reading whatever reset happened to leave here. It became worth
+     * saying when the measurement of section 13.3 put that read inside
+     * the function every critical section in this kernel calls.
+     */
+    mv      tp, zero
+
+    /*
      * Which hart this is. Every one of them arrives here, because
      * there is no firmware under this kernel to hold the others back,
      * so the first thing any of them does is find out whether it is

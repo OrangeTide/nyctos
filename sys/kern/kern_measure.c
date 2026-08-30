@@ -185,6 +185,16 @@ intr_region_begin(uintptr_t site)
 {
     struct cpu *c = cpu_self();
 
+    /*
+     * Nothing to charge it to yet. The boot path clears the register
+     * this is found through, so a core that has not claimed its own
+     * state reads NULL rather than whatever reset left, and the
+     * measurement declines rather than writing through it.
+     */
+    if (c == NULL) {
+        return;
+    }
+
     c->cp_intr_site = site;
     c->cp_intr_open = true;
     c->cp_intr_start = md_time_now();
@@ -196,6 +206,10 @@ intr_region_end(void)
     struct cpu *c = cpu_self();
     uint64_t now;
     uint64_t took;
+
+    if (c == NULL) {
+        return;
+    }
 
     if (!c->cp_intr_open) {
         /*
