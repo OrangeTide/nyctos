@@ -4933,6 +4933,181 @@ cyc_client_thread(void *arg)
     thread_exit(0);
 }
 
+
+/*
+ * The case the chain walk was built for, which nothing else in this
+ * tree produces.
+ *
+ * A client queues on a server that is already inside a request and
+ * blocked further down. Everything below that server is running at the
+ * priority of the client it is serving, and the new client outranks all
+ * of it. Without the walk the new client waits behind a chain nobody
+ * raised, which is the inversion section 12.3 exists to prevent.
+ *
+ * The stage that built the walk reported that it raises nobody. That is
+ * true of the workload this tree had, and it meant the raising half of
+ * the mechanism was never once executed. This is that workload.
+ */
+#define INV_BASE    5
+#define INV_LO      6
+#define INV_HI      20
+
+static struct channel *ch_inv_a;
+static struct channel *ch_inv_b;
+static struct channel *ch_inv_idle;
+static sys_handle_t h_inv_a_recv, h_inv_a_send;
+static sys_handle_t h_inv_b_recv, h_inv_b_send;
+static sys_handle_t h_inv_idle_recv;
+static struct thread *inv_a;
+static struct thread *inv_b;
+
+static void
+inv_b_thread(void *arg)
+{
+    struct sys_op_recv_args rx;
+
+    (void)arg;
+
+    memset(&rx, 0, sizeof(rx));
+    if (run(SYS_OP_IPC_RECV, h_inv_b_recv, &rx, sizeof(rx)) != SYS_OK) {
+        panic("inversion: B never received");
+    }
+
+    /*
+     * Serving, and now blocked on something else without replying. This
+     * is what makes the chain below A stay where it is.
+     */
+    memset(&rx, 0, sizeof(rx));
+    (void)run(SYS_OP_IPC_RECV, h_inv_idle_recv, &rx, sizeof(rx));
+
+    thread_exit(0);
+}
+
+static void
+inv_a_thread(void *arg)
+{
+    struct sys_op_recv_args rx;
+    struct sys_op_send_args tx;
+
+    (void)arg;
+
+    memset(&rx, 0, sizeof(rx));
+    if (run(SYS_OP_IPC_RECV, h_inv_a_recv, &rx, sizeof(rx)) != SYS_OK) {
+        panic("inversion: A never received");
+    }
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.inline_len = 2;
+    memcpy(tx.request.inline_data, "d", 2);
+    (void)run(SYS_OP_IPC_SEND, h_inv_b_send, &tx, sizeof(tx));
+
+    thread_exit(0);
+}
+
+static void
+inv_client_thread(void *arg)
+{
+    struct sys_op_send_args tx;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.inline_len = 2;
+    memcpy(tx.request.inline_data, "c", 2);
+    (void)run(SYS_OP_IPC_SEND, (sys_handle_t)(uintptr_t)arg, &tx,
+      sizeof(tx));
+
+    thread_exit(0);
+}
+
+static bool
+inv_settled(void)
+{
+    return inv_a->t_state == THREAD_BLOCKED &&
+      inv_a->t_wait == THREAD_WAIT_REPLY &&
+      inv_b->t_state == THREAD_BLOCKED &&
+      inv_b->t_wait == THREAD_WAIT_RECV;
+}
+
+static void
+inversion_checks(void)
+{
+    struct proc *p = proc_current();
+    struct thread *hi;
+    uint64_t before, deepest;
+    uint32_t spin;
+
+    cnputs("chains: a client behind a chain that outranks it\n");
+
+    ch_inv_a = channel_create("inv-a", p);
+    ch_inv_b = channel_create("inv-b", p);
+    ch_inv_idle = channel_create("inv-idle", p);
+    if (ch_inv_a == NULL || ch_inv_b == NULL || ch_inv_idle == NULL) {
+        panic("inversion: no channels");
+    }
+
+    expect("channels for a two deep chain",
+      handle_insert(&p->p_handles, ch_inv_a, SYS_OBJ_CHANNEL,
+        SYS_RIGHT_RECV, &h_inv_a_recv), SYS_OK);
+    (void)handle_insert(&p->p_handles, ch_inv_a, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND, &h_inv_a_send);
+    (void)handle_insert(&p->p_handles, ch_inv_b, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_inv_b_recv);
+    (void)handle_insert(&p->p_handles, ch_inv_b, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND, &h_inv_b_send);
+    (void)handle_insert(&p->p_handles, ch_inv_idle, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_inv_idle_recv);
+
+    inv_b = thread_create("inv-b", INV_BASE, inv_b_thread, NULL);
+    sched_ready(inv_b);
+    inv_a = thread_create("inv-a", INV_BASE, inv_a_thread, NULL);
+    sched_ready(inv_a);
+    sched_ready(thread_create("inv-lo", INV_LO, inv_client_thread,
+      (void *)(uintptr_t)h_inv_a_send));
+
+    for (spin = 0; spin < 2000000u && !inv_settled(); spin++) {
+        sched_yield();
+    }
+    if (!inv_settled()) {
+        panic("inversion: the chain never settled");
+    }
+
+    cnprintf("    a chain serving %u, two deep            OK\n",
+      (unsigned int)INV_LO);
+    if (inv_a->t_prio != INV_LO || inv_b->t_prio != INV_LO) {
+        panic("inversion: the chain runs at %u and %u, not %u",
+          (unsigned int)inv_a->t_prio, (unsigned int)inv_b->t_prio,
+          (unsigned int)INV_LO);
+    }
+
+    /*
+     * And now somebody who outranks all of it, queuing behind a server
+     * that cannot take the request.
+     */
+    before = channel_chain_raised(&deepest);
+    hi = thread_create("inv-hi", INV_HI, inv_client_thread,
+      (void *)(uintptr_t)h_inv_a_send);
+    sched_ready(hi);
+
+    for (spin = 0; spin < 2000000u &&
+      !(hi->t_state == THREAD_BLOCKED && hi->t_wait == THREAD_WAIT_SEND);
+      spin++) {
+        sched_yield();
+    }
+    if (hi->t_wait != THREAD_WAIT_SEND) {
+        panic("inversion: the high client never queued");
+    }
+
+    cnprintf("    a client at %u queued behind it        %s\n",
+      (unsigned int)INV_HI,
+      inv_a->t_prio == INV_HI && inv_b->t_prio == INV_HI ? "OK" : "WRONG");
+    if (inv_a->t_prio != INV_HI || inv_b->t_prio != INV_HI) {
+        panic("inversion: the chain stayed at %u and %u",
+          (unsigned int)inv_a->t_prio, (unsigned int)inv_b->t_prio);
+    }
+
+    cnprintf("    the walk raised %lu of them            OK\n",
+      (unsigned long)(channel_chain_raised(&deepest) - before));
+}
+
 static void
 chain_bound_checks(void)
 {
@@ -5997,6 +6172,7 @@ kernel_main(void)
     reply_error_checks();
     high_priority_server_checks();
     chain_bound_checks();
+    inversion_checks();
 #if SYS_TIER == 2
     cross_core_donation_checks();
     pool_stress_checks();

@@ -5834,6 +5834,41 @@ Section 12.3 is rewritten to describe what is there: the walk, what it
 is for, what enforces the bound, and the fact that it has raised nothing
 so far.
 
+*Reviewed.* The stage reported that the walk raises nobody and treated
+that as the answer. It was the answer to a question nobody had asked
+properly: the raising half of the mechanism had never been executed, so
+"it raises nobody" and "it cannot raise anybody" were indistinguishable,
+and the stage had no way to tell which it had built.
+
+**So the review built the workload the walk exists for.** Two servers,
+one behind the other, serving a client at priority 6, with the deeper
+one blocked without replying so the chain stays where it is. Then a
+client at 20 sends to the first server, which cannot take it, and queues.
+
+The walk raises both of them to 20. `chains: 2 threads raised by a walk`
+where every previous run said zero. The raising half works, and it is
+now exercised in every run rather than argued about.
+
+Removing only the raise, and leaving the bound, fails with `the chain
+stayed at 6 and 6`. The two halves of the mechanism are independently
+falsifiable now, which they were not: removing the walk wholesale hangs
+at the cycle check before the inversion is ever reached, so the earlier
+break test could only ever have demonstrated one of them.
+
+**What this changes about the stage's conclusion.** It said the case the
+walk was built for does not occur in this tree and that section 12.3's
+original claim had not been contradicted. The first half stands: nothing
+in the system's own work produces the inversion, and the count was zero
+for every run before this check existed. The second half was too
+generous to the section. The claim was that there is no thread whose
+promotion would help, and there are two, and they are now raised. What
+the section can still say is that the workloads this system runs do not
+need it, which is a much narrower statement than the one it made.
+
+The zero was a real measurement and reporting it was right. Stopping
+there was not: a mechanism that has never run is not a mechanism that
+has been shown to be unnecessary, and the difference is one check.
+
 **6. What the figures say about section 13.3.**
 
 - The milestone's own question, and the only stage whose outcome could
