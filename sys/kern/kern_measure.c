@@ -71,6 +71,16 @@ meas_count(const struct meas *m)
 }
 
 uint64_t
+meas_count_on(const struct meas *m, uint32_t core)
+{
+    if (core >= SYS_MAX_CORES) {
+        return 0;
+    }
+
+    return m->ms_count[core];
+}
+
+uint64_t
 meas_longest(const struct meas *m)
 {
     uint64_t worst = 0;
@@ -123,7 +133,16 @@ meas_check_clock(void)
      * counter would pass every other check in this file and make every
      * figure that crosses a core meaningless.
      */
-    for (i = 0; i < 10000; i++) {
+    /*
+     * Read until it moves, with room enough that only a stopped clock
+     * reaches the end. The bound is not a speed limit: this file says
+     * never to assert a threshold on a duration, and an earlier
+     * version of this loop did exactly that by insisting the clock
+     * tick within ten thousand reads. What is being checked is that it
+     * runs at all and never goes backwards, both of which are
+     * properties of the counter rather than of the host.
+     */
+    for (i = 0; i < 100000000u; i++) {
         uint64_t now = md_time_now();
 
         if (now < last) {
@@ -131,9 +150,11 @@ meas_check_clock(void)
               (unsigned long)last, (unsigned long)now);
         }
         last = now;
+
+        if (now != first) {
+            return;
+        }
     }
 
-    if (last == first) {
-        panic("clock: %lu reads and it never moved", (unsigned long)i);
-    }
+    panic("clock: it never moved, so it is stopped");
 }

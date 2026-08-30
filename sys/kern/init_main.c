@@ -4826,6 +4826,18 @@ cohort_checks(void)
 static struct meas meas_once = { "once", { 0 }, { 0 }, { 0 } };
 static struct meas meas_twice = { "twice", { 0 }, { 0 }, { 0 } };
 
+/*
+ * One region, entered from both cores at once. The two above cannot
+ * tell a per-core counter from a single shared one, because one core
+ * doing all the work gives the same total either way: forcing every
+ * increment into one slot leaves them reading 1024 and 2048 and passing.
+ * This one is entered by both cores together, so a shared slot loses
+ * increments and the total comes up short.
+ */
+#define CLK_SHARE   4096u
+
+static struct meas meas_shared = { "shared", { 0 }, { 0 }, { 0 } };
+
 #if SYS_TIER == 2
 static volatile uint64_t clk_stamp;
 static volatile uint32_t clk_go;
@@ -4841,6 +4853,21 @@ clk_thread(void *arg)
     }
 
     clk_stamp = meas_now();
+
+    /*
+     * And this core's share of the region both of them enter, run
+     * while the first core is entering it too.
+     */
+    {
+        uint32_t i;
+
+        for (i = 0; i < CLK_SHARE; i++) {
+            uint64_t t0 = meas_enter();
+
+            meas_leave(&meas_shared, t0);
+        }
+    }
+
     md_cpu_fence();
     clk_done = 1;
     thread_exit(0);
@@ -4878,6 +4905,18 @@ clock_checks(void)
         md_cpu_fence();
         clk_go = 1;
 
+        /*
+         * This core's share, entered while the other core is entering
+         * the same region. The overlap is the point: a counter kept in
+         * one slot for the machine loses increments here and nowhere
+         * else in this check.
+         */
+        for (spin = 0; spin < CLK_SHARE; spin++) {
+            uint64_t t0 = meas_enter();
+
+            meas_leave(&meas_shared, t0);
+        }
+
         for (spin = 0; spin < 2000000u && clk_done == 0; spin++) {
             sched_yield();
         }
@@ -4893,8 +4932,36 @@ clock_checks(void)
               (unsigned long)after);
         }
         cnputs("    and the other core reads the same one  OK\n");
+
+        /*
+         * And both cores' shares are there, each on its own core.
+         * The total alone would not say that: what says it is that
+         * neither core lost any of its own.
+         */
+        if (meas_count_on(&meas_shared, 0) != CLK_SHARE ||
+          meas_count_on(&meas_shared, 1) != CLK_SHARE) {
+            panic("clocks: shares of %lu and %lu, not %u each",
+              (unsigned long)meas_count_on(&meas_shared, 0),
+              (unsigned long)meas_count_on(&meas_shared, 1),
+              (unsigned int)CLK_SHARE);
+        }
+        cnprintf("    one region from both cores at once     %lu and %lu\n",
+          (unsigned long)meas_count_on(&meas_shared, 0),
+          (unsigned long)meas_count_on(&meas_shared, 1));
+    }
+#else
+    for (i = 0; i < CLK_SHARE; i++) {
+        uint64_t t0 = meas_enter();
+
+        meas_leave(&meas_shared, t0);
     }
 #endif
+
+    if (meas_count(&meas_shared) != CLK_SHARE * cpu_count()) {
+        panic("clocks: %lu entries in the shared region, not %lu",
+          (unsigned long)meas_count(&meas_shared),
+          (unsigned long)(CLK_SHARE * cpu_count()));
+    }
 
     /*
      * The unit that does not move. A region entered twice as often is
@@ -5987,9 +6054,10 @@ kernel_main(void)
      * is a property of this kernel, and what moves with the machine is
      * reported and not compared.
      */
-    cnprintf("  measured regions: %lu entries and %lu\n",
+    cnprintf("  measured regions: %lu entries and %lu, %lu shared\n",
       (unsigned long)meas_count(&meas_once),
-      (unsigned long)meas_count(&meas_twice));
+      (unsigned long)meas_count(&meas_twice),
+      (unsigned long)meas_count(&meas_shared));
 
     cnputs("stage 9 complete\n");
     machine_halt(0);

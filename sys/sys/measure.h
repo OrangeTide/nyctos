@@ -74,6 +74,13 @@ void meas_leave(struct meas *m, uint64_t started);
 /* How many times this region has been entered, on every core. */
 uint64_t meas_count(const struct meas *m);
 
+/*
+ * And on one of them. A total alone cannot tell a per-core counter from
+ * a single shared one, because one core doing all the work produces the
+ * same total either way.
+ */
+uint64_t meas_count_on(const struct meas *m, uint32_t core);
+
 /* The longest single visit, on any core, in the ticks of meas_hz(). */
 uint64_t meas_longest(const struct meas *m);
 

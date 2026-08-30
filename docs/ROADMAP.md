@@ -5427,6 +5427,49 @@ visit of 264 ticks and the region entered 2048 times reported 117. The
 smaller job took longer, because what was being measured was the host.
 The counts beside them are 1024 and 2048 in every run.
 
+*Reviewed.* Two findings, and the first is the one this milestone was
+warned about before it started.
+
+**The check for a per-core counter could not tell one from a shared
+one.** The stage's claim is that a measurement is kept per core because
+a region runs on a core. Its check entered two regions a known number of
+times and compared the counts, and every one of those entries was made
+by the same core. Forcing every increment into a single slot for the
+machine leaves that check reading 1024 and 2048 and passing.
+
+That is the failure M8 found four times and wrote into this milestone's
+entry as the thing to watch for: a check asserting something adjacent to
+what it claims. It took one experiment to find, and the experiment was
+the obvious one, which is the part worth remembering. The claim was
+about two cores and nothing in the check involved two cores.
+
+There is a third region now that both cores enter at once, four thousand
+and ninety-six times each, and the check asserts each core's own share
+rather than only the total. With the counter forced into one slot it
+fails with `shares of 8190 and 0, not 4096 each`. The 8190 is the second
+half of the point: two increments were lost outright to the race, so the
+total was wrong as well as the split, and the total alone would have
+been a weaker signal than the split.
+
+**And the file that says never to assert a threshold on a duration was
+asserting one.** The clock check read the counter ten thousand times and
+insisted it had moved, which is a statement about how fast this host
+gets through ten thousand reads. The margin was enormous and it would
+never have fired, and that is not the point: the rule this milestone is
+built on was broken in the file that states it. It reads until the value
+changes now, with room enough that only a stopped clock reaches the end,
+and what it asserts is that the counter runs and never goes backwards.
+Both are properties of the counter.
+
+**What was checked and left.** The compared count is deterministic partly
+because these regions are entered by this check and by nothing else. A
+region the rest of the kernel entered would put a number in the compared
+file that moves with what the system happened to do, which is the trap
+M6 stage four fell into. That is a property of how this facility is used
+rather than of the facility, and the next stage measures a region the
+kernel really does enter, so it is the next stage's problem to solve
+rather than a defect here.
+
 **2. The longest interrupts-disabled region, per tier.**
 
 - Section 13.3's first term, instrumented where interrupts are disabled
