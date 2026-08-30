@@ -669,7 +669,7 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         uint64_t points = preempt_points();
 
         sched_block();
-        ipc_round_end(self, started, points);
+        ipc_round_end(started, points);
     }
 
     err = self->t_waitres;

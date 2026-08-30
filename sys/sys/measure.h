@@ -148,7 +148,7 @@ void irq_dispatch_report(void);
  * raised to running. Both on the paths the system already has.
  */
 uint64_t ipc_round_begin(void);
-void ipc_round_end(struct thread *t, uint64_t started, uint64_t points);
+void ipc_round_end(uint64_t started, uint64_t points);
 void ipc_donate_stamp(struct thread *to, bool across);
 void ipc_donate_arrived(struct thread *t);
 void ipc_report(void);

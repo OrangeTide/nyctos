@@ -19,6 +19,8 @@
 #include <stdbool.h>
 #include <sys/thread.h>
 
+static void meas_record(struct meas *m, uint64_t took);
+
 uint64_t
 meas_now(void)
 {
@@ -62,7 +64,13 @@ meas_leave_points(struct meas *m, uint64_t started, uint64_t points,
         m->ms_shortest[self] = took;
     }
 
-    meas_leave(m, started);
+    /*
+     * One reading of the clock for one visit. Calling the plain
+     * version here would read it a second time, so the shortest and
+     * the longest would be measured to different ends of the same
+     * visit.
+     */
+    meas_record(m, took);
 }
 
 void
@@ -138,6 +146,18 @@ meas_report(const struct meas *m)
             cnprintf("        points: %lu to %lu\n", (unsigned long)lo,
               (unsigned long)hi);
         }
+    }
+}
+
+static void
+meas_record(struct meas *m, uint64_t took)
+{
+    uint32_t self = cpu_self()->cp_index;
+
+    m->ms_count[self]++;
+    m->ms_total[self] += took;
+    if (took > m->ms_longest[self]) {
+        m->ms_longest[self] = took;
     }
 }
 
@@ -542,10 +562,8 @@ ipc_round_begin(void)
 }
 
 void
-ipc_round_end(struct thread *t, uint64_t started, uint64_t points)
+ipc_round_end(uint64_t started, uint64_t points)
 {
-    (void)t;
-
     if (started == 0) {
         return;
     }
@@ -557,6 +575,18 @@ ipc_round_end(struct thread *t, uint64_t started, uint64_t points)
 void
 ipc_donate_stamp(struct thread *to, bool across)
 {
+    /*
+     * A thread raising its own priority is not a donation anybody
+     * waits for. A server picking up a queued sender does exactly
+     * that, and it is already running: stamping it means the arrival
+     * is recorded at the next message this thread blocks for, which
+     * put the two seconds between two typed lines into a figure about
+     * the kernel.
+     */
+    if (to == thread_current()) {
+        return;
+    }
+
     to->t_don_stamp = md_time_now();
     to->t_don_points = preempt_points();
     to->t_don_core = cpu_self()->cp_index;

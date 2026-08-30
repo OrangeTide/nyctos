@@ -5685,9 +5685,13 @@ rendezvous to that server running.
 
 | | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
 |---|---|---|---|---|
-| round trip, best | 36 us | 42 us | 44 us | 35 us |
-| donation on one core, best | 15 us | 13 us | 25 us | 22 us |
-| donation across cores, best | none | none | 62 us | 58 us |
+| round trip, best | 39 us | 39 us | 50 us | 35 us |
+| donation on one core, best | 15 us | 12 us | 24 us | 16 us |
+| donation across cores, best | none | none | 57 us | 56 us |
+
+These move by a few microseconds between runs, because they are
+durations and the host is not the same twice. What does not move is
+their order and their ratios.
 
 **Crossing a core costs about two and a half times a donation that does
 not, and both ports say so independently.** Sixty-two microseconds
@@ -5724,13 +5728,52 @@ are counted only when both ends were on one core, and the report says
 how many crossings could not be counted rather than printing a figure
 for them.
 
-**The worst case in every one of these is a person typing.** Twenty
-million ticks is the two seconds the paced session leaves between lines,
-which a client waits through when the server on the other end is the
-console driver. That is a number about the session and not about the
-kernel, so the figure that matters is the best case: the shortest round
-trip is the one where nothing was waiting for anything, and it is the
-kernel's own cost.
+**The worst round trip is a person typing.** Twenty million ticks is
+the two seconds the paced session leaves between lines, which a client
+waits through when the server on the other end is the console driver.
+That is a number about the session, so the figure that matters for the
+round trip is the best case: the one where nothing was waiting for
+anything, which is the kernel's own cost.
+
+The donation figures were the same shape and for a different reason,
+which the review of this stage found and which is recorded there.
+
+*Reviewed.* One defect in what was being measured, one in how, and a
+published number that was wrong by four orders of magnitude.
+
+**A third of the donations were not donations.** `donate()` raises a
+thread to at least a priority, and it is called twice: once by a client
+raising the server it is about to rendezvous with, and once by a server
+raising itself when it picks up a sender that was already queued. The
+second is not a donation anybody waits for. The server is already
+running, so the measurement, which closes when the donated-to thread
+next comes out of a block, closed at the next message that thread
+received. In the paced session that is two seconds later.
+
+Excluding it changes the count from 46 to 33 at Tier 0 and from 43 to
+30 at Tier 2, and changes the worst case from 20145394 ticks to 2830.
+Two seconds becomes 283 microseconds. The best case barely moves,
+because a self-donation is never the fastest thing in the set, which is
+why the figure that was published survived and the explanation beside it
+did not.
+
+**And the explanation was the part that was wrong.** The stage said the
+worst case in every one of these was a person typing. That is true of
+the round trip, where a client really does wait for a server that waits
+for input, and it was false of the donation, where the two seconds came
+from measuring an interval that had no business being measured. A
+plausible explanation for a number is not a check on it, and this one
+was plausible enough to stop the question being asked.
+
+**One visit, two readings of the clock.** The duration used for the
+shortest and the duration used for the longest came from separate reads
+taken a few instructions apart, so a single visit was measured to two
+different ends. Nothing observable followed from it, and it is the kind
+of thing that makes two figures in the same line quietly incomparable.
+One read now.
+
+**And a parameter nothing used.** The round trip's closing call took the
+thread it was closing for and ignored it.
 
 **5. The bound on the donation chain.**
 
