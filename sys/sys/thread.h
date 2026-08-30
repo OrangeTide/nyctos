@@ -160,6 +160,14 @@ struct thread {
     bool                t_don_across;
 
     /*
+     * The channel this thread is inside a request on, and the next
+     * thread serving the same one. Section 12.3's chain is walked
+     * along these.
+     */
+    struct channel     *t_serve_ch;
+    struct thread      *t_serve_next;
+
+    /*
      * Wait state. A thread is blocked on at most one object at a time per
      * section 5, so one link and one awaited value is all any of this ever
      * needs, however many kinds of thing become waitable.

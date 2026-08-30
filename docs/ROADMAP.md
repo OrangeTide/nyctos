@@ -5775,7 +5775,7 @@ One read now.
 **And a parameter nothing used.** The round trip's closing call took the
 thread it was closing for and ignored it.
 
-**5. The bound on the donation chain.**
+**5. The bound on the donation chain.** *Built.*
 
 - The one mechanism the *Needs* list still owes. `donate()` explains why
   the current arrangement cannot enforce it: nothing links a blocked
@@ -5789,6 +5789,50 @@ than deadlocking undetected, and a legitimate chain of the maximum
 length is not refused. If the link proves to cost more than the bound is
 worth, the check is that section 12.3 says so and the code stops
 claiming otherwise.
+
+*Built.* The link exists, the bound is enforced, and `SYS_ERR_DEADLOCK`
+is reachable for the first time. The stage said it would decide between
+building the walk and conceding the section by trying the first, and
+trying it produced a more interesting answer than either.
+
+**The link is a list on the channel of threads that owe it a reply.**
+That is what section 12.3 said was missing: from a queued sender there
+was no way to reach whoever was serving the channel it was queued on.
+It is set when a rendezvous completes, cleared at the reply, and cleared
+again when a server dies or is cancelled mid-request, because a dead
+thread left on that list is one the walk would follow into a slot that
+now belongs to something else.
+
+**A cycle is refused by the bound rather than recognised.** A server
+that takes a request and then sends into the channel it serves is a
+cycle of one, and the walk follows it round until the count runs out.
+That is deliberate: to a walk that counts, a cycle and a chain that is
+too long are the same thing, and the section already specifies the same
+error for both. One server and one channel is the whole test, which is
+two threads cheaper than two servers pointing at each other and proves
+exactly as much.
+
+Removing the walk makes that send block forever and the machine wedges
+with nothing printed, which is what section 12.3 said would happen and
+had never been demonstrated.
+
+**And the inheritance half of it raises nobody.** Every run walks chains
+to a depth of seven out of eight and raises zero threads. No client in
+this system ever queues on a server that is itself blocked onward at a
+lower priority, so the case the walk was built for does not occur here.
+The mechanism exists for the workload that has it; on the evidence
+available, the section's original claim that per-send donation is the
+whole of what is needed has not been contradicted.
+
+That is worth stating plainly rather than counting the stage a success
+for the mechanism it added. What the walk demonstrably buys is the
+deadlock error. What it was also supposed to buy cannot be shown to be
+worth anything by any workload this tree contains, and a counter saying
+zero is a better answer than a mechanism nobody measured.
+
+Section 12.3 is rewritten to describe what is there: the walk, what it
+is for, what enforces the bound, and the fact that it has raised nothing
+so far.
 
 **6. What the figures say about section 13.3.**
 

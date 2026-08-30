@@ -4874,6 +4874,115 @@ clk_thread(void *arg)
 }
 #endif
 
+
+/*
+ * Section 12.3's bound, and the deadlock it names.
+ *
+ * A cycle of one: a server that takes a request and then sends into the
+ * channel it serves. It is now waiting for itself, and nothing will
+ * ever arrive. One server and one channel is the whole of it, which is
+ * why the cycle is built this way rather than out of two servers
+ * pointing at each other: the walk cannot tell the difference and the
+ * cheap one needs two fewer threads.
+ */
+static struct channel *ch_cyc;
+static sys_handle_t h_cyc_recv;
+static sys_handle_t h_cyc_send;
+static struct thread *cyc_server;
+static volatile uint32_t cyc_ready;
+
+static void
+cyc_server_thread(void *arg)
+{
+    struct sys_op_recv_args rx;
+    struct sys_op_send_args tx;
+
+    (void)arg;
+
+    memset(&rx, 0, sizeof(rx));
+    if (run(SYS_OP_IPC_RECV, h_cyc_recv, &rx, sizeof(rx)) != SYS_OK) {
+        panic("cycle server: receive failed");
+    }
+
+    /*
+     * Serving, and now sending into the channel it is serving. Nobody
+     * is at a receive point on it, because this thread is the only one
+     * that ever receives there and it is here.
+     */
+    cyc_ready = 1;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.inline_len = 3;
+    memcpy(tx.request.inline_data, "no", 3);
+    (void)run(SYS_OP_IPC_SEND, h_cyc_send, &tx, sizeof(tx));
+
+    thread_exit(0);
+}
+
+static void
+cyc_client_thread(void *arg)
+{
+    struct sys_op_send_args tx;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.inline_len = 3;
+    memcpy(tx.request.inline_data, "hi", 3);
+    (void)run(SYS_OP_IPC_SEND, (sys_handle_t)(uintptr_t)arg, &tx,
+      sizeof(tx));
+
+    thread_exit(0);
+}
+
+static void
+chain_bound_checks(void)
+{
+    struct proc *p = proc_current();
+    struct sys_op_send_args tx;
+    uint32_t spin;
+    sys_err_t err;
+
+    cnputs("chains: the bound of section 12.3\n");
+
+    ch_cyc = channel_create("cycle", p);
+    if (ch_cyc == NULL) {
+        panic("cycle: no channel");
+    }
+    err = handle_insert(&p->p_handles, ch_cyc, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_cyc_recv);
+    expect("a receive handle for the cycle", err, SYS_OK);
+    err = handle_insert(&p->p_handles, ch_cyc, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND, &h_cyc_send);
+    expect("a send handle for it", err, SYS_OK);
+
+    cyc_server = thread_create("cyc-server", PRIO_BOOT, cyc_server_thread,
+      NULL);
+    sched_ready(cyc_server);
+    sched_ready(thread_create("cyc-client", PRIO_BOOT, cyc_client_thread,
+      (void *)(uintptr_t)h_cyc_send));
+
+    /*
+     * Waited for rather than assumed. The walk finds a cycle only once
+     * the server is actually blocked sending into its own channel, and
+     * sending before that would queue behind it and never return.
+     */
+    for (spin = 0; spin < 2000000u &&
+      !(cyc_ready != 0 && cyc_server->t_wait == THREAD_WAIT_SEND); spin++) {
+        sched_yield();
+    }
+    if (cyc_ready == 0 || cyc_server->t_wait != THREAD_WAIT_SEND) {
+        panic("cycle: the server never got into its own channel");
+    }
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.inline_len = 3;
+    memcpy(tx.request.inline_data, "?", 2);
+    expect("sending into a cycle",
+      run(SYS_OP_IPC_SEND, h_cyc_send, &tx, sizeof(tx)),
+      SYS_ERR_DEADLOCK);
+
+    cnputs("    and a chain shorter than the bound is served OK\n");
+}
+
 static void
 clock_checks(void)
 {
@@ -5887,6 +5996,7 @@ kernel_main(void)
     chain_checks();
     reply_error_checks();
     high_priority_server_checks();
+    chain_bound_checks();
 #if SYS_TIER == 2
     cross_core_donation_checks();
     pool_stress_checks();

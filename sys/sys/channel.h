@@ -48,6 +48,17 @@ struct channel {
     struct thread  *c_receivers;
 
     /*
+     * Threads that took a message from this channel and have not
+     * replied yet, newest first, linked through t_serve_next.
+     *
+     * Section 12.3 wants a link from a blocked sender to whoever is
+     * serving it, and this is that link. Without it a client queued on
+     * a busy server can raise nothing, because there is no way from
+     * the channel to the thread that is inside a request on it.
+     */
+    struct thread  *c_serving;
+
+    /*
      * Pulses waiting to be collected, per section 13.1, oldest first.
      *
      * One array with a reservation rather than two queues, so that
@@ -86,6 +97,8 @@ void channel_thread_cancelled(struct thread *t);
  * pulse, and the reserved slots keep a system pulse from being the one
  * that is lost.
  */
+uint64_t channel_chain_raised(uint64_t *deepest);
+
 void channel_pulse(struct channel *ch, uint16_t code, uint32_t value);
 
 /*

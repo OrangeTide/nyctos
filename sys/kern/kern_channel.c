@@ -156,6 +156,10 @@ undonate(struct thread *t)
 static bool buf_may_deliver(struct proc *from, struct proc *to, uintptr_t va,
   size_t len);
 
+static void serving_begin(struct channel *ch, struct thread *t);
+static void serving_end(struct thread *t);
+static sys_err_t chain_raise(struct channel *ch, uint8_t prio);
+
 static void
 msg_copy(struct sys_msg *dst, const struct sys_msg *src)
 {
@@ -632,6 +636,7 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         server->t_waitres = SYS_OK;
 
         server->t_wait = THREAD_WAIT_NONE;
+        serving_begin(ch, server);
         donate(server, self->t_prio);
 
         /*
@@ -651,6 +656,22 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         channel_rendezvous++;
         self->t_wait = THREAD_WAIT_REPLY;
     } else {
+        /*
+         * Nobody is at a receive point, so this thread queues. Section
+         * 12.3 has the queue being priority-ordered serve it, and that
+         * is only half: whoever is inside a request on this channel
+         * may be blocked further down, and everything below is running
+         * at the priority of the client it is serving rather than of
+         * this one.
+         */
+        err = chain_raise(ch, self->t_prio);
+        if (err != SYS_OK) {
+            self->t_msg = NULL;
+            self->t_reply = NULL;
+            md_intr_restore(s);
+            return err;
+        }
+
         sender_insert(ch, self);
         self->t_wait = THREAD_WAIT_SEND;
     }
@@ -847,6 +868,7 @@ channel_recv(struct channel *ch, struct sys_msg *out,
             self->t_donor = client;
             client->t_donee = self;
 
+            serving_begin(ch, self);
             donate(self, client->t_prio);
 
             /*
@@ -995,6 +1017,7 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
         undonate(self);
     }
     client->t_donee = NULL;
+    serving_end(self);
     self->t_client = 0;
 
     sched_ready(client);
@@ -1133,6 +1156,8 @@ channel_thread_release(struct thread *t, bool tell)
 void
 channel_thread_cancelled(struct thread *t)
 {
+    serving_end(t);
+
     channel_thread_release(t, true);
 }
 
@@ -1250,6 +1275,14 @@ static void
 release_dead(struct thread *t)
 {
     /*
+     * And the link that says it is serving something, because it is
+     * not any more. A dead server left on a channel's serving list is
+     * a thread the chain walk of section 12.3 would follow into a slot
+     * that has been given to something else.
+     */
+    serving_end(t);
+
+    /*
      * Its buffer first, for the reason cancellation has: the pages are
      * in the server and gone from here, the reply that would have given
      * them back is not coming, and a thread released into its own
@@ -1363,4 +1396,119 @@ struct proc *
 channel_owner(const struct channel *ch)
 {
     return ch->c_owner;
+}
+
+/*
+ * A thread has taken a message from this channel and owes a reply.
+ *
+ * Section 12.3 asks for a link from a blocked sender to whoever is
+ * serving it, and this is where it is made. Until it existed the bound
+ * on the chain and the deadlock error described a mechanism that was
+ * not there.
+ */
+static void
+serving_begin(struct channel *ch, struct thread *t)
+{
+    t->t_serve_ch = ch;
+    t->t_serve_next = ch->c_serving;
+    ch->c_serving = t;
+}
+
+static void
+serving_end(struct thread *t)
+{
+    struct channel *ch = t->t_serve_ch;
+    struct thread **link;
+
+    if (ch == NULL) {
+        return;
+    }
+
+    for (link = &ch->c_serving; *link != NULL; link = &(*link)->t_serve_next) {
+        if (*link == t) {
+            *link = t->t_serve_next;
+            break;
+        }
+    }
+
+    t->t_serve_ch = NULL;
+    t->t_serve_next = NULL;
+}
+
+/*
+ * Raise everyone between this sender and the bottom of the chain it is
+ * waiting on, per section 12.3.
+ *
+ * A client that queues on a busy server used to raise nobody. The
+ * section said there was no thread whose promotion would help, and
+ * there is one: the server is inside a request of its own and may be
+ * blocked sending further down, and everything below it is running at
+ * the priority of whoever it is serving rather than of whoever is
+ * waiting.
+ *
+ * The walk is bounded because the bound is the point. A chain longer
+ * than SYS_PRIO_CHAIN_MAX is refused, and so is a cycle, which is the
+ * same thing seen from the inside: following it never ends and the
+ * bound is what stops the walk rather than what the walk finds.
+ */
+/*
+ * How many threads a chain walk has actually raised, and how deep the
+ * deepest walk went. A walk that refuses cycles and never raises
+ * anybody is a deadlock detector rather than the inheritance section
+ * 12.3 describes, and the two are worth telling apart.
+ */
+static uint64_t chain_raised;
+static uint64_t chain_deepest;
+
+uint64_t
+channel_chain_raised(uint64_t *deepest)
+{
+    *deepest = chain_deepest;
+
+    return chain_raised;
+}
+
+static sys_err_t
+chain_raise(struct channel *ch, uint8_t prio)
+{
+    uint32_t depth;
+
+    for (depth = 0; depth < SYS_PRIO_CHAIN_MAX; depth++) {
+        struct thread *server = ch->c_serving;
+
+        if (server == NULL) {
+            /*
+             * Nobody is inside a request on this channel, so the queue
+             * being priority-ordered is the whole of what this sender
+             * needs. That is the case section 12.3 already described.
+             */
+            return SYS_OK;
+        }
+
+        /*
+         * Raised only if it is blocked. A runnable thread is on some
+         * core's queue, and moving it between another core's queues is
+         * that core's business, per section 11.4.
+         */
+        if (depth > chain_deepest) {
+            chain_deepest = depth;
+        }
+
+        if (server->t_prio < prio && server->t_state == THREAD_BLOCKED) {
+            server->t_prio = prio;
+            chain_raised++;
+        }
+
+        if (server->t_wait != THREAD_WAIT_SEND &&
+          server->t_wait != THREAD_WAIT_REPLY) {
+            return SYS_OK;
+        }
+        if (server->t_blocked_on == NULL) {
+            return SYS_OK;
+        }
+
+        ch = server->t_blocked_on;
+    }
+
+    return SYS_ERR_DEADLOCK;
 }

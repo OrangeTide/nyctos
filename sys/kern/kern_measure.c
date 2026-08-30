@@ -11,6 +11,7 @@
  * backwards.
  */
 
+#include <sys/channel.h>
 #include <sys/cpu.h>
 #include <sys/intr.h>
 #include <sys/measure.h>
@@ -616,6 +617,15 @@ ipc_donate_arrived(struct thread *t)
 void
 ipc_report(void)
 {
+    {
+        uint64_t deepest;
+        uint64_t raised = channel_chain_raised(&deepest);
+
+        cnprintf("chains: %lu threads raised by a walk, deepest %lu of "
+          "%u\n", (unsigned long)raised, (unsigned long)deepest,
+          (unsigned int)SYS_PRIO_CHAIN_MAX);
+    }
+
     cnputs("ipc: what the round trip and the donation cost\n");
     meas_report(&meas_roundtrip);
     meas_report(&meas_donate_near);
