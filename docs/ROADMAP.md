@@ -5626,6 +5626,42 @@ have been asserting how the input arrived rather than anything about the
 kernel. It says so instead, and what it asserts is the part that is
 about the kernel: a dispatch that happened passed no point.
 
+*Reviewed.* One defect, one piece of dead code, and one thing that
+turned out to be right for a reason worth writing down.
+
+**Whether this core is inside an interrupt handler was kept on the core,
+and it belongs to what is running.** The handler sets the flag, runs,
+and clears it, and in between it can hand the core away: releasing a
+waiter can dispatch, and the thread that runs next would have every
+thread it makes runnable recorded as woken by an interrupt. The flag is
+put down at a context switch and picked up on the way back now, exactly
+as the kernel lock has been since M8.
+
+This is the milestone's recurring shape one more time. Not a counter
+this time but a flag, and the same question answered the same way: it
+described the thing running, and it was stored on the thing running it.
+
+The hazard is real and it is rare. A count of how often the handler
+hands the core away mid-handler reports one in some runs and none in
+others, so the mis-attribution was one thread's timing away from
+happening and had not happened yet. That count is printed even when it
+is zero, because a line that appears only when something went wrong
+cannot say that nothing did.
+
+**The dead code was an accessor for the points figure**, declared,
+defined and never called. It went in because the reporting function was
+written before it was known what the report would need.
+
+**And the point at the page table walk was placed correctly by
+accident.** It sits before the test that asks whether this walk is being
+charged to a buffer move, so it counts every entry a walk writes rather
+than only the entries the buffer accounting cares about. That is what
+section 13.3 asks for and what the stage claimed, but the placement was
+one line away from being the narrower thing, and the two are not
+distinguishable by any check here: the dispatch path passes no page
+table walk at all, so both placements report zero for the term being
+measured.
+
 **4. IPC round trip and donation latency.**
 
 - The two figures the design's own arguments rest on, taken on the paths

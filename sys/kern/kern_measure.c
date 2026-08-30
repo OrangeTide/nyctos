@@ -379,6 +379,20 @@ irq_dispatch_report(void)
      * from an interrupt to the program waiting on it is straight and
      * cannot be broken into anywhere.
      */
+    for (i = 0; i < cpu_count(); i++) {
+        const struct cpu *c = cpu_at(i);
+
+        /*
+         * How often the handler let something else run while it was
+         * still the handler. Not a defect and not work: it is the
+         * reason the flag saying so belongs to what is running rather
+         * than to the core.
+         */
+        cnprintf("    core %u handed the core away %lu times "
+          "mid-handler\n", (unsigned int)i,
+          (unsigned long)c->cp_irq_switches);
+    }
+
     if (seen == 0) {
         cnputs("    none in this run, which is a fact about the input\n");
         return;
@@ -394,8 +408,3 @@ irq_dispatch_report(void)
     }
 }
 
-uint64_t
-irq_dispatch_points(void)
-{
-    return cpu_self()->cp_disp_points;
-}

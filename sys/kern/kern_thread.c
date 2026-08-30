@@ -351,6 +351,7 @@ thread_switch_to(struct thread *next)
 {
     struct thread *prev = current;
     bool had;
+    bool in_irq;
 
     if (next == prev) {
         return;
@@ -397,7 +398,23 @@ thread_switch_to(struct thread *next)
      */
     had = klock_drop();
 
+    /*
+     * Whether this core is inside an interrupt handler belongs to what
+     * is running, not to the core. The handler can let something else
+     * run while it is still the handler, and that something else would
+     * otherwise have every thread it makes runnable recorded as having
+     * been woken by an interrupt. Put down here and picked up on the
+     * way back, exactly as the kernel lock is.
+     */
+    in_irq = cpu_self()->cp_in_irq;
+    if (in_irq) {
+        cpu_self()->cp_irq_switches++;
+        cpu_self()->cp_in_irq = false;
+    }
+
     md_switch(&prev->t_sp, next->t_sp);
+
+    cpu_self()->cp_in_irq = in_irq;
 
     /*
      * Reached when something switches back to prev, which by then is

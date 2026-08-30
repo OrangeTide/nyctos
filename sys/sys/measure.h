@@ -107,7 +107,6 @@ uint64_t preempt_points(void);
 void irq_dispatch_stamp(struct thread *t);
 void irq_dispatch_arrived(struct thread *t);
 void irq_dispatch_report(void);
-uint64_t irq_dispatch_points(void);
 
 /* That it is one clock and it does not go backwards. Panics if it does. */
 void meas_check_clock(void);

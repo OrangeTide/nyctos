@@ -139,6 +139,13 @@ struct cpu {
     bool                cp_in_irq;
 
     /*
+     * How many context switches happened with that flag set, which is
+     * how often the handler let something else run while it was still
+     * the handler. It is a count of a hazard rather than of work.
+     */
+    uint64_t            cp_irq_switches;
+
+    /*
      * Section 13.3's second term, measured on this core: how many
      * interrupts have been dispatched all the way to a user thread,
      * the longest such dispatch, and the points it passed.
