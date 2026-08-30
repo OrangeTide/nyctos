@@ -5279,26 +5279,188 @@ that interrupt disabling was carrying the exclusion for the whole kernel.
 
 **Deadlines, the tickless timer, and the first measurements.**
 
-The priority mechanisms are present from M1. What is missing is treating the
-result as a real-time system, which means measuring it. This is where "no
-figures are claimed" stops being true.
+The priority mechanisms are present from M1. What is missing is treating
+the result as a real-time system, which means measuring it. This is where
+"no figures are claimed" stops being true.
 
 *Needs.* Absolute deadlines everywhere a timeout appears (14.3, 14.4). A
-one-shot timer reprogrammed to the earliest pending event, with no tick (14.1).
-A bound on the donation chain. Introspection sufficient to read pool
-high-water marks (22).
+one-shot timer reprogrammed to the earliest pending event, with no tick
+(14.1). A bound on the donation chain. Introspection sufficient to read
+pool high-water marks (22).
 
-*Done when* interrupt latency, IPC round trip and donation latency are measured
-on both tiers and published together with the configuration that produced them,
-and the Nth activation of a periodic timer lands at `first + N * period`
-despite a deliberately stalled task.
+**Most of that list is already built, and saying which changes what this
+milestone is.** Absolute deadlines arrived in M1 stage seven and every
+wait has carried one since. The tickless one-shot arrived with them, and
+M8 gave the arming of it to one named core. Pool high-water marks have
+been in the compared report since M3. What is left of the list is one
+item: the bound on the donation chain, which `donate()` says in its own
+comment is unenforced, because donation happens at a rendezvous where
+the target has just stopped being blocked and a walk is only needed to
+raise a thread that is already blocked onward. A cycle of servers would
+deadlock undetected. That is a real gap between section 12.3 and this
+tree, and it is the only new mechanism this milestone owes.
+
+So M9 is not mostly mechanism. It is measurement, and the hard part of
+measurement here is not taking the numbers.
+
+**The hard part is that this system has never run on hardware.** A
+latency figure taken under emulation is a figure about the emulator and
+the host it is on. M8 proved that rather than assuming it: a check that
+asserted an interrupt arrived inside one particular run failed about one
+run in three with the machine busy and never with it quiet. Publishing a
+nanosecond figure from this tree and calling it interrupt latency would
+be the same error with a decimal point on it.
+
+The way out is not to avoid measuring. It is to separate two kinds of
+number and treat them differently.
+
+**What is a property of the kernel is countable and deterministic.** How
+many instructions the longest interrupts-disabled region is. How many
+preemption points a path passes. How many switches, rendezvous and
+whole-TLB flushes a round trip costs. These are the same on every host,
+belong in the compared file, and are what section 13.3's first term
+actually asks for: it defines worst-case latency as the longest
+interrupts-disabled region plus the dispatch, and says both terms are
+measurable on a given port.
+
+**What is a property of the host is a duration**, and it goes in the
+report above the compared line, labelled with the machine that produced
+it, and is never asserted against a threshold. M6 stage four settled
+this rule for switch counts and it applies with more force here.
+
+**And M8 left a deviation this milestone has to confront.** At Tier 2
+the kernel takes one lock at every entry and holds it with interrupts
+disabled, which was recorded as a stated deviation from section 13.3
+rather than hidden. Section 13.3's whole per-tier argument is that Tier 0
+disables interrupts and accepts a latency floor, while Tier 2 enables
+them and locks finely to remove that floor. As built, Tier 2's longest
+interrupts-disabled region is its longest kernel entry, which is not
+better than Tier 0's, it is worse. The argument in 13.3 is currently
+inverted by the implementation, and this is the milestone that has to
+measure that and either fix it or say so in the section.
+
+*What M8 leaves for this milestone.* Three habits, each of which cost a
+stage there.
+
+**A counter is per core until there is a reason it is not.** M8 found one
+of something for the machine six times in six stages. Every number here
+is taken on a core, so every one of them decomposes, and a longest-region
+figure summed across cores would be meaningless rather than merely wrong.
+
+**A check must assert the thing it names.** M8 found four that did not,
+all of them passing. A latency check is unusually easy to get wrong this
+way, because a number arriving at all looks like the number being right.
+
+**A check that depends on how fast the host is will fail on a slower
+one.** This is the same lesson as the first paragraph about emulation and
+it is worth stating twice, because the entire subject of this milestone
+is durations.
+
+*Stages.* Six. The first three build the measurement and take the two
+terms of section 13.3, the fourth turns them on the paths the design
+cares about, the fifth is the one piece of mechanism still owed, and the
+sixth asks what the numbers mean for the section that motivated all of
+it.
+
+**1. A measurement that is not a measurement of the host.**
+
+- A cheap monotonic read on both ports, and the honest statement of what
+  it counts. Its resolution is reported rather than assumed.
+- Alongside it, the counting instruments: a way to say how long a region
+  is in a unit that does not move when the host does.
+- Per core, because a duration is measured on a core.
+
+*Check.* The counter never goes backwards across two reads on one core,
+its resolution is printed with the configuration that produced it, and
+the counted unit of a deliberately doubled region doubles while the same
+region's duration on a loaded host does not have to. Anything reported
+in nanoseconds is above the compared line; anything compared is a count.
+
+**2. The longest interrupts-disabled region, per tier.**
+
+- Section 13.3's first term, instrumented where interrupts are disabled
+  and restored, recording the longest region and where it began.
+- Naming the site matters more than the number. A figure with no site
+  attached cannot be acted on.
+
+*Check.* A deliberately long region introduced anywhere becomes the
+reported maximum and is named as its own site. Removing it restores the
+previous maximum. The figure is reported for both tiers.
+
+**3. Dispatching an interrupt to a user thread.**
+
+- Section 13.3's second term: from the interrupt being taken to the user
+  thread that waits on it running.
+- The path already exists and is checked for correctness; what is missing
+  is its length.
+
+*Check.* The measured dispatch counts the preemption points the path
+actually passes, and inserting one more into that path raises the count
+by exactly one. A program that waits on an interrupt reports the same
+number on both ports.
+
+**4. IPC round trip and donation latency.**
+
+- The two figures the design's own arguments rest on, taken on the paths
+  that already exist rather than on a benchmark written to be fast.
+- Both tiers, and at Tier 2 both with the server on this core and on the
+  other, because M8 measured that boundary at four pokes and this is the
+  same crossing seen from the other side.
+
+*Check.* The round trip is reported as a count that is identical in all
+four configurations and as a duration that is not compared. The donation
+figure is taken with the chain crossing a core boundary and without, and
+the difference is stated.
+
+**5. The bound on the donation chain.**
+
+- The one mechanism the *Needs* list still owes. `donate()` explains why
+  the current arrangement cannot enforce it: nothing links a blocked
+  sender to whoever is serving it.
+- Either that link is built and `SYS_ERR_DEADLOCK` becomes reachable, or
+  section 12.3 concedes that per-send donation is the whole mechanism.
+  The stage decides which by trying the first.
+
+*Check.* A cycle of servers is refused with `SYS_ERR_DEADLOCK` rather
+than deadlocking undetected, and a legitimate chain of the maximum
+length is not refused. If the link proves to cost more than the bound is
+worth, the check is that section 12.3 says so and the code stops
+claiming otherwise.
+
+**6. What the figures say about section 13.3.**
+
+- The milestone's own question, and the only stage whose outcome could
+  rewrite a section rather than delete one.
+- The per-tier argument is that Tier 2 removes a floor that Tier 0
+  accepts. As built it does the opposite.
+
+*Check.* The longest interrupts-disabled region is reported for both
+tiers with the site that produced it. If Tier 2's is longer than Tier
+0's, section 13.3 is wrong about this implementation and the section
+changes or the implementation does, and the stage says which and why.
+
+*Done when* interrupt latency, IPC round trip and donation latency are
+measured on both tiers and published together with the configuration that
+produced them, the Nth activation of a periodic timer lands at `first + N
+* period` despite a deliberately stalled task, and every published figure
+says whether it is a property of this kernel or of the machine it was
+taken on.
 
 *Would falsify.* Every latency intuition in the design, and the per-tier
-interrupt latency argument in 13.3 specifically. Also whether a tickless timer
-is affordable on a part where reprogramming is a slow peripheral write.
+interrupt latency argument in 13.3 specifically, which the M8 deviation
+has already put in doubt. Also whether a tickless timer is affordable on
+a part where reprogramming is a slow peripheral write, which cannot be
+answered here and needs saying rather than guessing.
 
-*Size.* Medium. Mostly instrumentation and discipline rather than new
-mechanism.
+*Watch for.* The thing M8 spent a stage learning: a number that is
+usually right is worse than no number, because it makes a check fail
+sometimes and a check that fails sometimes gets deleted. Every figure in
+the compared file must be a count. Every duration must be somewhere it
+can move without breaking anything.
+
+*Size.* Medium, and the estimate is unchanged rather than confirmed.
+Mostly instrumentation and discipline, plus one piece of mechanism and
+one section that may have to be rewritten.
 
 ### M10. The Submission Engine
 
