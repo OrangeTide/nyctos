@@ -371,10 +371,13 @@ intr_region_report(void)
     for (i = 0; i < cpu_count(); i++) {
         const struct cpu *c = cpu_at(i);
 
-        cnprintf("    core %u: %lu regions, longest %lu ticks, "
-          "begun at 0x%lx\n", (unsigned int)i,
+        uint64_t hz = md_time_hz();
+
+        cnprintf("    core %u: %lu regions, longest %lu ticks "
+          "(about %lu us), begun at 0x%lx\n", (unsigned int)i,
           (unsigned long)c->cp_intr_regions,
           (unsigned long)c->cp_intr_worst,
+          (unsigned long)(hz != 0 ? (c->cp_intr_worst * 1000000UL) / hz : 0),
           (unsigned long)c->cp_intr_worst_site);
 
         if (c->cp_intr_regions == 0) {
@@ -473,6 +476,7 @@ irq_dispatch_arrived(struct thread *t)
 void
 irq_dispatch_report(void)
 {
+    uint64_t hz = md_time_hz();
     uint32_t i;
     uint64_t seen = 0;
 
@@ -485,10 +489,12 @@ irq_dispatch_report(void)
         if (c->cp_disp_count == 0) {
             continue;
         }
-        cnprintf("    core %u: %lu dispatched, longest %lu ticks, "
-          "%lu points passed\n", (unsigned int)i,
+        cnprintf("    core %u: %lu dispatched, longest %lu ticks "
+          "(about %lu us), %lu points passed\n", (unsigned int)i,
           (unsigned long)c->cp_disp_count,
           (unsigned long)c->cp_disp_longest,
+          (unsigned long)(hz != 0 ?
+            (c->cp_disp_longest * 1000000UL) / hz : 0),
           (unsigned long)c->cp_disp_points);
     }
 

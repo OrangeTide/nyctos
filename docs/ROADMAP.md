@@ -5869,7 +5869,7 @@ The zero was a real measurement and reporting it was right. Stopping
 there was not: a mechanism that has never run is not a mechanism that
 has been shown to be unnecessary, and the difference is one check.
 
-**6. What the figures say about section 13.3.**
+**6. What the figures say about section 13.3.** *Built.*
 
 - The milestone's own question, and the only stage whose outcome could
   rewrite a section rather than delete one.
@@ -5880,6 +5880,60 @@ has been shown to be unnecessary, and the difference is one check.
 tiers with the site that produced it. If Tier 2's is longer than Tier
 0's, section 13.3 is wrong about this implementation and the section
 changes or the implementation does, and the stage says which and why.
+
+*Built.* Both terms of section 13.3 are measured on both ports and both
+tiers, and the section is rewritten around what they say. The stage
+expected to find Tier 2 worse than Tier 0 and the section inverted by
+the implementation. It found something else.
+
+| | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
+|---|---|---|---|---|
+| longest region | 3180 us | 1741 us | 2615 us | 2838 us |
+| regions entered | 585 | 585 | 22554 | 22391 |
+| interrupt to a program | 126 us | 87 us | 151 us | 222 us |
+| points on that path | 0 | 0 | 0 | 0 |
+
+**Tier 2 is not worse.** M8 recorded a deviation, that Tier 2 takes one
+lock at every entry and holds it with interrupts disabled, and predicted
+this milestone would find the latency floor raised by it. It is not
+raised. The difference between the two ports at one tier is larger than
+the difference between the tiers, which is what a figure dominated by
+something other than the thing being varied looks like.
+
+**What the deviation costs is the number of regions, not their length.**
+585 in a run at Tier 0 against about 22400 at Tier 2, which is the big
+lock making every entry into the kernel a disabled region, and the
+longest of them unaffected by any of it.
+
+**The longest region is a context switch, and no preemption point can
+bound it.** Four measurements, two tiers, two ports, two clocks, name
+the same line: `sched_block` disables interrupts and then dispatches, so
+the region runs from a thread deciding to block until whatever runs next
+enables them again. That is the strongest agreement anything in this
+project has produced.
+
+So section 13.3's argument is aimed at the wrong region. It says Tier 0
+bounds latency by preemption point placement; the binding region
+contains no preemption point and cannot, because it is the switch
+itself. Stage three placed points at batch entries, message copies and
+page table walks, and every one of them lowers regions that were never
+the longest. Enabling interrupts inside the kernel and locking finely,
+which is what the section promises Tier 2, would leave the binding term
+exactly where it is.
+
+**What would lower it** is not disabling interrupts across a switch, or
+making the switch interruptible. Both are design changes rather than
+measurements, and neither is attempted here. Naming them is what this
+stage can do, and it could not have named them before the figures
+existed: the answer was that the floor is scheduling and everyone had
+been looking at critical sections.
+
+**And the section keeps its per-tier shape rather than losing it.** The
+tension it describes between analysability and absolute latency is real
+and the resolution it chooses is still defensible. What was wrong was
+the account of what sets the floor, which is now measured and written
+down, along with the caution that these figures come from an emulator
+and are the right shape and the wrong magnitude.
 
 *Done when* interrupt latency, IPC round trip and donation latency are
 measured on both tiers and published together with the configuration that

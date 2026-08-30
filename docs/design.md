@@ -1302,7 +1302,7 @@ The ISR runs no driver logic, takes no lock a thread can hold, and performs no a
 
 ### 13.3 Interrupt Latency, Stated Per Tier
 
-**Worst-case interrupt latency is defined as the longest interrupts-disabled region plus the time to dispatch an interrupt to a user thread.** This definition is used because both terms are measurable on a given port, so the claim can be checked rather than asserted. Nothing here has been measured, and no figure is offered.
+**Worst-case interrupt latency is defined as the longest interrupts-disabled region plus the time to dispatch an interrupt to a user thread.** This definition is used because both terms are measurable on a given port, so the claim can be checked rather than asserted. Both terms are measured below, on both ports and both tiers, under emulation.
 
 There is a genuine tension between analyzability and absolute latency, and this document resolves it differently per tier rather than pretending one answer serves both.
 
@@ -1311,9 +1311,30 @@ Disabling interrupts inside the kernel and bounding latency purely by preemption
 * **Tier 0: interrupts are disabled inside the kernel**, and latency is bounded by preemption point placement. Cores are simple, often uniprocessor, and the kernel is small enough that the longest disabled region can be inspected exhaustively. This buys a kernel with no internal locking at all.
 * **Tier 2: interrupts are enabled, with fine-grained locking.** Multiprocessing forces internal locking regardless, so the marginal cost is small, and removing the floor matters more on hardware fast enough for it to be the binding constraint.
 
-Latency is therefore tier-specific and is a measured number per port rather than a general property of the architecture. This document states no such number, because none has been obtained.
+Latency is therefore tier-specific and is a measured number per port rather than a general property of the architecture. The numbers below were obtained under an emulator and on one host, so they are the right shape and the wrong magnitude: what can be read from them is which term dominates and whether the tiers differ, not what this kernel would do on a part.
 
 Preemption points sit at batch entry boundaries, at message copy chunk boundaries, and at page table walk boundaries.
+
+**The figures, measured at M9 stage six.** Both terms are now measured on both ports and both tiers, under emulation, which means every duration here describes the machine the measurement ran on and not this kernel. The counts do describe this kernel.
+
+| | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
+|---|---|---|---|---|
+| longest interrupts-disabled region | 3180 us | 1741 us | 2615 us | 2838 us |
+| regions entered | 585 | 585 | 22554 | 22391 |
+| interrupt to a user thread, longest | 126 us | 87 us | 151 us | 222 us |
+| preemption points on that path | 0 | 0 | 0 | 0 |
+
+The durations move between runs by tens of per cent, because the host is not the same twice. The counts do not move at all, and neither does the site.
+
+**Three things follow, and the third is the one that matters.**
+
+Tier 2 is not worse than Tier 0, which the deviation below might have been expected to make it. The longest region is the same order at both, and the difference between the two ports at one tier is larger than the difference between the tiers. What the deviation costs is not a longer region but many more of them: taking one lock at every entry raises the number of disabled regions in a run from 585 to about 22400, and leaves the longest one untouched.
+
+The dispatch term passes no preemption point at all, at either tier, on either port. There is no boundary anywhere between an interrupt being taken and the program waiting on it running, so that term is a straight line whose length is its whole bound.
+
+**And the longest region is a context switch, which no preemption point can bound.** All four measurements name the same line: `sched_block`, which disables interrupts and then dispatches, so the region runs from a thread deciding to block until whatever runs next enables them again. Preemption points at batch entries, message copy boundaries and page table walks lower regions that were never the longest. The floor this section describes is set by the scheduler, not by any critical section, and lowering it means either not disabling interrupts across a switch or making the switch itself interruptible. Neither is a measurement, and neither is done here.
+
+So the second bullet above is not merely unbuilt at Tier 2; the argument it rests on is aimed at the wrong region. Enabling interrupts inside the kernel and locking finely would leave the binding term exactly where it is.
 
 **Deviation, current at M8 stage two.** Tier 2 does not yet do what the
 second bullet says. There is one lock for the whole kernel, it is taken
