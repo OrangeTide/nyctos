@@ -337,10 +337,6 @@ sched_idle(void)
     had = klock_drop();
 
     for (;;) {
-        md_intr_enable();
-        md_idle_wait();
-        (void)md_intr_disable();
-
         /*
          * What another core sent here counts as something to do. The
          * bitmap alone does not know about it: a thread pushed to this
@@ -353,6 +349,25 @@ sched_idle(void)
         if (ready_bits != 0) {
             break;
         }
+
+        /*
+         * Tested before sleeping, with interrupts off across both,
+         * which is what closes the window between them. Enabling them
+         * first and testing afterwards loses the wake it was waiting
+         * for: the poke from the other core is taken in that window,
+         * its handler puts the thread on this queue, and the core then
+         * sleeps with nothing pending and work waiting. It stays there
+         * until some unrelated interrupt arrives.
+         *
+         * Sleeping with them off is what makes the test-first order
+         * possible. Both architectures wake from this instruction on
+         * an interrupt that is pending and masked, and say so.
+         */
+        md_idle_wait();
+
+        /* And let it be taken, now that there is something to take. */
+        md_intr_enable();
+        (void)md_intr_disable();
     }
 
     klock_regain(had);

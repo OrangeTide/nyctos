@@ -879,6 +879,19 @@ child_watch(struct child *c, struct proc *p)
     c->c_completion = args.out_handle;
 }
 
+/*
+ * How long a child that only computes is given before its silence is
+ * called a hang.
+ *
+ * It was one second, chosen when every program ran on one core. A read
+ * that crosses a core boundary is slower, and under host load the
+ * difference was enough to call a working program hung: the deadline
+ * had stopped detecting a failure and started measuring the machine
+ * this is running on. Section 14.3 says a deadline is for detecting a
+ * failure, so it is set where only a failure reaches it.
+ */
+#define JOIN_MS     30000u
+
 static int32_t
 child_join(struct child *c, uint32_t within_ms)
 {
@@ -1078,7 +1091,7 @@ completion_checks(void)
       run(SYS_OP_OBJECT_COMPLETION, c.c_completion, &cargs, sizeof(cargs)),
       SYS_ERR_WRONG_TYPE);
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
     cnprintf("    exiter finished with status %d\n", code);
     if (code != 7) {
         panic("completion: joined a child and read status %d", code);
@@ -1161,6 +1174,7 @@ user_interrupt_checks(void)
     struct timer *t;
     struct child c;
     unsigned long before = md_user_irqs;
+    uint32_t tries;
 
     tl = timeline_create("spin-timer");
     if (tl == NULL) {
@@ -1172,15 +1186,31 @@ user_interrupt_checks(void)
         panic("spin: no timer");
     }
 
-    sched_defer();
-    child_watch(&c, proc_spawn_image("spin", 20, NULL, 0, NULL, 0));
-    sched_undefer();
-    (void)child_join(&c, 1000);
+    /*
+     * Run it until one arrives, rather than once and insisting one did.
+     *
+     * What is being checked is that a program can be interrupted at
+     * all, which is a property of the kernel. Whether one arrives
+     * inside any particular run is a property of the host, and on two
+     * cores under load it stopped being reliable: this failed about
+     * one run in six with the machine busy and never with it quiet,
+     * which is the shape this milestone warned itself about.
+     *
+     * Bounded, because a kernel that cannot be interrupted must still
+     * fail rather than loop.
+     */
+    for (tries = 0; tries < 20 && md_user_irqs == before; tries++) {
+        sched_defer();
+        child_watch(&c, proc_spawn_image("spin", 20, NULL, 0, NULL, 0));
+        sched_undefer();
+        (void)child_join(&c, JOIN_MS);
+    }
 
     timer_destroy(t);
 
     if (md_user_irqs == before) {
-        panic("nothing interrupted the program while it ran");
+        panic("nothing interrupted a program in %u runs of one",
+          (unsigned int)tries);
     }
     cnprintf("    %lu interrupts taken while a program was running\n",
       md_user_irqs - before);
@@ -1208,7 +1238,7 @@ spawn_checks(void)
     child_watch(&c, proc_spawn_image("spawner", 20, NULL, 0, NULL, 0));
     sched_undefer();
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
     cnprintf("    spawner reported %d\n", code);
     if (code != 7) {
         panic("spawn: the spawner exited %d, expected the child's 7", code);
@@ -1235,7 +1265,7 @@ thread_checks(void)
     child_watch(&c, proc_spawn_image("threads", 20, NULL, 0, NULL, 0));
     sched_undefer();
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
     cnprintf("    threads reported %d\n", code);
     if (code != 9) {
         panic("threads: the process reported %d, not its last thread's 9",
@@ -1768,7 +1798,7 @@ slice_checks(void)
     child_watch(&c, proc_spawn("fs-client", 20, fs_client, ns, 1));
     sched_undefer();
 
-    (void)child_join(&c, 1000);
+    (void)child_join(&c, JOIN_MS);
 
     expect("the handle left this process when it was handed over",
       handle_lookup(&p->p_handles, root, SYS_OBJ_NONE, 0, NULL),
@@ -2003,7 +2033,7 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
     child_watch(&c, p);
     sched_undefer();
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
 
     trace_enable(false);
 
@@ -2133,7 +2163,7 @@ trespass_checks(sys_handle_t root)
     child_watch(&c, proc_spawn_image("trespass", 20, ns, 1, NULL, 0));
     sched_undefer();
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
 
     /*
      * Zero means it was refused and carried on. Any other value is the
@@ -2197,12 +2227,12 @@ two_copies_checks(void)
     child_watch(&c2, obj);
 #endif
 
-    if (child_join(&c1, 1000) != 7) {
+    if (child_join(&c1, JOIN_MS) != 7) {
         panic("two copies: the first did not run to its own exit");
     }
     handle_close(ht, h1);
 #if SYS_TIER == 2
-    if (child_join(&c2, 1000) != 7) {
+    if (child_join(&c2, JOIN_MS) != 7) {
         panic("two copies: the second did not run to its own exit");
     }
     handle_close(ht, h2);
@@ -2425,7 +2455,7 @@ fault_checks(void)
     child_watch(&c, obj);
     sched_undefer();
 
-    (void)child_join(&c, 1000);
+    (void)child_join(&c, JOIN_MS);
 
     memset(&sargs, 0, sizeof(sargs));
     if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) !=
@@ -2586,7 +2616,7 @@ move_checks(void)
         panic("move: the reply failed");
     }
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
 
 #if SYS_TIER == 2
     if (code != 1) {
@@ -2663,7 +2693,7 @@ device_checks(void)
         child_watch(&c, obj);
         sched_undefer();
 
-        (void)child_join(&c, 1000);
+        (void)child_join(&c, JOIN_MS);
 
         memset(&sargs, 0, sizeof(sargs));
         if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) != SYS_OK) {
@@ -2699,7 +2729,7 @@ device_checks(void)
         child_watch(&c, obj);
         sched_undefer();
 
-        if (child_join(&c, 1000) != -4) {
+        if (child_join(&c, JOIN_MS) != -4) {
             panic("device: a driver with no grant did not say so");
         }
         cnprintf("    %-38s %s\n", "a driver started without one",
@@ -2774,7 +2804,7 @@ grant_checks(void)
     child_watch(&c, obj);
     sched_undefer();
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
 
     /*
      * The word it wrote, read through the physical address, which is
@@ -3015,7 +3045,7 @@ paging_checks(void)
     sched_ready(paging_spinner_t);
     sched_undefer();
 
-    code = child_join(&c, 2000);
+    code = child_join(&c, JOIN_MS);
 
     if ((uint32_t)code != want) {
         panic("paging: it added its image to 0x%x, not 0x%x, after "
@@ -3101,7 +3131,7 @@ paging_checks(void)
         }
         child_watch(&bc, obj);
         sched_undefer();
-        (void)child_join(&bc, 1000);
+        (void)child_join(&bc, JOIN_MS);
 
         bch = channel_create("not-a-pager", obj);
         if (bch == NULL) {
@@ -3215,7 +3245,7 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
     child_watch(&c, proc_spawn_image("namespace", 20, ns, 3, NULL, 0));
     sched_undefer();
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
     if (code != 2) {
         panic("namespace: it found %d named entries, not 2", code);
     }
@@ -3231,7 +3261,7 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
     child_watch(&c, proc_spawn_image("namespace", 20, NULL, 0, NULL, 0));
     sched_undefer();
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
     if (code != 0) {
         panic("namespace: a child given nothing found %d entries", code);
     }
@@ -3280,7 +3310,7 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
     child_watch(&c, proc_spawn_image("resolve", 20, ns, 3, NULL, 0));
     sched_undefer();
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
     if (code != 0) {
         panic("namespace: the resolver failed case %d", code);
     }
@@ -3463,11 +3493,11 @@ kill_checks(void)
     expect("ending the server", run(SYS_OP_PROC_KILL, h, &kargs,
       sizeof(kargs)), SYS_OK);
 
-    code = child_join(&cc, 1000);
+    code = child_join(&cc, JOIN_MS);
     if (code != 0) {
         panic("kill: the client reported %d", code);
     }
-    code = child_join(&sc, 1000);
+    code = child_join(&sc, JOIN_MS);
     if (code != 9) {
         panic("kill: the server exited %d, not the code it was given",
           code);
@@ -3518,7 +3548,7 @@ kill_checks(void)
     child_watch(&cc, proc_spawn_image("orphan", 20, ns, 1, argv, 2));
     sched_undefer();
 
-    code = child_join(&cc, 1000);
+    code = child_join(&cc, JOIN_MS);
     if (code != 0) {
         panic("kill: the second client reported %d", code);
     }
@@ -3529,7 +3559,7 @@ kill_checks(void)
     kargs.code = 0;
     expect("ending the replacement", run(SYS_OP_PROC_KILL, h, &kargs,
       sizeof(kargs)), SYS_OK);
-    (void)child_join(&sc, 1000);
+    (void)child_join(&sc, JOIN_MS);
     (void)handle_close(ht, h);
     (void)handle_close(ht, recv);
 
@@ -3552,7 +3582,7 @@ kill_checks(void)
         sched_undefer();
     }
 
-    code = child_join(&sc, 2000);
+    code = child_join(&sc, JOIN_MS);
     if (code != 3) {
         panic("kill: the supervisor made %d starts, not three", code);
     }
@@ -3679,7 +3709,7 @@ death_checks(void)
             panic("death: the client would not be released");
         }
 
-        code = child_join(&c, 1000);
+        code = child_join(&c, JOIN_MS);
         if (code != 0) {
             panic("death: the cancelled client reported %d", code);
         }
@@ -3793,8 +3823,8 @@ death_checks(void)
             panic("death: the owner would not be released");
         }
 
-        (void)child_join(&oc, 1000);
-        code = child_join(&cc, 1000);
+        (void)child_join(&oc, JOIN_MS);
+        code = child_join(&cc, JOIN_MS);
         if (code != 0) {
             panic("death: the abandoned client reported %d", code);
         }
@@ -3995,7 +4025,7 @@ pulse_checks(void)
         }
 
         channel_pulse(ch, SYS_PULSE_USER_BASE, 0xbeef);
-        (void)child_join(&pc, 1000);
+        (void)child_join(&pc, JOIN_MS);
 
         expect("a pulse to a receiver already waiting",
           pulse_waiter_saw, SYS_OK);
@@ -4248,7 +4278,7 @@ cancel_checks(void)
             }
         }
 
-        code = child_join(&c, 1000);
+        code = child_join(&c, JOIN_MS);
         if (code != 0) {
             panic("cancel: blocked in %s, it reported %d", cases[i], code);
         }
@@ -4371,7 +4401,7 @@ reap_checks(void)
 
     stale_proc = ((struct proc *)obj)->p_id;
 
-    (void)child_join(&c, 1000);
+    (void)child_join(&c, JOIN_MS);
 
     /*
      * The spawn handed back a handle of its own and the watch made a
@@ -4532,7 +4562,7 @@ recovery_checks(struct channel *ch)
     child_watch(&c, proc_spawn_image("peer_c", 20, NULL, 0, NULL, 0));
     sched_undefer();
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
     if (code != SYS_EXIT_FAULT) {
         panic("recovery: peer_c exited %d, not of a fault", code);
     }
@@ -4541,7 +4571,7 @@ recovery_checks(struct channel *ch)
      * And the peer that did nothing. It was blocked in receive and had
      * no reason of its own to stop.
      */
-    code = child_join(&peer_a_child, 1000);
+    code = child_join(&peer_a_child, JOIN_MS);
     if (code != SYS_EXIT_COHORT) {
         panic("recovery: peer_a exited %d, not with its cohort", code);
     }
@@ -4619,7 +4649,7 @@ recovery_checks(struct channel *ch)
     child_watch(&bc, proc_spawn_image("peer_b", 20, ns, 2, NULL, 0));
     sched_undefer();
 
-    code = child_join(&bc, 1000);
+    code = child_join(&bc, JOIN_MS);
     if (code != 0) {
         panic("recovery: after the restart peer_b stopped at step %d",
           code);
@@ -4708,7 +4738,7 @@ cohort_checks(void)
         panic("cohort check: peer_b is in no cohort");
     }
 
-    code = child_join(&c, 1000);
+    code = child_join(&c, JOIN_MS);
     if (code != 0) {
         panic("cohort check: peer_b stopped at step %d", code);
     }
@@ -4757,7 +4787,7 @@ cohort_checks(void)
     }
     sched_undefer();
     expect("a second copy of one that has exited", err, SYS_OK);
-    (void)child_join(&c, 1000);
+    (void)child_join(&c, JOIN_MS);
 
     /*
      * And the handle the spawn returned, which the join does not
