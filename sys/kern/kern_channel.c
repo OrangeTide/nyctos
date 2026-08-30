@@ -127,6 +127,7 @@ static void
 donate(struct thread *to, uint8_t prio)
 {
     if (to->t_prio < prio) {
+        ipc_donate_stamp(to, to->t_core != cpu_self()->cp_index);
 #if SYS_TIER == 2
         /*
          * Raised on a thread this core does not own, which is what
@@ -657,7 +658,19 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
     self->t_blocked_on = ch;
     self->t_unwait = channel_unwait_thread;
-    sched_block();
+
+    {
+        /*
+         * The round trip as the client sees it: from giving up the
+         * core to having its reply. Everything the server does is
+         * inside this, which is the point.
+         */
+        uint64_t started = ipc_round_begin();
+        uint64_t points = preempt_points();
+
+        sched_block();
+        ipc_round_end(self, started, points);
+    }
 
     err = self->t_waitres;
 
@@ -873,6 +886,12 @@ channel_recv(struct channel *ch, struct sys_msg *out,
         self->t_blocked_on = ch;
         self->t_unwait = channel_unwait_thread;
         sched_block();
+
+        /*
+         * Running again, which for a server that was donated to is the
+         * moment section 12.3's mechanism has finished doing anything.
+         */
+        ipc_donate_arrived(self);
 
         if (self->t_waitres != SYS_OK) {
             *out_peer = self->t_client;

@@ -43,6 +43,7 @@
 
 #include <sys/config.h>
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -57,6 +58,29 @@ struct meas {
     uint64_t    ms_count[SYS_MAX_CORES];
     uint64_t    ms_longest[SYS_MAX_CORES];
     uint64_t    ms_total[SYS_MAX_CORES];
+
+    /*
+     * The fewest and the most preemption points any single visit
+     * passed. Kept as a range rather than a total because the question
+     * this milestone asks of a count is whether it is the same every
+     * time: a range that has not widened is a number about this
+     * kernel, and one that has is a number about the run.
+     */
+    uint64_t    ms_plo[SYS_MAX_CORES];
+    uint64_t    ms_phi[SYS_MAX_CORES];
+
+    /*
+     * Visits whose points could not be counted, because they began on
+     * one core and ended on another. A point counter is per core, and
+     * subtracting one core's from another's produces a number that
+     * means nothing: the first version of this printed one, and it had
+     * wrapped past zero.
+     */
+    uint64_t    ms_uncounted[SYS_MAX_CORES];
+
+    /* The shortest visit, which is the one the kernel is responsible
+     * for when the longest is dominated by what the server did. */
+    uint64_t    ms_shortest[SYS_MAX_CORES];
 };
 
 /* The monotonic source, and how many of its ticks are a second. */
@@ -70,6 +94,17 @@ uint64_t meas_hz(void);
  */
 uint64_t meas_enter(void);
 void meas_leave(struct meas *m, uint64_t started);
+
+/*
+ * The same, with the preemption points the visit passed. The duration
+ * is a fact about the host and the points are a fact about the kernel,
+ * so they are reported apart and only the second is compared.
+ */
+void meas_leave_points(struct meas *m, uint64_t started, uint64_t points,
+  bool counted);
+
+/* One line: how many, how long at worst, and how many points. */
+void meas_report(const struct meas *m);
 
 /* How many times this region has been entered, on every core. */
 uint64_t meas_count(const struct meas *m);
@@ -107,6 +142,16 @@ uint64_t preempt_points(void);
 void irq_dispatch_stamp(struct thread *t);
 void irq_dispatch_arrived(struct thread *t);
 void irq_dispatch_report(void);
+
+/*
+ * The round trip a client waits through, and the donation from being
+ * raised to running. Both on the paths the system already has.
+ */
+uint64_t ipc_round_begin(void);
+void ipc_round_end(struct thread *t, uint64_t started, uint64_t points);
+void ipc_donate_stamp(struct thread *to, bool across);
+void ipc_donate_arrived(struct thread *t);
+void ipc_report(void);
 
 /* That it is one clock and it does not go backwards. Panics if it does. */
 void meas_check_clock(void);

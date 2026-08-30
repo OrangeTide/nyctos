@@ -4823,8 +4823,8 @@ cohort_checks(void)
 #define CLK_ONCE    1024u
 #define CLK_TWICE   (CLK_ONCE * 2u)
 
-static struct meas meas_once = { "once", { 0 }, { 0 }, { 0 } };
-static struct meas meas_twice = { "twice", { 0 }, { 0 }, { 0 } };
+static struct meas meas_once = { .ms_name = "once" };
+static struct meas meas_twice = { .ms_name = "twice" };
 
 /*
  * One region, entered from both cores at once. The two above cannot
@@ -4836,7 +4836,7 @@ static struct meas meas_twice = { "twice", { 0 }, { 0 }, { 0 } };
  */
 #define CLK_SHARE   4096u
 
-static struct meas meas_shared = { "shared", { 0 }, { 0 }, { 0 } };
+static struct meas meas_shared = { .ms_name = "shared" };
 
 #if SYS_TIER == 2
 static volatile uint64_t clk_stamp;
@@ -6046,6 +6046,7 @@ kernel_main(void)
 
     intr_region_report();
     irq_dispatch_report();
+    ipc_report();
 
     object_report_usage();
 

@@ -149,6 +149,17 @@ struct thread {
     uint64_t            t_irq_points;
 
     /*
+     * When a client raised this thread's priority at a rendezvous, how
+     * many preemption points had been passed by then, and whether the
+     * client was on another core. Section 12.3's donation, timed from
+     * the raise to this thread running.
+     */
+    uint64_t            t_don_stamp;
+    uint64_t            t_don_points;
+    uint32_t            t_don_core;
+    bool                t_don_across;
+
+    /*
      * Wait state. A thread is blocked on at most one object at a time per
      * section 5, so one link and one awaited value is all any of this ever
      * needs, however many kinds of thing become waitable.

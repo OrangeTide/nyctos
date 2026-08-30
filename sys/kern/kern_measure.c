@@ -15,6 +15,8 @@
 #include <sys/intr.h>
 #include <sys/measure.h>
 #include <sys/systm.h>
+
+#include <stdbool.h>
 #include <sys/thread.h>
 
 uint64_t
@@ -33,6 +35,110 @@ uint64_t
 meas_enter(void)
 {
     return md_time_now();
+}
+
+void
+meas_leave_points(struct meas *m, uint64_t started, uint64_t points,
+  bool counted)
+{
+    uint32_t self = cpu_self()->cp_index;
+    uint64_t now = md_time_now();
+    uint64_t took = now >= started ? now - started : 0;
+
+    if (!counted) {
+        m->ms_uncounted[self]++;
+    } else {
+        if (m->ms_count[self] == m->ms_uncounted[self] ||
+          points < m->ms_plo[self]) {
+            m->ms_plo[self] = points;
+        }
+        if (m->ms_count[self] == m->ms_uncounted[self] ||
+          points > m->ms_phi[self]) {
+            m->ms_phi[self] = points;
+        }
+    }
+
+    if (m->ms_count[self] == 0 || took < m->ms_shortest[self]) {
+        m->ms_shortest[self] = took;
+    }
+
+    meas_leave(m, started);
+}
+
+void
+meas_report(const struct meas *m)
+{
+    uint64_t hz = md_time_hz();
+    uint64_t n = meas_count(m);
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+    bool seen = false;
+    uint32_t i;
+
+    for (i = 0; i < SYS_MAX_CORES; i++) {
+        if (m->ms_count[i] == 0) {
+            continue;
+        }
+        if (!seen || m->ms_plo[i] < lo) {
+            lo = m->ms_plo[i];
+        }
+        if (!seen || m->ms_phi[i] > hi) {
+            hi = m->ms_phi[i];
+        }
+        seen = true;
+    }
+
+    if (n == 0) {
+        cnprintf("    %s: none in this run\n", m->ms_name);
+        return;
+    }
+
+    {
+        uint64_t shortest = 0;
+        uint64_t uncounted = 0;
+        bool first = true;
+
+        for (i = 0; i < SYS_MAX_CORES; i++) {
+            uncounted += m->ms_uncounted[i];
+            if (m->ms_count[i] == 0) {
+                continue;
+            }
+            if (first || m->ms_shortest[i] < shortest) {
+                shortest = m->ms_shortest[i];
+                first = false;
+            }
+        }
+
+        /*
+         * The shortest is the one the kernel is answerable for. The
+         * longest is whatever the server on the other end was doing,
+         * and in this session that includes waiting for a person to
+         * type, so it is a figure about the run rather than the path.
+         */
+        /*
+         * In the clock's ticks and in microseconds. The ticks are what
+         * was counted and the microseconds are what can be compared
+         * with the other port, whose clock runs six times faster: the
+         * same work gives wildly different tick counts and nearly the
+         * same time, which is the only way to see that the two ports
+         * agree about anything.
+         */
+        cnprintf("    %s: %lu of them, %lu ticks at best, "
+          "%lu at worst\n", m->ms_name, (unsigned long)n,
+          (unsigned long)shortest, (unsigned long)meas_longest(m));
+        cnprintf("        best is about %lu microseconds\n",
+          (unsigned long)(hz != 0 ? (shortest * 1000000UL) / hz : 0));
+
+        if (uncounted == n) {
+            cnprintf("        points: not countable, %lu crossed a core\n",
+              (unsigned long)uncounted);
+        } else if (lo == hi) {
+            cnprintf("        points: %lu every time\n", (unsigned long)lo);
+        } else {
+            cnprintf("        points: %lu to %lu\n", (unsigned long)lo,
+              (unsigned long)hi);
+        }
+    }
 }
 
 void
@@ -408,3 +514,80 @@ irq_dispatch_report(void)
     }
 }
 
+
+/*
+ * The two figures the design's own arguments rest on, taken on the
+ * paths the system already has rather than on a benchmark written to
+ * come out well.
+ *
+ * The round trip is what a client spends blocked waiting for its reply.
+ * The donation is from a client raising a server's priority at the
+ * rendezvous to that server running: section 12.3's mechanism, timed
+ * rather than argued about.
+ *
+ * The donation is kept in two, because M8 measured a boundary between
+ * cores at four inter-processor interrupts and this is the same
+ * crossing seen from the other side. A donation that stays on one core
+ * needs nobody told; one that crosses needs a poke delivered and a
+ * core woken before the server can run at all.
+ */
+static struct meas meas_roundtrip = { .ms_name = "round trip" };
+static struct meas meas_donate_near = { .ms_name = "donation, same core" };
+static struct meas meas_donate_far = { .ms_name = "donation, across cores" };
+
+uint64_t
+ipc_round_begin(void)
+{
+    return md_time_now();
+}
+
+void
+ipc_round_end(struct thread *t, uint64_t started, uint64_t points)
+{
+    (void)t;
+
+    if (started == 0) {
+        return;
+    }
+
+    meas_leave_points(&meas_roundtrip, started, preempt_points() - points,
+      true);
+}
+
+void
+ipc_donate_stamp(struct thread *to, bool across)
+{
+    to->t_don_stamp = md_time_now();
+    to->t_don_points = preempt_points();
+    to->t_don_core = cpu_self()->cp_index;
+    to->t_don_across = across;
+}
+
+void
+ipc_donate_arrived(struct thread *t)
+{
+    if (t->t_don_stamp == 0) {
+        return;
+    }
+
+    /*
+     * The points are only a number if both ends were counted on the
+     * same core. A donation that crossed was stamped on one core and
+     * arrives on another, and those counters have nothing to do with
+     * each other.
+     */
+    meas_leave_points(t->t_don_across ? &meas_donate_far : &meas_donate_near,
+      t->t_don_stamp, preempt_points() - t->t_don_points,
+      t->t_don_core == cpu_self()->cp_index);
+
+    t->t_don_stamp = 0;
+}
+
+void
+ipc_report(void)
+{
+    cnputs("ipc: what the round trip and the donation cost\n");
+    meas_report(&meas_roundtrip);
+    meas_report(&meas_donate_near);
+    meas_report(&meas_donate_far);
+}

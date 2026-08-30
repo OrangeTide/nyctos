@@ -5662,7 +5662,7 @@ distinguishable by any check here: the dispatch path passes no page
 table walk at all, so both placements report zero for the term being
 measured.
 
-**4. IPC round trip and donation latency.**
+**4. IPC round trip and donation latency.** *Built.*
 
 - The two figures the design's own arguments rest on, taken on the paths
   that already exist rather than on a benchmark written to be fast.
@@ -5674,6 +5674,63 @@ measured.
 four configurations and as a duration that is not compared. The donation
 figure is taken with the chain crossing a core boundary and without, and
 the difference is stated.
+
+
+*Built.* Both figures are taken on the paths the system already has: the
+round trip is what a client spends blocked waiting for its reply, and
+the donation is from a client raising a server's priority at the
+rendezvous to that server running.
+
+**The numbers, with the configuration attached.**
+
+| | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
+|---|---|---|---|---|
+| round trip, best | 36 us | 42 us | 44 us | 35 us |
+| donation on one core, best | 15 us | 13 us | 25 us | 22 us |
+| donation across cores, best | none | none | 62 us | 58 us |
+
+**Crossing a core costs about two and a half times a donation that does
+not, and both ports say so independently.** Sixty-two microseconds
+against twenty-five on one port, fifty-eight against twenty-two on the
+other. M8 priced that boundary at four inter-processor interrupts per
+read; this is the same crossing in time, seen from the other side, and
+the two ports agreeing to within seven per cent is what makes it worth
+believing.
+
+**The ticks had to become microseconds before any of that was
+visible.** The two clocks run at 10000000 and 62500000 a second, so the
+same work gives 621 ticks on one port and 3684 on the other, and a
+reader comparing those two numbers learns nothing. Converted, they are
+62 and 58. The tick counts are what was measured and the microseconds
+are what can be compared, and printing only the first would have hidden
+the strongest result in the stage.
+
+**The stage expected a count identical in all four configurations and
+there is not one.** At Tier 0 both ports agree exactly: 145 round trips,
+46 donations, and the same range of preemption points. At Tier 2 one
+port sees 158 round trips and the other 159. Two cores make the number
+of round trips a run performs depend on how the two of them interleave,
+so it is not a property of this kernel and it does not go in the
+compared file. The expectation was written before there were two cores
+in the check and it was wrong.
+
+**And the first version of the points figure printed a negative
+number.** A donation that crosses a core is stamped on one core and
+arrives on another, and the count of preemption points is per core:
+subtracting one core's from another's gave 18446744073709501435, which
+is what a small negative number looks like when it is unsigned. That is
+this milestone's recurring lesson arriving in a third form. The points
+are counted only when both ends were on one core, and the report says
+how many crossings could not be counted rather than printing a figure
+for them.
+
+**The worst case in every one of these is a person typing.** Twenty
+million ticks is the two seconds the paced session leaves between lines,
+which a client waits through when the server on the other end is the
+console driver. That is a number about the session and not about the
+kernel, so the figure that matters is the best case: the shortest round
+trip is the one where nothing was waiting for anything, and it is the
+kernel's own cost.
 
 **5. The bound on the donation chain.**
 
