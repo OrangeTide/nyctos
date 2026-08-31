@@ -92,6 +92,9 @@ uint32_t timeline_owner(const struct timeline *tl, void **out);
 
 struct timeline *timeline_create(const char *name);
 
+/* What the counter stands at. */
+uint64_t timeline_value(const struct timeline *tl);
+
 /*
  * Block until the counter reaches value. Returns immediately if it already
  * has, whatever else has happened to the timeline, because a value that was

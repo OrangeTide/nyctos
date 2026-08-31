@@ -6141,7 +6141,7 @@ the fourth answers the question the milestone exists for, the fifth is
 the part of section 17 that is about repetition rather than batching,
 and the sixth decides whether the section stays.
 
-**1. A count greater than one.**
+**1. A count greater than one.** *Built.*
 
 - `SYS_BATCH_MAX_ENTRIES` exists and bounds the array. Every entry is
   validated before any entry executes, per section 17.2, so a batch that
@@ -6154,6 +6154,40 @@ writes a status for each. A batch with a bad entry in the middle
 executes none of them and returns `SYS_ERR_INVALID_ARG`, which is
 checked by observing that the first entry's effect did not happen. A
 batch longer than the bound is refused.
+
+*Built.* `SYS_BATCH_MAX_ENTRIES` is sixteen, a submission carries
+between one and that many, every entry is checked before any entry runs,
+and each writes its own status.
+
+**The descriptor already had the shape.** `flags`, `status`, `user_data`
+and the two register tags have been in `struct sys_op` since M1, and
+`sys_op_exec` has been writing the status all along. Nothing needed
+adding to the interface: what was missing was a count that could exceed
+one, which was refused in three lines at the top of the entry path.
+
+**Signals on a timeline are what the entries do**, because a timeline
+only goes up. After a batch of three the counter says how many ran, and
+after a batch that was refused it says whether any did. An operation
+with no visible effect would leave the second question unanswerable,
+which is the question the stage is actually about.
+
+**An existing check caught the first attempt, and it was checking the
+right thing.** Validating up front and returning on the first bad entry
+meant that entry never reached the code that writes its status, so a
+refused entry said nothing about why. `trespass` has asserted since M2
+that a descriptor pointing at memory the program does not own gives
+`SYS_ERR_FAULT` from the call *and* from the entry, and it failed. The
+validator writes the status it refuses on now. Section 17.6 wants every
+entry to report its own outcome and an entry refused before it ran is
+still an entry with an outcome.
+
+**Both halves are falsifiable.** Validating as it goes rather than up
+front leaves a refused batch having advanced the counter, which fails
+with `a refused batch advanced it to 6`. Executing only the first entry
+fails with `three entries advanced it to 1`.
+
+The full bound runs too, sixteen entries in one call, which is what the
+next stage measures against section 13.3.
 
 **2. `LINK`, and what a chain does when an entry fails.**
 

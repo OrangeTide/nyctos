@@ -75,21 +75,14 @@ static long
 syscall_body(struct sys_op *op, unsigned long count)
 {
     /*
-     * The count is one until the submission engine of section 17 exists.
-     * Rejecting anything else here rather than ignoring it means a caller
-     * built against that engine fails loudly on a kernel without it.
+     * A submission carries at least one entry and at most the bound of
+     * section 17.2. Zero is refused rather than treated as nothing to
+     * do: a caller that computed a count of zero has a bug, and a
+     * system call that succeeds without doing anything hides it.
      */
-    if (count != 1) {
+    if (count == 0 || count > SYS_BATCH_MAX_ENTRIES) {
         return SYS_ERR_INVALID_ARG;
     }
-
-    /*
-     * A batch entry boundary, per section 13.3. There is one entry
-     * until section 17 exists, so this is passed once per call; the
-     * point is placed where the boundary is rather than where it would
-     * be interesting.
-     */
-    preempt_point();
 
     /*
      * Section 23.2 step 2: the descriptor array has to be memory the
@@ -108,9 +101,79 @@ syscall_body(struct sys_op *op, unsigned long count)
         return SYS_ERR_FAULT;
     }
 
+    /*
+     * Every entry checked before any entry runs, per section 17.2. A
+     * batch that cannot run must not half-run: the alternative is a
+     * caller whose first two operations happened and whose third was
+     * refused for a reason it could have been told before anything
+     * did.
+     *
+     * What can be checked here is what does not need the operation:
+     * that the opcode exists, and that an argument structure is memory
+     * this process can reach. Everything else is the operation's own
+     * business and section 17.2 says so.
+     */
     {
-        long r = sys_op_exec(op);
-        struct proc *p = proc_current();
+        unsigned long i;
+
+        for (i = 0; i < count; i++) {
+            sys_err_t bad = SYS_OK;
+
+            if (op[i].opcode >= SYS_OP_COUNT) {
+                bad = SYS_ERR_INVALID_ARG;
+            } else if (op[i].arg_len != 0 &&
+              !proc_reaches(proc_current(), op[i].arg_ptr,
+                op[i].arg_len)) {
+                bad = SYS_ERR_FAULT;
+            }
+
+            if (bad != SYS_OK) {
+                /*
+                 * The entry that was refused says so, per section
+                 * 17.6, and the others are left as the caller wrote
+                 * them because they were never considered. An entry
+                 * refused before it ran still has to report why it was
+                 * refused: the check that caught this was already in
+                 * the tree, in a program that submits a descriptor
+                 * pointing at memory it does not own and asserts that
+                 * both the call and the entry say FAULT.
+                 */
+                op[i].status = bad;
+                return bad;
+            }
+        }
+    }
+
+    {
+        struct proc *p;
+        unsigned long i;
+        long r = SYS_OK;
+
+        for (i = 0; i < count; i++) {
+            long one;
+
+            /*
+             * A batch entry boundary, per section 13.3 and section
+             * 17.6. The batch is preemptible here and an entry is not,
+             * which is why the bound above does not appear in the
+             * latency figures and the cost of one entry does.
+             */
+            preempt_point();
+
+            one = sys_op_exec(&op[i]);
+
+            /*
+             * The call reports the first entry that failed, and every
+             * entry reports its own status in the array. With one
+             * entry the two are the same thing, which is what every
+             * caller written before this milestone assumes.
+             */
+            if (one != SYS_OK && r == SYS_OK) {
+                r = one;
+            }
+        }
+
+        p = proc_current();
 
         /*
          * And out, if this process has been killed. Here because it

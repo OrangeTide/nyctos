@@ -177,6 +177,18 @@
 #define SYS_PRIO_CHAIN_MAX      8
 
 /*
+ * How many entries one submission may carry, per section 17.2. A batch
+ * is a linear array with no branches, so its cost is the sum of its
+ * entries and this bounds that sum.
+ *
+ * Section 13.3 says this constant does not appear in interrupt latency
+ * at all and that the cost of one entry does, because the batch is
+ * preemptible at every entry boundary. That claim becomes checkable
+ * with this milestone and not before.
+ */
+#define SYS_BATCH_MAX_ENTRIES   16
+
+/*
  * The debug console of section 22.4: a system call that prints, holding no
  * handle and asking nothing of the caller.
  *

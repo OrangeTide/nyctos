@@ -113,6 +113,12 @@ expect(const char *what, sys_err_t got, sys_err_t want)
     cnprintf("    %-38s %s\n", what, errname(got));
 }
 
+static long
+run_batch(sys_op_t *ops, unsigned long n)
+{
+    return syscall_handler(ops, n);
+}
+
 static sys_err_t
 run(uint16_t opcode, sys_handle_t target, void *args, uint32_t arg_len)
 {
@@ -5158,6 +5164,125 @@ chain_bound_checks(void)
     cnputs("    and a chain shorter than the bound is served OK\n");
 }
 
+
+/*
+ * Section 17: the count exceeds one.
+ *
+ * Signals on a timeline are what the entries do, because a timeline is
+ * a counter that only goes up: after a batch of three the value says
+ * exactly how many of them ran, and after a batch that was refused it
+ * says whether any of them did. An operation with no visible effect
+ * would leave the second question unanswerable.
+ */
+#define BATCH_N     3
+
+static struct timeline *tl_batch;
+static sys_handle_t h_batch;
+
+static void
+batch_fill(sys_op_t *ops, sys_op_fence_args_t *args, uint32_t n,
+  uint64_t from)
+{
+    uint32_t i;
+
+    for (i = 0; i < n; i++) {
+        memset(&args[i], 0, sizeof(args[i]));
+        args[i].value = from + i + 1;
+
+        memset(&ops[i], 0, sizeof(ops[i]));
+        ops[i].opcode = SYS_OP_FENCE_SIGNAL;
+        ops[i].target = h_batch;
+        ops[i].arg_ptr = (uintptr_t)&args[i];
+        ops[i].arg_len = sizeof(args[i]);
+    }
+}
+
+static void
+batch_checks(void)
+{
+    struct proc *p = proc_current();
+    sys_op_fence_args_t args[SYS_BATCH_MAX_ENTRIES + 1];
+    sys_op_t ops[SYS_BATCH_MAX_ENTRIES + 1];
+    uint32_t i;
+    sys_err_t err;
+
+    cnputs("batches: the count of section 17 exceeds one\n");
+
+    tl_batch = timeline_create("batch");
+    if (tl_batch == NULL) {
+        panic("batch: no timeline");
+    }
+    err = handle_insert(&p->p_handles, tl_batch, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_SIGNAL | SYS_RIGHT_WAIT, &h_batch);
+    expect("a signal handle for the batch", err, SYS_OK);
+
+    /*
+     * Three entries, three signals, and a counter that says how many
+     * of them happened.
+     */
+    batch_fill(ops, args, BATCH_N, 0);
+    expect("a batch of three", (sys_err_t)run_batch(ops, BATCH_N),
+      SYS_OK);
+    cnprintf("    the counter reached %lu                  %s\n",
+      (unsigned long)timeline_value(tl_batch),
+      timeline_value(tl_batch) == BATCH_N ? "OK" : "WRONG");
+    if (timeline_value(tl_batch) != BATCH_N) {
+        panic("batch: three entries advanced it to %lu",
+          (unsigned long)timeline_value(tl_batch));
+    }
+
+    for (i = 0; i < BATCH_N; i++) {
+        if (ops[i].status != SYS_OK) {
+            panic("batch: entry %u said %d", (unsigned int)i,
+              (int)ops[i].status);
+        }
+    }
+    cnputs("    and every entry wrote its own status   OK\n");
+
+    /*
+     * A bad entry in the middle. Nothing may run, which the counter
+     * proves by not moving, and the entry that was refused has to say
+     * why.
+     */
+    batch_fill(ops, args, BATCH_N, BATCH_N);
+    ops[1].opcode = SYS_OP_COUNT;
+    expect("a batch with a bad entry in the middle",
+      (sys_err_t)run_batch(ops, BATCH_N), SYS_ERR_INVALID_ARG);
+    if (timeline_value(tl_batch) != BATCH_N) {
+        panic("batch: a refused batch advanced it to %lu",
+          (unsigned long)timeline_value(tl_batch));
+    }
+    if (ops[1].status != SYS_ERR_INVALID_ARG || ops[0].status != SYS_OK) {
+        panic("batch: the refusal was not reported on its own entry");
+    }
+    cnputs("    nothing ran, and the bad entry said why OK\n");
+
+    expect("a batch longer than the bound",
+      (sys_err_t)run_batch(ops, SYS_BATCH_MAX_ENTRIES + 1),
+      SYS_ERR_INVALID_ARG);
+    expect("a batch of none at all",
+      (sys_err_t)run_batch(ops, 0), SYS_ERR_INVALID_ARG);
+
+    /*
+     * And the full bound, which is the case section 13.3 has something
+     * to say about and the next stage measures.
+     */
+    batch_fill(ops, args, SYS_BATCH_MAX_ENTRIES, BATCH_N);
+    expect("a batch of the largest size allowed",
+      (sys_err_t)run_batch(ops, SYS_BATCH_MAX_ENTRIES), SYS_OK);
+    cnprintf("    %u entries in one call, counter at %lu  OK\n",
+      (unsigned int)SYS_BATCH_MAX_ENTRIES,
+      (unsigned long)timeline_value(tl_batch));
+
+    /*
+     * Given back, because a later and unrelated check asserts this
+     * table is empty. M8 stage three left one behind and failed that
+     * check rather than its own.
+     */
+    expect("giving the handle back",
+      handle_close(&p->p_handles, h_batch), SYS_OK);
+}
+
 static void
 clock_checks(void)
 {
@@ -6130,6 +6255,7 @@ kernel_main(void)
     cpu_report();
     lock_check();
     clock_checks();
+    batch_checks();
 #if SYS_TIER == 2
     core_checks();
 #endif

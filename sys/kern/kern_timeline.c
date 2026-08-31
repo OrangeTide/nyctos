@@ -295,3 +295,9 @@ timeline_owner(const struct timeline *tl, void **out)
 
     return tl->tl_owner_type;
 }
+
+uint64_t
+timeline_value(const struct timeline *tl)
+{
+    return tl->tl_value;
+}
