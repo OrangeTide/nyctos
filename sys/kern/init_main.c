@@ -5433,9 +5433,26 @@ pays_checks(void)
      * checked before it runs and again when it runs, whichever form
      * carried it.
      */
-    if (few_calls != 1 || one_calls != PAY_N) {
+    /*
+     * Both columns asserted and not only printed. These are counts, so
+     * they are the same on every host and in all four configurations,
+     * and the milestone's product is the numbers: a headline figure
+     * that can drift without anything failing is a figure nobody is
+     * keeping. Changing how entries are validated changes the second
+     * column, and it should have to be looked at and written down
+     * again rather than quietly becoming a different claim.
+     *
+     * Three checks a call: the descriptor array, the entry before it
+     * runs, and the entry when it runs. A batch pays the first once.
+     */
+    if (one_calls != PAY_N || few_calls != 1) {
         panic("pays: %lu crossings against %lu",
           (unsigned long)few_calls, (unsigned long)one_calls);
+    }
+    if (one_checks != PAY_N * 3 || few_checks != 1 + PAY_N * 2) {
+        panic("pays: %lu checks against %lu, not %u and %u",
+          (unsigned long)few_checks, (unsigned long)one_checks,
+          (unsigned int)(1 + PAY_N * 2), (unsigned int)(PAY_N * 3));
     }
     cnprintf("    it saves %lu crossings and %lu checks\n",
       (unsigned long)(one_calls - few_calls),

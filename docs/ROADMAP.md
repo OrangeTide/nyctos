@@ -6480,6 +6480,43 @@ status write-back and a second way of doing what one system call
 already does is stage six's judgement, and it now has a number to make
 it on.
 
+*Reviewed.* The stage's headline number was printed and not checked, and
+the thing the plan told it to watch for turned out to be answerable.
+
+**Both columns are asserted now.** The saving was reported as seven
+crossings and seven checks with only the crossings asserted, so the
+second figure could have changed without anything failing. The
+milestone's product is the numbers, and a number nobody keeps is a
+number that drifts. Removing the up-front per-entry check fails with
+`9 checks against 16, not 17 and 24`, which is what a changed claim
+should look like: visible, named, and requiring somebody to write the
+new figure down on purpose.
+
+**The batch does not win by skipping anything, and this can be shown
+rather than asserted.** The plan said to watch for a batch that looks
+cheaper because it was allowed to omit a check. The check it makes once
+instead of eight times validates `count * sizeof(*op)` bytes, which is
+the whole array: eight separate calls validate one descriptor each and
+the batch validates all eight together. The same memory is checked
+either way. That is amortisation of a fixed cost over more work, which
+is the only honest way for a batch to be cheaper, and it is the only
+place the numbers say it is cheaper.
+
+**And the counts are per core, which is why the window is clean.** The
+figures are differenced on the core the checking thread runs on, so a
+system call made on the other core in the same interval does not enter
+them. That is the M8 lesson applied in advance rather than after the
+fact, and the assertion on the crossings would have caught it if it had
+not been: eight and one are exact, and any contamination makes them not
+be.
+
+**What the numbers still do not say** is what a crossing costs. They
+count seven of them saved and measure none of them, which is the
+milestone's own rule working as intended and also its limit: whether
+seven crossings is worth the mechanism cannot be settled by counting
+them alone. Stage six has to weigh a count against a quantity of code,
+and it should say that is what it is doing.
+
 **5. Prepared programs, validated once.**
 
 - Section 17 has a program validated once and executed many times, which
