@@ -1319,13 +1319,15 @@ Preemption points sit at batch entry boundaries, at message copy chunk boundarie
 
 | | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
 |---|---|---|---|---|
-| longest interrupts-disabled region | 473 us | 521 us | 565 us | 628 us |
-| mean region | 16 us | 16 us | 5 us | 8 us |
-| regions entered | 580 | 580 | 20620 | 20396 |
+| longest interrupts-disabled region | 596 to 1009 us | about 500 us | 571 to 733 us | about 800 us |
+| mean region | 16 us | 16 us | 5 us | 7 us |
+| regions entered | 580 | 580 | 20500 | 20400 |
 | interrupt to a user thread, longest | 126 us | 87 us | 151 us | 222 us |
 | preemption points on that path | 0 | 0 | 0 | 0 |
 
-The durations move between runs by tens of per cent, because the host is not the same twice. The counts do not move at all, and neither does the site.
+The longest region moves between runs by nearly a factor of two, which is why it is given as a range. The mean moves by under a tenth. The counts do not move at all, and neither does the site.
+
+**The tiers are not distinguishable in the worst case and are sharply distinguishable in the typical one.** Four runs of each on one port give 596, 1009, 619 and 621 microseconds at Tier 0 against 733, 601, 580 and 571 at Tier 2: overlapping ranges and no difference that survives the noise. The means are 159 ticks against 51, stable to a few per cent across runs, so a typical region at Tier 2 is a third the length of one at Tier 0. The lock that M8 expected to make this tier worse makes twenty thousand short regions where the other tier has six hundred longer ones, and leaves the worst case where it was.
 
 **Three things follow, and the third is the one that matters.**
 

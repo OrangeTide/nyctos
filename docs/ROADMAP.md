@@ -331,10 +331,38 @@ counter asserted at zero across the decision rather than a reading of
 the source. Threads arriving from another core come through a list
 pushed with one compare and exchange.
 
+**Milestone 9 is done.** Both terms of section 13.3 are measured, on
+both ports and both tiers, along with the IPC round trip and what a
+donation costs. Every figure says which kind of number it is: a count is
+a property of this kernel and is compared exactly, a duration is a
+property of the emulator this ran on and is reported where it can move.
+
+| | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
+|---|---|---|---|---|
+| longest region | 596 to 1009 us | about 500 us | 571 to 733 us | about 800 us |
+| mean region | 16 us | 16 us | 5 us | 7 us |
+| interrupt to a program | 82 us | 147 us | 168 us | 189 us |
+| round trip, best | 40 us | 31 us | 42 us | 34 us |
+| donation, across cores | none | none | 56 us | 75 us |
+
+The longest interrupts-disabled region begins in a reply and ends in the
+next send, so it spans a context switch and contains no preemption
+point. Section 13.3 claimed Tier 0's latency was bounded by preemption
+point placement and it is bounded by the scheduler; the section is
+rewritten around the measurement.
+
+Crossing a core costs about three times a donation that does not, on
+both ports independently, which is milestone 8's four inter-processor
+interrupts seen in time.
+
+`SYS_ERR_DEADLOCK` is reachable: a cycle of servers is refused instead
+of wedging the machine with nothing said.
+
 What does not exist: the submission engine. Memory is still never
-reclaimed, a rendezvous still carries no deadline, and the reference
-counts this milestone listed as unsafe under two cores are still plain
-increments.
+reclaimed, a rendezvous still carries no deadline, the reference counts
+that decide when an object is freed are still plain increments, and
+nothing has run on hardware, so every duration above is the right shape
+and the wrong magnitude.
 
 ---
 
@@ -5279,6 +5307,10 @@ that interrupt disabling was carrying the exclusion for the whole kernel.
 
 **Deadlines, the tickless timer, and the first measurements.**
 
+**Done.** All six stages are built. Section 12 says what it answered,
+what the figures are, what the building kept finding, and what it left
+untested.
+
 The priority mechanisms are present from M1. What is missing is treating
 the result as a real-time system, which means measuring it. This is where
 "no figures are claimed" stops being true.
@@ -5888,9 +5920,9 @@ the implementation. It found something else.
 
 | | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
 |---|---|---|---|---|
-| longest region | 473 us | 521 us | 565 us | 628 us |
-| mean region | 16 us | 16 us | 5 us | 8 us |
-| regions entered | 580 | 580 | 20620 | 20396 |
+| longest region | 596 to 1009 us | about 500 us | 571 to 733 us | about 800 us |
+| mean region | 16 us | 16 us | 5 us | 7 us |
+| regions entered | 580 | 580 | 20500 | 20400 |
 | interrupt to a program | 126 us | 87 us | 151 us | 222 us |
 | points on that path | 0 | 0 | 0 | 0 |
 
@@ -5898,14 +5930,16 @@ Those are the figures after the review of this stage corrected them.
 What the stage first published was four times larger and named the
 wrong site; see below.
 
-**Tier 2 is slightly worse in the worst case and much better in the
-typical one.** M8 recorded a deviation, that Tier 2 takes one lock at
-every entry and holds it with interrupts disabled, and predicted this
-milestone would find the latency floor raised by it. It is raised by
-about a fifth: 565 and 628 microseconds against 473 and 521. The mean
-goes the other way and by more, 5 and 8 microseconds against 16, because
-the lock makes a great many very short regions where Tier 0 has fewer
-and longer ones.
+**The tiers cannot be told apart in the worst case and are sharply
+different in the typical one.** M8 recorded a deviation, that Tier 2
+takes one lock at every entry and holds it with interrupts disabled, and
+predicted this milestone would find the latency floor raised by it. Four
+runs of each on one port give 596, 1009, 619 and 621 microseconds at
+Tier 0 against 733, 601, 580 and 571 at Tier 2, which is two overlapping
+ranges and no difference at all. The mean is a different matter: 159
+ticks against 51, stable to a few per cent, so a typical region at Tier
+2 is a third the length. The lock makes twenty thousand short regions
+where the other tier has six hundred longer ones.
 
 **What the deviation costs is the number of regions, not their length.**
 585 in a run at Tier 0 against about 22400 at Tier 2, which is the big
@@ -5978,11 +6012,14 @@ real-time bound is made of worst cases, but a bound whose relationship
 to the typical case is unknown is a bound nobody can act on. Both are
 reported now.
 
-**What changes in the conclusion.** M8's prediction that the big lock
-would raise the floor was dismissed by the stage and is right, by about
-a fifth. What the stage got right and keeps is the shape: the region
-that binds spans a switch, and no placement of preemption points
-touches it.
+**What changes in the conclusion.** The stage said M8's prediction was
+wrong, the review of the stage said it was right by about a fifth, and
+four runs of each configuration say neither: the worst case is the same
+within a spread that is larger than the effect being looked for. Reading
+a difference out of one run of each was the same error twice in a row,
+in opposite directions. What the stage got right and keeps is the shape:
+the region that binds spans a switch, and no placement of preemption
+points touches it.
 
 **And the pattern.** The idle wait, the return to user mode, a server
 donating to itself, and now the boot. Four times in one milestone a
@@ -7097,7 +7134,142 @@ enough to starve the emulator, the paced session can be outrun by the
 pacing itself. One run failed that way with nothing in the guest to
 blame, and it is recorded here rather than explained away.
 
-## 12. Bring-Up Order Within M1
+## 12. Milestone 9, in Retrospect
+
+M9 is where "no figures are claimed" stopped being true. The priority
+mechanisms had been present since M1 and nobody had ever measured one.
+Six stages later there are numbers for both terms of section 13.3, for
+the round trip and for donation, on two ports and two tiers, and the
+section they were taken for has been rewritten around them.
+
+The measuring was the easy part. Four of the six stages published a
+figure that turned out to be measuring something else, and the
+milestone's real product is the account of how each one was caught.
+
+### 12.1 The Questions
+
+**Do the figures falsify the per-tier interrupt latency argument of
+section 13.3?**
+
+Yes, and not in the direction anybody expected. The section says Tier 0
+accepts a latency floor bounded by preemption point placement, and Tier
+2 removes that floor by enabling interrupts and locking finely. Both
+halves are wrong about this implementation.
+
+The floor is not set by any critical section. The longest
+interrupts-disabled region begins in `channel_reply` and ends in
+`channel_send`, which is a server replying, dispatching into its client,
+and that client re-entering the kernel to send again. All four
+configurations agree on both ends. It contains no preemption point and
+cannot: preemption points sit at batch entries, message copy boundaries
+and page table walks, and none of those is on it. Stage three placed
+them where the section says and every one lowers a region that was never
+the longest.
+
+So Tier 0's latency is not bounded by preemption point placement, and
+Tier 2 enabling interrupts would not remove a floor that the scheduler
+sets. The section keeps its per-tier shape, because the tension it
+describes is real, and its account of what sets the floor is replaced by
+the measurement.
+
+**Is the tickless timer affordable on a part where reprogramming is a
+slow peripheral write?**
+
+Not answered, and it cannot be answered here. Neither port has a timer
+that is slow to reprogram: one writes a supervisor register and the
+other a system register. The milestone said this needed saying rather
+than guessing, and saying it is all that can be done.
+
+### 12.2 The Figures, and What They Are Figures Of
+
+Every number below was taken under an emulator on one host. The counts
+are properties of this kernel and are identical everywhere they should
+be. The durations are properties of that host and are not.
+
+| | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
+|---|---|---|---|---|
+| longest region | 596 to 1009 us | about 500 us | 571 to 733 us | about 800 us |
+| mean region | 16 us | 16 us | 5 us | 7 us |
+| regions in a run | 580 | 580 | 20500 | 20400 |
+| interrupt to a program | 82 us | 147 us | 168 us | 189 us |
+| points on that path | 0 | 0 | 0 | 0 |
+| round trip, best | 40 us | 31 us | 42 us | 34 us |
+| donation, one core | 15 us | 12 us | 18 us | 14 us |
+| donation, across cores | none | none | 56 us | 75 us |
+
+**Crossing a core costs about three times a donation that does not, and
+both ports say so.** That is the same boundary M8 priced at four
+inter-processor interrupts per read, seen from the other side and in
+time, and two independent measurements agreeing is what makes it worth
+believing.
+
+**The tiers cannot be told apart in the worst case.** Four runs of each
+give 596, 1009, 619, 621 microseconds at Tier 0 and 733, 601, 580, 571
+at Tier 2. The spread is larger than any difference between them.
+
+**They are sharply different in the typical case**, 16 microseconds
+against 5, stable to a few per cent. The big lock M8 expected to make
+Tier 2 worse makes twenty thousand short regions where the other tier
+has six hundred longer ones, and leaves the worst case alone.
+
+### 12.3 What the Building Kept Finding
+
+**A measured interval that included something that was not being
+measured. Five times.**
+
+The idle wait, when the longest region came out at 480 milliseconds and
+a timer fires every millisecond. The return to user mode, when it came
+out at 248 and the region was open across everything a program did. A
+server donating to itself, which put the two seconds between two typed
+lines into a figure about the kernel. The boot, which is not a path the
+running system takes and was the largest region in every run by two
+orders of magnitude. And a difference between the tiers that was read
+out of one run of each, twice, in opposite directions.
+
+Every one of those numbers was plausible when it was published. That is
+the whole difficulty: a wrong latency figure does not look wrong, it
+looks like a latency figure. What caught all five in the end was the
+same question asked twice, where did this interval start and where did
+it end, and is each of those somewhere the question makes sense.
+
+**A per-core counter differenced across cores.** The points a donation
+passed, subtracted between the core that stamped it and the core it
+arrived on, printed 18446744073709501435. M8 found this pattern six
+times and named it in this milestone's own entry as the thing to watch
+for, and it happened anyway.
+
+**And a check that could not fail.** The count of preemption points was
+compared against what had just been written to it through a plain
+member, which the compiler deletes. The per-core counter check was made
+with one core. The chain walk's raising half had never once run, and
+"raises nobody" was reported as a result rather than as a gap.
+
+### 12.4 What Is Still Untested
+
+**Everything about durations, because none of this has run on hardware.**
+The figures have the right shape and the wrong magnitude. What can be
+read from them is which term dominates, whether the ports agree, and
+whether the tiers differ. What cannot is anything a real-time engineer
+would want.
+
+**The retired instruction counter, which was the unit this milestone
+wanted and could not have.** It is architecturally an instruction count
+on one port and the emulator answers it with something time-shaped:
+130000 for a thousand-iteration loop, and about the same again for a
+loop twice as long.
+
+**The chain walk raises nobody in this system's own work.** A workload
+built to need it raises two, so the mechanism is exercised; nothing this
+tree does for its own sake produces the case.
+
+**The bound on the donation chain is enforced by counting**, so a cycle
+and a chain that is too long are the same event. Nothing distinguishes
+them and nothing needs to yet.
+
+**And the reference counts M8 listed as unsafe are still plain
+increments.** Two milestones have now named them without fixing them.
+
+## 13. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -7141,7 +7313,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 13. Ordering: What Is Forced and What Is Chosen
+## 14. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -7172,7 +7344,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 14. What Would Change This Plan
+## 15. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -7209,7 +7381,7 @@ reason, so nothing else moves.
 
 ---
 
-## 15. Deliberately Not Scheduled
+## 16. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

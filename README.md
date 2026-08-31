@@ -29,6 +29,40 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 9 is done: there are numbers, and each one says whether it
+is about this kernel or about the machine it was taken on.** Both terms
+of section 13.3 are measured on both ports and both tiers, along with
+the IPC round trip and the cost of a donation.
+
+The rule the milestone is built on is that a count is a property of this
+kernel and belongs in the compared file, and a duration is a property of
+the host and belongs above it where it can move. Nothing has ever run on
+hardware, so every duration here has the right shape and the wrong
+magnitude.
+
+```
+interrupts off: the longest region, per section 13.3
+    core 0: 20457 regions, longest 6028 ticks (about 602 us),
+        mean 54 ticks, begun at 0x80008f1e
+        ended at 0x80008abc
+interrupt to a program: section 13.3's second term
+    core 0: 16 dispatched, longest 1680 ticks (about 168 us),
+        0 points passed
+```
+
+The longest interrupts-disabled region begins in a reply and ends in the
+next send, so it spans a context switch, and it contains no preemption
+point. Section 13.3 said Tier 0's latency was bounded by where the
+preemption points are; it is bounded by the scheduler, and the section
+is rewritten to say so.
+
+Crossing a core boundary costs about three times a donation that stays
+on one core, which both ports agree on independently. That is the same
+boundary milestone 8 priced at four inter-processor interrupts, in time.
+
+`SYS_ERR_DEADLOCK` is reachable for the first time: a cycle of servers
+is refused rather than wedging the machine silently.
+
 **Milestone 8 is done: it runs on two cores, and where things run is
 something you say rather than something it decides.** Each core has its
 own ready queue and takes no lock another core could be holding to
@@ -603,10 +637,16 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is real time:
-measuring the latency the whole design has been arranged around, which
-nothing has measured yet. Multicore was chosen for analysability, and
-whether that trade was worth making is a number nobody here has taken.
+See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is the
+submission engine of section 17, which was deliberately left last: it
+needs issuing operations to be interesting, and those need a device that
+can do direct memory access underneath them.
+
+The figures milestone 9 produced say what to look at before that. The
+longest interrupts-disabled region spans a context switch and no
+preemption point can shorten it, so lowering the latency floor means
+not disabling interrupts across a switch, or making the switch
+interruptible. Neither is scheduled.
 
 The ordering that got here is in the same file, along with what each
 milestone answered and what it left untested. The one choice most likely
