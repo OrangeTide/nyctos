@@ -6280,6 +6280,44 @@ state. That is about issuing ops, which return timelines and do not
 exist, so there is nothing for a cancelled entry to have been going to
 signal. It is recorded here rather than implemented against nothing.
 
+*Reviewed.* Two defects, and the first one changed an answer that had
+been decided on purpose somewhere else.
+
+**The validator tested the length where it should have tested the
+pointer.** `sys_op_exec` refuses an entry whose argument pointer is
+non-zero and unreachable, and lets a null pointer with a length through
+to the operation, which answers `SYS_ERR_INVALID_ARG`. The comment there
+says so and says why: a null pointer with a length is a malformed
+descriptor rather than an unreachable one. Stage one's up-front
+validator tested `arg_len != 0` instead, so that case became
+`SYS_ERR_FAULT`, and a decision written down in one place was reversed
+in another by someone who had not read it.
+
+Nothing caught it, because no check in the tree submits an entry shaped
+that way. There is one now, and putting the old condition back fails
+with `an entry with a length and no arguments: expected INVALID_ARG, got
+FAULT`.
+
+**The two checks are the same check, and that is the point rather than
+the accident.** Section 17.2 wants every entry validated before any
+entry runs, and each operation validates again when it runs, so an entry
+is reach-checked twice. That is what not half-running a batch costs, and
+it is a number stage four has to put on the batch side of its comparison
+rather than a duplication to be pleased about having noticed.
+
+**And the join check would have hung rather than reported.** It waits
+on a timeline value the two entries before it have already reached, so
+it returns at once; with no deadline it would wait for ever if those
+entries ever ran out of order. That is a check whose failure mode is a
+hang, which this milestone has now called out twice in other people's
+work. It carries a deadline that only an ordering failure can reach.
+
+**Checked and found sound.** The kill check sits after the branch rather
+than inside it, so an entry that was cancelled still leaves the kernel
+if the process has been killed. A cancelled entry does not become the
+call's return value, which is right: the call reports the first entry
+that failed, and an entry that never ran did not fail.
+
 **3. What a batch does to interrupt latency.**
 
 - Section 13.3 says `SYS_BATCH_MAX_ENTRIES` does not appear in interrupt

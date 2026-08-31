@@ -5294,7 +5294,16 @@ link_checks(void)
     args[1].value = base + 2;
     memset(&args[2], 0, sizeof(args[2]));
     args[2].value = base + 2;
-    args[2].deadline = SYS_DEADLINE_NEVER;
+
+    /*
+     * A deadline rather than never, and it is not a timing assertion:
+     * the value is already reached when this entry runs, so the wait
+     * returns at once and the deadline is only reached if the entries
+     * ran out of order. Waiting for ever would make that failure a
+     * hang, and this milestone has said twice that a check whose
+     * failure mode is a hang is a check nobody has read.
+     */
+    args[2].deadline = time_now() + time_from_ms(30000);
     ops[0].flags = 0;
     ops[1].flags = 0;
     ops[2].flags = 0;
@@ -5373,6 +5382,19 @@ batch_checks(void)
       SYS_ERR_INVALID_ARG);
     expect("a batch of none at all",
       (sys_err_t)run_batch(ops, 0), SYS_ERR_INVALID_ARG);
+
+    /*
+     * A null argument pointer with a length is a malformed descriptor
+     * and not an unreachable one, so the operation answers it rather
+     * than the validator. Pinned here because the validator of stage
+     * one tested the length instead of the pointer and turned this
+     * answer into FAULT, which is a decision that was already made and
+     * written down where it was made.
+     */
+    batch_fill(ops, args, 1, timeline_value(tl_batch));
+    ops[0].arg_ptr = 0;
+    expect("an entry with a length and no arguments",
+      (sys_err_t)run_batch(ops, 1), SYS_ERR_INVALID_ARG);
 
     /*
      * And the full bound, which is the case section 13.3 has something

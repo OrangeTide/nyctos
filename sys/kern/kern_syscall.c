@@ -138,9 +138,27 @@ syscall_body(struct sys_op *op, unsigned long count)
 
             if (op[i].opcode >= SYS_OP_COUNT) {
                 bad = SYS_ERR_INVALID_ARG;
-            } else if (op[i].arg_len != 0 &&
+            } else if (op[i].arg_ptr != 0 &&
               !proc_reaches(proc_current(), op[i].arg_ptr,
                 op[i].arg_len)) {
+                /*
+                 * The same condition sys_op_exec applies, and it has
+                 * to be the same one. A null pointer with a length is
+                 * a malformed descriptor rather than an unreachable
+                 * one, and the operations answer that with
+                 * SYS_ERR_INVALID_ARG; testing the length here instead
+                 * of the pointer turned that answer into FAULT, which
+                 * is a decision sys_op_exec had already made and
+                 * written down.
+                 *
+                 * So this check is a copy, deliberately. Section 17.2
+                 * wants every entry checked before any entry runs, and
+                 * the operation checks again when it runs, so an entry
+                 * is reach-checked twice. That is the cost of not
+                 * half-running a batch, and it is a number stage four
+                 * has to account for rather than a thing to be quietly
+                 * pleased about.
+                 */
                 bad = SYS_ERR_FAULT;
             }
 
