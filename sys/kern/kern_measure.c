@@ -699,6 +699,26 @@ void
 ipc_report(void)
 {
     {
+        uint64_t checks;
+        uint64_t calls = 0;
+        uint32_t i;
+
+        /*
+         * How many times anything entered this kernel through the
+         * submission path, which is the denominator the batching
+         * saving needs. Seven crossings saved is a number; seven out
+         * of how many is the question section 17 is answered by.
+         */
+        for (i = 0; i < cpu_count(); i++) {
+            calls += cpu_at(i)->cp_syscalls;
+        }
+        (void)submit_crossings(&checks);
+
+        cnprintf("submissions: %lu in the run, all but a few of one "
+          "entry\n", (unsigned long)calls);
+    }
+
+    {
         uint64_t deepest;
         uint64_t raised = channel_chain_raised(&deepest);
 

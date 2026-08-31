@@ -6610,7 +6610,7 @@ what makes the validation last, and a program whose entries stayed in
 the caller's memory would have to be revalidated; the copy is not an
 optimisation and the stage said so.
 
-**6. Whether section 17 survives.**
+**6. Whether section 17 survives.** *Built.*
 
 - The only stage whose outcome is deleting a section, and the entry has
   said since it was written that removing it costs nothing else.
@@ -6622,6 +6622,64 @@ mechanism costs: the entry array, the validation pass, the status
 write-back, and a second way of doing what one system call already does.
 The stage says which way the evidence points and, if it points at
 removal, says what would have had to be true instead.
+
+*Built.* The evidence, and the decision the entry has been promising
+since it was written.
+
+**What it saves.** A batch of eight saves seven crossings of the trap
+edge, seven checks and seven acquisitions of the kernel lock, all of it
+the fixed cost of a call amortised over more work and none of it
+per-entry work. A prepared program of four entries run four times saves
+ten checks, which grows with the number of executions.
+
+**What it costs.** About four hundred and fifty lines, of which the
+mechanism proper is the loop, the chaining, the validation pass and the
+prepared program object; the rest is the counting that answered this
+question. At Tier 2 it costs latency: stage three found the longest
+interrupts-disabled region growing about fivefold with batch size,
+because the kernel lock is held across the whole call, which section
+13.3 says should not happen and which is M8's deviation showing up
+where nothing had looked before.
+
+**And what uses it: nothing.** The run makes 733 submissions at Tier 0
+and 758 at Tier 2, and every one of them carries a single entry except
+the handful this milestone's own checks submit. The engine was built
+and no program adopted it.
+
+**That is not the verdict, because of why nothing uses it.** The
+pattern that motivates the mechanism is a chain: walk to a file, then
+read it, where the second operation names a handle the first produced.
+A batch cannot express that here, because an entry's target is fixed
+when the batch is submitted and section 17.7's answer to this, an array
+of handles the entries name by position, is the one Need of this
+milestone that no stage built. So the workload that would justify the
+engine is the workload the engine cannot yet carry, and the seven
+crossings are a measurement of a check rather than of anything the
+system does.
+
+**The decision.** Section 17 stays, and its claims are narrowed to what
+was measured rather than left as they were.
+
+Removing it now would be deciding against the idea on evidence that did
+not test the idea, which is the error this project's method exists to
+prevent. Keeping it as written would be leaving claims standing that
+five stages have shown to be larger than the facts.
+
+What also argues for keeping it is a thing the milestone did not expect
+to find. Section 17.7 says the direct-invoke shim means every operation
+has exactly one implementation rather than a batch path and a separate
+syscall path to keep in agreement, and that is now literally true: a
+single operation is a one-entry batch and there is no other route into
+the kernel. Deleting the engine would not delete that code, it would
+delete the loop around it. The marginal thing being judged is smaller
+than it looks.
+
+**What would have had to be true instead**, and what would settle it:
+build the argument substitution, convert one real client to it, and
+measure the same way. If a walk-then-read in one submission does not
+beat two, on counts, the section goes. That experiment is named here so
+that the next person to open this does not have to rediscover which one
+it is.
 
 *Done when* one batch issues several operations, collects their results
 and reports a status for each, with the submitting thread's own context

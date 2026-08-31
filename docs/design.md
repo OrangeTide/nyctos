@@ -1731,6 +1731,12 @@ Batches may be submitted as a prepared program object, validated once and re-exe
 
 The shim matters more than it appears. It means `sys_msg_send()` is a one-entry batch, so **every operation has exactly one implementation** rather than a batch path and a separate syscall path that must be kept in agreement. It also keeps trivial calls cheap, and keeps single operations legible to tracing tools that a prepared program would obscure.
 
+**What the mechanism was measured to save, at M10.** A batch of eight entries costs one crossing of the trap edge where eight separate submissions cost eight, and seventeen validation checks where they cost twenty-four. The seven checks it saves are the seven descriptor arrays it did not have to validate; the sixteen per-entry checks are the same either way, because every entry is checked before it runs and again when it runs whichever form carried it. So the saving is the fixed cost of a call multiplied by one fewer than the number of entries, and nothing per entry. A prepared program of four entries executed four times costs twenty-six checks against thirty-six, and that saving grows with the number of executions.
+
+**And what it was measured to cost.** At a tier that holds one lock across every entry into the kernel, a batch is one interrupts-disabled region as long as the batch, so the longest such region grows about fivefold between one entry and sixteen. That is the opposite of what section 13.3 says about `SYS_BATCH_MAX_ENTRIES`, and it is a property of that tier's locking rather than of this section: the preemption points at the entry boundaries are marked and nothing stops at them.
+
+**Nothing in the system uses it.** A run makes between 733 and 758 submissions and every one carries a single entry. The reason is that the pattern the engine is for is a chain, where one entry names a handle an earlier entry produced, and an entry's target is fixed when the batch is submitted. The handle array of section 17.7 is what would close that, and it is not built. The measurements above therefore describe the mechanism and not any workload, and the section's value is still unproven in the direction that matters.
+
 `sys_batch_exec` bounds `count` at `SYS_BATCH_MAX_ENTRIES` and rejects a larger submission with `SYS_ERR_INVALID_ARG` before executing any entry. **Preemption points sit at entry boundaries**, so submitting a batch never extends the kernel's non-preemptible section beyond the cost of one entry. On Tier 0 this is the primary determinant of interrupt latency.
 
 ---
