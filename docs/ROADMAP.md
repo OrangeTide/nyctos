@@ -358,11 +358,37 @@ interrupts seen in time.
 `SYS_ERR_DEADLOCK` is reachable: a cycle of servers is refused instead
 of wedging the machine with nothing said.
 
-What does not exist: the submission engine. Memory is still never
-reclaimed, a rendezvous still carries no deadline, the reference counts
-that decide when an object is freed are still plain increments, and
-nothing has run on hardware, so every duration above is the right shape
-and the wrong magnitude.
+**Milestone 10 is done, and it is the last one this plan lists.** A
+submission carries up to sixteen entries, validated before any of them
+runs, each reporting its own status. Linked entries abort as a group.
+A batch can be loaded once and executed many times.
+
+What it saves is countable and small: a batch of eight costs one
+crossing of the trap edge where eight calls cost eight, and seventeen
+validation checks where they cost twenty-four. The saving is the fixed
+cost of a call, multiplied by one fewer than the number of entries, and
+nothing per entry.
+
+What it does not answer is the question it was built for. The pattern
+the engine exists for is a chain, where one entry names a handle an
+earlier entry produced, and an entry's target is fixed when the batch
+is submitted. Nothing in the system uses a batch: a run makes about 750
+submissions and every one carries a single entry. Section 17 stays,
+with its claims narrowed to what was measured and the deciding
+experiment written down.
+
+It also found what M8's kernel lock costs. Section 13.3 says the batch
+bound does not appear in interrupt latency; it does not at Tier 0 and
+it does at Tier 2, where one lock is held across the whole call, so
+sixteen entries is one interrupts-disabled region sixteen entries long.
+
+What does not exist: a device that does direct memory access, and with
+it the half of section 17 about transfers in flight. Memory is still
+never reclaimed, a rendezvous still carries no deadline, and the
+reference counts that decide when an object is freed are still plain
+increments, which three milestones have now named without fixing.
+Nothing has run on hardware, so every duration this project has
+published is the right shape and the wrong magnitude.
 
 ---
 
@@ -6056,6 +6082,10 @@ one section that may have to be rewritten.
 
 **Section 17: the count exceeds one.**
 
+**Done.** All six stages are built. Section 13 says what it answered,
+what it could not, what the building kept finding, and what it left
+untested. It is the last milestone in this list.
+
 Deliberately last. The engine needs issuing ops to be interesting, issuing
 ops need a DMA-capable device, and that wants the driver work in M6
 underneath it. Building it earlier against blocking ops alone would
@@ -7895,7 +7925,134 @@ them and nothing needs to yet.
 **And the reference counts M8 listed as unsafe are still plain
 increments.** Two milestones have now named them without fixing them.
 
-## 13. Bring-Up Order Within M1
+## 13. Milestone 10, in Retrospect
+
+M10 was deliberately last, and it is the last: with it the milestone
+list in section 3 is finished. It asked whether the most novel mechanism
+in the design earns its place, and the answer it can give is narrower
+than the question, for a reason it found rather than assumed.
+
+### 13.1 The Questions
+
+**Does expressing dependencies as data beat a few more system calls?**
+
+Half answered. Batching beats separate calls by exactly the fixed cost
+of a call, multiplied by one fewer than the number of entries: a batch
+of eight saves seven crossings of the trap edge, seven validation checks
+and seven acquisitions of the kernel lock. It saves nothing per entry,
+because every entry is checked before it runs and again when it runs
+whichever form carried it.
+
+The dependency half was never tested. The pattern the mechanism exists
+for is a chain, where one entry names a handle an earlier entry
+produced, and an entry's target is fixed when the batch is submitted.
+Section 17.7's answer to that is an array of handles the entries name by
+position, and it is the one item of the *Needs* list that no stage of
+this milestone built. So the workload that would justify the engine is
+the workload the engine cannot carry.
+
+**Does the branchless form stay sufficient once real code uses it?**
+
+Not answered, because no real code uses it. A run makes between 733 and
+758 submissions and every one carries a single entry except the handful
+this milestone's own checks submit. The engine was built and nothing
+adopted it, and the reason is the same missing piece.
+
+**So section 17 stays, with its claims narrowed to what was measured.**
+Removing it would be deciding against the idea on evidence that did not
+test the idea. Keeping it as it stood would leave claims larger than the
+facts. What would settle it is named in stage six: build the argument
+substitution, convert one real client, and measure the same way.
+
+### 13.2 The Figures
+
+| | measured |
+|---|---|
+| eight operations, one call each | 8 crossings, 24 checks |
+| the same eight in one batch | 1 crossing, 17 checks |
+| four entries, four times, as batches | 36 checks |
+| the same, loaded once as a program | 26 checks |
+| longest region, one entry against sixteen, Tier 0 | 59 against 49 ticks |
+| the same at Tier 2 | 134 against 795 ticks |
+| submissions in a run | 733 at Tier 0, 758 at Tier 2 |
+
+Every count is identical in all four configurations, which is what M9
+established a count is for.
+
+**The latency row is the milestone's other finding.** Section 13.3 says
+`SYS_BATCH_MAX_ENTRIES` does not appear in interrupt latency and that
+the cost of one entry does. It is true at Tier 0, where the longest
+region inside a batch is one operation's own critical section, and false
+at Tier 2, where the kernel lock is taken at the entry and held with
+interrupts disabled until the call returns, so sixteen entries is one
+region sixteen entries long. Both ports agree at each tier and the site
+is the same in each pair.
+
+That is M8's deviation costing something at last. M9 measured it and
+found the latency floor unmoved; it was unmoved on a workload with no
+batches, and this is the workload that shows the price.
+
+### 13.3 What the Building Kept Finding
+
+**Something that was correct when the count was one, left alone when the
+count stopped being one.** Twice, in the same twenty lines. The status
+write-back, so that an entry refused before it ran said nothing about
+why. The check that a killed process leaves the kernel, which sat after
+the operation and so let a killed thread run fifteen more. Turning a
+scalar into a loop means asking of every line around it whether it
+belonged to the operation or to the call, and the answer was not
+obvious for either of them.
+
+**A decision written down in one place, reversed in another by someone
+who had not read it.** The validator tested the argument length where
+the code it duplicated tested the pointer, which turned a deliberate
+`SYS_ERR_INVALID_ARG` into `SYS_ERR_FAULT`. The comment explaining the
+original choice was six lines from the new code.
+
+**A new object type has a lifetime as well as a behaviour, and the
+behaviour is the part that gets checked.** A prepared program was never
+freed when its handle closed, so the fifth one a process ever loaded was
+refused for want of room nothing was using. The stage checked what the
+object did and not what became of it.
+
+**A check that passed on no data.** The latency measurement ran before
+its instrument was armed, printed two zeros, and reported that section
+13.3's claim held. Both figures being zero is not a result and the check
+says so now.
+
+**And two M9 measurements that had been right by luck.** Preemption
+points were counted per core, so a batch running in one thread put
+sixteen of them into a figure that was supposed to be the length of a
+dispatch; they are counted on the thread now. And a kernel thread
+reaching the system call exit was recorded as an interrupt dispatched to
+a user thread, which is not what section 13.3's second term means. Both
+were correct until this milestone gave the core something else to do,
+which is what "right by luck" means and why it is worth writing down.
+
+### 13.4 What Is Still Untested
+
+**The half of section 17 that needs a device.** Three transfers in
+flight, in the submitting thread's context, at its priority, with no
+worker pool. Nothing in this tree does direct memory access, the three
+issuing opcodes still answer `SYS_ERR_NOT_SUPPORTED`, and the milestone
+recorded that at planning time rather than building something that
+looked like a test of it.
+
+**The argument substitution**, which is both an unbuilt *Need* and the
+reason the main question is unanswered.
+
+**Section 17.5's last line**, that on abort every timeline the batch was
+going to signal is force-signalled in error state. That is about issuing
+ops, so there is nothing yet for a cancelled entry to have been going to
+signal.
+
+**And the reference counts.** M8 listed `p_refs`, `t_refs` and `cn_refs`
+as plain increments that two cores make unsafe. M9 listed them again.
+This is the third milestone to name them without fixing them, and the
+fact that they are named in three retrospectives rather than fixed in
+one is itself a finding about how this project has been prioritising.
+
+## 14. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -7939,7 +8096,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 14. Ordering: What Is Forced and What Is Chosen
+## 15. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -7970,7 +8127,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 15. What Would Change This Plan
+## 16. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -8007,7 +8164,7 @@ reason, so nothing else moves.
 
 ---
 
-## 16. Deliberately Not Scheduled
+## 17. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

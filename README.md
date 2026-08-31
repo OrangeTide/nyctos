@@ -29,6 +29,35 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 10 is done, and it is the last one the plan lists.** One
+system call can carry up to sixteen operations, checked before any of
+them runs, each reporting its own status. Linked entries abort as a
+group. A batch can be loaded once and executed many times without being
+checked again.
+
+```
+8 signals, one call each: 8 crossings, 24 checks
+the same 8 in one call:   1 crossings, 17 checks
+it saves 7 crossings and 7 checks
+```
+
+The saving is the fixed cost of a call multiplied by one fewer than the
+number of entries, and nothing per entry: every entry is checked before
+it runs and again when it runs whichever form carried it.
+
+What it does not answer is the question it was built for. The engine
+exists for chains, where one operation names a handle an earlier one
+produced, and an entry's target is fixed when the batch is submitted.
+Nothing in the system uses a batch: a run makes about 750 submissions
+and every one carries a single entry. Section 17 stays, with its claims
+cut back to what was measured and the deciding experiment written down.
+
+It also priced the kernel lock that milestone 8 introduced. Section
+13.3 says the batch bound does not appear in interrupt latency. It does
+not on one core with no lock, and it does on two, where one lock is
+held across the whole call and sixteen entries is one
+interrupts-disabled region sixteen entries long.
+
 **Milestone 9 is done: there are numbers, and each one says whether it
 is about this kernel or about the machine it was taken on.** Both terms
 of section 13.3 are measured on both ports and both tiers, along with
@@ -243,8 +272,9 @@ rather than a hole in the capability model.
 like a person typing and once as a burst like a pipe, and compares the
 transcript against a recorded one.
 
-What does not exist: the submission engine. Memory is still never
-reclaimed, so a slot comes back and the megabyte a process was loaded
+What does not exist: a device that does direct memory access, and with
+it the half of section 17 about transfers in flight. Memory is still
+never reclaimed, so a slot comes back and the megabyte a process was loaded
 into does not, and no address space is ever torn down. A rendezvous
 carries no deadline, so a wedged server hangs its client until a
 supervisor ends it, and nothing yet notices on its own that one should.
@@ -637,16 +667,20 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). The next milestone is the
-submission engine of section 17, which was deliberately left last: it
-needs issuing operations to be interesting, and those need a device that
-can do direct memory access underneath them.
+See [docs/ROADMAP.md](docs/ROADMAP.md). The plan's ten milestones are
+finished. What it does not schedule, and what the last three
+milestones each said would be worth doing next, is written down there
+rather than guessed at here.
 
-The figures milestone 9 produced say what to look at before that. The
-longest interrupts-disabled region spans a context switch and no
-preemption point can shorten it, so lowering the latency floor means
-not disabling interrupts across a switch, or making the switch
-interruptible. Neither is scheduled.
+Three things are named in more than one retrospective, which is what
+this project treats as a signal. The reference counts that decide when
+an object is freed are still plain increments, unsafe on two cores, and
+three milestones have listed them without fixing them. The longest
+interrupts-disabled region spans a context switch and no preemption
+point can shorten it, so lowering the latency floor means not
+disabling interrupts across a switch or making the switch
+interruptible. And nothing has ever run on hardware, so every duration
+published here is the right shape and the wrong magnitude.
 
 The ordering that got here is in the same file, along with what each
 milestone answered and what it left untested. The one choice most likely
