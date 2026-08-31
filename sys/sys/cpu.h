@@ -126,7 +126,17 @@ struct cpu {
     uintptr_t           cp_intr_site;
     uint64_t            cp_intr_worst;
     uintptr_t           cp_intr_worst_site;
+
+    /*
+     * And where it ended. The site a region begins at says who turned
+     * interrupts off; it does not say where the time went, because
+     * everything between the two is inside the region and a context
+     * switch can put another thread's work there.
+     */
+    uintptr_t           cp_intr_worst_end;
+    uint64_t            cp_intr_worst_at;
     uint64_t            cp_intr_regions;
+    uint64_t            cp_intr_total;
     bool                cp_intr_open;
 
     /*

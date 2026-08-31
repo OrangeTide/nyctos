@@ -430,7 +430,7 @@ proc_user_start(void *arg)
     struct proc *p = proc_current();
 
     (void)arg;
-    intr_region_end();
+    intr_region_end((uintptr_t)__builtin_return_address(0));
     enter_user(p->p_entry, (void *)p->p_startup_va, 0);
 }
 
@@ -1205,7 +1205,7 @@ proc_thread_start(void *arg)
     struct thread *t = thread_current();
 
     (void)arg;
-    intr_region_end();
+    intr_region_end((uintptr_t)__builtin_return_address(0));
     enter_user(t->t_uentry, (void *)t->t_uarg, t->t_ustack);
 }
 

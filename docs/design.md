@@ -1319,8 +1319,9 @@ Preemption points sit at batch entry boundaries, at message copy chunk boundarie
 
 | | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
 |---|---|---|---|---|
-| longest interrupts-disabled region | 3180 us | 1741 us | 2615 us | 2838 us |
-| regions entered | 585 | 585 | 22554 | 22391 |
+| longest interrupts-disabled region | 473 us | 521 us | 565 us | 628 us |
+| mean region | 16 us | 16 us | 5 us | 8 us |
+| regions entered | 580 | 580 | 20620 | 20396 |
 | interrupt to a user thread, longest | 126 us | 87 us | 151 us | 222 us |
 | preemption points on that path | 0 | 0 | 0 | 0 |
 
@@ -1332,7 +1333,9 @@ Tier 2 is not worse than Tier 0, which the deviation below might have been expec
 
 The dispatch term passes no preemption point at all, at either tier, on either port. There is no boundary anywhere between an interrupt being taken and the program waiting on it running, so that term is a straight line whose length is its whole bound.
 
-**And the longest region is a context switch, which no preemption point can bound.** All four measurements name the same line: `sched_block`, which disables interrupts and then dispatches, so the region runs from a thread deciding to block until whatever runs next enables them again. Preemption points at batch entries, message copy boundaries and page table walks lower regions that were never the longest. The floor this section describes is set by the scheduler, not by any critical section, and lowering it means either not disabling interrupts across a switch or making the switch itself interruptible. Neither is a measurement, and neither is done here.
+**And the longest region spans a context switch, which no preemption point can bound.** All four measurements agree on both ends: it begins in `channel_reply` and ends in `channel_send`. A server replying disables interrupts, hands the reply over, and dispatches to the client, and the region does not close until that client is back in the kernel sending again. Preemption points at batch entries, message copy boundaries and page table walks lower regions that were never the longest. The floor this section describes is set by the rendezvous and the switch inside it, not by any critical section that could be broken in half, and lowering it means either not disabling interrupts across a switch or making the switch itself interruptible. Neither is a measurement, and neither is done here.
+
+The means say the other half of it. A typical region is 5 to 16 microseconds and the longest is thirty to a hundred times that, so the figure this section defines is one event in twenty thousand rather than the shape of the system. Both numbers are worth having: the worst case is what a real-time bound is made of, and the mean is what says whether the worst case is representative.
 
 So the second bullet above is not merely unbuilt at Tier 2; the argument it rests on is aimed at the wrong region. Enabling interrupts inside the kernel and locking finely would leave the binding term exactly where it is.
 

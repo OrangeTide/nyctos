@@ -374,7 +374,7 @@ sched_idle(void)
          * quietest moment in the run, which was 480 milliseconds of a
          * paced session and told nobody anything.
          */
-        intr_region_end();
+        intr_region_end((uintptr_t)__builtin_return_address(0));
 
         md_idle_wait();
 

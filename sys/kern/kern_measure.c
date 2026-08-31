@@ -308,10 +308,33 @@ meas_check_clock(void)
  * recorded rather than netted out, because netting it out would mean
  * claiming a number this cannot produce.
  */
+/*
+ * Nothing is measured until the kernel has enabled interrupts for the
+ * first time.
+ *
+ * Before that the machine is booting with them off, and the interval
+ * from the first region that opens to the moment they are finally
+ * enabled is one long disabled region that no path in the running
+ * system ever produces. It was the largest figure in every run, by two
+ * orders of magnitude over the mean, and it is an artefact of when the
+ * kernel decides to start rather than of anything the kernel does.
+ */
+static bool intr_measuring;
+
+void
+intr_region_arm(void)
+{
+    intr_measuring = true;
+}
+
 void
 intr_region_begin(uintptr_t site)
 {
     struct cpu *c = cpu_self();
+
+    if (!intr_measuring) {
+        return;
+    }
 
     /*
      * Nothing to charge it to yet. The boot path clears the register
@@ -329,9 +352,13 @@ intr_region_begin(uintptr_t site)
 }
 
 void
-intr_region_end(void)
+intr_region_end(uintptr_t site)
 {
     struct cpu *c = cpu_self();
+
+    if (!intr_measuring) {
+        return;
+    }
     uint64_t now;
     uint64_t took;
 
@@ -354,10 +381,13 @@ intr_region_end(void)
 
     c->cp_intr_open = false;
     c->cp_intr_regions++;
+    c->cp_intr_total += took;
 
     if (took > c->cp_intr_worst) {
         c->cp_intr_worst = took;
         c->cp_intr_worst_site = c->cp_intr_site;
+        c->cp_intr_worst_end = site;
+        c->cp_intr_worst_at = c->cp_intr_start;
     }
 }
 
@@ -373,12 +403,28 @@ intr_region_report(void)
 
         uint64_t hz = md_time_hz();
 
+        uint64_t mean = c->cp_intr_regions != 0 ?
+          c->cp_intr_total / c->cp_intr_regions : 0;
+
+        /*
+         * The mean beside the longest, because a bound drawn from one
+         * sample is a bound drawn from one sample. Section 13.3 asks
+         * for the worst case and the worst case is the right figure;
+         * knowing whether it is typical or a single outlier is what
+         * says whether it describes the kernel or an accident.
+         */
         cnprintf("    core %u: %lu regions, longest %lu ticks "
-          "(about %lu us), begun at 0x%lx\n", (unsigned int)i,
+          "(about %lu us), mean %lu ticks, begun at 0x%lx\n",
+          (unsigned int)i,
           (unsigned long)c->cp_intr_regions,
           (unsigned long)c->cp_intr_worst,
           (unsigned long)(hz != 0 ? (c->cp_intr_worst * 1000000UL) / hz : 0),
+          (unsigned long)mean,
           (unsigned long)c->cp_intr_worst_site);
+        cnprintf("        ended at 0x%lx, and began %lu ticks into the "
+          "run of %lu\n", (unsigned long)c->cp_intr_worst_end,
+          (unsigned long)c->cp_intr_worst_at,
+          (unsigned long)md_time_now());
 
         if (c->cp_intr_regions == 0) {
             panic("interrupts off: core %u never disabled them",

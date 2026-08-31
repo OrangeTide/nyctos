@@ -66,7 +66,7 @@ syscall_handler(struct sys_op *op, unsigned long count)
      * closed here. Left open it runs through everything the program
      * then does, and the figure stops being about the kernel.
      */
-    intr_region_end();
+    intr_region_end((uintptr_t)__builtin_return_address(0));
 
     return r;
 }
@@ -180,7 +180,7 @@ trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
 
     trap_user_body(cause, pc, addr);
     klock_exit(s);
-    intr_region_end();
+    intr_region_end((uintptr_t)__builtin_return_address(0));
 }
 
 static void

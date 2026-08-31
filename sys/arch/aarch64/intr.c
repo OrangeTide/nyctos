@@ -105,7 +105,7 @@ void
 md_intr_restore(intr_state_t saved)
 {
     if ((saved & DAIF_I) == 0) {
-        intr_region_end();
+        intr_region_end((uintptr_t)__builtin_return_address(0));
     }
 
     __asm__ volatile ("msr daif, %0" :: "r" (saved) : "memory");
@@ -119,7 +119,7 @@ md_intr_enable(void)
      * Without this the span runs on until some later restore closes
      * it, and the figure includes time when interrupts were on.
      */
-    intr_region_end();
+    intr_region_end((uintptr_t)__builtin_return_address(0));
 
     __asm__ volatile ("msr daifclr, #2" ::: "memory");
 }

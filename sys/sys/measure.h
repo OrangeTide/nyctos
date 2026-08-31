@@ -161,8 +161,9 @@ void meas_check_clock(void);
  * into and out of interrupts being disabled, which is where a region
  * begins and ends however deeply the calls nest inside it.
  */
+void intr_region_arm(void);
 void intr_region_begin(uintptr_t site);
-void intr_region_end(void);
+void intr_region_end(uintptr_t site);
 void intr_region_report(void);
 uintptr_t intr_region_worst_site(void);
 

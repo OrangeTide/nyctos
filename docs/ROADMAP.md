@@ -5888,29 +5888,37 @@ the implementation. It found something else.
 
 | | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
 |---|---|---|---|---|
-| longest region | 3180 us | 1741 us | 2615 us | 2838 us |
-| regions entered | 585 | 585 | 22554 | 22391 |
+| longest region | 473 us | 521 us | 565 us | 628 us |
+| mean region | 16 us | 16 us | 5 us | 8 us |
+| regions entered | 580 | 580 | 20620 | 20396 |
 | interrupt to a program | 126 us | 87 us | 151 us | 222 us |
 | points on that path | 0 | 0 | 0 | 0 |
 
-**Tier 2 is not worse.** M8 recorded a deviation, that Tier 2 takes one
-lock at every entry and holds it with interrupts disabled, and predicted
-this milestone would find the latency floor raised by it. It is not
-raised. The difference between the two ports at one tier is larger than
-the difference between the tiers, which is what a figure dominated by
-something other than the thing being varied looks like.
+Those are the figures after the review of this stage corrected them.
+What the stage first published was four times larger and named the
+wrong site; see below.
+
+**Tier 2 is slightly worse in the worst case and much better in the
+typical one.** M8 recorded a deviation, that Tier 2 takes one lock at
+every entry and holds it with interrupts disabled, and predicted this
+milestone would find the latency floor raised by it. It is raised by
+about a fifth: 565 and 628 microseconds against 473 and 521. The mean
+goes the other way and by more, 5 and 8 microseconds against 16, because
+the lock makes a great many very short regions where Tier 0 has fewer
+and longer ones.
 
 **What the deviation costs is the number of regions, not their length.**
 585 in a run at Tier 0 against about 22400 at Tier 2, which is the big
 lock making every entry into the kernel a disabled region, and the
 longest of them unaffected by any of it.
 
-**The longest region is a context switch, and no preemption point can
-bound it.** Four measurements, two tiers, two ports, two clocks, name
-the same line: `sched_block` disables interrupts and then dispatches, so
-the region runs from a thread deciding to block until whatever runs next
-enables them again. That is the strongest agreement anything in this
-project has produced.
+**The longest region spans a context switch, and no preemption point can
+bound it.** Four measurements, two tiers, two ports, two clocks, agree
+on both ends: it begins in `channel_reply` and ends in `channel_send`. A
+server replying disables interrupts, hands the reply over and dispatches
+to its client, and the region does not close until that client is back
+in the kernel sending again. That is the strongest agreement anything in
+this project has produced.
 
 So section 13.3's argument is aimed at the wrong region. It says Tier 0
 bounds latency by preemption point placement; the binding region
@@ -5934,6 +5942,55 @@ and the resolution it chooses is still defensible. What was wrong was
 the account of what sets the floor, which is now measured and written
 down, along with the caution that these figures come from an emulator
 and are the right shape and the wrong magnitude.
+
+*Reviewed.* The stage published a figure four times too large, drawn
+from one sample, and named the wrong site. All three faults were the
+same fault, and it is the one this milestone has now made four times.
+
+**The longest region was the boot.** Nothing was measured about when it
+happened, so nothing said that it happened 0.6 per cent of the way into
+the run and ended at the single `md_intr_enable` that turns interrupts
+on for the first time. Before that call the machine is running with them
+off because it has not started yet, and the interval across it is not a
+path this kernel ever takes again. Measurement begins at that call now.
+
+The real longest region is 473 to 628 microseconds rather than 1741 to
+3180, and it begins in `channel_reply` and ends in `channel_send`, not
+in `sched_block`. So a server replying to its client, which dispatches
+into that client, which comes back into the kernel to send again. The
+stage's conclusion survives in shape and not in detail: the binding
+region does span a context switch and does contain no preemption point,
+which is what the argument rested on, and everything specific about it
+was wrong.
+
+**And the site named where the region opened, which the stage read as
+where the time went.** Those are different questions whenever a region
+spans a switch, because the second thread's work is inside the first
+thread's region. Recording both ends is what found the boot artefact:
+one address said `sched_block` and looked plausible, and the pair said
+`sched_block` to `md_intr_enable`, which is not a path, it is a boot.
+
+**One sample is not a distribution.** The stage reported a maximum and
+concluded from it. The mean is 5 to 16 microseconds against a maximum
+of 473 to 628, so the figure the section is built on is one event in
+twenty thousand. That does not make it the wrong figure, because a
+real-time bound is made of worst cases, but a bound whose relationship
+to the typical case is unknown is a bound nobody can act on. Both are
+reported now.
+
+**What changes in the conclusion.** M8's prediction that the big lock
+would raise the floor was dismissed by the stage and is right, by about
+a fifth. What the stage got right and keeps is the shape: the region
+that binds spans a switch, and no placement of preemption points
+touches it.
+
+**And the pattern.** The idle wait, the return to user mode, a server
+donating to itself, and now the boot. Four times in one milestone a
+measurement has included an interval that was not what was being
+measured, and each time the number was plausible enough to publish. The
+instrument that found all four in the end was the same one: ask where
+the interval started and where it ended, and check that both are
+somewhere the question makes sense.
 
 *Done when* interrupt latency, IPC round trip and donation latency are
 measured on both tiers and published together with the configuration that

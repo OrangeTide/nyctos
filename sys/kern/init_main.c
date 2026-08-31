@@ -6155,6 +6155,13 @@ kernel_main(void)
 
     cnputs("interrupts: a device advancing a timeline\n");
     md_intr_enable();
+
+    /*
+     * From here, because everything before it is a machine that has
+     * not turned interrupts on yet and a figure taken across that is a
+     * figure about booting.
+     */
+    intr_region_arm();
     interrupt_checks();
 
     cnputs("the console: an interrupt attached and handed over\n");
