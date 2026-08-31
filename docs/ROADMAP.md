@@ -6189,6 +6189,44 @@ fails with `three entries advanced it to 1`.
 The full bound runs too, sixteen entries in one call, which is what the
 next stage measures against section 13.3.
 
+*Reviewed.* Two defects, one of them a regression the stage introduced
+into a rule it was otherwise being careful about.
+
+**A killed process ran the rest of its batch.** The check that a dying
+thread leaves the kernel was where it had always been, after the
+operation, and the stage turned one operation into up to sixteen without
+moving it. So a process killed while blocked in the first entry would
+execute the other fifteen before noticing. Section 10.5 asks for the
+unblocking to be prompt, and the entry boundary is exactly where section
+17.6 says the batch is interruptible, so the check belongs inside the
+loop and is there now.
+
+That is the same mistake in shape as the one the stage made and caught
+with the status write-back: a thing that was correct when the count was
+one, left alone while the count stopped being one. Both were in the same
+twenty lines. Turning a scalar into a loop means asking of every line
+around it whether it belonged to the operation or to the call.
+
+The check is still load-bearing. Removing it fails the run with `join
+orphan: it did not finish`, which is a program killed while wedged in a
+server that never replies, and the whole of section 10.5's machinery
+resting on that one line.
+
+**And the check put a kilobyte of arrays on a four-kilobyte kernel
+stack.** Seventeen descriptors and seventeen argument structures, in a
+frame called from the boot path, which already has frames of its own.
+The guard word below each kernel stack would have caught the overflow
+and named it, which is not the same as not writing it. They are static
+now; the check is single-threaded and runs once.
+
+**What was looked at and left.** The kernel's own `run` helper reaches
+`sys_op_exec` directly rather than going through the entry point, so the
+boot checks that use it do not exercise the validation this stage added.
+The batch check goes through the real entry point and does. That is an
+asymmetry worth knowing about rather than a defect: `run` predates the
+entry path having anything to validate, and every user program goes the
+long way.
+
 **2. `LINK`, and what a chain does when an entry fails.**
 
 - A per-entry flag. Linked entries run in order, the first failure

@@ -5201,8 +5201,8 @@ static void
 batch_checks(void)
 {
     struct proc *p = proc_current();
-    sys_op_fence_args_t args[SYS_BATCH_MAX_ENTRIES + 1];
-    sys_op_t ops[SYS_BATCH_MAX_ENTRIES + 1];
+    static sys_op_fence_args_t args[SYS_BATCH_MAX_ENTRIES + 1];
+    static sys_op_t ops[SYS_BATCH_MAX_ENTRIES + 1];
     uint32_t i;
     sys_err_t err;
 

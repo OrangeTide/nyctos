@@ -102,6 +102,21 @@ syscall_body(struct sys_op *op, unsigned long count)
     }
 
     /*
+     * The check that a killed process leaves the kernel is inside the
+     * loop below rather than after it. It is there because a thread is
+     * certainly in the kernel with nothing of its own left on the
+     * stack at an entry boundary: unwinding a thread from wherever it
+     * happened to be would mean knowing what every kernel path holds,
+     * and an entry boundary knows that it holds nothing.
+     *
+     * Every blocked thread of a killed process is released into that
+     * line, because being blocked is being inside a system call. A
+     * thread computing in user mode reaches it at its next call, and
+     * one that never calls in is not stopped, which section 10.5 does
+     * not ask for: what it asks is that the unblocking be prompt.
+     */
+
+    /*
      * Every entry checked before any entry runs, per section 17.2. A
      * batch that cannot run must not half-run: the alternative is a
      * caller whose first two operations happened and whose third was
@@ -163,6 +178,25 @@ syscall_body(struct sys_op *op, unsigned long count)
             one = sys_op_exec(&op[i]);
 
             /*
+             * And out here if this process has been killed, which is
+             * the entry boundary section 17.6 makes the batch
+             * preemptible at. Checking only after the whole array
+             * would let a killed thread run up to fifteen more
+             * operations first, and section 10.5 asks for the
+             * unblocking to be prompt rather than eventual.
+             *
+             * An entry boundary is also the one place a thread is
+             * certainly in the kernel with nothing of its own left on
+             * the stack. Unwinding from wherever it happened to be
+             * would mean knowing what every kernel path holds, and
+             * this knows that it holds nothing.
+             */
+            p = proc_current();
+            if (p != NULL && p->p_dying) {
+                thread_exit(p->p_kill_code);
+            }
+
+            /*
              * The call reports the first entry that failed, and every
              * entry reports its own status in the array. With one
              * entry the two are the same thing, which is what every
@@ -171,27 +205,6 @@ syscall_body(struct sys_op *op, unsigned long count)
             if (one != SYS_OK && r == SYS_OK) {
                 r = one;
             }
-        }
-
-        p = proc_current();
-
-        /*
-         * And out, if this process has been killed. Here because it
-         * is the one place a thread is certainly in the kernel with
-         * nothing of its own left on the stack: unwinding a thread
-         * from wherever it happened to be would mean knowing what
-         * every kernel path holds, and this knows that it holds
-         * nothing.
-         *
-         * Every blocked thread of a killed process is released into
-         * this line, because being blocked is being inside a system
-         * call. A thread computing in user mode reaches it at its
-         * next call, and one that never calls in is not stopped,
-         * which section 10.5 does not ask for: what it asks is that
-         * the unblocking be prompt.
-         */
-        if (p != NULL && p->p_dying) {
-            thread_exit(p->p_kill_code);
         }
 
         return r;
