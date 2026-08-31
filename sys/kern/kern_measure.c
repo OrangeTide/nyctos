@@ -390,6 +390,11 @@ intr_region_end(uintptr_t site)
         c->cp_intr_worst_end = site;
         c->cp_intr_worst_at = c->cp_intr_start;
     }
+
+    if (took > c->cp_win_worst) {
+        c->cp_win_worst = took;
+        c->cp_win_site = c->cp_intr_site;
+    }
 }
 
 void
@@ -727,9 +732,8 @@ intr_region_reset(void)
         return;
     }
 
-    c->cp_intr_worst = 0;
-    c->cp_intr_worst_site = 0;
-    c->cp_intr_worst_end = 0;
+    c->cp_win_worst = 0;
+    c->cp_win_site = 0;
 }
 
 uint64_t
@@ -737,7 +741,12 @@ intr_region_worst(uintptr_t *site)
 {
     struct cpu *c = cpu_self();
 
-    *site = c->cp_intr_worst_site;
+    if (c == NULL) {
+        *site = 0;
+        return 0;
+    }
 
-    return c->cp_intr_worst;
+    *site = c->cp_win_site;
+
+    return c->cp_win_worst;
 }

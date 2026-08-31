@@ -135,6 +135,15 @@ struct cpu {
      */
     uintptr_t           cp_intr_worst_end;
     uint64_t            cp_intr_worst_at;
+
+    /*
+     * The same, over a window a check has cleared, so that asking what
+     * one batch cost does not throw away what the run cost. They were
+     * one pair of fields, and the run-wide figure survived only
+     * because the largest region happened after the last clearing.
+     */
+    uint64_t            cp_win_worst;
+    uintptr_t           cp_win_site;
     uint64_t            cp_intr_regions;
     uint64_t            cp_intr_total;
     bool                cp_intr_open;

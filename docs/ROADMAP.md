@@ -6381,6 +6381,44 @@ was already true before this stage and stayed true through both defects
 above. A count being right is not evidence that the thing it counts is
 doing anything.
 
+*Reviewed.* One defect that was harmless by luck, and one half of the
+check that could not fail.
+
+**Measuring one batch threw away the measurement of the run.** The
+windowed figure and the run-wide figure were the same fields, so
+clearing the first to ask what a batch cost also cleared the second.
+M9's headline number, the longest interrupts-disabled region in the
+whole run, was being reset twice in the middle of every run.
+
+It survived, and only because the largest region in this system happens
+in the IPC-heavy part of the session, which is long after the batch
+check runs. The reported figure stayed inside the range M9 measured, so
+nothing looked wrong. Had the batch check moved later, or had the
+largest region moved earlier, the run-wide number would have quietly
+become the maximum since the last clearing. They are separate fields
+now.
+
+**And the check reported a result it could never fail.** It printed
+whichever of the two outcomes it saw, which is right for the tier where
+the answer is the finding and wrong for the tier where the answer is a
+property that should stay true. Section 13.3's claim holds at Tier 0, so
+that tier asserts it: a run where the batch bound starts appearing in
+the figure is a regression and now says so. Tier 2 still reports,
+because asserting the behaviour that is wrong would mean failing on the
+day somebody fixed it.
+
+Holding interrupts across the whole batch at Tier 0, which is what Tier
+2 does by accident of the kernel lock, fails with `the batch bound
+entered the figure, 676 against 97`.
+
+**A limit of the instrument, stated rather than fixed.** The window is
+the core and not the batch: anything else that core does between the
+clearing and the reading is inside it, an interrupt included. That makes
+the figure an upper bound on what a batch cost rather than the batch's
+cost, which is the safe direction here, because contamination can only
+enlarge the one-entry figure and make the growth harder to see. The
+growth is a factor of five or six, so there is room.
+
 **4. Whether expressing dependencies as data pays.**
 
 - The milestone's question, answered in counts on the paths that exist.

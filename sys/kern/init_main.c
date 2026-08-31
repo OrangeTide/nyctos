@@ -5396,6 +5396,15 @@ batch_latency_checks(void)
      * region that grew somewhere else is not counted as this one
      * growing.
      */
+    /*
+     * The window is the core and not the batch: anything else this
+     * core does between the clearing and the reading is in it, an
+     * interrupt included. That makes the figure an upper bound on what
+     * the batch cost rather than the batch's cost, which is the safe
+     * direction for the question being asked, because contamination
+     * can only make the one-entry figure larger and the growth harder
+     * to see.
+     */
     base = timeline_value(tl);
     batch_fill_on(ops, args, h, 1, base);
     intr_region_reset();
@@ -5440,6 +5449,24 @@ batch_latency_checks(void)
     if (many > one * 4) {
         cnprintf("    the bound does appear in the figure     "
           "%lu times\n", (unsigned long)(many / one));
+
+#if SYS_TIER == 0
+        /*
+         * Asserted at this tier and reported at the other. Section
+         * 13.3's claim holds here, so a run where it stops holding is
+         * a regression and should say so; it does not hold at Tier 2,
+         * where the kernel lock is held across the whole call, and
+         * asserting the broken behaviour would mean failing the day
+         * somebody fixed it.
+         *
+         * A factor of four between two figures measured seconds apart
+         * in one run is about as safe as a duration comparison gets.
+         * The two are 62 and 55 ticks here, so the margin is an order
+         * of magnitude wider than the effect.
+         */
+        panic("latency: the batch bound entered the figure, %lu against %lu",
+          (unsigned long)many, (unsigned long)one);
+#endif
     } else {
         cnputs("    and the bound does not appear in it     OK\n");
     }
