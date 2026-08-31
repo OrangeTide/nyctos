@@ -149,6 +149,15 @@ struct thread {
     uint64_t            t_irq_points;
 
     /*
+     * Preemption points this thread has passed, as opposed to the core
+     * it is on. Section 13.3's second term is the length of one path,
+     * and a per-core count includes whatever else that core ran in the
+     * interval: a batch executing in another thread put sixteen points
+     * into a figure that was supposed to be about a dispatch.
+     */
+    uint64_t            t_points;
+
+    /*
      * When a client raised this thread's priority at a rendezvous, how
      * many preemption points had been passed by then, and whether the
      * client was on another core. Section 12.3's donation, timed from

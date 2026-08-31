@@ -165,6 +165,13 @@ void intr_region_arm(void);
 void intr_region_begin(uintptr_t site);
 void intr_region_end(uintptr_t site);
 void intr_region_report(void);
+
+/*
+ * Clear the running maximum and read it back, for asking what one
+ * particular thing cost rather than what the whole run did.
+ */
+void intr_region_reset(void);
+uint64_t intr_region_worst(uintptr_t *site);
 uintptr_t intr_region_worst_site(void);
 
 #endif /* _SYS_MEASURE_H_ */

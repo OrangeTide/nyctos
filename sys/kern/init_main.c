@@ -5180,6 +5180,24 @@ static struct timeline *tl_batch;
 static sys_handle_t h_batch;
 
 static void
+batch_fill_on(sys_op_t *ops, sys_op_fence_args_t *args, sys_handle_t h,
+  uint32_t n, uint64_t from)
+{
+    uint32_t i;
+
+    for (i = 0; i < n; i++) {
+        memset(&args[i], 0, sizeof(args[i]));
+        args[i].value = from + i + 1;
+
+        memset(&ops[i], 0, sizeof(ops[i]));
+        ops[i].opcode = SYS_OP_FENCE_SIGNAL;
+        ops[i].target = h;
+        ops[i].arg_ptr = (uintptr_t)&args[i];
+        ops[i].arg_len = sizeof(args[i]);
+    }
+}
+
+static void
 batch_fill(sys_op_t *ops, sys_op_fence_args_t *args, uint32_t n,
   uint64_t from)
 {
@@ -5312,6 +5330,119 @@ link_checks(void)
     expect("a join written as two producers and a wait",
       (sys_err_t)run_batch(ops, 3), SYS_OK);
     cnputs("    which LINK has no way to express       OK\n");
+
+    expect("giving the handle back", handle_close(&p->p_handles, h),
+      SYS_OK);
+}
+
+
+/*
+ * Section 13.3 on batches: the bound does not appear in interrupt
+ * latency and the cost of one entry does.
+ *
+ * That sentence has been in the design since before there was a batch,
+ * and until the count could exceed one there was no way to find out
+ * whether it was true. It rests entirely on the batch being
+ * interruptible at every entry boundary.
+ */
+static void
+batch_latency_checks(void)
+{
+    static sys_op_fence_args_t args[SYS_BATCH_MAX_ENTRIES];
+    static sys_op_t ops[SYS_BATCH_MAX_ENTRIES];
+    struct proc *p = proc_current();
+    struct timeline *tl;
+    sys_handle_t h;
+    uintptr_t site_one, site_many;
+    uint64_t one, many, points;
+    uint64_t base;
+    sys_err_t err;
+
+    cnputs("batches: what a batch does to interrupt latency\n");
+
+    tl = timeline_create("latency");
+    if (tl == NULL) {
+        panic("latency: no timeline");
+    }
+    err = handle_insert(&p->p_handles, tl, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_SIGNAL, &h);
+    expect("a signal handle for the measurement", err, SYS_OK);
+
+    /*
+     * The points a batch passes are its entries, exactly. That is a
+     * count, so it is the same on every host and in every
+     * configuration, and it is what the rest of this rests on: a
+     * boundary that is not marked cannot be a boundary anything stops
+     * at.
+     */
+    base = timeline_value(tl);
+    batch_fill_on(ops, args, h, SYS_BATCH_MAX_ENTRIES, base);
+    points = preempt_points();
+    expect("a batch of the largest size",
+      (sys_err_t)run_batch(ops, SYS_BATCH_MAX_ENTRIES), SYS_OK);
+    points = preempt_points() - points;
+
+    cnprintf("    %u entries passed %lu points            %s\n",
+      (unsigned int)SYS_BATCH_MAX_ENTRIES, (unsigned long)points,
+      points == SYS_BATCH_MAX_ENTRIES ? "OK" : "WRONG");
+    if (points != SYS_BATCH_MAX_ENTRIES) {
+        panic("latency: %lu points for %u entries",
+          (unsigned long)points, (unsigned int)SYS_BATCH_MAX_ENTRIES);
+    }
+
+    /*
+     * And now the question. One entry against the largest batch, each
+     * measured in its own window, with the site reported so that a
+     * region that grew somewhere else is not counted as this one
+     * growing.
+     */
+    base = timeline_value(tl);
+    batch_fill_on(ops, args, h, 1, base);
+    intr_region_reset();
+    (void)run_batch(ops, 1);
+    one = intr_region_worst(&site_one);
+
+    base = timeline_value(tl);
+    batch_fill_on(ops, args, h, SYS_BATCH_MAX_ENTRIES, base);
+    intr_region_reset();
+    (void)run_batch(ops, SYS_BATCH_MAX_ENTRIES);
+    many = intr_region_worst(&site_many);
+
+    cnprintf("    one entry held them off %lu ticks, from 0x%lx\n",
+      (unsigned long)one, (unsigned long)site_one);
+    cnprintf("    %u entries held them off %lu ticks, from 0x%lx\n",
+      (unsigned int)SYS_BATCH_MAX_ENTRIES, (unsigned long)many,
+      (unsigned long)site_many);
+
+    /*
+     * What is asserted is a relation and not a threshold. If the batch
+     * is interruptible at every entry boundary then the longest region
+     * inside it is one entry's worth however many entries there are,
+     * and the two figures are the same size. If it is not, the second
+     * grows with the count and section 13.3 is wrong about this
+     * implementation.
+     *
+     * Reported either way. Which of the two happens is the result of
+     * this stage and it is not the check's business to have an opinion.
+     */
+    /*
+     * No measurement is not a result. Both figures being zero means
+     * nothing was recorded, which happens if this runs before the
+     * instrument is armed, and reporting that as the claim holding is
+     * how a check comes to pass on no data at all. It did, the first
+     * time this was run.
+     */
+    if (one == 0 || many == 0) {
+        panic("latency: nothing was measured, %lu and %lu ticks",
+          (unsigned long)one, (unsigned long)many);
+    }
+
+    if (many > one * 4) {
+        cnprintf("    the bound does appear in the figure     "
+          "%lu times\n", (unsigned long)(many / one));
+    } else {
+        cnputs("    and the bound does not appear in it     OK\n");
+    }
 
     expect("giving the handle back", handle_close(&p->p_handles, h),
       SYS_OK);
@@ -6423,6 +6554,13 @@ kernel_main(void)
      */
     intr_region_arm();
     interrupt_checks();
+
+    /*
+     * After the instrument is armed, which happens where interrupts
+     * are first enabled. Before that there is nothing to measure and
+     * the check would pass on two zeros.
+     */
+    batch_latency_checks();
 
     cnputs("the console: an interrupt attached and handed over\n");
     console_checks();

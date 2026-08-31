@@ -15,6 +15,7 @@
 #include <sys/cpu.h>
 #include <sys/intr.h>
 #include <sys/measure.h>
+#include <sys/proc.h>
 #include <sys/systm.h>
 
 #include <stdbool.h>
@@ -458,9 +459,21 @@ void
 preempt_point(void)
 {
     struct cpu *c = cpu_self();
+    struct thread *t;
 
     if (c != NULL) {
         c->cp_points++;
+    }
+
+    /*
+     * And on the thread, because a path's length is a property of the
+     * path. The core's count answers how many boundaries this core
+     * went past, which is a different question and the one that was
+     * being asked by mistake.
+     */
+    t = thread_current();
+    if (t != NULL) {
+        t->t_points++;
     }
 }
 
@@ -491,8 +504,19 @@ irq_dispatch_stamp(struct thread *t)
         return;
     }
 
+    /*
+     * Section 13.3's second term is the time to dispatch an interrupt
+     * to a user thread, and the kernel's own threads are not that. One
+     * of them reaching the same closing call through a system call it
+     * made itself put a batch of sixteen preemption points into a
+     * figure that is supposed to be the length of a dispatch.
+     */
+    if (t->t_proc == proc_kernel()) {
+        return;
+    }
+
     t->t_irq_stamp = md_time_now();
-    t->t_irq_points = c->cp_points;
+    t->t_irq_points = t->t_points;
 }
 
 void
@@ -512,7 +536,7 @@ irq_dispatch_arrived(struct thread *t)
     c->cp_disp_count++;
     if (took > c->cp_disp_longest) {
         c->cp_disp_longest = took;
-        c->cp_disp_points = c->cp_points - t->t_irq_points;
+        c->cp_disp_points = t->t_points - t->t_irq_points;
     }
 
     t->t_irq_stamp = 0;
@@ -682,4 +706,38 @@ ipc_report(void)
     meas_report(&meas_roundtrip);
     meas_report(&meas_donate_near);
     meas_report(&meas_donate_far);
+}
+
+/*
+ * The longest region since this was last cleared, for asking what one
+ * particular thing did rather than what the whole run did.
+ *
+ * The running maximum answers section 13.3's question about the system.
+ * It cannot answer whether a batch of sixteen entries holds interrupts
+ * off sixteen times as long as a batch of one, because that is a
+ * question about two windows and the maximum is one number over all of
+ * them.
+ */
+void
+intr_region_reset(void)
+{
+    struct cpu *c = cpu_self();
+
+    if (c == NULL) {
+        return;
+    }
+
+    c->cp_intr_worst = 0;
+    c->cp_intr_worst_site = 0;
+    c->cp_intr_worst_end = 0;
+}
+
+uint64_t
+intr_region_worst(uintptr_t *site)
+{
+    struct cpu *c = cpu_self();
+
+    *site = c->cp_intr_worst_site;
+
+    return c->cp_intr_worst;
 }

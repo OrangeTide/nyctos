@@ -6318,7 +6318,7 @@ if the process has been killed. A cancelled entry does not become the
 call's return value, which is right: the call reports the first entry
 that failed, and an entry that never ran did not fail.
 
-**3. What a batch does to interrupt latency.**
+**3. What a batch does to interrupt latency.** *Built.*
 
 - Section 13.3 says `SYS_BATCH_MAX_ENTRIES` does not appear in interrupt
   latency and the cost of one entry does. That has never been testable
@@ -6332,6 +6332,54 @@ interrupts-disabled region does not grow with batch size: measured at
 one entry and at the maximum, using M9's instrument, with the site
 reported both times so that a change of site is not mistaken for a
 change of length.
+
+*Built.* Section 13.3 says `SYS_BATCH_MAX_ENTRIES` does not appear in
+interrupt latency and that the cost of one entry does. The sentence has
+been in the design since before there was a batch. It is true at Tier 0
+and false at Tier 2, and the reason is the deviation M8 recorded.
+
+| | one entry | sixteen entries | site |
+|---|---|---|---|
+| Tier 0 riscv64 | 59 ticks | 49 ticks | `timeline_signal` |
+| Tier 0 aarch64 | 349 ticks | 306 ticks | `timeline_signal` |
+| Tier 2 riscv64 | 134 ticks | 795 ticks | `klock_enter` |
+| Tier 2 aarch64 | 725 ticks | 3431 ticks | `klock_enter` |
+
+**The site says the whole thing.** At Tier 0 the longest region inside a
+batch is the operation's own critical section, and there are sixteen of
+them rather than one long one, so the batch's length does not enter the
+figure. At Tier 2 the longest region is the kernel lock, taken once at
+the entry and held with interrupts disabled until the call returns, so
+sixteen entries is one region sixteen entries long.
+
+Both ports agree at each tier, and the site is the same in each pair,
+which is why the check reports it: a figure that grew because a
+different region appeared would be a different result with the same
+numbers.
+
+**So the preemption point is a count and not yet a preemption point.**
+M9 placed it at the entry boundary and said it counts rather than
+yields, because what that stage needed was a number. This stage is what
+the number was for, and it says the boundary is marked and nothing stops
+there. Section 13.3's claim needs the batch to be interruptible at every
+entry, and at Tier 2 it is interruptible nowhere, because the lock M8
+took at the entry is held across all of it.
+
+**The claim is not wrong about the design.** It is wrong about this
+implementation, and the thing that makes it wrong is the same deviation
+M9 measured and found cost nothing. It cost nothing on a workload with
+no batches. This is the workload that shows what it costs, and the cost
+is proportional to the batch size.
+
+**Two ways the check nearly reported nothing.** It first ran before the
+measurement was armed and printed two zeros and `the bound does not
+appear in it OK`, which is a check passing on no data at all. It refuses
+a zero now.
+
+And the count it asserts, that a batch of sixteen passes sixteen points,
+was already true before this stage and stayed true through both defects
+above. A count being right is not evidence that the thing it counts is
+doing anything.
 
 **4. Whether expressing dependencies as data pays.**
 
