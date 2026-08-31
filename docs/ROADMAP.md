@@ -6056,28 +6056,193 @@ one section that may have to be rewritten.
 
 **Section 17: the count exceeds one.**
 
-Deliberately last. The engine needs issuing ops to be interesting, issuing ops
-need a DMA-capable device, and that wants the driver work in M6 underneath it.
-Building it earlier against blocking ops alone would exercise the machinery
-without testing the idea.
+Deliberately last. The engine needs issuing ops to be interesting, issuing
+ops need a DMA-capable device, and that wants the driver work in M6
+underneath it. Building it earlier against blocking ops alone would
+exercise the machinery without testing the idea.
+
+**That premise did not hold, and this entry is written knowing it.** M6
+built a block store, and it is a user process holding bytes behind an
+IPC protocol, not a device that transfers on its own. Nothing in this
+tree does direct memory access, `SYS_OP_DMA_ISSUE` and its two
+neighbours are still opcodes that answer `SYS_ERR_NOT_SUPPORTED`, and
+no stage of any milestone has written a device driver that a transfer
+could be in flight on. So the situation the paragraph above warns
+against is exactly the situation this milestone is in.
 
 *Needs.* Entry arrays with per-entry status. Typed registers with tags.
-`LINK` chaining with abort semantics. Issuing ops returning timelines. Prepared
-programs validated once and executed many times. Preemption points at entry
-boundaries.
+`LINK` chaining with abort semantics. Issuing ops returning timelines.
+Prepared programs validated once and executed many times. Preemption
+points at entry boundaries.
 
-*Done when* one batch issues several transfers, collects their timelines and
-waits on each, with three transfers in flight, the submitting thread's own
-context executing all of it, and donation unbroken throughout. And a prepared
-program re-executes without revalidation.
+**One of those is already built.** M9 stage three put a preemption point
+at the batch entry boundary, where section 17.6 says one belongs, and it
+fires once per call because the count is one. Raising the count is what
+makes it mean anything, and it makes section 13.3's claim about
+`SYS_BATCH_MAX_ENTRIES` checkable for the first time: the section says
+the constant does not appear in interrupt latency at all and that the
+cost of one entry does. Nobody has ever been able to test that.
+
+*What splits in two, and only one half can be tested here.* The engine
+makes two claims and they are independent.
+
+**That a dependency-ordered set of operations costs less than the same
+operations submitted one at a time.** This is about crossings of the
+trap edge and about work the kernel does twice, and it needs no device
+at all. Blocking operations answer it completely.
+
+**That the work runs with three transfers in flight, in the submitting
+thread's context, at its priority, with no worker pool.** This needs a
+device that can have a transfer in flight. There is none, so this half
+is untestable in this tree and the milestone must say so rather than
+building something that looks like a test of it.
+
+*What M6 already measured, one level up.* Section 25.7 asked the same
+question of the filesystem protocol: whether one compound message beats
+several round trips. The answer is in the compared report and has been
+since M6.
+
+```
+fs_client   5 rendezvous, 1 connections, 12 entries, 6 invalidations
+fs_batch    3 rendezvous, 0 connections, 4 entries, 2 invalidations
+```
+
+Batching paid there, and the second column is why: a compound never
+draws from the connection pool. The submission engine asks whether the
+same shape pays one level down, at the trap edge rather than at the
+message. M6's numbers are the precedent for how to answer it and the
+warning that the interesting difference may not be the one being looked
+for.
+
+*What M9 leaves for this milestone.* Two rules and a warning.
+
+**A count is a property of this kernel and a duration is a property of
+the host.** The question of whether the engine pays must be answered in
+counts: crossings, entries, rendezvous, switches. A figure in
+microseconds comparing two ways of doing the same work would be a figure
+about the machine it ran on, and this milestone would publish it as if
+it were about the design.
+
+**A comparison is where a measurement most easily includes something
+else.** M9 found five intervals that were measuring something other than
+what they claimed, and every one of them looked reasonable. Comparing
+two forms of the same work is the shape most likely to differ in
+something nobody controlled, so both forms have to do the same work and
+the check has to say what makes them the same.
+
+**And the thing to watch for is a batch that wins because it was
+allowed to skip something.** The one-at-a-time form pays for validating
+each entry, entering the kernel each time and taking the lock each time.
+If the batch form skips a check rather than amortising it, it will look
+faster and be wrong.
+
+*Stages.* Six. The first three build the mechanism section 17 specifies,
+the fourth answers the question the milestone exists for, the fifth is
+the part of section 17 that is about repetition rather than batching,
+and the sixth decides whether the section stays.
+
+**1. A count greater than one.**
+
+- `SYS_BATCH_MAX_ENTRIES` exists and bounds the array. Every entry is
+  validated before any entry executes, per section 17.2, so a batch that
+  cannot run does not half-run.
+- Per-entry status written back into the caller's array, per section
+  17.6.
+
+*Check.* A batch of several entries performs several operations and
+writes a status for each. A batch with a bad entry in the middle
+executes none of them and returns `SYS_ERR_INVALID_ARG`, which is
+checked by observing that the first entry's effect did not happen. A
+batch longer than the bound is refused.
+
+**2. `LINK`, and what a chain does when an entry fails.**
+
+- A per-entry flag. Linked entries run in order, the first failure
+  cancels the rest of that chain with `SYS_ERR_CANCELED`, and the chain
+  ends at the first entry without the flag.
+- Several independent chains may share a batch, and one failing does not
+  touch another.
+
+*Check.* A chain of three whose middle entry fails leaves the third
+`SYS_ERR_CANCELED` and the first's effect intact, and an unlinked entry
+after it still runs. Chains are not graphs, so the check also confirms
+that the thing section 17.5 says is expressed with fences is not
+expressed with `LINK`.
+
+**3. What a batch does to interrupt latency.**
+
+- Section 13.3 says `SYS_BATCH_MAX_ENTRIES` does not appear in interrupt
+  latency and the cost of one entry does. That has never been testable
+  because the count has never exceeded one.
+- The preemption point M9 placed at the entry boundary is what makes it
+  true, if it is true.
+
+*Check.* The points a batch passes equal its entry count, which is a
+count and is identical in all four configurations. The longest
+interrupts-disabled region does not grow with batch size: measured at
+one entry and at the maximum, using M9's instrument, with the site
+reported both times so that a change of site is not mistaken for a
+change of length.
+
+**4. Whether expressing dependencies as data pays.**
+
+- The milestone's question, answered in counts on the paths that exist.
+  The same work, done as several system calls and as one batch, with
+  every crossing counted.
+- M6's precedent says to look at more than the obvious column.
+
+*Check.* Both forms are reported side by side, in trap-edge crossings,
+entries validated, and kernel entries taken, and both figures are
+identical in all four configurations. What the batch form saves is
+stated as a number. If it saves nothing, that is the answer and stage
+six acts on it.
+
+**5. Prepared programs, validated once.**
+
+- Section 17 has a program validated once and executed many times, which
+  is a different claim from batching: it is about repetition rather than
+  about dependency.
+
+*Check.* A prepared program executed N times validates its entries once,
+which is a counter, and a program whose handles have gone stale between
+executions is refused at execution rather than running with them.
+
+**6. Whether section 17 survives.**
+
+- The only stage whose outcome is deleting a section, and the entry has
+  said since it was written that removing it costs nothing else.
+- The decision rests on stage four's counts and on what stage three
+  found about latency.
+
+*Check.* The saving is stated as a number and set against what the
+mechanism costs: the entry array, the validation pass, the status
+write-back, and a second way of doing what one system call already does.
+The stage says which way the evidence points and, if it points at
+removal, says what would have had to be true instead.
+
+*Done when* one batch issues several operations, collects their results
+and reports a status for each, with the submitting thread's own context
+executing all of it and donation unbroken throughout, and a prepared
+program re-executes without revalidation. **Not** when three transfers
+are in flight, which needs a device this tree does not have; that half
+of the original condition is recorded as untested rather than quietly
+dropped.
 
 *Would falsify.* The most novel idea in the design. Whether expressing
-dependencies as data actually beats a few more system calls, and whether the
-branchless form stays sufficient once real code uses it. If it does not pay,
-it is removed, and section 23 is already arranged so that removing it costs
-nothing else.
+dependencies as data actually beats a few more system calls, and whether
+the branchless form stays sufficient once real code uses it. If it does
+not pay, it is removed, and section 23 is already arranged so that
+removing it costs nothing else.
 
-*Size.* Medium.
+*Watch for.* The measurement being of the wrong thing, which M9 caught
+five times in six stages. A comparison of two forms is the easiest place
+in this project so far to measure something nobody meant, because the
+two forms differ in more than the one thing being studied and the
+difference that shows up is not necessarily the one being looked for.
+
+*Size.* Medium, and unchanged. The mechanism is small; the measurement
+is where the work is, and the honest accounting of what cannot be
+measured is part of it.
 
 ---
 
