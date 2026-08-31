@@ -30,6 +30,7 @@
 
 #include <stdbool.h>
 
+#include <sys/cpu.h>
 #include <sys/measure.h>
 #include <sys/lock.h>
 #include <sys/op.h>
@@ -82,6 +83,8 @@ syscall_body(struct sys_op *op, unsigned long count)
      * do: a caller that computed a count of zero has a bug, and a
      * system call that succeeds without doing anything hides it.
      */
+    cpu_self()->cp_syscalls++;
+
     if (count == 0 || count > SYS_BATCH_MAX_ENTRIES) {
         return SYS_ERR_INVALID_ARG;
     }
@@ -98,6 +101,7 @@ syscall_body(struct sys_op *op, unsigned long count)
      * both: what a program can reach in a descriptor is its own memory,
      * and its own memory is writable.
      */
+    cpu_self()->cp_checks++;
     if (!proc_reaches(proc_current(), (uintptr_t)op,
       count * sizeof(*op))) {
         return SYS_ERR_FAULT;
@@ -135,6 +139,8 @@ syscall_body(struct sys_op *op, unsigned long count)
 
         for (i = 0; i < count; i++) {
             sys_err_t bad = SYS_OK;
+
+            cpu_self()->cp_checks++;
 
             if (op[i].opcode >= SYS_OP_COUNT) {
                 bad = SYS_ERR_INVALID_ARG;

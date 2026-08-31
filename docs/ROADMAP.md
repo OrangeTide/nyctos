@@ -6419,7 +6419,7 @@ cost, which is the safe direction here, because contamination can only
 enlarge the one-entry figure and make the growth harder to see. The
 growth is a factor of five or six, so there is room.
 
-**4. Whether expressing dependencies as data pays.**
+**4. Whether expressing dependencies as data pays.** *Built.*
 
 - The milestone's question, answered in counts on the paths that exist.
   The same work, done as several system calls and as one batch, with
@@ -6431,6 +6431,54 @@ entries validated, and kernel entries taken, and both figures are
 identical in all four configurations. What the batch form saves is
 stated as a number. If it saves nothing, that is the answer and stage
 six acts on it.
+
+*Built.* Eight signals, done both ways through the same entry point,
+counted.
+
+```
+8 signals, one call each: 8 crossings, 24 checks
+the same 8 in one call:   1 crossings, 17 checks
+it saves 7 crossings and 7 checks
+and 7 of the lock, 8 against 1
+```
+
+Identical in all four configurations, which is what a count is for. The
+work either side is the same work and the check says how it knows: the
+timeline advances by eight whichever form carried it.
+
+**What it saves is per call and nothing per entry.** Seven crossings of
+seven, seven acquisitions of the kernel lock, and seven of the
+twenty-four checks. The seven checks it saves are the seven descriptor
+arrays it did not have to validate. The other sixteen are the entries
+themselves, checked once before they run and once when they run, and
+those are the same sixteen whichever form carried them.
+
+So the saving is exactly the fixed cost of a call, multiplied by one
+fewer than the number of entries, and nothing else. That is a smaller
+claim than the section makes and it is the claim the numbers support.
+
+**M6's warning was to look past the obvious column, and the obvious
+column is the crossings.** Eight to one looks like the whole result and
+is half of it: the checks went from twenty-four to seventeen rather than
+from twenty-four to three, which is what a reader who saw only the
+crossings would have assumed. The engine does not make the kernel do
+less work per operation. It makes it enter fewer times.
+
+**What this does not measure is the dependency half.** These eight
+signals do not depend on each other, so the comparison is of batching
+and not of expressing dependencies as data. What `LINK` adds over eight
+separate calls is that the caller does not return to user mode between
+entries to decide whether to continue, and stage two showed that works;
+the crossings it saves are the same seven counted here. There is no
+separate number for the dependency idea, because on this evidence its
+saving is the same saving.
+
+**And nothing here needs a device**, which was the point of splitting
+the milestone's two claims. This is the half that could be answered.
+Whether seven crossings is worth an entry array, a validation pass, a
+status write-back and a second way of doing what one system call
+already does is stage six's judgement, and it now has a number to make
+it on.
 
 **5. Prepared programs, validated once.**
 

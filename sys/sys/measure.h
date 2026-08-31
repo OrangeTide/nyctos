@@ -170,6 +170,12 @@ void intr_region_report(void);
  * Clear the running maximum and read it back, for asking what one
  * particular thing cost rather than what the whole run did.
  */
+/*
+ * Crossings of the trap edge on this core, and checks made on the
+ * submission path. Both are counts and both are the same on every host.
+ */
+uint64_t submit_crossings(uint64_t *checks);
+
 void intr_region_reset(void);
 uint64_t intr_region_worst(uintptr_t *site);
 uintptr_t intr_region_worst_site(void);

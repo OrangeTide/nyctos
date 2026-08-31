@@ -5345,6 +5345,115 @@ link_checks(void)
  * whether it was true. It rests entirely on the batch being
  * interruptible at every entry boundary.
  */
+
+/*
+ * The milestone's question: does expressing a set of operations as one
+ * submission beat submitting them one at a time?
+ *
+ * Answered in counts. A duration comparing two ways of doing the same
+ * work would be a figure about this host, and M9 spent six stages
+ * establishing that. The same eight signals go through the same entry
+ * point both ways, so the work either side of the comparison is the
+ * same work and the check can say why: the timeline advances by eight
+ * whichever form is used.
+ */
+#define PAY_N   8
+
+static void
+pays_checks(void)
+{
+    static sys_op_fence_args_t args[PAY_N];
+    static sys_op_t ops[PAY_N];
+    struct proc *p = proc_current();
+    struct timeline *tl;
+    sys_handle_t h;
+    uint64_t one_calls, one_checks, one_locks;
+    uint64_t few_calls, few_checks, few_locks;
+    uint64_t base, c0, k0, l0;
+    uint32_t i;
+    sys_err_t err;
+
+    cnputs("batches: whether one submission beats several\n");
+
+    tl = timeline_create("pays");
+    if (tl == NULL) {
+        panic("pays: no timeline");
+    }
+    err = handle_insert(&p->p_handles, tl, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_SIGNAL, &h);
+    expect("a signal handle for the comparison", err, SYS_OK);
+
+    /* Eight signals, one call each. */
+    base = timeline_value(tl);
+    batch_fill_on(ops, args, h, PAY_N, base);
+    c0 = submit_crossings(&k0);
+    l0 = spin_take_count();
+    for (i = 0; i < PAY_N; i++) {
+        if (run_batch(&ops[i], 1) != SYS_OK) {
+            panic("pays: a single submission failed");
+        }
+    }
+    one_calls = submit_crossings(&one_checks) - c0;
+    one_checks -= k0;
+    one_locks = spin_take_count() - l0;
+
+    if (timeline_value(tl) != base + PAY_N) {
+        panic("pays: the one-at-a-time form did %lu of %u",
+          (unsigned long)(timeline_value(tl) - base), (unsigned int)PAY_N);
+    }
+
+    /* The same eight signals, one call. */
+    base = timeline_value(tl);
+    batch_fill_on(ops, args, h, PAY_N, base);
+    c0 = submit_crossings(&k0);
+    l0 = spin_take_count();
+    if (run_batch(ops, PAY_N) != SYS_OK) {
+        panic("pays: the batch failed");
+    }
+    few_calls = submit_crossings(&few_checks) - c0;
+    few_checks -= k0;
+    few_locks = spin_take_count() - l0;
+
+    if (timeline_value(tl) != base + PAY_N) {
+        panic("pays: the batch form did %lu of %u",
+          (unsigned long)(timeline_value(tl) - base), (unsigned int)PAY_N);
+    }
+
+    cnprintf("    %u signals, one call each: %lu crossings, "
+      "%lu checks\n", (unsigned int)PAY_N, (unsigned long)one_calls,
+      (unsigned long)one_checks);
+    cnprintf("    the same %u in one call:   %lu crossings, "
+      "%lu checks\n", (unsigned int)PAY_N, (unsigned long)few_calls,
+      (unsigned long)few_checks);
+
+    /*
+     * The obvious column and the one M6 said to look at as well. A
+     * batch saves crossings, which is what it is for. What it does not
+     * save is the per-entry checking, because every entry is still
+     * checked before it runs and again when it runs, whichever form
+     * carried it.
+     */
+    if (few_calls != 1 || one_calls != PAY_N) {
+        panic("pays: %lu crossings against %lu",
+          (unsigned long)few_calls, (unsigned long)one_calls);
+    }
+    cnprintf("    it saves %lu crossings and %lu checks\n",
+      (unsigned long)(one_calls - few_calls),
+      (unsigned long)(one_checks - few_checks));
+
+#if SYS_TIER == 2
+    cnprintf("    and %lu of the lock, %lu against %lu\n",
+      (unsigned long)(one_locks - few_locks), (unsigned long)one_locks,
+      (unsigned long)few_locks);
+#else
+    (void)one_locks;
+    (void)few_locks;
+#endif
+
+    expect("giving the handle back", handle_close(&p->p_handles, h),
+      SYS_OK);
+}
+
 static void
 batch_latency_checks(void)
 {
@@ -6588,6 +6697,7 @@ kernel_main(void)
      * the check would pass on two zeros.
      */
     batch_latency_checks();
+    pays_checks();
 
     cnputs("the console: an interrupt attached and handed over\n");
     console_checks();

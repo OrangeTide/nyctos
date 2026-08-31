@@ -20,6 +20,7 @@
  * check that section 23.2 describes appears with the MMU in milestone 4.
  */
 
+#include <sys/cpu.h>
 #include <sys/sched.h>
 #include <sys/channel.h>
 #include <sys/config.h>
@@ -753,6 +754,7 @@ sys_op_exec(struct sys_op *op)
      * an unreachable one, and each operation already says so with
      * SYS_ERR_INVALID_ARG. Letting it through to them keeps that answer.
      */
+    cpu_self()->cp_checks++;
     if (op->arg_ptr != 0 &&
       !proc_reaches(p, op->arg_ptr, op->arg_len)) {
         op->status = SYS_ERR_FAULT;

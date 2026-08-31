@@ -144,6 +144,14 @@ struct cpu {
      */
     uint64_t            cp_win_worst;
     uintptr_t           cp_win_site;
+
+    /*
+     * Crossings of the trap edge, and checks made on the submission
+     * path. Section 17 exists to reduce the first; whether it reduces
+     * the second is the question nobody had asked.
+     */
+    uint64_t            cp_syscalls;
+    uint64_t            cp_checks;
     uint64_t            cp_intr_regions;
     uint64_t            cp_intr_total;
     bool                cp_intr_open;

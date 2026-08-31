@@ -750,3 +750,13 @@ intr_region_worst(uintptr_t *site)
 
     return c->cp_win_worst;
 }
+
+uint64_t
+submit_crossings(uint64_t *checks)
+{
+    struct cpu *c = cpu_self();
+
+    *checks = c->cp_checks;
+
+    return c->cp_syscalls;
+}
