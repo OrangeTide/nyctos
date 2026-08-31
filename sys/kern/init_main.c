@@ -5359,6 +5359,138 @@ link_checks(void)
  */
 #define PAY_N   8
 
+
+/*
+ * Section 17.7: a program validated once and executed many times.
+ *
+ * A different claim from batching. Batching amortises the cost of a
+ * call over several operations; this amortises the cost of validating
+ * over several executions of the same operations. The two save
+ * different things and stage four measured only the first.
+ */
+#define PREP_N      4
+#define PREP_TIMES  4
+
+static void
+prepared_checks(void)
+{
+    static sys_op_fence_args_t args[PREP_N];
+    static sys_op_t ops[PREP_N];
+    struct proc *p = proc_current();
+    sys_op_prog_args_t pargs;
+    struct timeline *tl;
+    sys_handle_t h, prog;
+    uint64_t base, k0, c0, batched, prepared;
+    uint32_t i;
+    sys_err_t err;
+
+    cnputs("programs: validated once, executed many times\n");
+
+    tl = timeline_create("prepared");
+    if (tl == NULL) {
+        panic("prepared: no timeline");
+    }
+    err = handle_insert(&p->p_handles, tl, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_SIGNAL, &h);
+    expect("a signal handle for the program", err, SYS_OK);
+
+    /*
+     * The same four signals run four times as an ordinary batch, so
+     * that there is something to compare against. The entries have to
+     * be refilled between runs because a timeline only goes up and the
+     * same values twice would be an error the second time.
+     */
+    (void)submit_crossings(&k0);
+    for (i = 0; i < PREP_TIMES; i++) {
+        base = timeline_value(tl);
+        batch_fill_on(ops, args, h, PREP_N, base);
+        if (run_batch(ops, PREP_N) != SYS_OK) {
+            panic("prepared: a plain batch failed");
+        }
+    }
+    (void)submit_crossings(&batched);
+    batched -= k0;
+
+    /*
+     * And now as a program. The entries are fixed at load, so the
+     * values they signal are fixed too, which is why this one counts
+     * up from where the batches left off and then re-signals the same
+     * values on later executions. Those later signals fail, and that
+     * is expected and is not what is being measured: what is being
+     * measured is how many checks the executions cost.
+     */
+    base = timeline_value(tl);
+    batch_fill_on(ops, args, h, PREP_N, base);
+
+    memset(&pargs, 0, sizeof(pargs));
+    pargs.entries = (uintptr_t)ops;
+    pargs.count = PREP_N;
+
+    /*
+     * The loading is inside the window, because it is part of what
+     * this form costs. Leaving it out would compare the executions of
+     * one form against the whole of the other, which is how a
+     * mechanism comes to look free.
+     */
+    (void)submit_crossings(&c0);
+
+    expect("loading a program", run(SYS_OP_PROG_LOAD, 0, &pargs,
+      sizeof(pargs)), SYS_OK);
+    prog = pargs.out_handle;
+    for (i = 0; i < PREP_TIMES; i++) {
+        (void)run(SYS_OP_PROG_EXEC, prog, NULL, 0);
+    }
+    (void)submit_crossings(&prepared);
+    prepared -= c0;
+
+    cnprintf("    %u entries, %u times as a batch:   %lu checks\n",
+      (unsigned int)PREP_N, (unsigned int)PREP_TIMES,
+      (unsigned long)batched);
+    cnprintf("    loaded once and run %u times:      %lu checks\n",
+      (unsigned int)PREP_TIMES, (unsigned long)prepared);
+
+    /*
+     * A batch pays for the array and for looking at every entry, every
+     * time. A program pays for the entries when it runs them and for
+     * nothing else, because the array is the kernel's and the opcodes
+     * were checked at load.
+     */
+    if (batched != PREP_TIMES * (1 + PREP_N * 2)) {
+        panic("prepared: %lu checks for the batches, not %u",
+          (unsigned long)batched,
+          (unsigned int)(PREP_TIMES * (1 + PREP_N * 2)));
+    }
+    /*
+     * Loading costs one check for the operation that asks for it, one
+     * for the array, and one per entry, paid once. Each execution
+     * costs one for the operation and one per entry as they run. The
+     * operation asking is itself an entry and pays like one, which is
+     * section 17.7's point about there being one implementation.
+     */
+    if (prepared != (2 + PREP_N) + PREP_TIMES * (1 + PREP_N)) {
+        panic("prepared: %lu checks for load and executions, not %u",
+          (unsigned long)prepared,
+          (unsigned int)((2 + PREP_N) + PREP_TIMES * (1 + PREP_N)));
+    }
+    cnprintf("    validating once saved %lu of them\n",
+      (unsigned long)(batched - prepared));
+
+    /*
+     * And a handle that has gone stale since the program was loaded.
+     * The entries name it and it is looked up at every execution, so
+     * this is refused when it runs rather than running with whatever
+     * the slot now holds.
+     */
+    expect("closing the handle the program names",
+      handle_close(&p->p_handles, h), SYS_OK);
+    expect("executing it afterwards",
+      run(SYS_OP_PROG_EXEC, prog, NULL, 0), SYS_ERR_STALE);
+    cnputs("    a stale handle is refused at execution  OK\n");
+
+    expect("giving the program back",
+      handle_close(&p->p_handles, prog), SYS_OK);
+}
+
 static void
 pays_checks(void)
 {
@@ -6715,6 +6847,7 @@ kernel_main(void)
      */
     batch_latency_checks();
     pays_checks();
+    prepared_checks();
 
     cnputs("the console: an interrupt attached and handed over\n");
     console_checks();

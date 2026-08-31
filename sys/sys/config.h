@@ -118,6 +118,9 @@
 #define SYS_MAX_GRANTS            64
 #define SYS_MAX_TIMELINES         64
 #define SYS_MAX_TIMERS            32
+/* Prepared programs held at once, per section 17.7. */
+#define SYS_MAX_PREPARED           4
+
 #define SYS_MAX_PROGRAMS           8
 
 /*

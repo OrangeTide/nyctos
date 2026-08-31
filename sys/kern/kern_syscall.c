@@ -185,6 +185,18 @@ syscall_body(struct sys_op *op, unsigned long count)
         }
     }
 
+    return batch_run(op, count);
+}
+
+/*
+ * Execute a validated array of entries, in order, in this thread's
+ * context. Shared by a submission and by a prepared program, so that
+ * the two cannot drift: section 17.7 wants one implementation of an
+ * operation rather than a batch path and a separate one.
+ */
+long
+batch_run(sys_op_t *op, unsigned long count)
+{
     {
         struct proc *p;
         unsigned long i;

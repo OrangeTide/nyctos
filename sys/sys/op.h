@@ -95,6 +95,13 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OBJ_IRQ         8
 #define SYS_OBJ_CONNECTION  9
 
+/*
+ * A prepared program, per section 17.7: a batch validated once and
+ * executed many times. Distinct from SYS_OBJ_PROGRAM, which is a member
+ * of the boot archive and was named first.
+ */
+#define SYS_OBJ_PREPARED   10
+
 /* Blocking ops. These are the only ones that can block. */
 #define SYS_OP_NOP                0
 #define SYS_OP_IPC_SEND           1
@@ -192,6 +199,16 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_THREAD_MIGRATE    24
 
 /*
+ * Prepared programs, per section 17.7. Load validates a batch once and
+ * returns a handle to it; exec runs it again without validating it
+ * again. The handles the entries name are looked up at every
+ * execution, because a handle is a slot in a table and what it means
+ * can change between one execution and the next.
+ */
+#define SYS_OP_PROG_LOAD         25
+#define SYS_OP_PROG_EXEC         26
+
+/*
  * Leave a pulse on a channel, per section 13.1. target names a
  * connection to it and carries SYS_RIGHT_SEND, which is how a message
  * reaches a channel too. Never blocks and does not fail
@@ -264,7 +281,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             25
+#define SYS_OP_COUNT             27
 
 /*
  * Per-entry flags, per section 17.5.
@@ -473,6 +490,18 @@ typedef struct sys_op_migrate_args {
     uint32_t    core;
     uint32_t    pad;
 } sys_op_migrate_args_t;
+
+/*
+ * Argument structure for SYS_OP_PROG_LOAD. target is unused; entries
+ * names the array and count how many. The handle comes back in
+ * out_handle.
+ */
+typedef struct sys_op_prog_args {
+    uintptr_t       entries;
+    uint32_t        count;
+    uint32_t        pad;
+    sys_handle_t    out_handle;
+} sys_op_prog_args_t;
 
 /* Argument structure for SYS_OP_THREAD_EXIT. target is unused. */
 typedef struct sys_op_exit_args {

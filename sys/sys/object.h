@@ -47,6 +47,7 @@ struct pool *grant_pool(void);
 struct pool *timeline_pool(void);
 struct pool *timer_pool(void);
 struct pool *program_pool(void);
+struct pool *prepared_pool(void);
 
 void object_init(void);
 void object_report(void);

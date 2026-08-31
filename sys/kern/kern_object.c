@@ -9,6 +9,7 @@
  * become memory.
  */
 
+#include <sys/prepared.h>
 #include <sys/config.h>
 #include <sys/object.h>
 #include <sys/page.h>
@@ -24,6 +25,7 @@ POOL_STORAGE(grants, struct grant, SYS_MAX_GRANTS);
 POOL_STORAGE(timelines, struct timeline, SYS_MAX_TIMELINES);
 POOL_STORAGE(timers, struct timer, SYS_MAX_TIMERS);
 POOL_STORAGE(programs, struct program, SYS_MAX_PROGRAMS);
+POOL_STORAGE(prepared, struct prepared, SYS_MAX_PREPARED);
 
 /*
  * Every pool has to fit the index field of an identifier, and pool_init()
@@ -53,6 +55,7 @@ static struct pool grant_p;
 static struct pool timeline_p;
 static struct pool timer_p;
 static struct pool program_p;
+static struct pool prepared_p;
 
 struct pool *proc_pool(void) { return &proc_p; }
 struct pool *thread_pool(void) { return &thread_p; }
@@ -62,6 +65,7 @@ struct pool *grant_pool(void) { return &grant_p; }
 struct pool *timeline_pool(void) { return &timeline_p; }
 struct pool *timer_pool(void) { return &timer_p; }
 struct pool *program_pool(void) { return &program_p; }
+struct pool *prepared_pool(void) { return &prepared_p; }
 
 static struct pool *const all_pools[] = {
     &proc_p,
@@ -72,6 +76,7 @@ static struct pool *const all_pools[] = {
     &timeline_p,
     &timer_p,
     &program_p,
+    &prepared_p,
 };
 
 #define NPOOLS (sizeof(all_pools) / sizeof(all_pools[0]))
@@ -87,6 +92,7 @@ object_init(void)
     POOL_INIT(&timeline_p, timelines, "timeline", SYS_MAX_TIMELINES);
     POOL_INIT(&timer_p, timers, "timer", SYS_MAX_TIMERS);
     POOL_INIT(&program_p, programs, "program", SYS_MAX_PROGRAMS);
+    POOL_INIT(&prepared_p, prepared, "prepared", SYS_MAX_PREPARED);
 }
 
 /*

@@ -60,6 +60,7 @@ uintptr_t boot_first_load(void);
 void boot_report(void);
 
 /* sys/kern/kern_syscall.c */
+long batch_run(sys_op_t *op, unsigned long count);
 long syscall_handler(struct sys_op *op, unsigned long count);
 void trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
   __attribute__((noreturn));

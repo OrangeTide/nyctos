@@ -6517,7 +6517,7 @@ seven crossings is worth the mechanism cannot be settled by counting
 them alone. Stage six has to weigh a count against a quantity of code,
 and it should say that is what it is doing.
 
-**5. Prepared programs, validated once.**
+**5. Prepared programs, validated once.** *Built.*
 
 - Section 17 has a program validated once and executed many times, which
   is a different claim from batching: it is about repetition rather than
@@ -6526,6 +6526,57 @@ and it should say that is what it is doing.
 *Check.* A prepared program executed N times validates its entries once,
 which is a counter, and a program whose handles have gone stale between
 executions is refused at execution rather than running with them.
+
+*Built.* A program is a validated batch the kernel keeps. Loading
+checks it once; executing runs it without checking it again.
+
+```
+4 entries, 4 times as a batch:   36 checks
+loaded once and run 4 times:      26 checks
+validating once saved 10 of them
+```
+
+**The entries are copied into the kernel, and that is what makes the
+validation last.** A program whose entries stayed in the caller's memory
+would have to be checked at every execution, because the caller could
+have rewritten them between one and the next, and then nothing would
+have been validated once. The copy is the mechanism, not an
+optimisation of it.
+
+**What cannot be validated once is the handles, and the check says so.**
+A handle is a slot in a table, and what it names can change or go away.
+Every execution looks them up again, so a program whose handle is closed
+after loading is refused when it next runs rather than running against
+whatever the slot now holds. Resolving them at load instead fails with
+`executing it afterwards: expected STALE, got OK`.
+
+So what a program saves is exactly the static half: the array is the
+kernel's and needs no reachability check, and the opcodes were checked
+when it was loaded. What it still pays, every time, is one check per
+entry as the entries run, plus one for the operation that asked.
+
+**The arithmetic had to be corrected twice, in the same direction both
+times.** The predicted figure was 25 and the answer was 26, because the
+operation that loads a program is itself an entry and pays a check like
+one. Before that the prediction was 16 against an answer of 20, for the
+same reason applied to executing. That is section 17.7's claim about
+there being one implementation showing up in the accounting: an
+operation that runs a batch is not outside the batch machinery, it is
+inside it, and the counting notices before the reader does.
+
+**And the load is inside the measured window.** Leaving it out would
+have compared the executions of one form against the whole of the
+other, which is how a mechanism comes to look free. The saving is ten
+checks for four executions of four entries, and it grows with the
+number of executions and not with anything else.
+
+**What is not built, and no stage of this milestone claimed it.** The
+interface in section 17.7 has `sys_prog_exec` take an array of handles
+that the entries name by position, which is the "typed registers with
+tags" of the *Needs* list. Programs here carry their own targets, so
+they can be re-executed but not re-aimed. The six stages of this
+milestone never covered that Need and this is the place to say so
+rather than let it pass unmentioned.
 
 **6. Whether section 17 survives.**
 

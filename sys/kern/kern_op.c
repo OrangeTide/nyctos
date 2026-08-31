@@ -20,6 +20,7 @@
  * check that section 23.2 describes appears with the MMU in milestone 4.
  */
 
+#include <sys/prepared.h>
 #include <sys/cpu.h>
 #include <sys/sched.h>
 #include <sys/channel.h>
@@ -610,6 +611,58 @@ op_pulse_send(struct proc *p, struct sys_op *op)
 }
 
 static sys_err_t
+op_prog_load(struct proc *p, struct sys_op *op)
+{
+    sys_op_prog_args_t *args;
+    struct prepared *pr;
+    sys_handle_t h;
+    sys_err_t err;
+
+    args = (sys_op_prog_args_t *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    err = prepared_load(p, (const sys_op_t *)args->entries, args->count,
+      &pr);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    err = handle_insert(&p->p_handles, pr, SYS_OBJ_PREPARED,
+      SYS_RIGHT_READ | SYS_RIGHT_WRITE, &h);
+    if (err != SYS_OK) {
+        prepared_free(pr);
+        return err;
+    }
+
+    args->out_handle = h;
+
+    return SYS_OK;
+}
+
+/*
+ * Run a loaded program. The handle naming the program is looked up
+ * here and the handles its entries name are looked up as they run,
+ * because a handle is a slot in a table and what it names can change
+ * between one execution and the next.
+ */
+static sys_err_t
+op_prog_exec(struct proc *p, struct sys_op *op)
+{
+    void *obj;
+    sys_err_t err;
+
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_PREPARED,
+      SYS_RIGHT_WRITE, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    return (sys_err_t)prepared_exec(obj);
+}
+
+static sys_err_t
 op_thread_migrate(struct proc *p, struct sys_op *op)
 {
     sys_op_migrate_args_t *args;
@@ -791,6 +844,12 @@ sys_op_exec(struct sys_op *op)
         break;
     case SYS_OP_THREAD_MIGRATE:
         err = op_thread_migrate(p, op);
+        break;
+    case SYS_OP_PROG_LOAD:
+        err = op_prog_load(p, op);
+        break;
+    case SYS_OP_PROG_EXEC:
+        err = op_prog_exec(p, op);
         break;
     case SYS_OP_PULSE_SEND:
         err = op_pulse_send(p, op);
