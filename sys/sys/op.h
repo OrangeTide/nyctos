@@ -267,9 +267,27 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_COUNT             25
 
 /*
- * The reg_in, reg_out and flags fields are meaningful only to the
- * submission engine, which is not built. They are here so that the
- * descriptor does not change shape if it ever is.
+ * Per-entry flags, per section 17.5.
+ *
+ * SYS_OP_LINK says the entry after this one belongs to the same chain.
+ * Linked entries run in order, the first failure cancels the rest of
+ * that chain with SYS_ERR_CANCELED, and the chain ends at the first
+ * entry without the flag. Several chains may share one batch and one
+ * failing does not touch another.
+ *
+ * It means abort-on-error grouping and nothing else. Entries run in
+ * submission order whether linked or not, because the engine executes
+ * in one thread: chaining does not make anything concurrent, which is
+ * the second of the two things section 17.5 says are easily assumed
+ * about it and false.
+ */
+#define SYS_OP_LINK             (1u << 0)
+
+/*
+ * The reg_in and reg_out fields are meaningful only to the parts of the
+ * submission engine that are not built. They are here so that the
+ * descriptor does not change shape if they ever are. The flags field is
+ * live: see SYS_OP_LINK above.
  */
 typedef struct sys_op {
     uint16_t        opcode;

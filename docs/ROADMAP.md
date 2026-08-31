@@ -6227,7 +6227,7 @@ asymmetry worth knowing about rather than a defect: `run` predates the
 entry path having anything to validate, and every user program goes the
 long way.
 
-**2. `LINK`, and what a chain does when an entry fails.**
+**2. `LINK`, and what a chain does when an entry fails.** *Built.*
 
 - A per-entry flag. Linked entries run in order, the first failure
   cancels the rest of that chain with `SYS_ERR_CANCELED`, and the chain
@@ -6240,6 +6240,45 @@ long way.
 after it still runs. Chains are not graphs, so the check also confirms
 that the thing section 17.5 says is expressed with fences is not
 expressed with `LINK`.
+
+*Built.* `SYS_OP_LINK` is the low bit of a flags field that has been in
+the descriptor since M1 and had never meant anything. Linked entries run
+in order, the first failure cancels the rest of that chain, the chain
+ends at the first entry without the flag, and an entry outside it is
+untouched.
+
+**Five entries say all of it.** A chain of three whose middle entry
+fails, then two on their own. The first runs, the second fails, the
+third reports `SYS_ERR_CANCELED` without running, and both of the
+independent entries run. The counter reaches three of five, which is
+what says the cancelled entry did not quietly happen anyway.
+
+The failing entry fails by signalling a value the timeline has already
+passed, which section 9.1 makes an error. That is worth saying because
+the alternative was arranging a broken handle, and an entry that fails
+for a reason the reader has to reconstruct makes the check about the
+arrangement rather than about the chaining.
+
+**Both directions falsify.** Never cancelling leaves the third entry
+reporting `0`, which fails with `the rest of the chain said 0`. Never
+ending a chain cancels the independent entries after it, which fails
+with `an independent entry was cancelled with it`. The two mistakes are
+opposite and a check that caught only one of them would be half a check.
+
+**And the thing `LINK` cannot say is checked too.** Section 17.5 says
+chains are not graphs and that a join is written with a fence instead:
+two producers advancing a timeline and a consumer waiting on the final
+value. That batch runs, and there is no arrangement of flags that would
+express it, because a flag can only say that the next entry belongs to
+this one. Checking the mechanism that replaces `LINK` in the same place
+as `LINK` is what keeps the section's claim from being a sentence nobody
+tested.
+
+**What is not built and is section 17.5's last line.** On abort, every
+timeline the batch was going to signal is force-signalled in error
+state. That is about issuing ops, which return timelines and do not
+exist, so there is nothing for a cancelled entry to have been going to
+signal. It is recorded here rather than implemented against nothing.
 
 **3. What a batch does to interrupt latency.**
 

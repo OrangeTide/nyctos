@@ -5197,6 +5197,117 @@ batch_fill(sys_op_t *ops, sys_op_fence_args_t *args, uint32_t n,
     }
 }
 
+
+/*
+ * Section 17.5: chaining, and what a chain does when an entry fails.
+ *
+ * The entries signal a timeline for the same reason as the stage
+ * before: a counter that only goes up says exactly which of them ran.
+ */
+static void
+link_checks(void)
+{
+    static sys_op_fence_args_t args[5];
+    static sys_op_t ops[5];
+    struct proc *p = proc_current();
+    struct timeline *tl;
+    sys_handle_t h;
+    uint64_t base;
+    uint32_t i;
+    sys_err_t err;
+
+    cnputs("chaining: abort-on-error grouping, section 17.5\n");
+
+    tl = timeline_create("link");
+    if (tl == NULL) {
+        panic("link: no timeline");
+    }
+    err = handle_insert(&p->p_handles, tl, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_SIGNAL | SYS_RIGHT_WAIT, &h);
+    expect("a signal handle for the chain", err, SYS_OK);
+
+    /*
+     * Five entries: a chain of three whose middle one fails, then one
+     * unlinked entry, then another. The middle one fails by signalling
+     * a value the timeline has already passed, which section 9.1 makes
+     * an error and which needs no broken handle to arrange.
+     */
+    for (i = 0; i < 5; i++) {
+        memset(&args[i], 0, sizeof(args[i]));
+        memset(&ops[i], 0, sizeof(ops[i]));
+        ops[i].opcode = SYS_OP_FENCE_SIGNAL;
+        ops[i].target = h;
+        ops[i].arg_ptr = (uintptr_t)&args[i];
+        ops[i].arg_len = sizeof(args[i]);
+    }
+
+    base = timeline_value(tl);
+    args[0].value = base + 1;       /* runs */
+    args[1].value = base;           /* backwards: fails */
+    args[2].value = base + 2;       /* cancelled, so never runs */
+    args[3].value = base + 2;       /* an independent entry, runs */
+    args[4].value = base + 3;       /* and another */
+
+    ops[0].flags = SYS_OP_LINK;
+    ops[1].flags = SYS_OP_LINK;
+    /* ops[2] ends the chain; ops[3] and ops[4] are on their own. */
+
+    expect("a batch with a chain of three in it",
+      (sys_err_t)run_batch(ops, 5), SYS_ERR_INVALID_ARG);
+
+    if (ops[0].status != SYS_OK) {
+        panic("chaining: the first entry did not run");
+    }
+    if (ops[1].status != SYS_ERR_INVALID_ARG) {
+        panic("chaining: the failing entry said %d", (int)ops[1].status);
+    }
+    if (ops[2].status != SYS_ERR_CANCELED) {
+        panic("chaining: the rest of the chain said %d",
+          (int)ops[2].status);
+    }
+    if (ops[3].status != SYS_OK || ops[4].status != SYS_OK) {
+        panic("chaining: an independent entry was cancelled with it");
+    }
+    cnputs("    the rest of the chain was cancelled    OK\n");
+    cnputs("    and an entry outside it still ran      OK\n");
+
+    /*
+     * And the counter says which of them happened: the first, then the
+     * two after the chain, and not the cancelled one.
+     */
+    if (timeline_value(tl) != base + 3) {
+        panic("chaining: the counter reached %lu, not %lu",
+          (unsigned long)timeline_value(tl), (unsigned long)(base + 3));
+    }
+    cnprintf("    three of five ran, counter at %lu      OK\n",
+      (unsigned long)timeline_value(tl));
+
+    /*
+     * Section 17.5 says chains are not graphs and that a join is
+     * expressed with a fence instead. Two producers advancing a
+     * timeline and a consumer waiting on the final value is that join,
+     * and it is a thing LINK cannot say: there is no flag arrangement
+     * that makes one entry wait for two.
+     */
+    base = timeline_value(tl);
+    args[0].value = base + 1;
+    args[1].value = base + 2;
+    memset(&args[2], 0, sizeof(args[2]));
+    args[2].value = base + 2;
+    args[2].deadline = SYS_DEADLINE_NEVER;
+    ops[0].flags = 0;
+    ops[1].flags = 0;
+    ops[2].flags = 0;
+    ops[2].opcode = SYS_OP_FENCE_WAIT;
+
+    expect("a join written as two producers and a wait",
+      (sys_err_t)run_batch(ops, 3), SYS_OK);
+    cnputs("    which LINK has no way to express       OK\n");
+
+    expect("giving the handle back", handle_close(&p->p_handles, h),
+      SYS_OK);
+}
+
 static void
 batch_checks(void)
 {
@@ -6256,6 +6367,7 @@ kernel_main(void)
     lock_check();
     clock_checks();
     batch_checks();
+    link_checks();
 #if SYS_TIER == 2
     core_checks();
 #endif

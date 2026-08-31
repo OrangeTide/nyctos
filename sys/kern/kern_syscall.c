@@ -28,6 +28,8 @@
  * port is where step 2 of section 23.2 acquires an answer.
  */
 
+#include <stdbool.h>
+
 #include <sys/measure.h>
 #include <sys/lock.h>
 #include <sys/op.h>
@@ -163,8 +165,10 @@ syscall_body(struct sys_op *op, unsigned long count)
         struct proc *p;
         unsigned long i;
         long r = SYS_OK;
+        bool cancelling = false;
 
         for (i = 0; i < count; i++) {
+            bool linked = (op[i].flags & SYS_OP_LINK) != 0;
             long one;
 
             /*
@@ -175,7 +179,35 @@ syscall_body(struct sys_op *op, unsigned long count)
              */
             preempt_point();
 
-            one = sys_op_exec(&op[i]);
+            if (cancelling) {
+                /*
+                 * An earlier entry of this chain failed, so this one
+                 * does not run and says so. Section 17.5: the first
+                 * failure cancels the remainder of that chain.
+                 */
+                op[i].status = SYS_ERR_CANCELED;
+                one = SYS_OK;
+            } else {
+                one = sys_op_exec(&op[i]);
+
+                /*
+                 * A failure cancels what is left of this chain, and
+                 * only this chain. An entry that is not linked to the
+                 * next one has nothing after it to cancel.
+                 */
+                if (one != SYS_OK && linked) {
+                    cancelling = true;
+                }
+            }
+
+            /*
+             * The chain ends at the first entry without the flag, so
+             * whatever comes after starts a new one and is unaffected
+             * by this one having failed.
+             */
+            if (!linked) {
+                cancelling = false;
+            }
 
             /*
              * And out here if this process has been killed, which is
