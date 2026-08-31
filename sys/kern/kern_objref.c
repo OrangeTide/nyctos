@@ -15,6 +15,7 @@
  * and does not grow a case per object type.
  */
 
+#include <sys/prepared.h>
 #include <sys/grant.h>
 #include <sys/channel.h>
 #include <sys/handle.h>
@@ -98,6 +99,16 @@ void
 handle_object_release(const struct handle_table *ht, uint32_t type,
   void *obj, uint32_t rights)
 {
+    /*
+     * A prepared program is its handle, per section 17.7: nothing else
+     * names one, so the slot goes back when the handle does. It did
+     * not, and four slots meant the fifth program a process ever
+     * loaded was refused for want of room that nothing was using.
+     */
+    if (type == SYS_OBJ_PREPARED) {
+        prepared_free(obj);
+    }
+
     if (type == SYS_OBJ_TIMELINE && (rights & SYS_RIGHT_SIGNAL) != 0) {
         timeline_drop_signaler(obj);
     }

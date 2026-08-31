@@ -71,6 +71,18 @@ prepared_load(struct proc *p, const sys_op_t *entries, uint32_t count,
 long
 prepared_exec(struct prepared *pr)
 {
+    /*
+     * By whoever loaded it and nobody else. The entries name addresses
+     * in the loader's memory, and a handle can be moved: executing in
+     * another process would re-check that those addresses are
+     * reachable there, so it is safe, and they would mean something
+     * else, so it is wrong. Refusing is the answer that needs no
+     * argument.
+     */
+    if (pr->pr_owner != proc_current()) {
+        return SYS_ERR_PERM_DENIED;
+    }
+
     return batch_run(pr->pr_ops, pr->pr_count);
 }
 

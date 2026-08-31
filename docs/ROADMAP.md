@@ -6578,6 +6578,38 @@ they can be re-executed but not re-aimed. The six stages of this
 milestone never covered that Need and this is the place to say so
 rather than let it pass unmentioned.
 
+*Reviewed.* Two defects, and both were in what happens to the object
+rather than in what it does.
+
+**A prepared program was never freed.** Nothing else names one, so the
+slot should go back when the handle does, and the release path knew
+about timelines, processes, threads, connections and channels and not
+about this. Four slots meant the fifth program a process ever loaded
+was refused for want of room nothing was using.
+
+Nothing caught it, because the check loaded one program and closed it
+once. Loading and closing twice as many as the pool holds is the check
+that would have, and it does: putting the leak back fails with `load 3
+of 8 ran out of slots`. The lesson is small and keeps recurring in this
+milestone: a new object type has a lifetime as well as a behaviour, and
+the behaviour is the part that gets checked because it is the part the
+stage was about.
+
+**And the field that says who owns it was written and never read.** A
+handle can be moved between processes, and a program's entries name
+addresses in the memory of whoever loaded it. Executing one somewhere
+else is safe, because every execution re-checks that those addresses
+are reachable in the process running it, and it is wrong, because they
+would mean something different there. It is refused now, which is the
+answer that needs no argument about which of those two facts wins.
+
+**What was checked and found sound.** The per-execution handle lookup
+is what makes a moved or stale handle refuse rather than resolve, and
+that was already checked. The copy of the entries into the kernel is
+what makes the validation last, and a program whose entries stayed in
+the caller's memory would have to be revalidated; the copy is not an
+optimisation and the stage said so.
+
 **6. Whether section 17 survives.**
 
 - The only stage whose outcome is deleting a section, and the entry has

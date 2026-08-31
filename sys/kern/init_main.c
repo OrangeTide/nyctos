@@ -5489,6 +5489,29 @@ prepared_checks(void)
 
     expect("giving the program back",
       handle_close(&p->p_handles, prog), SYS_OK);
+
+    /*
+     * And more programs than the pool holds, loaded and given back one
+     * at a time. A program is its handle and nothing else names one,
+     * so closing it has to return the slot; it did not, and the fifth
+     * load was refused for want of room nothing was using.
+     */
+    for (i = 0; i < SYS_MAX_PREPARED * 2; i++) {
+        memset(&pargs, 0, sizeof(pargs));
+        pargs.entries = (uintptr_t)ops;
+        pargs.count = PREP_N;
+        if (run(SYS_OP_PROG_LOAD, 0, &pargs, sizeof(pargs)) != SYS_OK) {
+            panic("prepared: load %u of %u ran out of slots",
+              (unsigned int)i, (unsigned int)(SYS_MAX_PREPARED * 2));
+        }
+        if (handle_close(&p->p_handles, pargs.out_handle) != SYS_OK) {
+            panic("prepared: could not give program %u back",
+              (unsigned int)i);
+        }
+    }
+    cnprintf("    %u loaded and given back, %u slots      OK\n",
+      (unsigned int)(SYS_MAX_PREPARED * 2),
+      (unsigned int)SYS_MAX_PREPARED);
 }
 
 static void
