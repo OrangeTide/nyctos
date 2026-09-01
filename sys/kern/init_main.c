@@ -5873,8 +5873,6 @@ batch_checks(void)
 #define REF_ROUNDS  4096
 
 static struct thread *ref_victim;
-static volatile uint32_t ref_go;
-static volatile uint32_t ref_done;
 
 static void
 ref_hammer(void)
@@ -5886,6 +5884,15 @@ ref_hammer(void)
         thread_unref(ref_victim);
     }
 }
+
+/*
+ * The other core's half. Tier 0 has no other core, per section 13.3,
+ * so this and the two flags it waits on exist only where there is one.
+ */
+#if SYS_TIER == 2
+
+static volatile uint32_t ref_go;
+static volatile uint32_t ref_done;
 
 static void
 ref_thread(void *arg)
@@ -5903,11 +5910,12 @@ ref_thread(void *arg)
     thread_exit(0);
 }
 
+#endif /* SYS_TIER == 2 */
+
 static void
 refcount_checks(void)
 {
     uint32_t before;
-    uint32_t spin;
 
     cnputs("references: a count two cores let go of at once\n");
 
@@ -5923,6 +5931,7 @@ refcount_checks(void)
 
 #if SYS_TIER == 2
     {
+        uint32_t spin;
         struct thread *t = thread_create("ref-other", PRIO_BOOT,
           ref_thread, NULL);
 
@@ -5947,7 +5956,6 @@ refcount_checks(void)
           (unsigned int)REF_ROUNDS);
     }
 #else
-    (void)spin;
     ref_hammer();
     cnprintf("    %u rounds on the only core there is    OK\n",
       (unsigned int)REF_ROUNDS);
