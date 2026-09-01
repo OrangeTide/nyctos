@@ -11,6 +11,7 @@
 #include <sys/page.h>
 #include <sys/handle.h>
 #include <sys/object.h>
+#include <sys/objref.h>
 #include <sys/sched.h>
 #include <sys/proc.h>
 #include <sys/systm.h>
@@ -1346,40 +1347,59 @@ proc_reap(struct proc *p)
     }
 }
 
-static void
-proc_reap_if_done(struct proc *p)
+/*
+ * Let one reference go and say whether that was the last thing keeping
+ * this process in existence.
+ *
+ * The count and the answer are taken together, under the exclusion of
+ * sys/objref.h, because the answer reads the count and two other
+ * fields. The reaping is done outside it: reaping closes every handle
+ * this process held, which releases references to other objects, which
+ * arrives back here.
+ */
+static bool
+proc_release(struct proc *p, const char *complaint)
 {
-    if (p->p_exited && p->p_refs == 0 && p->p_nthreads == 0) {
-        proc_reap(p);
+    intr_state_t s = objref_enter();
+    bool doomed;
+
+    if (p->p_refs == 0) {
+        objref_leave(s);
+        panic("proc %s: %s", p->p_name, complaint);
     }
+
+    p->p_refs--;
+    doomed = p->p_exited && p->p_refs == 0 && p->p_nthreads == 0;
+
+    objref_leave(s);
+
+    return doomed;
 }
 
 void
 proc_ref(struct proc *p)
 {
+    intr_state_t s = objref_enter();
+
     p->p_refs++;
+
+    objref_leave(s);
 }
 
 void
 proc_unref(struct proc *p)
 {
-    if (p->p_refs == 0) {
-        panic("proc %s: unreferenced more often than referenced",
-          p->p_name);
+    if (proc_release(p, "unreferenced more often than referenced")) {
+        proc_reap(p);
     }
-    p->p_refs--;
-    proc_reap_if_done(p);
 }
 
 void
 proc_thread_reaped(struct proc *p)
 {
-    if (p->p_refs == 0) {
-        panic("proc %s: a thread outlived every reference to it",
-          p->p_name);
+    if (proc_release(p, "a thread outlived every reference to it")) {
+        proc_reap(p);
     }
-    p->p_refs--;
-    proc_reap_if_done(p);
 }
 
 struct thread *

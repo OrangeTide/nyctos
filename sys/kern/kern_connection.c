@@ -5,6 +5,7 @@
 
 #include <sys/channel.h>
 #include <sys/connection.h>
+#include <sys/objref.h>
 #include <sys/object.h>
 #include <sys/systm.h>
 
@@ -60,16 +61,29 @@ connection_owner(const struct connection *cn)
 void
 connection_ref(struct connection *cn)
 {
+    intr_state_t s = objref_enter();
+
     cn->cn_refs++;
+
+    objref_leave(s);
 }
 
 void
 connection_unref(struct connection *cn)
 {
+    intr_state_t s = objref_enter();
+    bool doomed;
+
     if (cn->cn_refs == 0) {
+        objref_leave(s);
         panic("connection: unreferenced more often than referenced");
     }
-    if (--cn->cn_refs == 0) {
+
+    doomed = --cn->cn_refs == 0;
+
+    objref_leave(s);
+
+    if (doomed) {
         connection_destroy(cn);
     }
 }

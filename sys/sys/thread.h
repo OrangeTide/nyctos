@@ -471,4 +471,7 @@ void md_switch(void **old_sp, void *new_sp);
 /* Which cores this thread has ever been queued on, one bit each. */
 uint32_t thread_linked_cores(const struct thread *t);
 
+/* How many things are keeping this thread in existence. */
+uint32_t thread_refs(const struct thread *t);
+
 #endif /* _SYS_THREAD_H_ */

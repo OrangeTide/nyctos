@@ -15,6 +15,8 @@
  * and does not grow a case per object type.
  */
 
+#include <sys/lock.h>
+#include <sys/objref.h>
 #include <sys/prepared.h>
 #include <sys/grant.h>
 #include <sys/channel.h>
@@ -175,3 +177,44 @@ handle_object_release(const struct handle_table *ht, uint32_t type,
         channel_set_owner(obj, NULL);
     }
 }
+
+#if SYS_TIER == 2
+
+static struct spinlock objref_lock = { 0, 0, "objrefs" };
+
+intr_state_t
+objref_enter(void)
+{
+    intr_state_t s = md_intr_disable();
+
+    spin_lock(&objref_lock);
+
+    return s;
+}
+
+void
+objref_leave(intr_state_t saved)
+{
+    spin_unlock(&objref_lock);
+    md_intr_restore(saved);
+}
+
+#else
+
+/*
+ * Section 13.3 buys Tier 0 a kernel with no internal locking at all,
+ * and one core is what makes disabling interrupts exclusion again.
+ */
+intr_state_t
+objref_enter(void)
+{
+    return md_intr_disable();
+}
+
+void
+objref_leave(intr_state_t saved)
+{
+    md_intr_restore(saved);
+}
+
+#endif /* SYS_TIER == 2 */

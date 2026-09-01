@@ -272,6 +272,13 @@ rather than a hole in the capability model.
 like a person typing and once as a burst like a pipe, and compares the
 transcript against a recorded one.
 
+The reference counts that decide when an object is freed were plain
+increments, unsafe on two cores, and three milestones listed them
+without fixing them. They are fixed: the count and the decision to free
+are taken together, and a check that hammers one from both cores finds
+it back where it started, where the old code left it at 230 instead of
+1.
+
 What does not exist: a device that does direct memory access, and with
 it the half of section 17 about transfers in flight. Memory is still
 never reclaimed, so a slot comes back and the megabyte a process was loaded
@@ -672,10 +679,8 @@ finished. What it does not schedule, and what the last three
 milestones each said would be worth doing next, is written down there
 rather than guessed at here.
 
-Three things are named in more than one retrospective, which is what
-this project treats as a signal. The reference counts that decide when
-an object is freed are still plain increments, unsafe on two cores, and
-three milestones have listed them without fixing them. The longest
+Two things are named in more than one retrospective, which is what this
+project treats as a signal. The longest
 interrupts-disabled region spans a context switch and no preemption
 point can shorten it, so lowering the latency floor means not
 disabling interrupts across a switch or making the switch

@@ -5855,6 +5855,114 @@ batch_checks(void)
       handle_close(&p->p_handles, h_batch), SYS_OK);
 }
 
+
+/*
+ * The reference counts that decide when an object is freed, taken and
+ * let go from both cores at once.
+ *
+ * M8 listed these as unsafe the moment there were two cores, M9 listed
+ * them again, and M10 listed them a third time. Nothing ever checked
+ * them, which is most of why nothing ever fixed them: the hazard was a
+ * sentence in three retrospectives rather than a line of output.
+ *
+ * A thread is the object, because a thread carries a count and can be
+ * referenced by a handle without being run. The count is put back
+ * exactly where it started, which a lost increment or a lost decrement
+ * both break.
+ */
+#define REF_ROUNDS  4096
+
+static struct thread *ref_victim;
+static volatile uint32_t ref_go;
+static volatile uint32_t ref_done;
+
+static void
+ref_hammer(void)
+{
+    uint32_t i;
+
+    for (i = 0; i < REF_ROUNDS; i++) {
+        thread_ref(ref_victim);
+        thread_unref(ref_victim);
+    }
+}
+
+static void
+ref_thread(void *arg)
+{
+    (void)arg;
+
+    while (ref_go == 0) {
+        md_cpu_relax();
+    }
+
+    ref_hammer();
+
+    md_cpu_fence();
+    ref_done = 1;
+    thread_exit(0);
+}
+
+static void
+refcount_checks(void)
+{
+    uint32_t before;
+    uint32_t spin;
+
+    cnputs("references: a count two cores let go of at once\n");
+
+    /*
+     * The checking thread itself, which is running and so cannot be
+     * reaped however far its count is wound up and down. One extra
+     * reference is held across the whole thing so that reaching zero
+     * is never the right answer either.
+     */
+    ref_victim = thread_current();
+    thread_ref(ref_victim);
+    before = thread_refs(ref_victim);
+
+#if SYS_TIER == 2
+    {
+        struct thread *t = thread_create("ref-other", PRIO_BOOT,
+          ref_thread, NULL);
+
+        expect("a second core to let go from", sched_migrate(t, 1),
+          SYS_OK);
+        sched_ready(t);
+
+        md_cpu_fence();
+        ref_go = 1;
+
+        ref_hammer();
+
+        for (spin = 0; spin < 2000000u && ref_done == 0; spin++) {
+            sched_yield();
+        }
+        if (ref_done == 0) {
+            panic("references: the other core never finished");
+        }
+        md_cpu_fence();
+
+        cnprintf("    %u rounds from each of two cores       OK\n",
+          (unsigned int)REF_ROUNDS);
+    }
+#else
+    (void)spin;
+    ref_hammer();
+    cnprintf("    %u rounds on the only core there is    OK\n",
+      (unsigned int)REF_ROUNDS);
+#endif
+
+    if (thread_refs(ref_victim) != before) {
+        panic("references: the count came back as %u, not %u",
+          (unsigned int)thread_refs(ref_victim), (unsigned int)before);
+    }
+    cnprintf("    and the count came back to %u            OK\n",
+      (unsigned int)before);
+
+    thread_unref(ref_victim);
+}
+
 static void
 clock_checks(void)
 {
@@ -6827,6 +6935,7 @@ kernel_main(void)
     cpu_report();
     lock_check();
     clock_checks();
+    refcount_checks();
     batch_checks();
     link_checks();
 #if SYS_TIER == 2

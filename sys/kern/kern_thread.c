@@ -12,6 +12,7 @@
  * going back on a run queue, blocking, or dead.
  */
 
+#include <sys/objref.h>
 #include <sys/lock.h>
 #include <sys/config.h>
 #include <sys/object.h>
@@ -512,13 +513,21 @@ thread_reapable(const struct thread *t)
 void
 thread_ref(struct thread *t)
 {
+    intr_state_t s = objref_enter();
+
     t->t_refs++;
+
+    objref_leave(s);
 }
 
 void
 thread_unref(struct thread *t)
 {
+    intr_state_t s = objref_enter();
+    bool doomed;
+
     if (t->t_refs == 0) {
+        objref_leave(s);
         panic("thread %s: unreferenced more often than referenced",
           t->t_name);
     }
@@ -529,8 +538,17 @@ thread_unref(struct thread *t)
      * either way it is not on a stack anything is using, because a
      * thread reaches THREAD_DEAD only after it has switched away for
      * the last time and been parked or passed over.
+     *
+     * Decided under the exclusion of sys/objref.h with the count, and
+     * acted on outside it. Two cores letting the last two references
+     * go together would otherwise both find the count at zero, or
+     * neither would.
      */
-    if (thread_reapable(t) && t != current && t != reap_parked) {
+    doomed = thread_reapable(t) && t != current && t != reap_parked;
+
+    objref_leave(s);
+
+    if (doomed) {
         thread_reap(t);
     }
 }
@@ -608,6 +626,12 @@ thread_cancel(struct thread *t)
     md_intr_restore(s);
 
     return SYS_OK;
+}
+
+uint32_t
+thread_refs(const struct thread *t)
+{
+    return t->t_refs;
 }
 
 uint32_t

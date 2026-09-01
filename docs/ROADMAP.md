@@ -382,11 +382,21 @@ bound does not appear in interrupt latency; it does not at Tier 0 and
 it does at Tier 2, where one lock is held across the whole call, so
 sixteen entries is one interrupts-disabled region sixteen entries long.
 
+**The reference counts are fixed**, which three retrospectives had named
+and none had done. `p_refs`, `t_refs` and `cn_refs` decide when an
+object is freed, and the decision reads the count and other state
+together, so an atomic counter would not have been enough. The count
+and the decision are taken under one exclusion and the freeing is done
+after it is released, because reaping an object closes handles that
+release references to others and would arrive back at the same lock.
+
+A check hammers one count from both cores, four thousand rounds each,
+and requires it to come back where it started. With the plain
+increments it comes back at 230 instead of 1.
+
 What does not exist: a device that does direct memory access, and with
 it the half of section 17 about transfers in flight. Memory is still
-never reclaimed, a rendezvous still carries no deadline, and the
-reference counts that decide when an object is freed are still plain
-increments, which three milestones have now named without fixing.
+never reclaimed, a rendezvous still carries no deadline, and
 Nothing has run on hardware, so every duration this project has
 published is the right shape and the wrong magnitude.
 
@@ -8051,6 +8061,15 @@ as plain increments that two cores make unsafe. M9 listed them again.
 This is the third milestone to name them without fixing them, and the
 fact that they are named in three retrospectives rather than fixed in
 one is itself a finding about how this project has been prioritising.
+
+*Since fixed, immediately after this milestone closed.* The count and
+the decision to free are taken together under one exclusion, and the
+freeing is done after it is released, because reaping an object closes
+handles that release references to other objects and would arrive back
+at the same lock. A check hammers one count from both cores and
+requires it to come back where it started; with the plain increments it
+comes back at 230 instead of 1, so the hazard three retrospectives
+described was not a small one.
 
 ## 14. Bring-Up Order Within M1
 
