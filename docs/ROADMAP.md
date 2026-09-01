@@ -5093,6 +5093,16 @@ external interrupt. It is a limit of what has been built rather than a
 defect in it, and the stage that gives a second core a device is the
 stage that has to answer it.
 
+*Since fixed, after M10 closed.* Every per-context register is
+addressed from the core asking now: a context is a hart and a privilege
+level together, so hart H uses 2H+1 for its supervisor mode. The
+threshold moved from the one-off setup into the per-core half, because
+a core whose threshold nobody lowered is enabled for a source and never
+delivered one. A second core writes a value nothing else uses into its
+own threshold and reads the first core's back to check they are not the
+same register, which the old arithmetic fails with `core 1 shares the
+first core's context`.
+
 **5. What two cores did to the measurements.** *Built.*
 
 - Every counter this system prints is a plain increment on a shared word.
@@ -7788,9 +7798,10 @@ timer's lists. That is narrower than the claim stage two made, and the
 difference is a real gap rather than a wording problem.
 
 **Two cores, and only two.** `SYS_MAX_CORES` is 2. Nothing here has run
-with more, the interrupt controller on one port still addresses its
-external sources to the first core's context, and the arming of the
-timer names one core by a constant.
+with more, and the arming of the timer names one core by a constant.
+The interrupt controller on one port also addressed its external
+sources to the first core's context, which was fixed after M10 closed;
+the M8 entry that recorded it as a known limit says what was done.
 
 **Nothing measured latency**, which is the property the whole
 partitioned design was chosen for.

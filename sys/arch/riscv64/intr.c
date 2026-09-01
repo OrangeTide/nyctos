@@ -13,6 +13,7 @@
  * supervisor context of hart zero rather than the machine one.
  */
 
+#include <sys/cpu.h>
 #include <sys/measure.h>
 #include <sys/intr.h>
 #include <sys/systm.h>
@@ -24,15 +25,18 @@
 /*
  * The platform-level interrupt controller, which is where every device
  * that is not the timer arrives.
- * Context 1 is hart 0 in supervisor mode, which is where this kernel
- * runs; context 0 is its machine mode, which after boot does nothing.
+ * A context is a hart and a privilege level together: hart H has
+ * context 2H for its machine mode and 2H+1 for its supervisor mode.
+ * Everything per-context here is therefore addressed from the core
+ * asking, and was addressed as hart 0 until M10. Nothing had gone
+ * wrong, because only the first core ever enables an external source
+ * and so only it ever claims one; a second core that took an external
+ * interrupt would have claimed from the first core's context and taken
+ * an interrupt that was not delivered to it.
  */
 #define PLIC_BASE       0x0c000000UL
 #define PLIC_PRIORITY   0x000000        /* one word per source */
 #define PLIC_ENABLE     0x002000        /* one bit per source, per context */
-#define PLIC_CONTEXT    1               /* hart 0, supervisor mode */
-#define PLIC_ENABLE_CTX (PLIC_ENABLE + PLIC_CONTEXT * 0x80)
-#define PLIC_HART_CTX   (PLIC_CONTEXT * 0x1000)
 #define PLIC_THRESHOLD  0x200000        /* per context */
 #define PLIC_CLAIM      0x200004        /* per context */
 
@@ -77,6 +81,29 @@
 unsigned long md_pending_irq;
 
 /* PLIC registers. Context 0 throughout, which is hart 0 in machine mode. */
+static unsigned int
+plic_context(void)
+{
+    /*
+     * This core's supervisor context. The core index is the hart
+     * number on this port: a hart carries its own number down from
+     * machine mode and claims the entry of that index.
+     */
+    return 2u * cpu_self()->cp_index + 1u;
+}
+
+static unsigned long
+plic_enable_ctx(void)
+{
+    return PLIC_ENABLE + (unsigned long)plic_context() * 0x80UL;
+}
+
+static unsigned long
+plic_hart_ctx(void)
+{
+    return (unsigned long)plic_context() * 0x1000UL;
+}
+
 static volatile uint32_t *
 plic_reg(unsigned long off)
 {
@@ -86,7 +113,7 @@ plic_reg(unsigned long off)
 static void
 plic_enable(unsigned int source, bool on)
 {
-    volatile uint32_t *reg = plic_reg(PLIC_ENABLE_CTX + (source / 32) * 4);
+    volatile uint32_t *reg = plic_reg(plic_enable_ctx() + (source / 32) * 4);
     uint32_t bit = (uint32_t)1 << (source % 32);
 
     if (on) {
@@ -144,11 +171,15 @@ void
 md_intr_init(void)
 {
     /*
-     * The timer needs nothing: supervisor mode programs its own. The PLIC
-     * needs its source given a priority above the threshold of the context
-     * it is delivering to, or it delivers nothing and says nothing.
+     * The timer needs nothing: supervisor mode programs its own. The
+     * PLIC needs its source given a priority above the threshold of
+     * the context it is delivering to, or it delivers nothing and says
+     * nothing.
+     *
+     * A source priority is one word for the machine. The threshold is
+     * per context and has moved to the per-core half below, where a
+     * core that is not the first one also gets one.
      */
-    *plic_reg(PLIC_THRESHOLD + PLIC_HART_CTX) = 0;
     *plic_reg(PLIC_PRIORITY + UART_SOURCE * 4) = 1;
 }
 void
@@ -202,7 +233,7 @@ md_irq_claim(void)
     }
 
     if (cause == CAUSE_EXTERNAL) {
-        source = *plic_reg(PLIC_CLAIM + PLIC_HART_CTX);
+        source = *plic_reg(PLIC_CLAIM + plic_hart_ctx());
         if (source == 0) {
             return IRQ_NONE;
         }
@@ -223,7 +254,7 @@ void
 md_irq_eoi(unsigned int irq)
 {
     if (irq >= PLIC_IRQ_BASE) {
-        *plic_reg(PLIC_CLAIM + PLIC_HART_CTX) = irq - PLIC_IRQ_BASE;
+        *plic_reg(PLIC_CLAIM + plic_hart_ctx()) = irq - PLIC_IRQ_BASE;
     } else if (irq == TIMER_IRQ) {
         md_timer_disarm();
     }
@@ -308,10 +339,42 @@ void
 md_intr_init_core(void)
 {
     /*
-     * Nothing but the poke. The timer and the external controller are
-     * unmasked by whoever attaches to them, and a core that runs
-     * nothing attaches to neither; being reachable by the other core is
-     * what every core needs from the start.
+     * This core's threshold, so that a source enabled in this core's
+     * context can reach it. Every context starts with a threshold that
+     * refuses everything, and a core whose threshold nobody lowered
+     * would be enabled for a source and never delivered one.
+     */
+    *plic_reg(PLIC_THRESHOLD + plic_hart_ctx()) = 0;
+
+    /*
+     * And that it is this core's and not the first core's. Every
+     * per-context register here was addressed as hart zero until M10,
+     * so a second core setting its threshold was setting the first
+     * core's, and a second core claiming an interrupt would have taken
+     * one delivered to the first.
+     *
+     * Written and read back rather than reasoned about, because the
+     * arithmetic that was wrong is the arithmetic that would be
+     * checked. A value nothing else uses, into this core's threshold,
+     * and then the first core's is read: if they are the same register
+     * it comes back.
+     */
+    if (cpu_self()->cp_index != 0) {
+        *plic_reg(PLIC_THRESHOLD + plic_hart_ctx()) = 7;
+
+        if (*plic_reg(PLIC_THRESHOLD + 0x1000UL) == 7) {
+            panic("plic: core %u shares the first core's context",
+              (unsigned int)cpu_self()->cp_index);
+        }
+
+        *plic_reg(PLIC_THRESHOLD + plic_hart_ctx()) = 0;
+    }
+
+    /*
+     * And the poke. The timer and the external controller are unmasked
+     * by whoever attaches to them, and a core that runs nothing
+     * attaches to neither; being reachable by the other core is what
+     * every core needs from the start.
      */
     md_irq_unmask(IPI_IRQ);
 }
