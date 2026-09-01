@@ -197,6 +197,13 @@ struct cpu {
      * than once into a register: a spin on a value the compiler is
      * allowed to cache is a spin that never ends.
      */
+    /*
+     * How deep this core is inside the console. A message is printed
+     * by several calls, and the calls nest, so the lock is taken by
+     * the outermost one and a count is what knows which that was.
+     */
+    uint32_t            cp_cn_depth;
+
     volatile uint64_t   cp_idle;
     volatile bool       cp_up;
 };

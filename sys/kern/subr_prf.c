@@ -12,15 +12,111 @@
  * boot and to say something useful in a panic, and no more. It has a
  * minimum field width and no floating point.
  */
-
+#include <sys/cpu.h>
+#include <sys/lock.h>
 #include <sys/systm.h>
 
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 
-void
-cnwrite(const char *buf, size_t len)
+/*
+ * One core at a time, for the length of a message rather than the length
+ * of a character. Two cores printing at once produced a line neither of
+ * them wrote: a panic from the second core arrived shuffled into the
+ * first core's output, one fragment at a time, and could not be read.
+ *
+ * The unit is a message because that is the unit a reader reads. Locking
+ * each character would still let two lines arrive woven together, which
+ * is the defect and not a smaller version of it.
+ *
+ * Messages nest: a panic prints a prefix, a body and a newline, and the
+ * formatter prints each piece of what it formats. So the lock is taken by
+ * the outermost call and the depth in the core is what knows which one
+ * that was. Interrupts are off throughout, because a handler that printed
+ * while this core held the lock would wait for itself.
+ *
+ * Before cpu_init there is no core structure and no second core, so the
+ * early boot messages take nothing and rely on being alone.
+ */
+#if SYS_TIER == 2
+static struct spinlock console_lock = { 0, 0, "console" };
+#endif
+
+static intr_state_t
+console_enter(void)
+{
+    intr_state_t s = md_intr_disable();
+    struct cpu *c = cpu_self();
+
+    if (c != NULL && c->cp_cn_depth++ == 0) {
+#if SYS_TIER == 2
+        spin_lock(&console_lock);
+#endif
+    }
+
+    return s;
+}
+
+static void
+console_leave(intr_state_t saved)
+{
+    struct cpu *c = cpu_self();
+
+    if (c != NULL && --c->cp_cn_depth == 0) {
+#if SYS_TIER == 2
+        spin_unlock(&console_lock);
+#endif
+    }
+
+    md_intr_restore(saved);
+}
+
+/*
+ * The panic path waits for a bounded time, then prints regardless.
+ *
+ * A core that stops the machine must say why, so it cannot wait for a
+ * lock forever: if the core holding it is the broken one, the panic
+ * would never appear at all. But the ordinary case is a core partway
+ * through an ordinary message, which will be finished in microseconds,
+ * and barging into that is what made a panic unreadable in the first
+ * place. So it waits, and the bound is what it costs to be wrong: long
+ * enough that no real message is still running, short enough that a
+ * human watching a wedged machine does not conclude it printed nothing.
+ *
+ * Nothing gives it back. panic does not return.
+ */
+#define CONSOLE_PANIC_SPINS 20000000u
+
+static void
+console_seize(void)
+{
+    struct cpu *c = cpu_self();
+
+    (void)md_intr_disable();
+
+    if (c == NULL || c->cp_cn_depth > 0) {
+        return;
+    }
+
+    c->cp_cn_depth = 1;
+#if SYS_TIER == 2
+    {
+        unsigned int i;
+
+        for (i = 0; i < CONSOLE_PANIC_SPINS; i++) {
+            if (spin_trylock(&console_lock)) {
+                return;
+            }
+            md_cpu_relax();
+        }
+    }
+#endif
+}
+
+/* Characters onto the port, with the newline expansion. Caller holds it. */
+static void
+cn_raw(const char *buf, size_t len)
 {
     size_t i;
 
@@ -33,12 +129,25 @@ cnwrite(const char *buf, size_t len)
 }
 
 void
+cnwrite(const char *buf, size_t len)
+{
+    intr_state_t s = console_enter();
+
+    cn_raw(buf, len);
+    console_leave(s);
+}
+
+void
 cnputs(const char *s)
 {
+    intr_state_t st = console_enter();
+
     while (*s != '\0') {
-        cnwrite(s, 1);
+        cn_raw(s, 1);
         s++;
     }
+
+    console_leave(st);
 }
 
 static size_t
@@ -91,15 +200,15 @@ emit(const char *s, size_t len, int width, bool left)
 
     if (!left) {
         while (pad-- > 0) {
-            cnwrite(" ", 1);
+            cn_raw(" ", 1);
         }
     }
 
-    cnwrite(s, len);
+    cn_raw(s, len);
 
     if (left) {
         while (pad-- > 0) {
-            cnwrite(" ", 1);
+            cn_raw(" ", 1);
         }
     }
 }
@@ -125,10 +234,11 @@ cnvprintf(const char *fmt, va_list ap)
     int width;
     bool left;
     bool neg;
+    intr_state_t cn = console_enter();
 
     while (*fmt != '\0') {
         if (*fmt != '%') {
-            cnwrite(fmt, 1);
+            cn_raw(fmt, 1);
             fmt++;
             continue;
         }
@@ -220,12 +330,12 @@ cnvprintf(const char *fmt, va_list ap)
             emit(numbuf, len, width, left);
             break;
         case '%':
-            cnwrite("%", 1);
+            cn_raw("%", 1);
             break;
         default:
-            cnwrite("%", 1);
+            cn_raw("%", 1);
             if (*fmt != '\0') {
-                cnwrite(fmt, 1);
+                cn_raw(fmt, 1);
             }
             break;
         }
@@ -234,6 +344,8 @@ cnvprintf(const char *fmt, va_list ap)
             fmt++;
         }
     }
+
+    console_leave(cn);
 }
 
 void
@@ -262,6 +374,13 @@ void
 panic(const char *fmt, ...)
 {
     va_list ap;
+
+    /*
+     * Whatever else is being printed, this gets printed. The rest of
+     * this message nests inside the hold taken here, so the three
+     * calls below arrive as one piece.
+     */
+    console_seize();
 
     cnputs("\npanic: ");
     va_start(ap, fmt);

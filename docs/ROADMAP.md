@@ -5103,6 +5103,31 @@ own threshold and reads the first core's back to check they are not the
 same register, which the old arithmetic fails with `core 1 shares the
 first core's context`.
 
+*And what that fix found.* The panic proving the check works arrived
+unreadable: `panic: pl4096 on ic: core co1 shre 0ares t anhed first
+core's context`. Two cores writing the console at once produce a line
+neither of them wrote, because nothing kept one core's message together.
+A break test made both cores print the same fixed line three hundred
+times each: without exclusion, 277 of 304 lines came out woven, and the
+count itself is wrong because weaving destroys the line boundaries the
+count is made of.
+
+The console now holds one core at a time for the length of a message
+rather than the length of a character, which is the unit because it is
+what a reader reads. Messages nest, since a panic prints a prefix, a
+body and a newline and the formatter prints each piece of what it
+formats, so the outermost call takes the lock and a depth in the core
+knows which one that was. The same test with it in place: 600 lines, all
+of them one of the two.
+
+The panic path is the one that cannot simply wait. A core that stops the
+machine must say why, so waiting forever would lose the message
+altogether if the core holding the lock is the broken one, and that is
+the case a panic exists for. It waits a bounded time and then prints
+regardless. Printing immediately was tried first and reproduced the
+original symptom exactly, because the case that actually occurs is not a
+wedged core but an ordinary core partway through an ordinary message.
+
 **5. What two cores did to the measurements.** *Built.*
 
 - Every counter this system prints is a plain increment on a shared word.

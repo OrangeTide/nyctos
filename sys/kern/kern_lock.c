@@ -21,6 +21,27 @@
 
 #if SYS_TIER == 2
 
+/*
+ * Take it if it is free, and say whether it was. For a caller that has
+ * something better to do than wait, which in this kernel means the
+ * panic path: a core that cannot print because another core is
+ * printing is worse than two cores printing at once.
+ */
+bool
+spin_trylock(struct spinlock *l)
+{
+    uint32_t self = cpu_self()->cp_index + 1;
+
+    if (__atomic_exchange_n(&l->sl_locked, 1u, __ATOMIC_ACQUIRE) != 0) {
+        return false;
+    }
+
+    cpu_self()->cp_locks++;
+    l->sl_owner = self;
+
+    return true;
+}
+
 /* Whether this core is the one holding it. */
 static bool
 spin_held(const struct spinlock *l)

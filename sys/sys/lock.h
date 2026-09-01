@@ -76,6 +76,12 @@ void spin_lock(struct spinlock *l);
 void spin_unlock(struct spinlock *l);
 
 /*
+ * Take it if it is free. For the panic path, which must print whatever
+ * else is happening.
+ */
+bool spin_trylock(struct spinlock *l);
+
+/*
  * The kernel lock, held from the moment a core enters the kernel until
  * it leaves. There are four ways in, all of them from the port's
  * exception vectors, and each one is a pair of these.
