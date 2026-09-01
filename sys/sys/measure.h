@@ -164,6 +164,12 @@ void meas_check_clock(void);
 void intr_region_arm(void);
 void intr_region_begin(uintptr_t site);
 void intr_region_end(uintptr_t site);
+
+/*
+ * The region just opened was opened to print, so it is the console's
+ * and not the kernel's. Both are reported.
+ */
+void intr_region_console(void);
 void intr_region_report(void);
 
 /*

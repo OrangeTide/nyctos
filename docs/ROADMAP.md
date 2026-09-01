@@ -5128,6 +5128,26 @@ regardless. Printing immediately was tried first and reproduced the
 original symptom exactly, because the case that actually occurs is not a
 wedged core but an ordinary core partway through an ordinary message.
 
+*What reviewing it found.* Holding a message across a whole line means
+printing with interrupts off, and that made the console the longest
+interrupts-disabled region in the system: on riscv64 at Tier 2 the
+worst went from 714 microseconds at `channel_reply` to about 1100
+inside the console, and the mean of every region on the core went from
+49 ticks to 117. At Tier 0 the mean went from 16 to 111 microseconds.
+Nothing in the kernel had changed. Section 13.3's headline figure had
+quietly become a measurement of the UART, which is the one thing M9
+said a figure must not be allowed to do.
+
+Disabling interrupts is not the part to undo. A core preempted while
+holding the console lock is a core whose next thread spins for a lock
+its own core will not release until it runs again, and at Tier 0, where
+there is no lock at all, preemption mid-message weaves two threads
+together on one core just as two cores did. What was wrong was the
+reporting, not the exclusion. The report now gives the longest region
+and the longest that is not a console message, and the second one is
+back at `channel_reply` in all four configurations at 469 to 602
+microseconds, which is where M9 left it.
+
 **5. What two cores did to the measurements.** *Built.*
 
 - Every counter this system prints is a plain increment on a shared word.

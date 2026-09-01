@@ -1328,6 +1328,10 @@ Preemption points sit at batch entry boundaries, at message copy chunk boundarie
 
 The longest region moves between runs by nearly a factor of two, which is why it is given as a range. The mean moves by under a tenth. The counts do not move at all, and neither does the site.
 
+**The console displaced this figure, and the report now gives both.** Holding a console message together across cores means printing it with interrupts off, and a line onto a polled UART is the longest interrupts-disabled region this kernel has: about 1100 microseconds against the 597 that the kernel's own longest region costs on the same run. It also moves the mean, which is the more misleading of the two, because most regions are short and a few console lines are not: at Tier 0 the mean went from 16 to 111 microseconds without a single kernel path changing. The report prints the overall longest and the longest that is not a console message, and the table above is the second of those. The site is unchanged either way: `channel_reply` at every tier and port, exactly as it was at M9.
+
+The console figure is real and is not hidden. A system printing a line genuinely cannot take an interrupt for that long. It is a property of the debug facility of section 22 rather than of a path a system does work through, and a figure about the kernel that is really a figure about a UART answers a question nobody asked.
+
 **The tiers are not distinguishable in the worst case and are sharply distinguishable in the typical one.** Four runs of each on one port give 596, 1009, 619 and 621 microseconds at Tier 0 against 733, 601, 580 and 571 at Tier 2: overlapping ranges and no difference that survives the noise. The means are 159 ticks against 51, stable to a few per cent across runs, so a typical region at Tier 2 is a third the length of one at Tier 0. The lock that M8 expected to make this tier worse makes twenty thousand short regions where the other tier has six hundred longer ones, and leaves the worst case where it was.
 
 **Three things follow, and the third is the one that matters.**

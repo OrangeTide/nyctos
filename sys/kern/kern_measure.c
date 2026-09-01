@@ -349,7 +349,24 @@ intr_region_begin(uintptr_t site)
 
     c->cp_intr_site = site;
     c->cp_intr_open = true;
+    c->cp_intr_console = false;
     c->cp_intr_start = md_time_now();
+}
+
+/*
+ * The region this core has just opened was opened to print. Called by
+ * the console, and only when it was the caller that turned interrupts
+ * off: a message printed inside a region somebody else began belongs to
+ * whoever began it.
+ */
+void
+intr_region_console(void)
+{
+    struct cpu *c = cpu_self();
+
+    if (c != NULL) {
+        c->cp_intr_console = true;
+    }
 }
 
 void
@@ -389,6 +406,11 @@ intr_region_end(uintptr_t site)
         c->cp_intr_worst_site = c->cp_intr_site;
         c->cp_intr_worst_end = site;
         c->cp_intr_worst_at = c->cp_intr_start;
+    }
+
+    if (!c->cp_intr_console && took > c->cp_intr_worst_kern) {
+        c->cp_intr_worst_kern = took;
+        c->cp_intr_worst_kern_site = c->cp_intr_site;
     }
 
     if (took > c->cp_win_worst) {
@@ -431,6 +453,20 @@ intr_region_report(void)
           "run of %lu\n", (unsigned long)c->cp_intr_worst_end,
           (unsigned long)c->cp_intr_worst_at,
           (unsigned long)md_time_now());
+
+        /*
+         * And the same without the console, which is what section
+         * 13.3 is asking about. Printing a line with interrupts off is
+         * a real region and the line above says so; it is also the
+         * longest one here, and a figure about the kernel that is
+         * really a figure about a UART is a figure nobody can use.
+         */
+        cnprintf("        without the console: %lu ticks (about %lu us)"
+          " at 0x%lx\n",
+          (unsigned long)c->cp_intr_worst_kern,
+          (unsigned long)(hz != 0 ?
+            (c->cp_intr_worst_kern * 1000000UL) / hz : 0),
+          (unsigned long)c->cp_intr_worst_kern_site);
 
         if (c->cp_intr_regions == 0) {
             panic("interrupts off: core %u never disabled them",

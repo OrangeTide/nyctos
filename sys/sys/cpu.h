@@ -137,6 +137,21 @@ struct cpu {
     uint64_t            cp_intr_worst_at;
 
     /*
+     * And the same again, ignoring the regions the kernel's own
+     * console opens. Printing a line to a polled UART with interrupts
+     * off is a real region and is reported as one, but it is the debug
+     * facility of section 22 rather than a path a system does work
+     * through, and left alone it is the longest region here: it
+     * displaced the figure section 13.3 asks for the moment the
+     * console started holding a message together. Both are printed,
+     * because hiding either would be answering a different question
+     * than the one asked.
+     */
+    bool                cp_intr_console;
+    uint64_t            cp_intr_worst_kern;
+    uintptr_t           cp_intr_worst_kern_site;
+
+    /*
      * The same, over a window a check has cleared, so that asking what
      * one batch cost does not throw away what the run cost. They were
      * one pair of fields, and the run-wide figure survived only

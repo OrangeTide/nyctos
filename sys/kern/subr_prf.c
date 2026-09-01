@@ -14,6 +14,7 @@
  */
 #include <sys/cpu.h>
 #include <sys/lock.h>
+#include <sys/measure.h>
 #include <sys/systm.h>
 
 #include <stdarg.h>
@@ -49,6 +50,18 @@ console_enter(void)
     intr_state_t s = md_intr_disable();
     struct cpu *c = cpu_self();
 
+    /*
+     * A message printed with interrupts on is a region of its own, and
+     * a long one: a line onto a polled UART is the longest region this
+     * kernel has. It is charged to the console rather than to section
+     * 13.3's figure, and both are reported. Only when this call was the
+     * one that turned them off, because a message printed inside
+     * somebody else's region belongs to whoever began it.
+     */
+    if (s != 0) {
+        intr_region_console();
+    }
+
     if (c != NULL && c->cp_cn_depth++ == 0) {
 #if SYS_TIER == 2
         spin_lock(&console_lock);
@@ -78,11 +91,14 @@ console_leave(intr_state_t saved)
  * A core that stops the machine must say why, so it cannot wait for a
  * lock forever: if the core holding it is the broken one, the panic
  * would never appear at all. But the ordinary case is a core partway
- * through an ordinary message, which will be finished in microseconds,
+ * through an ordinary message, which will be finished shortly,
  * and barging into that is what made a panic unreadable in the first
  * place. So it waits, and the bound is what it costs to be wrong: long
  * enough that no real message is still running, short enough that a
  * human watching a wedged machine does not conclude it printed nothing.
+ * The longest message this system prints holds the console for about a
+ * millisecond, which the interrupts-off report names, and this bound is
+ * several hundred times that.
  *
  * Nothing gives it back. panic does not return.
  */
