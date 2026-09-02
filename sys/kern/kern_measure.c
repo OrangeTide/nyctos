@@ -86,7 +86,16 @@ meas_report(const struct meas *m)
     uint32_t i;
 
     for (i = 0; i < SYS_MAX_CORES; i++) {
-        if (m->ms_count[i] == 0) {
+        /*
+         * A core with no counted visit, not merely one with no visit.
+         * The range is only ever written by a visit that could be
+         * counted, so a core whose visits all crossed a core still
+         * holds the zeroes it started with, and folding those in
+         * reports a low of zero that nothing measured. Every
+         * measurement here keeps all its visits on one core, which is
+         * why this had not shown.
+         */
+        if (m->ms_count[i] == m->ms_uncounted[i]) {
             continue;
         }
         if (!seen || m->ms_plo[i] < lo) {
@@ -613,9 +622,26 @@ irq_dispatch_arrived(struct thread *t)
     took = now >= t->t_irq_stamp ? now - t->t_irq_stamp : 0;
 
     c->cp_disp_count++;
+
     if (took > c->cp_disp_longest) {
         c->cp_disp_longest = took;
-        c->cp_disp_points = t->t_points - t->t_irq_points;
+    }
+
+    /*
+     * The most any dispatch passed, and not the count belonging to
+     * whichever happened to be longest.
+     *
+     * What the report asserts is that no dispatch passes a preemption
+     * point, which is a claim about all of them. Recording the points
+     * only when the duration was a new worst tested one sample, and
+     * would have said nothing about a short dispatch that passed six.
+     */
+    {
+        uint64_t pts = t->t_points - t->t_irq_points;
+
+        if (pts > c->cp_disp_points) {
+            c->cp_disp_points = pts;
+        }
     }
 
     t->t_irq_stamp = 0;
@@ -639,7 +665,8 @@ irq_dispatch_report(void)
             continue;
         }
         cnprintf("    core %u: %lu dispatched, longest %lu ticks "
-          "(about %lu us), %lu points passed\n", (unsigned int)i,
+          "(about %lu us), most points on any of them %lu\n",
+          (unsigned int)i,
           (unsigned long)c->cp_disp_count,
           (unsigned long)c->cp_disp_longest,
           (unsigned long)(hz != 0 ?
@@ -656,8 +683,8 @@ irq_dispatch_report(void)
      * never blocks. Insisting on one would be insisting on how the
      * input arrived.
      *
-     * What is asserted is the thing that is about the kernel: a
-     * dispatch that happened passed no preemption point, so the path
+     * What is asserted is the thing that is about the kernel: no
+     * dispatch that happened passed a preemption point, so the path
      * from an interrupt to the program waiting on it is straight and
      * cannot be broken into anywhere.
      */

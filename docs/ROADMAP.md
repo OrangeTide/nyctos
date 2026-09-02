@@ -6722,6 +6722,35 @@ a region already open when another begins is silently abandoned rather
 than counted, which is the same case the closing side documents and
 declines to charge for.
 
+*And a second time over the instrument.* Two defects, one of them
+demonstrated rather than argued.
+
+The dispatch check asserted that no interrupt reaches a program by way
+of a preemption point, and tested it on one dispatch. The count was
+recorded only when a dispatch was the longest so far, so it described
+whichever dispatch happened to take the most time and said nothing
+about the others. Planting three points on every dispatch that was not
+the longest: the old form reports `0 points passed` and the run
+completes, with fifteen of sixteen dispatches having passed three
+points each. It now keeps the most any dispatch passed, and the same
+plant fails with `3 points on the way`. The figure it prints is still
+zero, so the claim holds; it is now a claim about all of them.
+
+The other is latent. The report of a preemption-point range folds in
+any core that had visits, but the range is only ever written by a visit
+that could be counted, so a core whose visits all crossed a core still
+holds the zeroes it started with and contributes a low of zero that
+nothing measured. Every measurement here keeps its visits on one core,
+which is why it has not shown; both sessions were dumped per core to
+check that rather than assume it. The guard now skips a core with no
+counted visit rather than a core with no visit.
+
+The corrupted-file trap in the notes caught me again on the way: a perl
+substitution whose pattern contained an escaped `||` inserted its
+replacement at the start of the file instead of at the match. The build
+would not have compiled, but nothing about the failure points at the
+cause. Both edits were redone with awk.
+
 **A limit of the instrument, stated rather than fixed.** The window is
 the core and not the batch: anything else that core does between the
 clearing and the reading is inside it, an interrupt included. That makes
