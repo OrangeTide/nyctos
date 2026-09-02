@@ -810,7 +810,13 @@ intr_region_reset(void)
 uint64_t
 intr_region_count(void)
 {
-    return cpu_self()->cp_win_regions;
+    struct cpu *c = cpu_self();
+
+    if (c == NULL) {
+        return 0;
+    }
+
+    return c->cp_win_regions;
 }
 
 uint64_t

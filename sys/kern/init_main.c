@@ -5721,14 +5721,29 @@ batch_latency_checks(void)
      * growing.
      */
     /*
+     * Nothing else on this core inside the window.
+     *
      * The window is the core and not the batch: anything else this
-     * core does between the clearing and the reading is in it, an
-     * interrupt included. That makes the figure an upper bound on what
-     * the batch cost rather than the batch's cost, which is the safe
-     * direction for the question being asked, because contamination
-     * can only make the one-entry figure larger and the growth harder
-     * to see.
+     * core does between the clearing and the reading is in it. That
+     * was written down as making the figure an upper bound rather
+     * than the batch's cost, and left at that. It was worth more.
+     * With the dispatch held off, twelve runs of the sixteen-entry
+     * figure on one port sit between 275 and 301 ticks; without it,
+     * two of the twelve read 1030 and 1143, which is another thread's
+     * work inside the window and nothing to do with the batch. That
+     * is what used to push the old assertion against its threshold.
+     *
+     * It matters more now than it did, because the count below is
+     * asserted exactly: one thread dispatched in here would add its
+     * regions to these and fail a check about the batch for a reason
+     * that has nothing to do with the batch.
+     *
+     * Deferring holds off the dispatch and not the interrupt, so what
+     * is being measured is untouched. A handler is entered with
+     * interrupts already masked and opens no region of its own.
      */
+    sched_defer();
+
     base = timeline_value(tl);
     batch_fill_on(ops, args, h, 1, base);
     intr_region_reset();
@@ -5742,6 +5757,8 @@ batch_latency_checks(void)
     (void)run_batch(ops, SYS_BATCH_MAX_ENTRIES);
     many = intr_region_worst(&site_many);
     n_many = intr_region_count();
+
+    sched_undefer();
 
     cnprintf("    one entry: %lu region, held them off %lu ticks, "
       "from 0x%lx\n", (unsigned long)n_one, (unsigned long)one,

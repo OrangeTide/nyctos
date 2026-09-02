@@ -6665,6 +6665,34 @@ Holding interrupts across the whole batch at Tier 0 now fails with `one
 region covered all 16 entries`, and a run that is neither shape fails
 too rather than being passed over.
 
+*Reviewing that.* Three things, and the second one matters most.
+
+The accessor for the new count was the only one of the three window
+functions without a null guard on the core pointer. Its neighbours both
+have one. Fixed rather than argued about.
+
+The window is the core and not the batch, which this milestone had
+already written down as making the figure an upper bound rather than
+the batch's cost. That was an understatement, and the new count made it
+matter: the count is asserted exactly, so one thread dispatched inside
+the window would add its regions and fail a check about the batch for a
+reason that has nothing to do with the batch. Both measurements now
+hold the dispatch off. The cost of not having done so was visible in
+the durations all along: twelve runs of the sixteen-entry figure on
+aarch64 at Tier 0 read between 275 and 301 ticks with the dispatch held
+off, and without it two of the twelve read 1030 and 1143. That is
+another thread's work inside the window, and it is what used to push
+the old assertion against its four-times threshold.
+
+And the last thing is the argument for having stopped asserting
+durations at all. Sixty-four boots under eight machines at once, with
+the dispatch held off and nothing else in the window: sixty-three of
+the sixteen-entry figures fall between 253 and 476 ticks and one reads
+3972. Nothing was dispatched into that window. It is the host
+descheduling the emulated core in the middle of a region, which no
+amount of care inside the kernel can prevent and no threshold can
+survive. The count was sixteen in all sixty-four.
+
 **A limit of the instrument, stated rather than fixed.** The window is
 the core and not the batch: anything else that core does between the
 clearing and the reading is inside it, an interrupt included. That makes
