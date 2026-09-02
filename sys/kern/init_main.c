@@ -1187,11 +1187,6 @@ user_interrupt_checks(void)
     if (tl == NULL) {
         panic("spin: no timeline");
     }
-    t = timer_create("spin", tl, time_now() + time_from_ms(1),
-      time_from_ms(1));
-    if (t == NULL) {
-        panic("spin: no timer");
-    }
 
     /*
      * Run it until one arrives, rather than once and insisting one did.
@@ -1209,17 +1204,44 @@ user_interrupt_checks(void)
     for (tries = 0; tries < 20 && md_user_irqs == before; tries++) {
         sched_defer();
         child_watch(&c, proc_spawn_image("spin", 20, NULL, 0, NULL, 0));
+
+        /*
+         * One shot, armed here and not once for the whole check.
+         *
+         * A repeating timer was what this used, at a millisecond, and
+         * it hung the machine. A period is a rate against the host
+         * clock, and a guest that cannot service that rate never
+         * returns to the program between one activation and the next:
+         * the timer was seen firing 1026 times a second while the
+         * program it was meant to interrupt made no progress at all,
+         * for as long as anyone was willing to wait. The check then
+         * printed nothing and looked exactly like a hung kernel.
+         *
+         * A single activation cannot do that however slow the machine
+         * is. Ten milliseconds is long enough that the child is
+         * certainly running by then and short enough that it is
+         * certainly still running: the program is eighty milliseconds
+         * of work, and both figures stretch together when the host is
+         * busy.
+         *
+         * Armed while dispatch is deferred, so it is armed before the
+         * child has had the core and comes due while it has it.
+         */
+        t = timer_create("spin", tl, time_now() + time_from_ms(10), 0);
+        if (t == NULL) {
+            panic("spin: no timer");
+        }
+
         sched_undefer();
         (void)child_join(&c, JOIN_MS);
+        timer_destroy(t);
     }
-
-    timer_destroy(t);
 
     if (md_user_irqs == before) {
         panic("nothing interrupted a program in %u runs of one",
           (unsigned int)tries);
     }
-    cnprintf("    %lu interrupts taken while a program was running\n",
+    cnprintf("    interrupts taken while a program was running: %lu\n",
       md_user_irqs - before);
 }
 

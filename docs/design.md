@@ -1421,6 +1421,8 @@ For a **one-shot** timer the timeline advances once at its deadline.
 
 For a **periodic** timer the counter value is the activation count, which gives overrun detection for free. A task that intended to wait for activation `N+1` and finds the counter already at `N+3` has missed two activations and knows it without any additional mechanism.
 
+**Skipping activations is not the same as surviving the rate.** Overrun detection means a task that misses activations is told so and no backlog is delivered, which is what the counter above gives. It does not mean a period shorter than the machine can service is safe: each activation still costs an exception, and when servicing one takes longer than the period, the interrupted thread never runs between them. The system stays busy and stops making progress, which is not a state anything here detects. A periodic timer at a millisecond did this on an emulated board with a loaded host: it fired 1026 times a second while the program it was meant to interrupt advanced by nothing at all. The rule that follows is for whoever sets the period, because the kernel cannot know what the machine can service: a period is a rate the hardware has to keep up with, and nothing here checks that it can.
+
 Timer destruction closes the kernel's signal right, which force-signals the timeline in error state under section 9.3 rule 2. No new rule is needed.
 
 **Phase is absolute.**

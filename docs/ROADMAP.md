@@ -5175,6 +5175,39 @@ now records that it is panicking, and the second entry prints `panic
 while panicking` and stops. Per core, because a second core with its own
 reason to stop has something worth saying.
 
+*And the intermittent aarch64 failure, which was this check.* `make
+check` timed out about one run in twenty on aarch64 at Tier 2, always
+after `user mode: a program that can be interrupted` and never with a
+message. Catching one under a debugger while it was still alive
+answered it: the machine was at full CPU with the `spin` program on a
+core at priority 20, and the millisecond timer this check arms had
+fired 68,713 times, then 72,819 four seconds later. It was servicing
+1026 interrupts a second and the program it was interrupting was
+advancing by nothing.
+
+A period is a rate the host has to keep up with. When the guest cannot
+service an activation before the next comes due, it never returns to
+the interrupted thread at all, and since this check prints nothing
+until it finishes, a machine working as hard as it can looked exactly
+like a machine that had stopped. Two things made that hard to see: the
+output was block-buffered, so where it stopped was not where it stopped,
+and the first CPU figure taken was of the `timeout` wrapper rather than
+of QEMU, which read 0% and argued for a sleep rather than a spin.
+
+The check needs one interrupt to arrive while a program is running, not
+a thousand a second. It arms a single activation now, ten milliseconds
+out, inside the deferral it already held around the spawn, so it is
+armed before the child has had the core and comes due while it has it.
+One activation cannot outrun the machine however slow it is. Both
+figures stretch together when the host is busy, which is what makes the
+ten milliseconds hold: the program is eighty milliseconds of work.
+
+The rate at which this reproduces is not under my control, so the fix
+is not proved by putting the period back: 392 sessions with the old
+code and the same load produced nothing, having produced two hangs in
+under 250 a few hours earlier. What is settled is the mechanism, which
+was observed directly, and that a single activation cannot exhibit it.
+
 **5. What two cores did to the measurements.** *Built.*
 
 - Every counter this system prints is a plain increment on a shared word.
@@ -5477,6 +5510,21 @@ measurable on a given port.
 report above the compared line, labelled with the machine that produced
 it, and is never asserted against a threshold. M6 stage four settled
 this rule for switch counts and it applies with more force here.
+
+**And a rate is a property of the host too, which is what M10 found out
+afterwards.** The interrupt check armed a repeating timer at a
+millisecond and ran a program that computes for eighty, so that
+something would certainly interrupt it. A period is a rate against the
+host clock, and the guest has to service one activation before the next
+comes due. When it cannot, it never gets back to the program between
+them: the timer was caught firing 1026 times a second while the program
+made no progress at all, the machine at full CPU and the check printing
+nothing, for as long as anyone was willing to wait. It looked exactly
+like a hung kernel and was not one.
+
+A count of activations is safe to ask for and a duration is safe to
+report. A rate is neither, because it is the one figure the host can
+make impossible to meet. The check arms a single activation now.
 
 **And M8 left a deviation this milestone has to confront.** At Tier 2
 the kernel takes one lock at every entry and holds it with interrupts
