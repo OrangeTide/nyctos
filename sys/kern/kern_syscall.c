@@ -285,11 +285,22 @@ trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
     struct thread *t;
 
     /*
-     * Taken like any other entry, though nothing here gives it back.
-     * A core that stops the machine while another is spinning for this
-     * lock is a core that stops the machine, which is what was wanted.
+     * Interrupts off, and deliberately not the kernel lock.
+     *
+     * This is reached because kernel code faulted, and kernel code
+     * faults while it is inside the kernel, which at Tier 2 means
+     * holding that lock already. Taking it again is the one thing
+     * spin_lock refuses, so every kernel fault raised in a system call
+     * reported `lock kernel: taken again by the core already holding
+     * it` and nothing whatever about the fault: no cause, no address,
+     * no thread. The most useful message this kernel has was replaced
+     * by a misleading one at exactly the moment it was needed.
+     *
+     * Nothing here needs the lock. It reads per-core state and stops
+     * the machine, and the message is held together against the other
+     * cores by the console rather than by this.
      */
-    (void)klock_enter();
+    (void)md_intr_disable();
     t = thread_current();
 
     /*

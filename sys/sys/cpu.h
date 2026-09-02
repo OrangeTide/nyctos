@@ -219,6 +219,18 @@ struct cpu {
      */
     uint32_t            cp_cn_depth;
 
+    /*
+     * Whether this core is already in here. A panic prints, and
+     * printing dereferences whatever the caller handed it: the thread
+     * name in an unhandled kernel trap is read out of a structure the
+     * fault may be the first evidence of having corrupted. Faulting
+     * inside the message re-enters this function, which prints, which
+     * faults, and the machine that was supposed to stop spews half a
+     * line forever instead. It did: twenty-five kilobytes of `panic:
+     * unhandled trap in ` and no halt until the emulator was killed.
+     */
+    bool                cp_panicking;
+
     volatile uint64_t   cp_idle;
     volatile bool       cp_up;
 };

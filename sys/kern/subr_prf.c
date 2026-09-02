@@ -375,6 +375,34 @@ cnprintf(const char *fmt, ...)
 }
 
 /*
+ * Whether this core is already panicking. Per core, because a second
+ * core with its own reason to stop has something to say and should say
+ * it; and with a fallback for the boot path, where there is no core
+ * structure to ask yet.
+ */
+static bool
+panic_reentered(void)
+{
+    static bool early;
+    struct cpu *c = cpu_self();
+
+    if (c == NULL) {
+        if (early) {
+            return true;
+        }
+        early = true;
+        return false;
+    }
+
+    if (c->cp_panicking) {
+        return true;
+    }
+    c->cp_panicking = true;
+
+    return false;
+}
+
+/*
  * The kernel has decided it cannot continue: print, then stop the machine.
  *
  * A panic is for a broken kernel invariant, and for the death of a process
@@ -397,6 +425,16 @@ panic(const char *fmt, ...)
      * calls below arrive as one piece.
      */
     console_seize();
+
+    /*
+     * And if this core was already in here, the fault that brought it
+     * back is in the message itself. Say so in a form that cannot
+     * fault, and stop.
+     */
+    if (panic_reentered()) {
+        cnputs("\npanic while panicking\n");
+        machine_halt(1);
+    }
 
     cnputs("\npanic: ");
     va_start(ap, fmt);

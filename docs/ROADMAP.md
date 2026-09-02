@@ -5148,6 +5148,33 @@ and the longest that is not a console message, and the second one is
 back at `channel_reply` in all four configurations at 469 to 602
 microseconds, which is where M9 left it.
 
+*And what reviewing the panic path found.* Two defects, both in the
+part of the kernel that exists to explain the others.
+
+An unhandled kernel trap reported the wrong thing entirely. `trap_fatal`
+opened by taking the kernel lock, and it is reached because kernel code
+faulted, and kernel code faults while it is inside the kernel holding
+that lock. Taking it again is the one thing `spin_lock` refuses, so a
+kernel fault raised inside a system call printed `lock kernel: taken
+again by the core already holding it` and nothing about the fault: no
+cause, no address, no thread name. Forcing a store to address 1 inside a
+system call showed it on both ports. The lock was never needed there.
+It reads per-core state and stops the machine, and the message is held
+together against the other cores by the console. With it gone the same
+break test prints `unhandled trap in spawner: page, cause=0xf pc=...
+addr=0x1`. At Tier 0 the lock was a no-op that did not even disable
+interrupts, so the report was also open to being preempted.
+
+A panic that faults inside its own message never stopped. The thread
+name in that report is read out of a structure the fault may be the
+first evidence of having corrupted, and printing it can fault, which
+re-enters `panic`, which prints, which faults. Handing the report a
+pointer to address 1 produced twenty-five kilobytes of `panic:
+unhandled trap in ` and no halt until the emulator was killed. A core
+now records that it is panicking, and the second entry prints `panic
+while panicking` and stops. Per core, because a second core with its own
+reason to stop has something worth saying.
+
 **5. What two cores did to the measurements.** *Built.*
 
 - Every counter this system prints is a plain increment on a shared word.
