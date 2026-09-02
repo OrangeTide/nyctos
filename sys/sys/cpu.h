@@ -161,6 +161,16 @@ struct cpu {
     uintptr_t           cp_win_site;
 
     /*
+     * And how many regions the window held. This is the countable
+     * half of the same question: a stretch of code that disables
+     * interrupts once for the whole of itself has one region however
+     * much work is inside it, and one that lets them in between each
+     * piece has a region per piece. The count says which, and says it
+     * the same way on every host, which the duration does not.
+     */
+    uint64_t            cp_win_regions;
+
+    /*
      * Crossings of the trap edge, and checks made on the submission
      * path. Section 17 exists to reduce the first; whether it reduces
      * the second is the question nobody had asked.

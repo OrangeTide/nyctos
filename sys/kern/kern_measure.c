@@ -423,9 +423,12 @@ intr_region_end(uintptr_t site)
      * right or pass one that was wrong. Nothing measured prints
      * inside its window today, which is why this had not bitten.
      */
-    if (!c->cp_intr_console && took > c->cp_win_worst) {
-        c->cp_win_worst = took;
-        c->cp_win_site = c->cp_intr_site;
+    if (!c->cp_intr_console) {
+        c->cp_win_regions++;
+        if (took > c->cp_win_worst) {
+            c->cp_win_worst = took;
+            c->cp_win_site = c->cp_intr_site;
+        }
     }
 }
 
@@ -800,6 +803,14 @@ intr_region_reset(void)
 
     c->cp_win_worst = 0;
     c->cp_win_site = 0;
+    c->cp_win_regions = 0;
+}
+
+/* How many regions the window held. */
+uint64_t
+intr_region_count(void)
+{
+    return cpu_self()->cp_win_regions;
 }
 
 uint64_t

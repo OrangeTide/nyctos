@@ -5260,7 +5260,9 @@ and the sixteen entry figure from 45 to 204, and a run was seen at 231
 against 54, which fires. The distributions are identical with and
 without the change above, so this is not new. It is the same rule this
 plan keeps rediscovering: a count is safe to assert and a duration is
-not, and this check asserts a duration. Left as found, and named here.
+not, and this check asserted a duration. Fixed next, by counting the
+regions in the window instead: the count is what the claim was really
+about, and it does not move.
 
 **5. What two cores did to the measurements.** *Built.*
 
@@ -6634,6 +6636,34 @@ day somebody fixed it.
 Holding interrupts across the whole batch at Tier 0, which is what Tier
 2 does by accident of the kernel lock, fails with `the batch bound
 entered the figure, 676 against 97`.
+
+*Since fixed.* That assertion was a duration compared against a
+threshold, which is the one thing section 13.3's own rule says never to
+do, and it was not safe: with eight machines running at once the one
+entry figure ranges from 48 to 86 ticks and the sixteen entry figure
+from 45 to 204, and a run at 231 against 54 failed a build. On aarch64
+at Tier 0 the two sit at 292 and 925 on a quiet host, which is a ratio
+of three against a threshold of four. The comment that stood here
+claimed the margin was an order of magnitude wider than the effect. It
+was about a fifth of it.
+
+What the check wanted to know is countable, and counting it says the
+same thing exactly. The question is whether anything lets interrupts in
+between one entry and the next, so the instrument now counts the
+interrupts-off regions in the window as well as timing the longest. A
+batch interruptible at every boundary has a region per entry and one
+that disables interrupts once for the whole call has a single region,
+however many entries are in it. Tier 0 reads one region for one entry
+and sixteen for sixteen, beginning in `timeline_signal`; Tier 2 reads
+one and one, beginning in `klock_enter`, which is M8's deviation stated
+as a count rather than inferred from a ratio. Both are the same on both
+ports and in every run: eighty boots under the load that broke the old
+form give sixteen every time. The durations are still printed, because
+what the regions cost is worth seeing, and nothing is asserted on them.
+
+Holding interrupts across the whole batch at Tier 0 now fails with `one
+region covered all 16 entries`, and a run that is neither shape fails
+too rather than being passed over.
 
 **A limit of the instrument, stated rather than fixed.** The window is
 the core and not the batch: anything else that core does between the

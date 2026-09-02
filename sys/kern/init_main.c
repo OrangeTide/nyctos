@@ -5678,6 +5678,7 @@ batch_latency_checks(void)
     sys_handle_t h;
     uintptr_t site_one, site_many;
     uint64_t one, many, points;
+    uint64_t n_one, n_many;
     uint64_t base;
     sys_err_t err;
 
@@ -5733,45 +5734,63 @@ batch_latency_checks(void)
     intr_region_reset();
     (void)run_batch(ops, 1);
     one = intr_region_worst(&site_one);
+    n_one = intr_region_count();
 
     base = timeline_value(tl);
     batch_fill_on(ops, args, h, SYS_BATCH_MAX_ENTRIES, base);
     intr_region_reset();
     (void)run_batch(ops, SYS_BATCH_MAX_ENTRIES);
     many = intr_region_worst(&site_many);
+    n_many = intr_region_count();
 
-    cnprintf("    one entry held them off %lu ticks, from 0x%lx\n",
-      (unsigned long)one, (unsigned long)site_one);
-    cnprintf("    %u entries held them off %lu ticks, from 0x%lx\n",
-      (unsigned int)SYS_BATCH_MAX_ENTRIES, (unsigned long)many,
+    cnprintf("    one entry: %lu region, held them off %lu ticks, "
+      "from 0x%lx\n", (unsigned long)n_one, (unsigned long)one,
+      (unsigned long)site_one);
+    cnprintf("    %u entries: %lu regions, held them off %lu ticks, "
+      "from 0x%lx\n", (unsigned int)SYS_BATCH_MAX_ENTRIES,
+      (unsigned long)n_many, (unsigned long)many,
       (unsigned long)site_many);
 
     /*
-     * What is asserted is a relation and not a threshold. If the batch
-     * is interruptible at every entry boundary then the longest region
-     * inside it is one entry's worth however many entries there are,
-     * and the two figures are the same size. If it is not, the second
-     * grows with the count and section 13.3 is wrong about this
-     * implementation.
-     *
-     * Reported either way. Which of the two happens is the result of
-     * this stage and it is not the check's business to have an opinion.
+     * No measurement is not a result. A count of zero means nothing
+     * was recorded, which happens if this runs before the instrument
+     * is armed, and reporting that as the claim holding is how a check
+     * comes to pass on no data at all. It did, the first time this was
+     * run.
      */
-    /*
-     * No measurement is not a result. Both figures being zero means
-     * nothing was recorded, which happens if this runs before the
-     * instrument is armed, and reporting that as the claim holding is
-     * how a check comes to pass on no data at all. It did, the first
-     * time this was run.
-     */
-    if (one == 0 || many == 0) {
-        panic("latency: nothing was measured, %lu and %lu ticks",
-          (unsigned long)one, (unsigned long)many);
+    if (n_one == 0 || n_many == 0) {
+        panic("latency: nothing was measured, %lu and %lu regions",
+          (unsigned long)n_one, (unsigned long)n_many);
     }
 
-    if (many > one * 4) {
-        cnprintf("    the bound does appear in the figure     "
-          "%lu times\n", (unsigned long)(many / one));
+    /*
+     * What is asserted is the count and not the durations.
+     *
+     * The question is whether anything lets interrupts in between one
+     * entry and the next. Counting the regions answers it exactly: a
+     * batch that is interruptible at every boundary has a region per
+     * entry, and one that disables interrupts once for the whole call
+     * has one region however many entries are in it. Both figures are
+     * the same on every host and in every run.
+     *
+     * It used to be asserted as a ratio of the two durations, that
+     * sixteen entries held interrupts off no more than four times as
+     * long as one. That is a duration compared against a threshold,
+     * which section 13.3's own rule says never to do, and it was not
+     * safe: with eight machines running at once the one-entry figure
+     * ranges from 48 to 86 ticks and the sixteen-entry figure from 45
+     * to 204, and a run at 231 against 54 failed the build. The
+     * comment that stood here claimed the margin was an order of
+     * magnitude wider than the effect. It was about a fifth of it.
+     *
+     * The durations are still printed, because what the regions cost
+     * is worth seeing, and they are not asserted on.
+     */
+    if (n_many == n_one * SYS_BATCH_MAX_ENTRIES) {
+        cnputs("    a region for each entry, so the bound stays out OK\n");
+    } else if (n_many == n_one) {
+        cnprintf("    one region for all %u, so the bound is in it\n",
+          (unsigned int)SYS_BATCH_MAX_ENTRIES);
 
 #if SYS_TIER == 0
         /*
@@ -5781,17 +5800,20 @@ batch_latency_checks(void)
          * where the kernel lock is held across the whole call, and
          * asserting the broken behaviour would mean failing the day
          * somebody fixed it.
-         *
-         * A factor of four between two figures measured seconds apart
-         * in one run is about as safe as a duration comparison gets.
-         * The two are 62 and 55 ticks here, so the margin is an order
-         * of magnitude wider than the effect.
          */
-        panic("latency: the batch bound entered the figure, %lu against %lu",
-          (unsigned long)many, (unsigned long)one);
+        panic("latency: one region covered all %u entries",
+          (unsigned int)SYS_BATCH_MAX_ENTRIES);
 #endif
     } else {
-        cnputs("    and the bound does not appear in it     OK\n");
+        /*
+         * Neither shape. Not something to pass over: the two counts
+         * are meant to be exactly equal or exactly a factor of the
+         * entry count apart, and anything else means this is no longer
+         * measuring what it says.
+         */
+        panic("latency: %lu regions for one entry and %lu for %u",
+          (unsigned long)n_one, (unsigned long)n_many,
+          (unsigned int)SYS_BATCH_MAX_ENTRIES);
     }
 
     expect("giving the handle back", handle_close(&p->p_handles, h),

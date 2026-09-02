@@ -184,6 +184,12 @@ uint64_t submit_crossings(uint64_t *checks);
 
 void intr_region_reset(void);
 uint64_t intr_region_worst(uintptr_t *site);
+
+/*
+ * How many interrupts-off regions the window held. The countable half
+ * of the same question the worst-case duration asks.
+ */
+uint64_t intr_region_count(void);
 uintptr_t intr_region_worst_site(void);
 
 #endif /* _SYS_MEASURE_H_ */
