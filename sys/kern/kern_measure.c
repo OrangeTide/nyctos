@@ -413,7 +413,17 @@ intr_region_end(uintptr_t site)
         c->cp_intr_worst_kern_site = c->cp_intr_site;
     }
 
-    if (took > c->cp_win_worst) {
+    /*
+     * The window a check has cleared, and the console left out of it
+     * for a stronger reason than above. That figure is reported
+     * beside the one it displaced; this one is asserted on. A window
+     * measures what one stretch of kernel code held interrupts off
+     * for, and a console region inside one is thousands of times
+     * every kernel region and would either fail a check that was
+     * right or pass one that was wrong. Nothing measured prints
+     * inside its window today, which is why this had not bitten.
+     */
+    if (!c->cp_intr_console && took > c->cp_win_worst) {
         c->cp_win_worst = took;
         c->cp_win_site = c->cp_intr_site;
     }

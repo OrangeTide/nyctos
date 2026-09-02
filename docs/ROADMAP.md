@@ -5232,6 +5232,36 @@ is inherent rather than a fault: a one-shot signals activation one, so
 the next try offers a value the timeline already has and is refused for
 going backwards.
 
+*Reviewing the console lock a second time.* The exclusion itself holds
+under a harder test than the first one: two cores printing through
+different entry points, `cnprintf` with conversions against `cnputs`,
+at different lengths. 600 lines, 300 from each core, none malformed.
+The same test with the lock taken out gives 129 malformed lines of 446,
+so it is sensitive to what it is checking.
+
+What the first review left half done was the measurement. It taught the
+run-wide figure to report the console separately and left the windowed
+figure, the one a check clears and reads around a stretch of code,
+counting console regions like any other. Nothing measured prints inside
+its window today, so it had not bitten, but that figure is the one that
+is asserted on rather than reported, and a console region inside a
+window is thousands of times every kernel region in it. It would fail a
+check that was right or pass one that was wrong. It is excluded there
+too now.
+
+*And something else that was already there.* Verifying that change
+turned up an intermittent failure in the batch latency check that has
+nothing to do with the console. It asserts at Tier 0 that the sixteen
+entry figure is no more than four times the one entry figure, which is
+a duration compared against a threshold, and its comment claims the
+margin is an order of magnitude wider than the effect. It is not. Under
+eight machines at once the one entry figure ranges from 48 to 86 ticks
+and the sixteen entry figure from 45 to 204, and a run was seen at 231
+against 54, which fires. The distributions are identical with and
+without the change above, so this is not new. It is the same rule this
+plan keeps rediscovering: a count is safe to assert and a duration is
+not, and this check asserts a duration. Left as found, and named here.
+
 **5. What two cores did to the measurements.** *Built.*
 
 - Every counter this system prints is a plain increment on a shared word.
