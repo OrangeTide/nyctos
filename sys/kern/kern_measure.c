@@ -373,14 +373,10 @@ void
 intr_region_end(uintptr_t site)
 {
     struct cpu *c = cpu_self();
-
-    if (!intr_measuring) {
-        return;
-    }
     uint64_t now;
     uint64_t took;
 
-    if (c == NULL) {
+    if (!intr_measuring || c == NULL) {
         return;
     }
 
@@ -408,9 +404,14 @@ intr_region_end(uintptr_t site)
         c->cp_intr_worst_at = c->cp_intr_start;
     }
 
-    if (!c->cp_intr_console && took > c->cp_intr_worst_kern) {
-        c->cp_intr_worst_kern = took;
-        c->cp_intr_worst_kern_site = c->cp_intr_site;
+    if (!c->cp_intr_console) {
+        c->cp_intr_regions_kern++;
+        c->cp_intr_total_kern += took;
+
+        if (took > c->cp_intr_worst_kern) {
+            c->cp_intr_worst_kern = took;
+            c->cp_intr_worst_kern_site = c->cp_intr_site;
+        }
     }
 
     /*
@@ -473,12 +474,24 @@ intr_region_report(void)
          * a real region and the line above says so; it is also the
          * longest one here, and a figure about the kernel that is
          * really a figure about a UART is a figure nobody can use.
+         *
+         * The mean as well as the longest, and for the same reason.
+         * Separating one and not the other left the headline figure
+         * about the kernel and the typical figure about the console:
+         * most regions are short and a few console lines are very
+         * long, so the mixed mean is the one that moves most. At Tier
+         * 0 it went from 16 microseconds to 111 when the console
+         * started holding a message together, without a single kernel
+         * path having changed.
          */
-        cnprintf("        without the console: %lu ticks (about %lu us)"
-          " at 0x%lx\n",
+        cnprintf("        without the console: %lu regions, longest %lu "
+          "ticks (about %lu us), mean %lu ticks, at 0x%lx\n",
+          (unsigned long)c->cp_intr_regions_kern,
           (unsigned long)c->cp_intr_worst_kern,
           (unsigned long)(hz != 0 ?
             (c->cp_intr_worst_kern * 1000000UL) / hz : 0),
+          (unsigned long)(c->cp_intr_regions_kern != 0 ?
+            c->cp_intr_total_kern / c->cp_intr_regions_kern : 0),
           (unsigned long)c->cp_intr_worst_kern_site);
 
         if (c->cp_intr_regions == 0) {
@@ -488,6 +501,18 @@ intr_region_report(void)
         if (c->cp_intr_worst_site == 0) {
             panic("interrupts off: core %u has a longest region "
               "with nobody to blame", (unsigned int)i);
+        }
+
+        /*
+         * And the same of the figure section 13.3 actually asks for.
+         * A core with regions but none outside the console has been
+         * printing and doing nothing else, which is not a state this
+         * system reaches, and reporting a zero as though it were a
+         * measurement is how a check comes to pass on no data.
+         */
+        if (c->cp_intr_regions_kern == 0) {
+            panic("interrupts off: core %u measured nothing but the "
+              "console", (unsigned int)i);
         }
     }
 }

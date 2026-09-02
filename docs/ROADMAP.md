@@ -6693,6 +6693,35 @@ descheduling the emulated core in the middle of a region, which no
 amount of care inside the kernel can prevent and no threshold can
 survive. The count was sixteen in all sixty-four.
 
+*Reviewing the instrument itself.* The same fix was left half done a
+third time, in the same place. Separating the console from the longest
+region and not from the mean left the headline figure about the kernel
+and the typical figure about the console, and the typical figure is the
+one the console moves most: most regions are short and a few console
+lines are very long. On one run core 0 at Tier 2 shows 23717 regions
+with a mean of 112 ticks and 23370 without the console with a mean of
+51. One and a half per cent of the regions doubled the typical one.
+
+The count of regions and the total time behind the mean are now kept
+both ways, and the report prints both. That the console-free means come
+back to what M9 measured, 5 microseconds on riscv64 at Tier 2 against
+the 5 in the table and 7 on aarch64 against the 7, is the first
+independent check any of these figures has had: the number was recorded
+in a document, the instrument was rebuilt underneath it twice, and it
+came back the same.
+
+A core that measured regions but none outside the console now fails
+rather than reporting a zero as a figure, which is the rule the rest of
+this file already follows.
+
+Two things looked like defects and were not. `irq_dispatch_stamp`
+dereferences its thread without a null check where the call that closes
+the same measurement checks for one; the guards match their callers,
+because both of its callers dereference the thread before calling. And
+a region already open when another begins is silently abandoned rather
+than counted, which is the same case the closing side documents and
+declines to charge for.
+
 **A limit of the instrument, stated rather than fixed.** The window is
 the core and not the batch: anything else that core does between the
 clearing and the reading is inside it, an interrupt included. That makes

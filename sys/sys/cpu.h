@@ -150,6 +150,8 @@ struct cpu {
     bool                cp_intr_console;
     uint64_t            cp_intr_worst_kern;
     uintptr_t           cp_intr_worst_kern_site;
+    uint64_t            cp_intr_regions_kern;
+    uint64_t            cp_intr_total_kern;
 
     /*
      * The same, over a window a check has cleared, so that asking what
