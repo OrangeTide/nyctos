@@ -5208,6 +5208,30 @@ code and the same load produced nothing, having produced two hangs in
 under 250 a few hours earlier. What is settled is the mechanism, which
 was observed directly, and that a single activation cannot exhibit it.
 
+*Reviewing that fix.* Two things it got wrong and one it got right by
+luck. The right one first: with the one-shot removed entirely the check
+sees no interrupt at all, and with it back it sees exactly one per try,
+so the timer really is what interrupts the program and the deadline
+really does land inside its run.
+
+The margin was asserted from a number nobody had measured. Instrumenting
+the loop puts the child's run at seventy-two milliseconds on one port
+and seventy-eight on the other, against a shot armed ten milliseconds
+out, so it lands with about seven times the room at the far end and far
+more at the near one. That is what the comment now says, because it is
+what was measured.
+
+The defect is that the timeline outlives the timers bound to it.
+Destroying a timer drops the kernel's signal right, and dropping the
+last one puts a timeline into the error state for good, so from the
+second try on the timer was bound to a timeline nothing could advance.
+It never showed, because this check counts interrupts and not values,
+which is the kind of quiet wrong worth not leaving in. One signal right
+is now held for the whole check. Its value still stops at one, and that
+is inherent rather than a fault: a one-shot signals activation one, so
+the next try offers a value the timeline already has and is refused for
+going backwards.
+
 **5. What two cores did to the measurements.** *Built.*
 
 - Every counter this system prints is a plain increment on a shared word.

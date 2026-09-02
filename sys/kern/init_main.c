@@ -1189,6 +1189,23 @@ user_interrupt_checks(void)
     }
 
     /*
+     * One signal right held across the whole check, because each try
+     * makes a timer and destroys it, and destroying the last thing
+     * that could signal a timeline puts it in the error state for
+     * good under section 9.3 rule 2. Without this the second try binds
+     * its timer to a timeline that can no longer be advanced, and
+     * every later activation is refused. It ran that way and nothing
+     * showed, because what this counts is interrupts and not values,
+     * which is exactly the sort of quiet wrong worth not leaving in.
+     *
+     * The value it reaches is not what this reads and cannot be: a
+     * one-shot signals activation one, so the second try offers a
+     * value the timeline already has and is refused for going
+     * backwards. What is being counted is interrupts.
+     */
+    timeline_add_signaler(tl);
+
+    /*
      * Run it until one arrives, rather than once and insisting one did.
      *
      * What is being checked is that a program can be interrupted at
@@ -1220,9 +1237,10 @@ user_interrupt_checks(void)
          * A single activation cannot do that however slow the machine
          * is. Ten milliseconds is long enough that the child is
          * certainly running by then and short enough that it is
-         * certainly still running: the program is eighty milliseconds
-         * of work, and both figures stretch together when the host is
-         * busy.
+         * certainly still running: the program is seventy-two
+         * milliseconds of work on one port and seventy-eight on the
+         * other, measured, and both figures stretch together when the
+         * host is busy.
          *
          * Armed while dispatch is deferred, so it is armed before the
          * child has had the core and comes due while it has it.
@@ -1236,6 +1254,8 @@ user_interrupt_checks(void)
         (void)child_join(&c, JOIN_MS);
         timer_destroy(t);
     }
+
+    timeline_drop_signaler(tl);
 
     if (md_user_irqs == before) {
         panic("nothing interrupted a program in %u runs of one",
