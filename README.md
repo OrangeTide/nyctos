@@ -675,7 +675,9 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 ## Next steps
 
 See [docs/ROADMAP.md](docs/ROADMAP.md). The plan's ten milestones are
-finished. What it does not schedule, and what the last three
+finished, and an eleventh is being built: the argument substitution of
+section 17.4, which is the experiment M10 named as the one that would
+settle the question it could only half answer. What it does not schedule, and what the last three
 milestones each said would be worth doing next, is written down there
 rather than guessed at here.
 

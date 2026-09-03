@@ -358,8 +358,11 @@ interrupts seen in time.
 `SYS_ERR_DEADLOCK` is reachable: a cycle of servers is refused instead
 of wedging the machine with nothing said.
 
-**Milestone 10 is done, and it is the last one this plan lists.** A
-submission carries up to sixteen entries, validated before any of them
+**Milestone 10 is done.** It was the last one this plan listed; M11
+is being built now, and asks the question section 3 says M10 could
+only half answer.
+
+A submission carries up to sixteen entries, validated before any of them
 runs, each reporting its own status. Linked entries abort as a group.
 A batch can be loaded once and executed many times.
 
@@ -6280,7 +6283,8 @@ one section that may have to be rewritten.
 
 **Done.** All six stages are built. Section 13 says what it answered,
 what it could not, what the building kept finding, and what it left
-untested. It is the last milestone in this list.
+untested. It was the last milestone in this list, and M11 below is the
+experiment it named as the one that would settle its open question.
 
 Deliberately last. The engine needs issuing ops to be interesting, issuing
 ops need a DMA-capable device, and that wants the driver work in M6
@@ -7128,6 +7132,139 @@ difference that shows up is not necessarily the one being looked for.
 *Size.* Medium, and unchanged. The mechanism is small; the measurement
 is where the work is, and the honest accounting of what cannot be
 measured is part of it.
+
+### M11. Substitution
+
+**Section 17.4: an entry that takes its argument from the one before it.**
+
+M10 named the experiment that would settle its own open question, in
+the paragraph above this one: build the argument substitution, convert
+one real client to it, and measure the same way. This is that
+experiment.
+
+**Why the question is still open.** M10 measured what a batch saves and
+the answer was exact: the fixed cost of a call, multiplied by one fewer
+than the number of entries, and nothing per entry. But every batch it
+measured was a list of operations that happened to travel together.
+None of them depended on another, because the mechanism for expressing
+a dependency was never built. So what M10 weighed was bundling, not
+dependency ordering, and section 17's actual claim, that expressing
+dependencies as data beats a few more system calls, went untested.
+
+The descriptor has carried `reg_in` and `reg_out` since M10, with a
+comment saying they are meaningful only to the parts of the engine that
+are not built. This milestone is about making them mean something.
+
+*Needs.* A register file per execution, typed and zeroed at entry
+(section 17.4). An entry reading its target or an argument from a
+register. `SYS_OP_IPC_SEND` writing a reply's moved handle to
+`reg_out`. The abort rule of section 17.5's last line, which registers
+are what make enumerable.
+
+**The two halves M10 split are still split, and this one takes the
+half that has no device in it.** Substitution needs no hardware: it is
+about what one entry can hand the next inside a single execution. The
+transfers-in-flight half still needs a device that transfers on its
+own, and stage five asks honestly whether this tree can have one rather
+than assuming either answer.
+
+**1. A register file, typed and private to one execution.** *Planned.*
+
+- `SYS_BATCH_REGS` registers, each holding a handle or a scalar and
+  tagged with which. The tag is the whole point: section 17.4 says
+  without it a batch could construct a handle arithmetically and defeat
+  the handle table's unforgeability.
+- Zeroed at entry, so nothing survives from one execution to the next.
+- *Check.* A batch writes a register and a later entry in the same
+  batch reads it back unchanged. A second batch submitted by the same
+  thread sees zeros. An entry that reads a register holding a scalar as
+  though it held a handle is refused with `SYS_ERR_INVALID_ARG`, and
+  the refusal is what the check asserts, not the absence of a crash.
+
+**2. An entry takes its target from a register.** *Planned.*
+
+- `reg_in` stops being decoration. An entry names either a literal
+  target or a register, and the operation cannot tell the difference by
+  the time it runs.
+- *Check.* An operation that needs a handle gets one written by an
+  earlier entry of the same batch and succeeds. The same batch with the
+  earlier entry removed fails on the tag check rather than on a
+  fabricated handle, and fails before the operation runs.
+
+**3. A reply's moved handle is written to `reg_out`.** *Planned.*
+
+- Section 17.4 makes `SYS_OP_IPC_SEND` the second writer of a register,
+  alongside the issuing ops, because without it a batch cannot use the
+  result of a request it made.
+- *Check.* A walk that returns a connection, and the entry after it
+  using that connection as its target, in one submission. Two calls
+  before, one now, and the count says so. A reply carrying no handle
+  leaves the register empty and the dependent entry fails on the tag,
+  which is the failure mode section 17.4 asks for by name.
+
+**4. Abort force-signals what the batch would have signalled.**
+*Planned.*
+
+- Section 17.5's last line, unbuilt because M10 had nothing that a
+  cancelled entry could have been going to signal.
+- The set is determinable without executing, and registers are why: a
+  target is either literal, and visible by inspection, or from a
+  register, which an earlier entry either wrote or did not.
+- *Check.* A chain whose second entry fails, followed by an entry that
+  would have signalled a timeline. A thread waiting on that timeline is
+  released with an error rather than waiting for something that will
+  never happen. And the enumeration runs without executing the
+  remaining entries, which is checkable by counting what it visits.
+
+**5. Whether an issuing op can exist in this tree at all.** *Planned.*
+
+- `SYS_OP_DMA_ISSUE` and its two neighbours have answered
+  `SYS_ERR_NOT_SUPPORTED` since they were given numbers. M10 recorded
+  that they need a device that transfers on its own, and this tree has
+  none.
+- What it has is a device that finishes work on its own schedule: an
+  interrupt landing on a timeline, which is section 13.2 and is built.
+  Whether that is enough to make an issuing op mean anything, or
+  whether it only looks like one, is the question.
+- *Check.* Either an issuing entry returns a timeline that is signalled
+  while the submitting thread runs on, with a count showing the thread
+  did something between issuing and waiting, or the stage records what
+  is missing and the three opcodes keep refusing, with the reason in
+  section 17 rather than in a commit message. A stage that answers no
+  is not a stage that failed.
+
+**6. What substitution pays.** *Planned.*
+
+- The measurement M10 could not make, on the client M10 named: walk,
+  read and close as three calls against one submission that carries the
+  dependency in a register.
+- *Check.* Crossings, validation checks and rendezvous for both forms,
+  asserted as counts and not as durations. The milestone's answer is
+  those numbers, whichever way they come out.
+
+*Done when* one submission carries a dependency that separate calls
+would have had to carry in user code, and the report says what that
+saved. **Not** when three transfers are in flight, unless stage five
+finds a way; that half stays recorded as untested rather than quietly
+dropped, exactly as M10 left it.
+
+*Would falsify.* Section 17.4. If substitution costs more than it
+saves, or if the branchless enumeration turns out not to be
+determinable once real code uses it, the register file goes and section
+17 loses its second half. Section 23 is arranged so that removing it
+costs nothing else, which is the same insurance M10 relied on.
+
+*Watch for.* Measuring the wrong thing, which M9 caught five times in
+six stages and M10 warned about in the entry above. The two forms being
+compared here differ in more than substitution: one makes fewer calls
+as well. Separating the saving that comes from bundling, which M10
+already measured, from the saving that comes from the dependency, which
+is what this milestone is for, is the whole difficulty.
+
+*Size.* Small to medium. The register file is a few dozen lines. The
+abort enumeration and the honest accounting in stage five are where the
+work is.
+
 
 ---
 
@@ -8322,8 +8459,10 @@ increments.** Two milestones have now named them without fixing them.
 
 ## 13. Milestone 10, in Retrospect
 
-M10 was deliberately last, and it is the last: with it the milestone
-list in section 3 is finished. It asked whether the most novel mechanism
+M10 was deliberately last of the ten this plan was written with, and
+with it that list was finished. M11 was added afterwards, out of this
+retrospective: the experiment named below as the one that would settle
+the question this milestone could only half answer. It asked whether the most novel mechanism
 in the design earns its place, and the answer it can give is narrower
 than the question, for a reason it found rather than assumed.
 
