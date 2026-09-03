@@ -20,6 +20,7 @@
 
 #include <sys/cpu.h>
 #include <sys/lock.h>
+#include <sys/measure.h>
 #include <sys/proc.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
@@ -244,6 +245,7 @@ cpu_secondary_entry(void)
 #endif
 
     lock_check_secondary();
+    meas_clock_secondary();
 
     /*
      * Its own way in to the interrupt controller, before it has

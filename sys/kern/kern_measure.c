@@ -298,6 +298,79 @@ meas_check_clock(void)
 }
 
 /*
+ * One clock for the machine, checked across the cores rather than
+ * asserted about them.
+ *
+ * The check above reads the counter many times on one core, which
+ * establishes that it runs and never goes backwards, and says nothing
+ * at all about the other core reading the same one. That distinction
+ * is not academic here: every figure that crosses a core is a
+ * subtraction of one core's reading from another's. The donation
+ * across cores is measured that way, and section 13.3's dispatch term
+ * is stamped in a handler on one core and closed when the thread runs,
+ * which may be another. A per-core counter, or two counters started at
+ * each core's own bring-up, would pass every other check in this file
+ * and quietly make all of those figures differences between unrelated
+ * numbers. The comment above said so and nothing tested it.
+ *
+ * The test is a bracket. This core reads the counter, asks the other
+ * to read it, and reads again; the other core's value has to lie
+ * between the two. Two counters with any offset between them fail
+ * this, and two that happen to agree to within the width of the
+ * bracket are, for the purpose of every figure here, the same clock.
+ */
+static volatile uint64_t clk_across;
+static volatile uint32_t clk_asked;
+static volatile uint32_t clk_read;
+
+void
+meas_clock_secondary(void)
+{
+    while (clk_asked == 0) {
+        md_cpu_relax();
+    }
+
+    clk_across = md_time_now();
+    md_cpu_fence();
+    clk_read = 1;
+}
+
+void
+meas_check_clock_across(void)
+{
+    uint64_t before, after, theirs;
+    uint32_t spin;
+
+    if (cpu_count() < 2) {
+        return;
+    }
+
+    before = md_time_now();
+    md_cpu_fence();
+    clk_asked = 1;
+
+    for (spin = 0; spin < 100000000u && clk_read == 0; spin++) {
+        md_cpu_relax();
+    }
+    if (clk_read == 0) {
+        panic("clock: the other core never read it");
+    }
+
+    md_cpu_fence();
+    after = md_time_now();
+    theirs = clk_across;
+
+    if (theirs < before || theirs > after) {
+        panic("clock: core 1 read %lu, outside %lu to %lu on core 0",
+          (unsigned long)theirs, (unsigned long)before,
+          (unsigned long)after);
+    }
+
+    cnprintf("    and both cores read the one counter  %lu in %lu\n",
+      (unsigned long)(theirs - before), (unsigned long)(after - before));
+}
+
+/*
  * Section 13.3's first term: the longest region with interrupts
  * disabled.
  *
@@ -526,12 +599,6 @@ intr_region_report(void)
     }
 }
 
-uintptr_t
-intr_region_worst_site(void)
-{
-    return cpu_self()->cp_intr_worst_site;
-}
-
 /*
  * A preemption point, per section 13.3: a place where the kernel could
  * be preempted, and therefore a boundary on how long it cannot be.
@@ -745,14 +812,23 @@ ipc_round_begin(void)
 }
 
 void
-ipc_round_end(uint64_t started, uint64_t points)
+ipc_round_end(uint64_t started, uint64_t points, uint32_t core)
 {
     if (started == 0) {
         return;
     }
 
+    /*
+     * Counted only if it ended where it began. A point counter belongs
+     * to a core, so subtracting a reading taken on one from a reading
+     * taken on another is not a small error, it is a number with no
+     * meaning that can come out below zero and wrap. The donation
+     * beside this has always asked; this one asserted the answer
+     * instead, and was right only because a thread stays on its core
+     * unless something migrates it on purpose.
+     */
     meas_leave_points(&meas_roundtrip, started, preempt_points() - points,
-      true);
+      core == cpu_self()->cp_index);
 }
 
 void

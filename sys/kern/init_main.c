@@ -7023,6 +7023,7 @@ kernel_main(void)
     cpu_start_others();
     cpu_report();
     lock_check();
+    meas_check_clock_across();
     clock_checks();
     refcount_checks();
     batch_checks();

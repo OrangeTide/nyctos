@@ -688,9 +688,10 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
          */
         uint64_t started = ipc_round_begin();
         uint64_t points = preempt_points();
+        uint32_t core = cpu_self()->cp_index;
 
         sched_block();
-        ipc_round_end(started, points);
+        ipc_round_end(started, points, core);
     }
 
     err = self->t_waitres;

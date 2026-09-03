@@ -6745,6 +6745,33 @@ which is why it has not shown; both sessions were dumped per core to
 check that rather than assume it. The guard now skips a core with no
 counted visit rather than a core with no visit.
 
+*A third time over it, and the best finding yet was a comment.* The
+clock check reads the counter many times on one core, which establishes
+that it runs and never goes backwards, and says nothing about the other
+core reading the same one. Its own comment named the hazard exactly, in
+the file, and stopped there: a per-core counter "would pass every other
+check in this file and make every figure that crosses a core
+meaningless". Nothing tested it, and every cross-core figure this
+system prints is a subtraction of one core's reading from another's:
+the donation across cores, and section 13.3's dispatch term, which is
+stamped in a handler on one core and closed when the thread runs.
+
+The test is a bracket. The boot core reads the counter, asks the other
+to read it, and reads again; the other's value has to lie between the
+two. It does, 627 ticks into a 1527-tick bracket. Adding a constant to
+the second core's reading fails with `core 1 read 1798896, outside
+798273 to 799649 on core 0`. Two counters with any offset between them
+fail this, and two that agree to within the bracket are the same clock
+for every purpose here.
+
+Two smaller ones. The round trip counted its preemption points without
+asking whether it ended on the core it began on, where the donation
+beside it has always asked; the answer was right, because a thread does
+not leave its core unless something migrates it, but it was assumed
+rather than checked and the failure it guards against is a subtraction
+that wraps past zero. And `intr_region_worst_site` was declared,
+defined, and called by nothing.
+
 The corrupted-file trap in the notes caught me again on the way: a perl
 substitution whose pattern contained an escaped `||` inserted its
 replacement at the start of the file instead of at the match. The build

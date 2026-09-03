@@ -148,13 +148,21 @@ void irq_dispatch_report(void);
  * raised to running. Both on the paths the system already has.
  */
 uint64_t ipc_round_begin(void);
-void ipc_round_end(uint64_t started, uint64_t points);
+void ipc_round_end(uint64_t started, uint64_t points, uint32_t core);
 void ipc_donate_stamp(struct thread *to, bool across);
 void ipc_donate_arrived(struct thread *t);
 void ipc_report(void);
 
 /* That it is one clock and it does not go backwards. Panics if it does. */
 void meas_check_clock(void);
+
+/*
+ * And that the other core reads the same counter, which every figure
+ * that crosses a core depends on. The first is called on the boot
+ * core, the second on each core that comes up after it.
+ */
+void meas_check_clock_across(void);
+void meas_clock_secondary(void);
 
 /*
  * Section 13.3's first term. The ports call these at the transition
@@ -190,6 +198,5 @@ uint64_t intr_region_worst(uintptr_t *site);
  * of the same question the worst-case duration asks.
  */
 uint64_t intr_region_count(void);
-uintptr_t intr_region_worst_site(void);
 
 #endif /* _SYS_MEASURE_H_ */
