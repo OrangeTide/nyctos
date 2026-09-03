@@ -124,7 +124,17 @@ static sys_err_t
 run(uint16_t opcode, sys_handle_t target, void *args, uint32_t arg_len)
 {
     struct sys_op op;
+    struct batch_regs regs;
     sys_err_t err;
+
+    /*
+     * One entry is an execution of one entry, so it gets a file like
+     * any other. Passing nothing would make a register read from a
+     * single operation a case the operation had to know about, and
+     * there is no reason for one entry to be a different kind of
+     * thing from the first entry of two.
+     */
+    regs_init(&regs);
 
     memset(&op, 0, sizeof(op));
     op.opcode = opcode;
@@ -133,7 +143,7 @@ run(uint16_t opcode, sys_handle_t target, void *args, uint32_t arg_len)
     op.arg_len = arg_len;
     op.status = SYS_ERR_INTERRUPTED;    /* so a missing write is visible */
 
-    err = sys_op_exec(&op);
+    err = sys_op_exec(&op, &regs);
 
     if (op.status != err) {
         panic("op %u: status field and return value disagree", opcode);
@@ -5289,7 +5299,9 @@ register_checks(void)
      * instead of proceeding on a zero.
      */
     for (i = 0; i < SYS_BATCH_REGS; i++) {
-        if (regs_tag(&r, i) != REG_EMPTY) {
+        uint8_t tag;
+
+        if (regs_peek(&r, i, &tag) != SYS_OK || tag != REG_EMPTY) {
             panic("registers: register %u was not empty at the start", i);
         }
         if (regs_get_handle(&r, i, &h) != SYS_ERR_INVALID_ARG ||
@@ -5344,6 +5356,12 @@ register_checks(void)
       regs_put_scalar(&r, SYS_BATCH_REGS, 1), SYS_ERR_INVALID_ARG);
     expect("reading outside the file",
       regs_get_scalar(&r, SYS_BATCH_REGS, &v), SYS_ERR_INVALID_ARG);
+    {
+        uint8_t tag = REG_HANDLE;
+
+        expect("asking what is outside the file",
+          regs_peek(&r, SYS_BATCH_REGS, &tag), SYS_ERR_INVALID_ARG);
+    }
     cnputs("    an index outside the file is refused     OK\n");
 
     /*
@@ -5355,7 +5373,9 @@ register_checks(void)
      */
     regs_init(&r);
     for (i = 0; i < SYS_BATCH_REGS; i++) {
-        if (regs_tag(&r, i) != REG_EMPTY) {
+        uint8_t tag;
+
+        if (regs_peek(&r, i, &tag) != SYS_OK || tag != REG_EMPTY) {
             panic("registers: register %u survived an execution", i);
         }
     }

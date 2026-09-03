@@ -7180,21 +7180,33 @@ than assuming either answer.
   is refused rather than read as a handle of value zero, which is what
   makes a batch that names a register an earlier entry never wrote fail
   instead of proceeding.
-- The file lives on the stack of the call that runs the batch, which is
-  what makes "private to one execution" true without anything having to
-  clear it afterwards.
+- The file lives on the stack of the call that runs the batch, and of
+  the call that runs a single operation, because one entry is an
+  execution of one entry. That placement is what makes "private to one
+  execution" true without anything having to clear it afterwards.
 - *Checked directly rather than through a submission*, because nothing
   writes a register from an entry yet; the entries that use it are the
   stages after this one. What can be established here is every property
   the rest of the milestone rests on, and those properties are all
-  refusals.
+  refusals. That an execution actually sees an empty file is checked
+  end to end in the stage that gives an entry something to write.
 - *What settles it.* Four ways to break it, each caught by a different
   line. Dropping the tag check from a handle read gives `empty register
   0 was readable`. Leaving the tags alone in the initialiser gives
-  `register 1 survived an execution`. Dropping the bounds check gives
-  `writing outside the file: expected INVALID_ARG, got OK`. Not
-  updating the tag on a write gives `reading it back: expected OK, got
-  INVALID_ARG`.
+  `register 1 survived an execution`. Dropping the bound from the tag
+  enquiry gives `asking what is outside the file: expected
+  INVALID_ARG, got OK`. Not updating the tag on a write gives `reading
+  it back: expected OK, got INVALID_ARG`.
+- *Reviewed.* The stage said the file lives on the stack of the call
+  that runs the batch and it did not: nothing in the batch path owned
+  one, and the check called the initialiser on a local of its own. The
+  words described a structure that had not been built. It is built
+  now, and `sys_op_exec` carries it without reading it, which is how
+  the placement gets settled rather than asserted. The enquiry that
+  reports what a register holds also answered `REG_EMPTY` for an index
+  outside the file, which is the one answer that reads as an
+  invitation to write it; it returns an error like every other call in
+  the file now.
 
 **2. An entry takes its target from a register.** *Planned.*
 

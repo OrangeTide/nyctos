@@ -28,7 +28,14 @@ void panic(const char *fmt, ...) __attribute__((noreturn))
   __attribute__((format(printf, 1, 2)));
 
 /* sys/kern/kern_op.c */
-sys_err_t sys_op_exec(struct sys_op *op);
+struct batch_regs;
+
+/*
+ * One entry, with the register file of the execution it belongs to.
+ * The file is how an entry reaches what an earlier one produced; an
+ * operation that names no register never looks at it.
+ */
+sys_err_t sys_op_exec(struct sys_op *op, struct batch_regs *regs);
 
 /* sys/kern/kern_thread.c */
 void thread_exited(void) __attribute__((noreturn));

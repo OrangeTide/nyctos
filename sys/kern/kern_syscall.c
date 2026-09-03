@@ -30,6 +30,7 @@
 
 #include <stdbool.h>
 
+#include <sys/batchreg.h>
 #include <sys/cpu.h>
 #include <sys/measure.h>
 #include <sys/lock.h>
@@ -199,10 +200,25 @@ batch_run(sys_op_t *op, unsigned long count)
 {
     {
         struct proc *p;
+        struct batch_regs regs;
         unsigned long i;
         long r = SYS_OK;
         bool cancelling = false;
 
+        /*
+         * The registers of section 17.4, on this call's stack and
+         * emptied here. That placement is what makes them private to
+         * one execution: the next batch gets a different frame and
+         * this one is gone, so nothing has to clear them afterwards
+         * and nothing can read what the batch before it left.
+         *
+         * Section 17.5's abort rule depends on it. A register is
+         * either written by an entry of this batch or it is empty,
+         * with no third case where it holds something older, and that
+         * is what makes the set of timelines a batch would have
+         * signalled enumerable without running it.
+         */
+        regs_init(&regs);
         for (i = 0; i < count; i++) {
             bool linked = (op[i].flags & SYS_OP_LINK) != 0;
             long one;
@@ -224,7 +240,7 @@ batch_run(sys_op_t *op, unsigned long count)
                 op[i].status = SYS_ERR_CANCELED;
                 one = SYS_OK;
             } else {
-                one = sys_op_exec(&op[i]);
+                one = sys_op_exec(&op[i], &regs);
 
                 /*
                  * A failure cancels what is left of this chain, and

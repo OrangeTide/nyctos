@@ -77,12 +77,14 @@ regs_get_scalar(const struct batch_regs *r, unsigned int i, uint64_t *out)
     return SYS_OK;
 }
 
-uint8_t
-regs_tag(const struct batch_regs *r, unsigned int i)
+sys_err_t
+regs_peek(const struct batch_regs *r, unsigned int i, uint8_t *tag)
 {
     if (i >= SYS_BATCH_REGS) {
-        return REG_EMPTY;
+        return SYS_ERR_INVALID_ARG;
     }
 
-    return r->br_tag[i];
+    *tag = r->br_tag[i];
+
+    return SYS_OK;
 }

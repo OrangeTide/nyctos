@@ -779,10 +779,19 @@ op_grant_map(struct proc *p, struct sys_op *op)
     return grant_map(obj, p, rights, &args->out_base, &args->out_len);
 }
 sys_err_t
-sys_op_exec(struct sys_op *op)
+sys_op_exec(struct sys_op *op, struct batch_regs *regs)
 {
     struct proc *p;
     sys_err_t err;
+
+    /*
+     * Carried but not yet read. The entries that take an argument from
+     * a register are the stage after this one; what this stage settles
+     * is that there is one file per execution for them to read, and a
+     * parameter nothing dereferences is how that is settled rather
+     * than asserted.
+     */
+    (void)regs;
 
     /*
      * The one path that returns without writing a status, because there is

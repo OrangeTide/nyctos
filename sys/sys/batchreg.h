@@ -67,7 +67,15 @@ sys_err_t regs_get_handle(const struct batch_regs *r, unsigned int i,
 sys_err_t regs_get_scalar(const struct batch_regs *r, unsigned int i,
   uint64_t *out);
 
-/* What a register holds, for a caller that wants to ask before reading. */
-uint8_t regs_tag(const struct batch_regs *r, unsigned int i);
+/*
+ * What a register holds, for a caller that wants to ask before reading.
+ *
+ * An error rather than a tag for an index outside the file, because a
+ * tag would have to be one of the three and every one of them says the
+ * register exists. Answering REG_EMPTY for a register that cannot be
+ * written is the one answer that reads as an invitation.
+ */
+sys_err_t regs_peek(const struct batch_regs *r, unsigned int i,
+  uint8_t *tag);
 
 #endif /* _SYS_BATCHREG_H_ */
