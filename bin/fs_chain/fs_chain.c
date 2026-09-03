@@ -43,7 +43,6 @@
 
 static char buf[256];
 
-static sys_msg_t walk_reply, fetch_reply, close_reply;
 static struct sys_op_send_args walk, fetch, shut;
 
 static void
@@ -97,14 +96,14 @@ main(void)
     /* Walk, and keep what the reply moved. */
     ops[0].opcode = SYS_OP_IPC_SEND;
     ops[0].target = dir;
-    ops[0].flags = SYS_OP_RESULT_TO_REG;
+    ops[0].flags = SYS_OP_RESULT_TO_REG | SYS_OP_LINK;
     ops[0].reg_out = 0;
     ops[0].arg_ptr = (uintptr_t)&walk;
     ops[0].arg_len = sizeof(walk);
 
     /* Read it, on whatever the walk came back with. */
     ops[1].opcode = SYS_OP_IPC_SEND;
-    ops[1].flags = SYS_OP_TARGET_FROM_REG;
+    ops[1].flags = SYS_OP_TARGET_FROM_REG | SYS_OP_LINK;
     ops[1].reg_in = 0;
     ops[1].arg_ptr = (uintptr_t)&fetch;
     ops[1].arg_len = sizeof(fetch);
@@ -116,7 +115,7 @@ main(void)
      * tell the server nothing.
      */
     ops[2].opcode = SYS_OP_IPC_SEND;
-    ops[2].flags = SYS_OP_TARGET_FROM_REG;
+    ops[2].flags = SYS_OP_TARGET_FROM_REG | SYS_OP_LINK;
     ops[2].reg_in = 0;
     ops[2].arg_ptr = (uintptr_t)&shut;
     ops[2].arg_len = sizeof(shut);
@@ -130,24 +129,32 @@ main(void)
         return 2;
     }
 
-    walk_reply = walk.reply;
-    fetch_reply = fetch.reply;
-    close_reply = shut.reply;
-
-    rep = (const fs_reply_t *)walk_reply.inline_data;
+/*
+     * In the order they ran, so that a failing run names the entry
+     * that failed first rather than a later one that failed because
+     * of it.
+     */
+    rep = (const fs_reply_t *)walk.reply.inline_data;
     if (rep->fr_status != SYS_OK) {
         return 3;
     }
-    rep = (const fs_reply_t *)close_reply.inline_data;
+
+    rep = (const fs_reply_t *)fetch.reply.inline_data;
+    if (rep->fr_status != SYS_OK) {
+        return 4;
+    }
+
+    rep = (const fs_reply_t *)shut.reply.inline_data;
     if (rep->fr_status != SYS_OK) {
         return 5;
     }
 
-    rep = (const fs_reply_t *)fetch_reply.inline_data;
-    if (rep->fr_status != SYS_OK) {
-        return 4;
-    }
-    got = rep->fr_length;
+    /*
+     * From the read's reply and not from whichever was looked at
+     * last, which is a mistake this made once and the byte count
+     * caught at once.
+     */
+    got = ((const fs_reply_t *)fetch.reply.inline_data)->fr_length;
 
     len = got < sizeof(buf) ? got : sizeof(buf);
 

@@ -7343,12 +7343,56 @@ fs_chain   2 submissions, 5 rendezvous, 1 connections, 12 entries, 6 invalidatio
   more page table at Tier 2, which is what a client that moves buffers
   costs and matches what `fs_client` costs on the same line. Updated
   deliberately.
+- *Reviewed, and it found the thing this stage was standing on.*
 
-**4. Abort force-signals what the batch would have signalled.**
-*Planned.*
+  The program was called `fs_chain`, its comment described a chain, and
+  it set no `LINK` flag on anything. Section 17.5's chaining is the
+  mechanism for "these belong together and a failure ends the rest",
+  and without it a failed walk let three more entries reach the kernel
+  and be refused one at a time. Linked now, and checking the replies in
+  the order they ran rather than an order that would name a later entry
+  as the cause of an earlier one's failure.
 
-- Section 17.5's last line, unbuilt because M10 had nothing that a
-  cancelled entry could have been going to signal.
+  Then the check written to prove the chain aborts showed that it does
+  not, for a reason neither the program nor the stage had noticed. A
+  walk for a name that does not exist **succeeds**: the message was
+  delivered and answered, and the refusal is in the server's payload,
+  which the kernel does not read. Section 12.4 requires a `status`
+  field on the message for exactly this, and says what happens without
+  it in words that describe this program: "a `FS_OP_WALK` for a file
+  that does not exist is a completely successful `SYS_OP_IPC_SEND` as
+  far as the kernel can see, so a linked chain would carry on and send
+  a read on a connection that was never returned." The field is not in
+  `sys_msg_t`. The rule is not built.
+
+  What stops the read is the empty register, because a walk that fails
+  moves no handle. That is the right outcome by the wrong route, and it
+  holds only for as long as no operation both fails and moves a handle.
+  The check now asserts what is true, names what is missing, and would
+  fail the day the kernel learns to see a server's refusal, which is
+  how it will be noticed. Stage four takes the field.
+
+**4. What a chain does when a server says no, and what an abort
+signals.** *Planned.*
+
+*Widened by stage three's review*, which found that the first half of
+this is missing entirely and that a program was relying on it without
+either of us noticing.
+
+- **The status field of section 12.4.** A reply carries a `status` of
+  type `sys_err_t` outside the opaque payload, and `sys_msg_t` does not
+  have one. Without it a request the server refused is a successful
+  send as far as the kernel can see, so a linked chain carries on.
+  Section 25.6 already makes servers report failure as `sys_err_t`, so
+  this costs the protocols nothing they were not doing; what it costs
+  is a field in a structure every server in the tree fills in.
+- *Check.* `fs_chain` walking for a name that does not exist: the walk
+  entry itself reports the server's refusal, and the entries after it
+  are `SYS_ERR_CANCELED` rather than each being refused on its own. The
+  check stage three left behind asserts today's behaviour and will fail
+  when this lands, which is the point of having written it that way.
+- **And then section 17.5's last line**, that on abort every timeline
+  the batch was going to signal is force-signalled in error state.
 - The set is determinable without executing, and registers are why: a
   target is either literal, and visible by inspection, or from a
   register, which an earlier entry either wrote or did not.

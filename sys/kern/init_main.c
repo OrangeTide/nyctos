@@ -5383,6 +5383,66 @@ substitution_checks(void)
     req->fr_name[0] = 'm';
 
     /*
+     * And the same pair as a chain, whose walk finds nothing.
+     *
+     * What section 17.5 says should happen is that the walk fails and
+     * cancels the rest. What happens is that the walk succeeds: the
+     * message was delivered and answered, and the refusal is in the
+     * server's payload, which the kernel does not read. Section 12.4
+     * requires a status field on the message for exactly this, saying
+     * that without it "a FS_OP_WALK for a file that does not exist is
+     * a completely successful SYS_OP_IPC_SEND as far as the kernel can
+     * see, so a linked chain would carry on and send a read on a
+     * connection that was never returned". The field is not in
+     * sys_msg_t and the rule is not built.
+     *
+     * What stops the read here is the empty register, not the chain.
+     * That is the right outcome reached by the wrong route, and it
+     * holds only because a walk that fails moves no handle. The entry
+     * after the refused one is cancelled, which is the part of section
+     * 17.5 that does work.
+     */
+    req = (fs_request_t *)walk.request.inline_data;
+    req->fr_name[0] = 'z';
+    ops[0].flags |= SYS_OP_LINK;
+    ops[1].flags |= SYS_OP_LINK;
+    memset(&read.reply, 0, sizeof(read.reply));
+
+    {
+        sys_op_t three[3];
+
+        memcpy(three, ops, sizeof(ops));
+        three[2] = ops[1];
+        three[2].flags = SYS_OP_TARGET_FROM_REG;
+
+        r = run_batch(three, 3);
+        expect("a chain whose walk found nothing",
+          (sys_err_t)r, SYS_ERR_INVALID_ARG);
+
+        if (three[0].status != SYS_OK) {
+            panic("substitution: the walk reported %ld, so the kernel "
+              "can see a server's refusal after all",
+              (long)three[0].status);
+        }
+        if (three[1].status != SYS_ERR_INVALID_ARG) {
+            panic("substitution: the read said %ld, not refused",
+              (long)three[1].status);
+        }
+        if (three[2].status != SYS_ERR_CANCELED) {
+            panic("substitution: the entry after it said %ld, not "
+              "canceled", (long)three[2].status);
+        }
+        if (read.reply.inline_len != 0) {
+            panic("substitution: a refused entry sent its message");
+        }
+    }
+    cnputs("    a refusal cancels the rest of the chain  OK\n");
+
+    ops[0].flags &= ~(uint16_t)SYS_OP_LINK;
+    ops[1].flags &= ~(uint16_t)SYS_OP_LINK;
+    req->fr_name[0] = 'm';
+
+    /*
      * And the same second entry on its own. A fresh execution has a
      * fresh file, so the register it names holds nothing, and it is
      * refused before the message goes rather than sending on a handle
