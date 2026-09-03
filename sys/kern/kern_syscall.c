@@ -43,6 +43,64 @@
 
 static long syscall_body(struct sys_op *op, unsigned long count);
 
+
+/*
+ * What can be told about an entry without running it, per section 17.2.
+ *
+ * One function because there are two callers and they must agree: a
+ * submission checks every entry before any entry runs, and a prepared
+ * program checks them once at load so that its executions do not have
+ * to. When these were written out twice they drifted the moment
+ * section 17.4's registers arrived, and a prepared program would have
+ * half-run on an entry a submission refused.
+ *
+ * The rule for what belongs here is whether the answer can change
+ * between now and the entry running. Which register a number names
+ * cannot; whether that register holds a handle can, and stays where it
+ * has to be.
+ */
+sys_err_t
+entry_static_check(struct proc *p, const sys_op_t *e)
+{
+    if (e->opcode >= SYS_OP_COUNT) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    /*
+     * A null pointer with a length is a malformed descriptor rather
+     * than an unreachable one, and each operation already says so with
+     * SYS_ERR_INVALID_ARG. Letting it through to them keeps that
+     * answer; testing the length here instead of the pointer turned it
+     * into FAULT once, which was a decision sys_op_exec had already
+     * made and written down.
+     */
+    if (e->arg_ptr != 0 && !proc_reaches(p, e->arg_ptr, e->arg_len)) {
+        return SYS_ERR_FAULT;
+    }
+
+    if ((e->flags & SYS_OP_TARGET_FROM_REG) != 0 &&
+      e->reg_in >= SYS_BATCH_REGS) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    if ((e->flags & SYS_OP_RESULT_TO_REG) != 0) {
+        if (e->reg_out >= SYS_BATCH_REGS) {
+            return SYS_ERR_INVALID_ARG;
+        }
+
+        /*
+         * Which operations produce a handle to put in a register is
+         * fixed by section 17.4 rather than discovered. It names two,
+         * and the issuing ops are not built.
+         */
+        if (e->opcode != SYS_OP_IPC_SEND) {
+            return SYS_ERR_NOT_SUPPORTED;
+        }
+    }
+
+    return SYS_OK;
+}
+
 /*
  * Every way into this kernel is one of four functions the port's
  * exception vectors call, and each one is a pair of these. A thread
@@ -139,35 +197,10 @@ syscall_body(struct sys_op *op, unsigned long count)
         unsigned long i;
 
         for (i = 0; i < count; i++) {
-            sys_err_t bad = SYS_OK;
+            sys_err_t bad;
 
             cpu_self()->cp_checks++;
-
-            if (op[i].opcode >= SYS_OP_COUNT) {
-                bad = SYS_ERR_INVALID_ARG;
-            } else if (op[i].arg_ptr != 0 &&
-              !proc_reaches(proc_current(), op[i].arg_ptr,
-                op[i].arg_len)) {
-                /*
-                 * The same condition sys_op_exec applies, and it has
-                 * to be the same one. A null pointer with a length is
-                 * a malformed descriptor rather than an unreachable
-                 * one, and the operations answer that with
-                 * SYS_ERR_INVALID_ARG; testing the length here instead
-                 * of the pointer turned that answer into FAULT, which
-                 * is a decision sys_op_exec had already made and
-                 * written down.
-                 *
-                 * So this check is a copy, deliberately. Section 17.2
-                 * wants every entry checked before any entry runs, and
-                 * the operation checks again when it runs, so an entry
-                 * is reach-checked twice. That is the cost of not
-                 * half-running a batch, and it is a number stage four
-                 * has to account for rather than a thing to be quietly
-                 * pleased about.
-                 */
-                bad = SYS_ERR_FAULT;
-            }
+            bad = entry_static_check(proc_current(), &op[i]);
 
             if (bad != SYS_OK) {
                 /*

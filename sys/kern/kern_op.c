@@ -869,7 +869,17 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
     cpu_self()->cp_checks++;
     if (op->arg_ptr != 0 &&
       !proc_reaches(p, op->arg_ptr, op->arg_len)) {
-        op->status = SYS_ERR_FAULT;
+        /*
+         * The caller's descriptor and not the copy a substituted
+         * target runs on, which is a distinction this path had wrong:
+         * the status went into the copy and the caller was left with
+         * whatever it had written. Reachable only if the memory stops
+         * being reachable between the check every entry gets before
+         * any entry runs and this one, which is a race no check here
+         * can construct, and is the reason the duplicate check exists
+         * at all.
+         */
+        entry->status = SYS_ERR_FAULT;
         return SYS_ERR_FAULT;
     }
 

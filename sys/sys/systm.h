@@ -68,6 +68,14 @@ void boot_report(void);
 
 /* sys/kern/kern_syscall.c */
 long batch_run(sys_op_t *op, unsigned long count);
+
+struct proc;
+
+/*
+ * What can be told about an entry without running it. Shared by the
+ * submission path and the prepared one so that they cannot disagree.
+ */
+sys_err_t entry_static_check(struct proc *p, const sys_op_t *e);
 long syscall_handler(struct sys_op *op, unsigned long count);
 void trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
   __attribute__((noreturn));

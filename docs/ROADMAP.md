@@ -7254,6 +7254,36 @@ than assuming either answer.
   starts with an empty file is now seen through the batch path: the
   dependent entry submitted on its own, in a later execution, finds
   nothing where the pair had left a connection.
+- *Reviewed.* Three defects, two of them made by this stage.
+
+  Adding register fields to an entry made two validators disagree. A
+  submission checks every entry before any entry runs, per section
+  17.2, and a prepared program checks them once at load so its
+  executions do not have to; the second says in its own comment that it
+  does "the same validation a submission gets", and after this stage it
+  did not. A prepared program naming a register that does not exist
+  would have half-run on every execution. Both now call one function,
+  so the next field cannot make them drift again, and the rule for what
+  belongs in it is written there: whether the answer can change between
+  the check and the entry running. Which register a number names cannot.
+  Whether that register holds a handle can, and stays where it is.
+
+  The submission path had the same hole before that: the register
+  fields were checked when the entry was reached rather than before any
+  entry ran, so a batch refused for a bad register index had already
+  run the entries before it. `trespass` now submits a pair whose second
+  entry names one register past the end and asserts the first entry's
+  status is untouched, which is section 17.6's own way of saying it was
+  never considered. Removing either the check or the shared validator's
+  register range fails it with `exited 16`.
+
+  And a fault on an entry with a substituted target wrote the status
+  into the copy the substitution ran on rather than into the caller's
+  descriptor, so the caller was left with whatever it had written. It
+  is reachable only if memory stops being reachable between the check
+  every entry gets before any entry runs and the one the operation
+  makes, which is the race that duplicate check exists for and one no
+  check here can construct. Fixed, and stated as unchecked.
 
 **3. A real client carries its dependency in a register.** *Planned.*
 

@@ -19,6 +19,7 @@ prepared_load(struct proc *p, const sys_op_t *entries, uint32_t count,
     struct prepared *pr;
     sys_id_t id;
     uint32_t i;
+    sys_err_t err;
 
     if (count == 0 || count > SYS_BATCH_MAX_ENTRIES) {
         return SYS_ERR_INVALID_ARG;
@@ -38,12 +39,9 @@ prepared_load(struct proc *p, const sys_op_t *entries, uint32_t count,
     for (i = 0; i < count; i++) {
         cpu_self()->cp_checks++;
 
-        if (entries[i].opcode >= SYS_OP_COUNT) {
-            return SYS_ERR_INVALID_ARG;
-        }
-        if (entries[i].arg_ptr != 0 &&
-          !proc_reaches(p, entries[i].arg_ptr, entries[i].arg_len)) {
-            return SYS_ERR_FAULT;
+        err = entry_static_check(p, &entries[i]);
+        if (err != SYS_OK) {
+            return err;
         }
     }
 

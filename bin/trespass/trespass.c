@@ -169,6 +169,38 @@ main(void)
         return 7;
     }
 
+    /*
+     * A batch whose second entry names a register that does not exist.
+     *
+     * Section 17.2 says every entry is checked before any entry runs,
+     * and which register a number names is a property of the entry
+     * rather than of the execution, so this has to be caught before
+     * the first entry does anything. The first entry's status is how
+     * that is visible: an entry never considered is left as the caller
+     * wrote it, per section 17.6, so finding it untouched is finding
+     * that the batch did not half-run.
+     */
+    {
+        sys_op_t pair[2];
+
+        memset(pair, 0, sizeof(pair));
+        pair[0].opcode = SYS_OP_NOP;
+        pair[0].status = SYS_ERR_INTERRUPTED;   /* nothing writes this */
+        pair[1].opcode = SYS_OP_IPC_SEND;
+        pair[1].flags = SYS_OP_TARGET_FROM_REG;
+        pair[1].reg_in = SYS_BATCH_REGS;        /* one past the end */
+
+        if (sys_op_submit(pair, 2) != SYS_ERR_INVALID_ARG) {
+            return 14;
+        }
+        if (pair[1].status != SYS_ERR_INVALID_ARG) {
+            return 15;
+        }
+        if (pair[0].status != SYS_ERR_INTERRUPTED) {
+            return 16;
+        }
+    }
+
 
 
     /*
