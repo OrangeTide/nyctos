@@ -28,13 +28,6 @@ meas_now(void)
 {
     return md_time_now();
 }
-
-uint64_t
-meas_hz(void)
-{
-    return md_time_hz();
-}
-
 uint64_t
 meas_enter(void)
 {
@@ -462,6 +455,10 @@ intr_region_begin(uintptr_t site)
         return;
     }
 
+    if (c->cp_intr_open) {
+        c->cp_intr_lost_begin++;
+    }
+
     c->cp_intr_site = site;
     c->cp_intr_open = true;
     c->cp_intr_console = false;
@@ -502,6 +499,7 @@ intr_region_end(uintptr_t site)
          * return to user mode and the idle path both do. Nothing is
          * charged for it: what is known is that it ended, not when.
          */
+        c->cp_intr_lost_end++;
         return;
     }
 
@@ -608,6 +606,26 @@ intr_region_report(void)
           (unsigned long)(c->cp_intr_regions_kern != 0 ?
             c->cp_intr_total_kern / c->cp_intr_regions_kern : 0),
           (unsigned long)c->cp_intr_worst_kern_site);
+
+        /*
+         * And what the instrument did not see, which is as much a part
+         * of the figure as what it did.
+         *
+         * The two are not the same kind of thing and are printed
+         * apart because reading them as one invites the wrong
+         * conclusion. An end that arrives with no region open closes
+         * nothing and loses nothing: the region it belonged to was
+         * already accounted for, and the call is the return to user
+         * mode or the idle path closing a second time. A region
+         * replaced while still open is a measurement gone. It began,
+         * nothing closed it, and its duration is discarded, so if one
+         * of those was the longest region in the run then the figure
+         * above is not.
+         */
+        cnprintf("        %lu closes found nothing open, losing nothing; "
+          "%lu regions were replaced before they closed\n",
+          (unsigned long)c->cp_intr_lost_end,
+          (unsigned long)c->cp_intr_lost_begin);
 
         if (c->cp_intr_regions == 0) {
             panic("interrupts off: core %u never disabled them",

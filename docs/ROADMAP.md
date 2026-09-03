@@ -6806,6 +6806,35 @@ older than this check: a core announces itself up when it claims its
 state, which is well before it can take an interrupt, and the lock
 check already waited in the same gap.
 
+*A fifth pass, and the question none of the others asked: what does the
+instrument not see?* Two things are discarded by design and neither was
+counted, so nothing said whether the regions reported were most of them
+or a few of them.
+
+They turn out to be different in kind, and printing them as one number
+invited exactly the wrong reading, which I made myself before checking.
+An end that arrives with no region open closes nothing and loses
+nothing: the region was already accounted for and this is the return to
+user mode or the idle path closing a second time. There are 721 of
+those against 21364 regions at Tier 2 and 748 against 1452 at Tier 0. A
+region replaced while still open is a measurement gone: it began,
+nothing closed it, and its duration is discarded. There are 26 of those
+per run at Tier 2 and 25 at Tier 0.
+
+So the blind spot is about one region in eight hundred at Tier 0 and
+one in eight hundred and twenty at Tier 2, and if one of those was the
+longest region in a run then the figure reported for that run is not
+the longest. That is a small hole and it is now a stated one. The
+counts are within one of each other on both ports and at both tiers,
+which is what says they are structural: particular paths that re-enable
+interrupts without going through the restore, and not noise.
+
+A sweep of every declaration in the header against its definition and
+its callers turned up `meas_hz`, declared, defined, and referenced only
+by a comment. Removed, and the comment now names the clock rather than
+the function. The same sweep over the instrument's per-core fields
+found none that are written and never read.
+
 **A limit of the instrument, stated rather than fixed.** The window is
 the core and not the batch: anything else that core does between the
 clearing and the reading is inside it, an interrupt included. That makes

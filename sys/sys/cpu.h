@@ -154,6 +154,17 @@ struct cpu {
     uint64_t            cp_intr_total_kern;
 
     /*
+     * And what the instrument did not see. A region whose end is
+     * reached with none open cannot be charged for, and one that
+     * begins while another is still open replaces it. Both are
+     * discarded by design and neither was counted, so the reported
+     * number of regions could have been a fraction of the real one
+     * and the report would have looked exactly the same.
+     */
+    uint64_t            cp_intr_lost_end;
+    uint64_t            cp_intr_lost_begin;
+
+    /*
      * The same, over a window a check has cleared, so that asking what
      * one batch cost does not throw away what the run cost. They were
      * one pair of fields, and the run-wide figure survived only

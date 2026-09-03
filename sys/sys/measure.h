@@ -85,7 +85,6 @@ struct meas {
 
 /* The monotonic source, and how many of its ticks are a second. */
 uint64_t meas_now(void);
-uint64_t meas_hz(void);
 
 /*
  * Open and close a region. The value returned by the first is handed
@@ -116,7 +115,7 @@ uint64_t meas_count(const struct meas *m);
  */
 uint64_t meas_count_on(const struct meas *m, uint32_t core);
 
-/* The longest single visit, on any core, in the ticks of meas_hz(). */
+/* The longest single visit, on any core, in the clock's ticks. */
 uint64_t meas_longest(const struct meas *m);
 
 /*
