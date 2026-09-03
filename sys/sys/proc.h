@@ -171,6 +171,15 @@ struct proc {
      * process that ended is not a process nobody can ask about; it
      * becomes one when the last thing that could ask lets go.
      */
+    /*
+     * How many times this process has crossed the trap edge, which is
+     * what section 17 is about saving. Per process because that is the
+     * unit a comparison of two clients needs: the machine-wide count
+     * includes whatever else was running, and on two cores that is not
+     * a small difference.
+     */
+    uint64_t            p_submits;
+
     uint32_t            p_refs;
 
     /*

@@ -7285,30 +7285,64 @@ than assuming either answer.
   makes, which is the race that duplicate check exists for and one no
   check here can construct. Fixed, and stated as unchecked.
 
-**3. A real client carries its dependency in a register.** *Planned.*
+**3. A real client carries its dependency in a register.** *Built.*
 
 *Re-scoped by stage two.* This stage was to make `SYS_OP_IPC_SEND` the
 writer of a register and show a walk handing a connection to a read.
-Stage two had to build that to have anything to read, because a
-register nothing writes cannot be checked, and it used the pair as its
-own check. What is left is the part that was always the point: a client
-that is not a check.
+Stage two had to build that to have anything to read, and used the pair
+as its own check. What was left is the part that was always the point:
+a client that is not a check.
 
-- The filesystem client of M1 walks and then reads, as two calls, with
-  the connection carried between them in a local variable. It is a user
-  program, not kernel code, so converting it exercises the mechanism
-  from the side a program sees.
-- *Check.* The client reads the same bytes and prints the same line, so
-  the compared transcript does not move, and the crossings it makes go
-  from two to one. The count is what the stage reports.
-- *Watch for.* The saving being the one M10 already measured. A batch
-  of two saves one crossing whether or not the entries depend on each
-  other, so the number this produces is not by itself evidence for
-  substitution. What substitution adds is that the second entry could
-  not have been written down at all without it, which is a fact about
-  what the caller had to do rather than a count, and the stage has to
-  say so plainly rather than presenting a crossing saved as though it
-  were the answer.
+- *A third client rather than a converted one.* `fs_client` is the
+  baseline `fs_batch` is measured against, and section 25.7's whole
+  comparison rests on it staying the plain three-round-trip form.
+  Converting it would have destroyed the measurement this milestone is
+  trying to add to. `fs_chain` does the same work in one submission and
+  sits beside both.
+- Four entries: walk, keeping the handle its reply moved; read on that
+  register; close, on the same register again; and a `HANDLE_CLOSE`
+  taking its target from the register too. That last one is there
+  because the program never learns the handle's value and so cannot
+  close it any other way. Section 17.5 names that as a limit when a
+  chain aborts; it is the same limit when a chain succeeds, and an
+  entry reading a register is the answer to it.
+- *Check.* The same bytes, so the exit status is unchanged and
+  `run_client` asserts it. What moved is the crossings, which are now
+  counted per process rather than for the machine: the machine-wide
+  figure includes whatever else was running, and on two cores that is
+  not a small difference.
+- *The three-way comparison, which is the stage's product.*
+
+```
+fs_client  5 submissions, 5 rendezvous, 1 connections, 12 entries, 6 invalidations
+fs_batch   4 submissions, 3 rendezvous, 0 connections,  4 entries, 2 invalidations
+fs_chain   2 submissions, 5 rendezvous, 1 connections, 12 entries, 6 invalidations
+```
+
+- Read across rather than down. `fs_chain` and `fs_client` agree on
+  every column but the first: the same rendezvous, the same connection
+  drawn from the server's pool, the same buffers remapped. Substitution
+  saved four crossings of the trap edge and nothing else, which is
+  exactly what M10 said batching saves and no more. `fs_batch` saves
+  two rendezvous and the connection, and that is the protocol's saving
+  rather than the engine's. The two mechanisms are visible apart
+  because the three lines are side by side.
+- *So the crossings are not the argument.* M10 already measured that a
+  batch of N saves N-1 crossings whether or not the entries depend on
+  each other. What substitution adds is that these four entries could
+  not have been written down as one batch at all before it: the second
+  names a handle that does not exist until the first has answered. That
+  is a fact about what the caller can express, not a number, and the
+  milestone has to say so rather than presenting a saved crossing as
+  though it were the answer.
+- *What settles it.* Two ways to break the dependency, both caught by
+  the byte count. Taking the flag off the read so it uses its literal
+  target, and taking it off the walk so nothing is written, each give
+  `fs_chain: read 2 bytes, expected 31`.
+- *What it cost the compared file.* Six more buffer remappings and one
+  more page table at Tier 2, which is what a client that moves buffers
+  costs and matches what `fs_client` costs on the same line. Updated
+  deliberately.
 
 **4. Abort force-signals what the batch would have signalled.**
 *Planned.*

@@ -144,6 +144,14 @@ syscall_body(struct sys_op *op, unsigned long count)
      */
     cpu_self()->cp_syscalls++;
 
+    {
+        struct proc *self = proc_current();
+
+        if (self != NULL) {
+            self->p_submits++;
+        }
+    }
+
     if (count == 0 || count > SYS_BATCH_MAX_ENTRIES) {
         return SYS_ERR_INVALID_ARG;
     }

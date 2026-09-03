@@ -2106,8 +2106,9 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
         leaf = after.vc_leaf - cost.vc_leaf;
         flush = after.vc_flush - cost.vc_flush;
 
-        cnprintf("    %-10s %lu rendezvous, %lu connections, "
-          "%lu entries, %lu invalidations\n", image,
+        cnprintf("    %-10s %lu submissions, %lu rendezvous, "
+          "%lu connections, %lu entries, %lu invalidations\n", image,
+          (unsigned long)p->p_submits,
           (unsigned long)rounds,
           (unsigned long)(conns->highwater - pool_before),
           (unsigned long)leaf,
@@ -7025,7 +7026,7 @@ user_slice(void)
     sys_ns_spec_t ns[2];
     struct channel *ch;
     struct channel *blk;
-    sys_handle_t h_recv, h_blk, store, root, root2, root3;
+    sys_handle_t h_recv, h_blk, store, root, root2, root3, root5;
     sys_err_t err;
 
     boot_report();
@@ -7068,6 +7069,13 @@ user_slice(void)
     expect("a second one, for the second client",
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     root2 = cargs.out_handle;
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a third one, for the client that chains",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    root5 = cargs.out_handle;
 
 #if SYS_TIER == 2
     /*
@@ -7202,12 +7210,14 @@ user_slice(void)
         p1 = cpu_crossings(&d1);
 
         run_client("fs_batch", root2, BLK_MOTD_BYTES, SEND_BLOCK_NO);
+        run_client("fs_chain", root5, BLK_MOTD_BYTES, SEND_BLOCK_YES);
 
         pinned_storage_checks(blk_proc, root4, p1 - p0, d1 - d0);
     }
 #else
     run_client("fs_client", root, BLK_MOTD_BYTES, SEND_BLOCK_YES);
     run_client("fs_batch", root2, BLK_MOTD_BYTES, SEND_BLOCK_NO);
+    run_client("fs_chain", root5, BLK_MOTD_BYTES, SEND_BLOCK_YES);
 #endif
 
     trespass_checks(root3);

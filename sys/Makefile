@@ -93,7 +93,8 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
     $(OBJTOP)/bin/wedged/wedged.bin \
     $(OBJTOP)/bin/orphan/orphan.bin \
     $(OBJTOP)/bin/echoes/echoes.bin \
-    $(OBJTOP)/bin/supervise/supervise.bin
+    $(OBJTOP)/bin/supervise/supervise.bin \
+    $(OBJTOP)/bin/fs_chain/fs_chain.bin
 	@mkdir -p $(@D)
 	$(MKBOOTARCH) $@ \
 	    fs_server=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 0 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_server/fs_server.bin \
@@ -122,6 +123,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) \
 	    wedged=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 23 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/wedged/wedged.bin \
 	    orphan=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 24 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/orphan/orphan.bin \
 	    echoes=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 25 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/echoes/echoes.bin \
-	    supervise=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 26 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/supervise/supervise.bin
+	    supervise=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 26 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/supervise/supervise.bin \
+	    fs_chain=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 27 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_chain/fs_chain.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)
