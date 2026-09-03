@@ -315,10 +315,18 @@ meas_check_clock(void)
  *
  * The test is a bracket. This core reads the counter, asks the other
  * to read it, and reads again; the other core's value has to lie
- * between the two. Two counters with any offset between them fail
- * this, and two that happen to agree to within the width of the
- * bracket are, for the purpose of every figure here, the same clock.
+ * between the two. What that establishes is not that the two counters
+ * are the same one but that they differ by less than the bracket, so
+ * the bracket is taken several times and the narrowest is reported:
+ * the claim is only ever as strong as the tightest one measured, and
+ * saying which it was is what lets a later reader judge it.
+ *
+ * Written for two cores because the build has two. Every core after
+ * the first would answer on the same three words, and the round
+ * numbers below would stop meaning one exchange.
  */
+#define CLK_ROUNDS  8
+
 static volatile uint64_t clk_across;
 static volatile uint32_t clk_asked;
 static volatile uint32_t clk_read;
@@ -326,48 +334,73 @@ static volatile uint32_t clk_read;
 void
 meas_clock_secondary(void)
 {
-    while (clk_asked == 0) {
-        md_cpu_relax();
-    }
+    uint32_t r;
 
-    clk_across = md_time_now();
-    md_cpu_fence();
-    clk_read = 1;
+    for (r = 1; r <= CLK_ROUNDS; r++) {
+        uint32_t spin;
+
+        /*
+         * Bounded, because this runs before the core has its way in
+         * to the interrupt controller and a core stuck here is a core
+         * that cannot be poked. Giving up leaves the other core to
+         * fail the check rather than both waiting for each other.
+         */
+        for (spin = 0; spin < 100000000u && clk_asked != r; spin++) {
+            md_cpu_relax();
+        }
+        if (clk_asked != r) {
+            return;
+        }
+
+        clk_across = md_time_now();
+        md_cpu_fence();
+        clk_read = r;
+    }
 }
 
 void
 meas_check_clock_across(void)
 {
-    uint64_t before, after, theirs;
-    uint32_t spin;
+    uint64_t tightest = 0;
+    uint32_t r;
 
     if (cpu_count() < 2) {
         return;
     }
 
-    before = md_time_now();
-    md_cpu_fence();
-    clk_asked = 1;
+    for (r = 1; r <= CLK_ROUNDS; r++) {
+        uint64_t before, after, theirs;
+        uint32_t spin;
 
-    for (spin = 0; spin < 100000000u && clk_read == 0; spin++) {
-        md_cpu_relax();
+        before = md_time_now();
+        md_cpu_fence();
+        clk_asked = r;
+
+        for (spin = 0; spin < 100000000u && clk_read != r; spin++) {
+            md_cpu_relax();
+        }
+        if (clk_read != r) {
+            panic("clock: the other core never read it, round %u",
+              (unsigned int)r);
+        }
+
+        md_cpu_fence();
+        after = md_time_now();
+        theirs = clk_across;
+
+        if (theirs < before || theirs > after) {
+            panic("clock: core 1 read %lu, outside %lu to %lu on core 0",
+              (unsigned long)theirs, (unsigned long)before,
+              (unsigned long)after);
+        }
+
+        if (tightest == 0 || after - before < tightest) {
+            tightest = after - before;
+        }
     }
-    if (clk_read == 0) {
-        panic("clock: the other core never read it");
-    }
 
-    md_cpu_fence();
-    after = md_time_now();
-    theirs = clk_across;
-
-    if (theirs < before || theirs > after) {
-        panic("clock: core 1 read %lu, outside %lu to %lu on core 0",
-          (unsigned long)theirs, (unsigned long)before,
-          (unsigned long)after);
-    }
-
-    cnprintf("    and both cores read the one counter  %lu in %lu\n",
-      (unsigned long)(theirs - before), (unsigned long)(after - before));
+    cnprintf("    and both cores read one counter, to within %lu ticks\n",
+      (unsigned long)tightest);
 }
 
 /*

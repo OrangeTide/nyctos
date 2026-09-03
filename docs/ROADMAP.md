@@ -6778,6 +6778,34 @@ replacement at the start of the file instead of at the match. The build
 would not have compiled, but nothing about the failure points at the
 cause. Both edits were redone with awk.
 
+*A fourth pass, over the check the third one added.* One bracket says
+the two counters differ by less than that bracket, and the bracket was
+152 microseconds wide. That is a weak claim to have been reporting as
+though it settled the question, and it was not stated with the figure
+attached, so nobody reading the output could tell how weak.
+
+The bracket is taken eight times now and the narrowest is printed. It
+runs to about 500 ticks against the 1527 of a single try. The
+improvement is measured rather than asserted: with a constant added to
+the second core's reading, a skew of 400 ticks passes the single
+bracket eight runs out of eight and fails the eight-round form eight
+out of eight, and a skew of 200 passes both. So the skew this detects
+went from somewhere above 400 ticks to between 200 and 400, and what
+the check establishes is a bound rather than an identity. The line it
+prints now says which bound.
+
+A first guess that a 900-tick skew would slip past the single bracket
+was wrong, and testing it rather than writing it down is what said so:
+it fails both, eight out of eight.
+
+And the secondary's wait is bounded. It runs before that core has its
+way in to the interrupt controller, so a core stuck there is a core
+that cannot be poked; it now gives up and lets the other core fail the
+check rather than both waiting on each other. The window itself is
+older than this check: a core announces itself up when it claims its
+state, which is well before it can take an interrupt, and the lock
+check already waited in the same gap.
+
 **A limit of the instrument, stated rather than fixed.** The window is
 the core and not the batch: anything else that core does between the
 clearing and the reading is inside it, an interrupt included. That makes
