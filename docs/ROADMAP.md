@@ -7168,18 +7168,33 @@ transfers-in-flight half still needs a device that transfers on its
 own, and stage five asks honestly whether this tree can have one rather
 than assuming either answer.
 
-**1. A register file, typed and private to one execution.** *Planned.*
+**1. A register file, typed and private to one execution.** *Built.*
 
-- `SYS_BATCH_REGS` registers, each holding a handle or a scalar and
-  tagged with which. The tag is the whole point: section 17.4 says
-  without it a batch could construct a handle arithmetically and defeat
-  the handle table's unforgeability.
-- Zeroed at entry, so nothing survives from one execution to the next.
-- *Check.* A batch writes a register and a later entry in the same
-  batch reads it back unchanged. A second batch submitted by the same
-  thread sees zeros. An entry that reads a register holding a scalar as
-  though it held a handle is refused with `SYS_ERR_INVALID_ARG`, and
-  the refusal is what the check asserts, not the absence of a crash.
+- `SYS_BATCH_REGS` is four. The chains section 17 describes carry one
+  intermediate value each, a walk handing a connection to the entry
+  that reads on it, and a batch may hold several. It is interface
+  rather than configuration, because a program names a register by
+  number.
+- Each register holds a handle or a scalar and says which. Empty is a
+  third state and not the number zero: a register nothing has written
+  is refused rather than read as a handle of value zero, which is what
+  makes a batch that names a register an earlier entry never wrote fail
+  instead of proceeding.
+- The file lives on the stack of the call that runs the batch, which is
+  what makes "private to one execution" true without anything having to
+  clear it afterwards.
+- *Checked directly rather than through a submission*, because nothing
+  writes a register from an entry yet; the entries that use it are the
+  stages after this one. What can be established here is every property
+  the rest of the milestone rests on, and those properties are all
+  refusals.
+- *What settles it.* Four ways to break it, each caught by a different
+  line. Dropping the tag check from a handle read gives `empty register
+  0 was readable`. Leaving the tags alone in the initialiser gives
+  `register 1 survived an execution`. Dropping the bounds check gives
+  `writing outside the file: expected INVALID_ARG, got OK`. Not
+  updating the tag on a write gives `reading it back: expected OK, got
+  INVALID_ARG`.
 
 **2. An entry takes its target from a register.** *Planned.*
 

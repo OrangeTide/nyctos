@@ -7,6 +7,7 @@
 #include <sys/lock.h>
 #include <sys/blk.h>
 #include <sys/bootarch.h>
+#include <sys/batchreg.h>
 #include <sys/channel.h>
 #include <sys/cohort.h>
 #include <sys/cpu.h>
@@ -5259,6 +5260,109 @@ batch_fill(sys_op_t *ops, sys_op_fence_args_t *args, uint32_t n,
 
 
 /*
+ * Section 17.4: the registers one execution has, and what they refuse.
+ *
+ * Checked directly rather than through a submission, because at this
+ * stage nothing writes a register from an entry: the file exists and
+ * the entries that use it come next. What can be established here is
+ * every property the rest of the milestone will rest on, and the
+ * refusals are the properties. A file that returns a value for a
+ * register nobody wrote, or hands back an integer as a handle, is the
+ * whole of what section 17.4 says must not happen.
+ */
+static void
+register_checks(void)
+{
+    struct batch_regs r;
+    sys_handle_t h;
+    uint64_t v;
+    unsigned int i;
+
+    cnputs("registers: what one entry can hand the next, section 17.4\n");
+
+    regs_init(&r);
+
+    /*
+     * Empty is a state, and not the number zero. Every register starts
+     * in it and reads of either kind are refused, which is what makes
+     * a batch that names a register an earlier entry never wrote fail
+     * instead of proceeding on a zero.
+     */
+    for (i = 0; i < SYS_BATCH_REGS; i++) {
+        if (regs_tag(&r, i) != REG_EMPTY) {
+            panic("registers: register %u was not empty at the start", i);
+        }
+        if (regs_get_handle(&r, i, &h) != SYS_ERR_INVALID_ARG ||
+          regs_get_scalar(&r, i, &v) != SYS_ERR_INVALID_ARG) {
+            panic("registers: empty register %u was readable", i);
+        }
+    }
+    cnprintf("    %u registers, all of them empty          OK\n",
+      (unsigned int)SYS_BATCH_REGS);
+
+    /* A scalar goes in and comes back, and is not a handle. */
+    expect("writing a scalar", regs_put_scalar(&r, 1, 0x5eed), SYS_OK);
+    v = 0;
+    expect("reading it back", regs_get_scalar(&r, 1, &v), SYS_OK);
+    if (v != 0x5eed) {
+        panic("registers: a scalar came back as %lu", (unsigned long)v);
+    }
+    expect("reading that scalar as a handle",
+      regs_get_handle(&r, 1, &h), SYS_ERR_INVALID_ARG);
+    cnputs("    a scalar is not a handle                 OK\n");
+
+    /* And a handle goes in and comes back, and is not a scalar. */
+    expect("writing a handle", regs_put_handle(&r, 2, (sys_handle_t)0x99),
+      SYS_OK);
+    h = SYS_HANDLE_INVALID;
+    expect("reading it back", regs_get_handle(&r, 2, &h), SYS_OK);
+    if (h != (sys_handle_t)0x99) {
+        panic("registers: a handle came back as %lu", (unsigned long)h);
+    }
+    expect("reading that handle as a scalar",
+      regs_get_scalar(&r, 2, &v), SYS_ERR_INVALID_ARG);
+    cnputs("    a handle is not a scalar                 OK\n");
+
+    /*
+     * A register that is written again is what it was written as, not
+     * what it was. Otherwise a batch could put a handle somewhere and
+     * a later entry could turn it into a number that still reads as a
+     * handle.
+     */
+    expect("writing over a handle with a scalar",
+      regs_put_scalar(&r, 2, 7), SYS_OK);
+    expect("and reading it as a handle",
+      regs_get_handle(&r, 2, &h), SYS_ERR_INVALID_ARG);
+    cnputs("    written again is written again           OK\n");
+
+    /*
+     * An index outside the file is refused and not folded back into
+     * it, because a program that names register nine has a bug and a
+     * kernel that quietly gives it register one hides it.
+     */
+    expect("writing outside the file",
+      regs_put_scalar(&r, SYS_BATCH_REGS, 1), SYS_ERR_INVALID_ARG);
+    expect("reading outside the file",
+      regs_get_scalar(&r, SYS_BATCH_REGS, &v), SYS_ERR_INVALID_ARG);
+    cnputs("    an index outside the file is refused     OK\n");
+
+    /*
+     * And an execution starts with nothing from the one before it.
+     * This is the property that makes the abort rule of section 17.5
+     * enumerable: a register is either written by an entry of this
+     * batch or it is empty, with no third case where it holds
+     * something older.
+     */
+    regs_init(&r);
+    for (i = 0; i < SYS_BATCH_REGS; i++) {
+        if (regs_tag(&r, i) != REG_EMPTY) {
+            panic("registers: register %u survived an execution", i);
+        }
+    }
+    cnputs("    nothing survives into the next execution OK\n");
+}
+
+/*
  * Section 17.5: chaining, and what a chain does when an entry fails.
  *
  * The entries signal a timeline for the same reason as the stage
@@ -7026,6 +7130,7 @@ kernel_main(void)
     meas_check_clock_across();
     clock_checks();
     refcount_checks();
+    register_checks();
     batch_checks();
     link_checks();
 #if SYS_TIER == 2

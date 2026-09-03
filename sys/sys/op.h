@@ -300,6 +300,17 @@ typedef uintptr_t sys_handle_t;
  */
 #define SYS_OP_LINK             (1u << 0)
 
+
+/*
+ * How many registers one execution has, per section 17.4.
+ *
+ * Four because the chains section 17 describes carry one intermediate
+ * value each, a walk handing a connection to the entry that reads on
+ * it, and a batch may hold several independent chains. It is interface
+ * rather than configuration: a program names a register by number, so
+ * changing this changes what a program may say.
+ */
+#define SYS_BATCH_REGS            4
 /*
  * The reg_in and reg_out fields are meaningful only to the parts of the
  * submission engine that are not built. They are here so that the

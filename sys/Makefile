@@ -35,6 +35,7 @@ SRCS := arch/$(ARCH)/boot.S \
         kern/kern_op.c \
         kern/kern_prepared.c \
         kern/kern_pager.c \
+        kern/kern_batchreg.c \
         kern/kern_objref.c \
         kern/kern_proc.c \
         kern/kern_timeline.c \
