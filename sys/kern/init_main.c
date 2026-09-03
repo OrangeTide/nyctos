@@ -5270,6 +5270,166 @@ batch_fill(sys_op_t *ops, sys_op_fence_args_t *args, uint32_t n,
 
 
 /*
+ * Section 17.4: an entry whose target is what an earlier entry produced.
+ *
+ * The pair is the one the design uses to explain itself. A walk answers
+ * with a connection in the message handle, and a read is sent on that
+ * connection: two operations where the second cannot be written down
+ * until the first has answered. Before this the second call had to be
+ * made by the caller, because there was nowhere for the first answer to
+ * live. Now it lives in a register and both go in one submission.
+ */
+static void
+substitution_checks(void)
+{
+    static struct sys_op_send_args walk, read;
+    static sys_op_t ops[2];
+    struct sys_op_connect_args cargs;
+    fs_request_t *req;
+    fs_reply_t *rep;
+    sys_handle_t dir;
+    long r;
+
+    cnputs("substitution: an entry takes its target from a register\n");
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to the root directory",
+      run(SYS_OP_CHAN_CONNECT, h_fs_recv, &cargs, sizeof(cargs)), SYS_OK);
+    dir = cargs.out_handle;
+
+    /*
+     * Entry one walks and says where to put what comes back. Entry two
+     * reads and says where to get its target from. Neither names the
+     * other; they agree on a register number and that is the whole of
+     * the dependency.
+     */
+    memset(&walk, 0, sizeof(walk));
+    req = (fs_request_t *)walk.request.inline_data;
+    req->fr_op = FS_OP_WALK;
+    req->fr_name[0] = 'm';
+    walk.request.inline_len = sizeof(*req);
+
+    memset(&read, 0, sizeof(read));
+    req = (fs_request_t *)read.request.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = 0;
+    req->fr_length = 8;
+    read.request.inline_len = sizeof(*req);
+
+    memset(ops, 0, sizeof(ops));
+    ops[0].opcode = SYS_OP_IPC_SEND;
+    ops[0].target = dir;
+    ops[0].flags = SYS_OP_RESULT_TO_REG;
+    ops[0].reg_out = 0;
+    ops[0].arg_ptr = (uintptr_t)&walk;
+    ops[0].arg_len = sizeof(walk);
+
+    ops[1].opcode = SYS_OP_IPC_SEND;
+    ops[1].flags = SYS_OP_TARGET_FROM_REG;
+    ops[1].reg_in = 0;
+    ops[1].arg_ptr = (uintptr_t)&read;
+    ops[1].arg_len = sizeof(read);
+
+    r = run_batch(ops, 2);
+    if (r != SYS_OK) {
+        panic("substitution: the pair returned %ld", r);
+    }
+    rep = (fs_reply_t *)read.reply.inline_data;
+    if (rep->fr_status != SYS_OK || rep->fr_length != 8) {
+        panic("substitution: the read said %ld and %lu bytes",
+          (long)rep->fr_status, (unsigned long)rep->fr_length);
+    }
+    cnputs("    a walk and a read in one submission      OK\n");
+
+    /*
+     * And the descriptor came back as it went in. The kernel writes
+     * one field of an entry, which the interface says in as many
+     * words, so a substituted target lives on a copy and never in the
+     * caller's array. A prepared program of section 17.7 is the case
+     * that makes this more than tidiness: it is validated once and
+     * executed many times from one stored copy, and a kernel that
+     * edits it has made the second execution a different program.
+     */
+    if (ops[1].target != SYS_HANDLE_INVALID || ops[1].reg_in != 0) {
+        panic("substitution: the kernel wrote into the entry");
+    }
+    cnputs("    the entry is unchanged but for status    OK\n");
+
+    /*
+     * A reply that carries no handle leaves the register empty, per
+     * section 17.4, rather than writing an invalid handle into it. The
+     * walk fails to find the name, the send itself succeeds because
+     * the message was delivered and answered, and the entry that
+     * depends on the answer is refused on the tag rather than looking
+     * up handle zero.
+     */
+    req = (fs_request_t *)walk.request.inline_data;
+    req->fr_name[0] = 'z';
+    memset(&read.reply, 0, sizeof(read.reply));
+    r = run_batch(ops, 2);
+    expect("a pair whose first entry found nothing",
+      (sys_err_t)r, SYS_ERR_INVALID_ARG);
+    if (ops[0].status != SYS_OK) {
+        panic("substitution: the walk itself failed, %ld",
+          (long)ops[0].status);
+    }
+    if (read.reply.inline_len != 0) {
+        panic("substitution: the read went on an empty register");
+    }
+    cnputs("    a reply with no handle leaves it empty   OK\n");
+    req->fr_name[0] = 'm';
+
+    /*
+     * And the same second entry on its own. A fresh execution has a
+     * fresh file, so the register it names holds nothing, and it is
+     * refused before the message goes rather than sending on a handle
+     * that was never there.
+     *
+     * This is also the end of what stage one could only check
+     * directly: that an execution starts with nothing in it, seen
+     * through the batch path rather than through the initialiser.
+     */
+    memset(&read.reply, 0, sizeof(read.reply));
+    r = run_batch(&ops[1], 1);
+    expect("the same entry with nothing in the register",
+      (sys_err_t)r, SYS_ERR_INVALID_ARG);
+    if (read.reply.inline_len != 0) {
+        panic("substitution: a refused entry sent its message anyway");
+    }
+    cnputs("    nothing carried over from the last one   OK\n");
+
+    /*
+     * A register outside the file, refused before the operation runs
+     * for the same reason: an entry that sends and then finds it has
+     * nowhere to put the answer has already sent.
+     */
+    ops[0].reg_out = SYS_BATCH_REGS;
+    expect("a result register outside the file",
+      (sys_err_t)run_batch(&ops[0], 1), SYS_ERR_INVALID_ARG);
+    ops[0].reg_out = 0;
+
+    /*
+     * And an operation that produces no handle to put anywhere.
+     * Section 17.4 names the producers; the rest are refused by name
+     * rather than handed whatever they left in their arguments.
+     */
+    {
+        sys_op_t nop;
+
+        memset(&nop, 0, sizeof(nop));
+        nop.opcode = SYS_OP_NOP;
+        nop.flags = SYS_OP_RESULT_TO_REG;
+        expect("a result register on an operation with no result",
+          (sys_err_t)run_batch(&nop, 1), SYS_ERR_NOT_SUPPORTED);
+    }
+
+    expect("giving the directory back",
+      handle_close(&proc_current()->p_handles, dir), SYS_OK);
+}
+
+/*
  * Section 17.4: the registers one execution has, and what they refuse.
  *
  * Checked directly rather than through a submission, because at this
@@ -7219,6 +7379,8 @@ kernel_main(void)
 
     cnputs("the slice: a file read from another process\n");
     slice_checks();
+
+    substitution_checks();
 
     cnputs("user mode: a program that can be interrupted\n");
     user_interrupt_checks();

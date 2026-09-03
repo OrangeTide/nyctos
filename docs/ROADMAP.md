@@ -7208,26 +7208,77 @@ than assuming either answer.
   invitation to write it; it returns an error like every other call in
   the file now.
 
-**2. An entry takes its target from a register.** *Planned.*
+**2. An entry takes its target from a register.** *Built.*
 
-- `reg_in` stops being decoration. An entry names either a literal
-  target or a register, and the operation cannot tell the difference by
-  the time it runs.
-- *Check.* An operation that needs a handle gets one written by an
-  earlier entry of the same batch and succeeds. The same batch with the
-  earlier entry removed fails on the tag check rather than on a
-  fabricated handle, and fails before the operation runs.
+- Two flags rather than a sentinel index, because register zero is a
+  register: `SYS_OP_TARGET_FROM_REG` says the target is whatever
+  `reg_in` names, and `SYS_OP_RESULT_TO_REG` says the handle this entry
+  produces goes where `reg_out` names.
+- *The writer had to be one section 17.4 names.* The stage as planned
+  needed something to write a register before anything could read one,
+  and the obvious candidate was to let any operation that produces a
+  handle write one. That would have been interface this project
+  invented. Section 17.4 gives two producers, the issuing ops and a
+  send whose reply moved a handle, so the send is what writes here and
+  the rest are refused by name with `SYS_ERR_NOT_SUPPORTED`.
+- *Substitution happens on a copy.* The descriptor documents one field
+  the kernel writes, and a prepared program of section 17.7 is
+  validated once and executed many times from one stored copy, so a
+  kernel that edits the entry has made the second execution a
+  different program. The resolved target lives on a copy and only the
+  status goes back.
+- *Both registers are settled before the operation runs.* An entry
+  naming an empty register is refused having done nothing, and an
+  entry whose result register is out of range is refused before it
+  sends rather than after, because a send that has happened cannot be
+  taken back for want of somewhere to put the answer.
+- A reply carrying no handle leaves the register empty rather than
+  writing `SYS_HANDLE_INVALID` into it, which is what section 17.4
+  asks for by name.
+- *Check.* The pair the design uses to explain itself, against the
+  filesystem server that has been in the tree since M1: a walk that
+  answers with a connection, and a read sent on that connection, in
+  one submission. The second entry never names the first.
+- *What settles it.* Four ways to break it, each caught by a different
+  line. Not substituting at all sends the read on the literal target
+  and gives `the pair returned -7`. Substituting into the caller's
+  entry instead of a copy gives `the kernel wrote into the entry`.
+  Writing the moved handle even when the reply carried none gives `a
+  pair whose first entry found nothing: expected INVALID_ARG, got
+  STALE`, which is section 17.4's own argument reproduced: without the
+  rule the dependent entry looks up handle zero instead of being
+  refused. Checking the result register after the operation instead of
+  before gives `a result register outside the file: expected
+  INVALID_ARG, got OK`.
+- *And it closed what stage one could not check.* That an execution
+  starts with an empty file is now seen through the batch path: the
+  dependent entry submitted on its own, in a later execution, finds
+  nothing where the pair had left a connection.
 
-**3. A reply's moved handle is written to `reg_out`.** *Planned.*
+**3. A real client carries its dependency in a register.** *Planned.*
 
-- Section 17.4 makes `SYS_OP_IPC_SEND` the second writer of a register,
-  alongside the issuing ops, because without it a batch cannot use the
-  result of a request it made.
-- *Check.* A walk that returns a connection, and the entry after it
-  using that connection as its target, in one submission. Two calls
-  before, one now, and the count says so. A reply carrying no handle
-  leaves the register empty and the dependent entry fails on the tag,
-  which is the failure mode section 17.4 asks for by name.
+*Re-scoped by stage two.* This stage was to make `SYS_OP_IPC_SEND` the
+writer of a register and show a walk handing a connection to a read.
+Stage two had to build that to have anything to read, because a
+register nothing writes cannot be checked, and it used the pair as its
+own check. What is left is the part that was always the point: a client
+that is not a check.
+
+- The filesystem client of M1 walks and then reads, as two calls, with
+  the connection carried between them in a local variable. It is a user
+  program, not kernel code, so converting it exercises the mechanism
+  from the side a program sees.
+- *Check.* The client reads the same bytes and prints the same line, so
+  the compared transcript does not move, and the crossings it makes go
+  from two to one. The count is what the stage reports.
+- *Watch for.* The saving being the one M10 already measured. A batch
+  of two saves one crossing whether or not the entries depend on each
+  other, so the number this produces is not by itself evidence for
+  substitution. What substitution adds is that the second entry could
+  not have been written down at all without it, which is a fact about
+  what the caller had to do rather than a count, and the stage has to
+  say so plainly rather than presenting a crossing saved as though it
+  were the answer.
 
 **4. Abort force-signals what the batch would have signalled.**
 *Planned.*

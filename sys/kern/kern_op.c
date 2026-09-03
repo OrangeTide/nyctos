@@ -23,6 +23,7 @@
 #include <sys/prepared.h>
 #include <sys/cpu.h>
 #include <sys/sched.h>
+#include <sys/batchreg.h>
 #include <sys/channel.h>
 #include <sys/config.h>
 #include <sys/connection.h>
@@ -781,17 +782,10 @@ op_grant_map(struct proc *p, struct sys_op *op)
 sys_err_t
 sys_op_exec(struct sys_op *op, struct batch_regs *regs)
 {
+    struct sys_op *entry;
+    struct sys_op sub;
     struct proc *p;
     sys_err_t err;
-
-    /*
-     * Carried but not yet read. The entries that take an argument from
-     * a register are the stage after this one; what this stage settles
-     * is that there is one file per execution for them to read, and a
-     * parameter nothing dereferences is how that is settled rather
-     * than asserted.
-     */
-    (void)regs;
 
     /*
      * The one path that returns without writing a status, because there is
@@ -800,6 +794,62 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
      */
     if (op == NULL) {
         return SYS_ERR_FAULT;
+    }
+
+    /*
+     * The descriptor the caller gave, kept apart from the one this
+     * runs. Substituting a register into the target means writing a
+     * handle the caller did not put there, and writing it back into
+     * the caller's array would be a program editing itself: a prepared
+     * program of section 17.7 is executed many times from one copy,
+     * and the second execution would find the first one's answer
+     * already in place. So the substitution happens on a copy and only
+     * the status goes back.
+     */
+    entry = op;
+
+    /*
+     * Where the target comes from, per section 17.4, decided before
+     * the operation runs and not by the operation. Failing here rather
+     * than inside means an entry that names an empty register has had
+     * no effect at all when it reports why.
+     */
+    if ((op->flags & SYS_OP_TARGET_FROM_REG) != 0) {
+        sys_handle_t h;
+
+        err = regs == NULL ? SYS_ERR_INVALID_ARG :
+          regs_get_handle(regs, op->reg_in, &h);
+        if (err != SYS_OK) {
+            entry->status = err;
+            return err;
+        }
+
+        sub = *op;
+        sub.target = h;
+        op = &sub;
+    }
+
+    /*
+     * And where the result goes, checked now for the same reason. An
+     * entry whose register is out of range must not send a message and
+     * then discover it has nowhere to put the answer, because the
+     * message has already gone.
+     */
+    if ((op->flags & SYS_OP_RESULT_TO_REG) != 0) {
+        if (regs == NULL || op->reg_out >= SYS_BATCH_REGS) {
+            entry->status = SYS_ERR_INVALID_ARG;
+            return SYS_ERR_INVALID_ARG;
+        }
+        if (op->opcode != SYS_OP_IPC_SEND) {
+            /*
+             * Section 17.4 names two kinds of producer and one of them
+             * is the issuing ops, which are not built. Refusing the
+             * rest by name is better than writing whatever an
+             * operation happened to leave in its arguments.
+             */
+            entry->status = SYS_ERR_NOT_SUPPORTED;
+            return SYS_ERR_NOT_SUPPORTED;
+        }
     }
 
     p = proc_current();
@@ -914,12 +964,37 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
     }
 
     /*
+     * The handle the reply moved, into the register the entry named.
+     *
+     * Only on success, and only if one arrived. Section 17.4 says a
+     * reply carrying no handle leaves the register empty, so that an
+     * entry depending on it fails on the tag rather than on a value
+     * that looks like a handle. Writing SYS_HANDLE_INVALID here would
+     * turn that refusal into a lookup of handle zero.
+     *
+     * Nothing here can fail: the register was checked before the
+     * operation ran, which is why the message having already gone does
+     * not matter.
+     */
+    if (err == SYS_OK && (op->flags & SYS_OP_RESULT_TO_REG) != 0) {
+        const struct sys_op_send_args *args =
+          (const struct sys_op_send_args *)op->arg_ptr;
+
+        if (args != NULL && args->reply.handle != SYS_HANDLE_INVALID) {
+            (void)regs_put_handle(regs, op->reg_out, args->reply.handle);
+        }
+    }
+
+    /*
      * Section 23.3: the status goes into the descriptor and is also
      * returned. The duplication is deliberate, because the register is what
      * a C wrapper returns and the field is what survives when the
      * descriptor is one of many.
+     *
+     * Into the caller's descriptor, which is not the one this ran when
+     * a register supplied the target.
      */
-    op->status = err;
+    entry->status = err;
 
     return err;
 }

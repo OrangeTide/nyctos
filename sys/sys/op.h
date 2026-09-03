@@ -300,6 +300,29 @@ typedef uintptr_t sys_handle_t;
  */
 #define SYS_OP_LINK             (1u << 0)
 
+/*
+ * Where an entry's target comes from, and where its result goes, per
+ * section 17.4.
+ *
+ * SYS_OP_TARGET_FROM_REG says the target is not the handle in the
+ * descriptor but whatever register `reg_in` names. The register must
+ * hold a handle: one holding a scalar, or holding nothing because no
+ * earlier entry wrote it, fails the entry with SYS_ERR_INVALID_ARG
+ * before the operation runs. That refusal is the whole reason the file
+ * is typed, because the alternative is a handle made out of an integer
+ * the caller chose.
+ *
+ * SYS_OP_RESULT_TO_REG says the handle this entry produces goes into
+ * the register `reg_out` names. Section 17.4 gives two producers: the
+ * issuing ops, which are not built, and a send, whose reply may carry
+ * a handle that moved with it. A reply that carries none leaves the
+ * register empty rather than writing an invalid handle into it, so an
+ * entry that depends on it fails on the tag instead of on a value that
+ * looks like a handle and is not.
+ */
+#define SYS_OP_TARGET_FROM_REG  (1u << 1)
+#define SYS_OP_RESULT_TO_REG    (1u << 2)
+
 
 /*
  * How many registers one execution has, per section 17.4.
