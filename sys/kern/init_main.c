@@ -2066,6 +2066,93 @@ boundary_rate(const char *what, const struct vm_cost *c)
 #define SEND_BLOCK_NO       0
 #define SEND_BLOCK_YES      1
 #define SEND_BLOCK_EITHER   2
+/*
+ * Whole names, because the three differ in one character and keying on
+ * its position would be a table that silently matches the wrong row
+ * the day a fourth client is added.
+ */
+static bool
+same_name(const char *a, const char *b)
+{
+    while (*a != '\0' && *a == *b) {
+        a++;
+        b++;
+    }
+
+    return *a == *b;
+}
+
+/*
+ * What each of the three clients costs, asserted rather than printed.
+ *
+ * These are counts. They are the same on both ports, at both tiers and
+ * in every run, which is what makes them a property of this kernel and
+ * of these three programs rather than of the machine underneath. M10
+ * settled the rule and the reason: a headline figure that can drift
+ * without anything failing is a figure nobody is keeping, and the
+ * numbers here are this milestone's product.
+ *
+ * The entries and invalidations on the same line are not in the table.
+ * Those are zero at Tier 0, where there is one address space and a
+ * buffer that arrives is already where it needs to be, so they are a
+ * property of the tier and are reported rather than asserted.
+ */
+static const struct {
+    const char *cc_name;
+    uint64_t    cc_submits;
+    uint64_t    cc_checks;
+    uint64_t    cc_rounds;
+    uint64_t    cc_conns;
+} client_cost[] = {
+    /*
+     * Walk, read and close as three calls, plus the close of the
+     * handle and one submission of output.
+     */
+    { "fs_client", 5, 15, 5, 1 },
+
+    /*
+     * The compound request of section 25.7: one message asks for all
+     * three, so two round trips go and the server never draws a
+     * connection from its pool.
+     */
+    { "fs_batch",  4, 12, 3, 0 },
+
+    /*
+     * The same three requests as fs_client, in one submission, with
+     * the connection carried between them in a register.
+     */
+    { "fs_chain",  2, 12, 5, 1 },
+};
+
+static void
+client_cost_check(const char *image, const struct proc *p, uint64_t rounds,
+  uint64_t conns)
+{
+    unsigned int i;
+
+    for (i = 0; i < sizeof(client_cost) / sizeof(client_cost[0]); i++) {
+        if (!same_name(client_cost[i].cc_name, image)) {
+            continue;
+        }
+
+        if (p->p_submits != client_cost[i].cc_submits ||
+          p->p_checks != client_cost[i].cc_checks ||
+          rounds != client_cost[i].cc_rounds ||
+          conns != client_cost[i].cc_conns) {
+            panic("%s: %lu submissions, %lu checks, %lu rendezvous, "
+              "%lu connections, against %lu, %lu, %lu, %lu",
+              image, (unsigned long)p->p_submits,
+              (unsigned long)p->p_checks, (unsigned long)rounds,
+              (unsigned long)conns,
+              (unsigned long)client_cost[i].cc_submits,
+              (unsigned long)client_cost[i].cc_checks,
+              (unsigned long)client_cost[i].cc_rounds,
+              (unsigned long)client_cost[i].cc_conns);
+        }
+        return;
+    }
+}
+
 
 static void
 run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
@@ -2115,9 +2202,10 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
         leaf = after.vc_leaf - cost.vc_leaf;
         flush = after.vc_flush - cost.vc_flush;
 
-        cnprintf("    %-10s %lu submissions, %lu rendezvous, "
+        cnprintf("    %-10s %lu submissions, %lu checks, %lu rendezvous, "
           "%lu connections, %lu entries, %lu invalidations\n", image,
           (unsigned long)p->p_submits,
+          (unsigned long)p->p_checks,
           (unsigned long)rounds,
           (unsigned long)(conns->highwater - pool_before),
           (unsigned long)leaf,
@@ -2147,6 +2235,9 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
             run.vc_halves = after.vc_halves - cost.vc_halves;
             boundary_rate(image, &run);
         }
+
+        client_cost_check(image, p, rounds,
+          conns->highwater - pool_before);
     }
     trace_report(image);
 

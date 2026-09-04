@@ -7515,14 +7515,54 @@ the answer is no.*
   twenty-three of sixty-four, so the pool is not under pressure; and
   the one-shots are destroyed and their handles closed after they fire.
 
-**6. What substitution pays.** *Planned.*
+**6. What substitution pays.** *Built.*
 
-- The measurement M10 could not make, on the client M10 named: walk,
-  read and close as three calls against one submission that carries the
-  dependency in a register.
-- *Check.* Crossings, validation checks and rendezvous for both forms,
-  asserted as counts and not as durations. The milestone's answer is
-  those numbers, whichever way they come out.
+- The measurement M10 could not make, on the client M10 named, with
+  the counts asserted rather than reported. They are the same on both
+  ports, at both tiers and in every run, which is what makes them a
+  property of this kernel and these three programs rather than of the
+  machine underneath.
+
+```
+fs_client  5 submissions, 15 checks, 5 rendezvous, 1 connections
+fs_batch   4 submissions, 12 checks, 3 rendezvous, 0 connections
+fs_chain   2 submissions, 12 checks, 5 rendezvous, 1 connections
+```
+
+- *What substitution saves.* Three crossings of the trap edge and three
+  validation checks, against `fs_client` doing the same work. Nothing
+  else moves: the same five rendezvous, the same connection drawn from
+  the server's pool, the same buffers remapped. The three checks are
+  the three array reach checks the three calls it removed would each
+  have paid, so the saving is the fixed cost of a call multiplied by
+  one fewer than the number of entries, and nothing per entry. That is
+  exactly what M10 measured for batching without dependencies, arrived
+  at again by a batch that has them.
+- *So substitution does not pay in counts.* It pays in what can be
+  said. Those four entries could not have been one batch before it,
+  because the second names a handle that does not exist until the first
+  has answered, and a caller had no way to write that down. What the
+  numbers establish is that expressing it costs nothing extra: the
+  dependency is carried for free, and the saving that comes with it is
+  the ordinary saving of making one call instead of four.
+- *And the answer to section 17's question is uncomfortable, which is
+  why it is worth having.* Set beside the other row: the compound
+  protocol request of section 25.7 saves two rendezvous and never draws
+  a connection at all, where the engine saves three crossings and one
+  fewer array check. For this workload, changing the protocol beat
+  changing the kernel. The engine's saving is real and small and fixed;
+  the protocol's saving is larger and grows with what the server can be
+  asked to do in one message.
+- *What settles it.* The table is asserted, so the numbers cannot drift
+  without a run failing. Changing a row fails with the pair printed
+  side by side. Taking the register off the third entry of `fs_chain`
+  fails with `2 submissions, 11 checks, 4 rendezvous, 1 connections,
+  against 2, 12, 5, 1`, which is the assertion catching a lost
+  rendezvous rather than a lost byte.
+- Entries and invalidations are on the same line and not in the table.
+  They are zero at Tier 0, where one address space means a buffer that
+  arrives is already where it needs to be, so they are a property of
+  the tier and are reported rather than asserted.
 
 *Done when* one submission carries a dependency that separate calls
 would have had to carry in user code, and the report says what that

@@ -144,14 +144,11 @@ syscall_body(struct sys_op *op, unsigned long count)
      * do: a caller that computed a count of zero has a bug, and a
      * system call that succeeds without doing anything hides it.
      */
+    struct proc *self = proc_current();
+
     cpu_self()->cp_syscalls++;
-
-    {
-        struct proc *self = proc_current();
-
-        if (self != NULL) {
-            self->p_submits++;
-        }
+    if (self != NULL) {
+        self->p_submits++;
     }
 
     if (count == 0 || count > SYS_BATCH_MAX_ENTRIES) {
@@ -171,6 +168,9 @@ syscall_body(struct sys_op *op, unsigned long count)
      * and its own memory is writable.
      */
     cpu_self()->cp_checks++;
+    if (self != NULL) {
+        self->p_checks++;
+    }
     if (!proc_reaches(proc_current(), (uintptr_t)op,
       count * sizeof(*op))) {
         return SYS_ERR_FAULT;
@@ -210,6 +210,9 @@ syscall_body(struct sys_op *op, unsigned long count)
             sys_err_t bad;
 
             cpu_self()->cp_checks++;
+            if (self != NULL) {
+                self->p_checks++;
+            }
             bad = entry_static_check(proc_current(), &op[i]);
 
             if (bad != SYS_OK) {

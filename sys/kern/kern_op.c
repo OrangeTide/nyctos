@@ -867,6 +867,9 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
      * SYS_ERR_INVALID_ARG. Letting it through to them keeps that answer.
      */
     cpu_self()->cp_checks++;
+    if (p != NULL) {
+        p->p_checks++;
+    }
     if (op->arg_ptr != 0 &&
       !proc_reaches(p, op->arg_ptr, op->arg_len)) {
         /*

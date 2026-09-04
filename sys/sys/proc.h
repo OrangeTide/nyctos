@@ -180,6 +180,14 @@ struct proc {
      */
     uint64_t            p_submits;
 
+    /*
+     * And how much checking those crossings cost it, per section 23.2.
+     * The pair is what section 17 is weighed on: a form that makes
+     * fewer calls but validates more per call has moved the cost
+     * rather than removed it.
+     */
+    uint64_t            p_checks;
+
     uint32_t            p_refs;
 
     /*
