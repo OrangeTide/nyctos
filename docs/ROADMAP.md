@@ -7478,12 +7478,12 @@ the answer is no.*
     one at a time, the same three:  about 121 ms
 ```
 
-- Counts asserted, durations reported, and the pair is the point:
-  neither number describes this kernel, and the two of them together
-  describe whether the three were running at once, which does. Sixty
-  against a hundred and twenty-one is three things in flight with one
-  thread and no worker pool, which is what section 17.3 claims an
-  issuing op would buy. What the tree cannot do is start the work.
+- Counts asserted, durations reported. Sixty against a hundred and
+  twenty-one shows that several completions can be outstanding at once
+  and waited for in one submission by one thread with no worker pool,
+  which is the engine's shape. It does not show concurrent work and
+  cannot: a timer does no work, and the two figures are arithmetic
+  about a clock. See the review below.
 - *What settles the premise.* All three opcodes are asserted to refuse
   as unbuilt rather than as unknown. The dispatch check in the tree
   tries one of them; a premise resting on two opcodes nobody has ever
@@ -7491,6 +7491,29 @@ the answer is no.*
   `INVALID_ARG` fails.
 - *A stage that answers no is not a stage that failed.* It is recorded
   here and in section 17 rather than in a commit message.
+- *Reviewed, and the numbers claim less than the words around them did.*
+
+  A timer does no work. Three deadlines set from one origin are reached
+  by the latest of them and three set one after another are reached by
+  their sum, so sixty against a hundred and twenty-one is arithmetic
+  about a clock and not evidence that anything ran at the same time as
+  anything else. Nothing was transferring while the thread waited,
+  because there is nothing here that transfers. The entry said "three
+  things in flight", which invites reading the pair as a measurement of
+  concurrent work, and it is not one.
+
+  What the pair does show is the engine's shape: several completions
+  outstanding at once, waited for in one submission, by one thread with
+  no worker pool. That is worth having and is what isolates which half
+  is missing. It is also the strongest thing available, because no
+  arrangement of what is in this tree would demonstrate concurrent
+  work: there is no work to make concurrent, which is the stage's
+  conclusion reached a second time from the demonstration's own
+  weakness.
+
+  Checked and sound: the six timelines this adds bring the run to
+  twenty-three of sixty-four, so the pool is not under pressure; and
+  the one-shots are destroyed and their handles closed after they fire.
 
 **6. What substitution pays.** *Planned.*
 

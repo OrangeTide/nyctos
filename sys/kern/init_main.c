@@ -5401,11 +5401,23 @@ inflight_checks(void)
     /*
      * Asserted as a count and reported as a duration, per the rule
      * this plan keeps arriving at. What is countable is that one
-     * submission waited on three things and all three arrived. How
-     * long it took is the host's business, and it is printed because
-     * the shape of the number is the point: three timers at 20, 40 and
-     * 60 milliseconds take about 60 if they ran together and about 120
-     * if they did not.
+     * submission waited on three things and all three arrived.
+     *
+     * And what the two durations below do not show, which matters more
+     * than what they do. A timer does no work. Three deadlines set
+     * from one origin are reached by the latest of them, and three set
+     * one after another are reached by their sum, and that is
+     * arithmetic about a clock rather than evidence that anything ran
+     * at the same time as anything else. Nothing here is transferring
+     * while the thread waits, because there is nothing here that
+     * transfers.
+     *
+     * What they do show is the engine's shape: that several
+     * completions can be outstanding at once and waited for in one
+     * submission by one thread with no worker pool. That is the half
+     * of section 17.3 this tree has. The half it does not have is a
+     * device, and no arrangement of what is here would demonstrate
+     * concurrent work, because there is no work to make concurrent.
      */
     cnprintf("    %u waits in one submission, all arrived    OK\n",
       (unsigned int)FLIGHT_N);
