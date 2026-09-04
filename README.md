@@ -29,7 +29,39 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
-**Milestone 10 is done, and it is the last one the plan lists.** One
+**Milestone 11 is done: an operation can take its target from a
+register an earlier operation wrote.** The dependency that used to live
+in a local variable between two calls lives in the batch instead, so a
+client that walks to a file, reads it, closes it and gives the handle
+back makes one submission where the plain form makes four.
+
+```
+fs_client  5 submissions, 15 checks, 5 rendezvous, 1 connections
+fs_batch   4 submissions, 12 checks, 3 rendezvous, 0 connections
+fs_chain   2 submissions, 12 checks, 5 rendezvous, 1 connections
+```
+
+Read across rather than down. `fs_chain` and `fs_client` agree on every
+column but the first, so substitution changed the shape of the call and
+not the work; the three checks it saves are the three the removed calls
+would each have paid. `fs_batch` asks the server one compound question
+instead of three, and saves two round trips and the connection.
+**For this workload, changing the protocol beat changing the kernel.**
+
+A reply now carries a status the kernel can read, so a request a server
+refused is no longer a successful send, and a chain aborts on it rather
+than reading from a connection that was never returned. A batch that
+aborts force-signals the timelines it was going to signal, so a waiter
+is told rather than left to a timeout.
+
+The three issuing opcodes still refuse. Starting work needs a device
+that transfers and this tree has none, and the one route that looks
+open is an issuing send, which the design rules out on structural
+grounds. What the tree does reach is the other half: several
+completions outstanding at once, waited for in one submission, by one
+thread with no worker pool.
+
+**Milestone 10 is done.** One
 system call can carry up to sixteen operations, checked before any of
 them runs, each reporting its own status. Linked entries abort as a
 group. A batch can be loaded once and executed many times without being
@@ -48,9 +80,11 @@ it runs and again when it runs whichever form carried it.
 What it does not answer is the question it was built for. The engine
 exists for chains, where one operation names a handle an earlier one
 produced, and an entry's target is fixed when the batch is submitted.
-Nothing in the system uses a batch: a run makes about 750 submissions
-and every one carries a single entry. Section 17 stays, with its claims
-cut back to what was measured and the deciding experiment written down.
+Nothing in the system used a batch: a run made about 750 submissions
+and every one carried a single entry. Section 17 stayed, with its
+claims cut back to what was measured and the deciding experiment
+written down. Milestone 11 above is that experiment, and one client
+uses a batch now.
 
 It also priced the kernel lock that milestone 8 introduced. Section
 13.3 says the batch bound does not appear in interrupt latency. It does
@@ -674,12 +708,22 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). The plan's ten milestones are
-finished, and an eleventh is being built: the argument substitution of
-section 17.4, which is the experiment M10 named as the one that would
-settle the question it could only half answer. What it does not schedule, and what the last three
-milestones each said would be worth doing next, is written down there
-rather than guessed at here.
+See [docs/ROADMAP.md](docs/ROADMAP.md). Eleven milestones are finished.
+The eleventh was not in the plan: it came out of the tenth's
+retrospective, which named the experiment that would settle the
+question it could only half answer. What the plan does not schedule,
+and what the last milestones each said would be worth doing next, is
+written down there rather than guessed at here.
+
+The eleventh's answer is worth repeating because it is not the one the
+mechanism was hoping for. Carrying a dependency in a register lets a
+batch express what used to need separate calls, and the saving that
+comes with it is the ordinary saving of making one call instead of
+four: the fixed cost of a call multiplied by one fewer than the number
+of entries, and nothing per entry. Set beside a compound protocol
+request, which saves two round trips and a server-side allocation, the
+kernel mechanism is the smaller of the two answers for the workload
+measured.
 
 Two things are named in more than one retrospective, which is what this
 project treats as a signal. The longest

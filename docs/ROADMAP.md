@@ -358,9 +358,7 @@ interrupts seen in time.
 `SYS_ERR_DEADLOCK` is reachable: a cycle of servers is refused instead
 of wedging the machine with nothing said.
 
-**Milestone 10 is done.** It was the last one this plan listed; M11
-is being built now, and asks the question section 3 says M10 could
-only half answer.
+**Milestone 10 is done.**
 
 A submission carries up to sixteen entries, validated before any of them
 runs, each reporting its own status. Linked entries abort as a group.
@@ -397,11 +395,39 @@ A check hammers one count from both cores, four thousand rounds each,
 and requires it to come back where it started. With the plain
 increments it comes back at 230 instead of 1.
 
+**Milestone 11 is done, and with it the deciding experiment M10 named.**
+An entry can take its target from a register another entry wrote, so a
+batch can carry a dependency that used to live in a local variable
+between two calls. A client that walks to a file, reads it, closes it
+and gives the handle back makes one submission where the plain form
+makes four.
+
+What that saves is three crossings of the trap edge and three
+validation checks, which is the fixed cost of a call multiplied by one
+fewer than the number of entries and nothing per entry. It is the same
+law M10 measured for batching without dependencies, so substitution
+adds no saving of its own. What it adds is that the batch can be
+written at all.
+
+Set beside the compound protocol request of section 25.7, which saves
+two rendezvous and never draws a connection from the server's pool:
+for this workload, changing the protocol beat changing the kernel.
+
+A reply now carries a status the kernel can read, so a request a server
+refused is no longer a successful send and a linked chain aborts on it.
+A batch that aborts force-signals the timelines it was going to signal,
+so a waiter is told rather than left to a timeout.
+
 What does not exist: a device that does direct memory access, and with
-it the half of section 17 about transfers in flight. Memory is still
-never reclaimed, a rendezvous still carries no deadline, and
-Nothing has run on hardware, so every duration this project has
-published is the right shape and the wrong magnitude.
+it the half of section 17 about transfers in flight. M11 gave that
+absence a reason rather than leaving it a gap: starting work needs
+something that transfers, and the one route that looks open through the
+block store is an issuing send, which section 17.3 rules out on
+structural grounds.
+
+Memory is still never reclaimed and a rendezvous still carries no
+deadline. Nothing has run on hardware, so every duration this project
+has published is the right shape and the wrong magnitude.
 
 ---
 
@@ -7137,6 +7163,10 @@ measured is part of it.
 
 **Section 17.4: an entry that takes its argument from the one before it.**
 
+**Done.** All six stages are built. Section 14 says what it answered,
+what it could not, what the building kept finding, and what it left
+untested.
+
 M10 named the experiment that would settle its own open question, in
 the paragraph above this one: build the argument substitution, convert
 one real client to it, and measure the same way. This is that
@@ -8938,7 +8968,155 @@ requires it to come back where it started; with the plain increments it
 comes back at 230 instead of 1, so the hazard three retrospectives
 described was not a small one.
 
-## 14. Bring-Up Order Within M1
+## 14. Milestone 11, in Retrospect
+
+M11 was not in the plan. It came out of section 13, which closed by
+naming the experiment that would settle the question M10 could only
+half answer: build the argument substitution, convert one real client
+to it, and measure the same way. This is that experiment, and its
+answer is that substitution pays in what can be said rather than in
+what can be counted, which is not the answer the section was hoping
+for.
+
+### 14.1 The Questions
+
+**Does expressing dependencies as data beat a few more system calls?**
+
+Answered, at last, and the answer is *not by itself*. A four-entry
+chain that carries a connection in a register costs three fewer
+crossings of the trap edge and three fewer validation checks than the
+four calls it replaces. Those three checks are the three array reach
+checks the removed calls would each have paid, so the saving is the
+fixed cost of a call multiplied by one fewer than the number of
+entries, and nothing per entry. That is precisely the law M10 measured
+for batching *without* dependencies, arrived at again by a batch that
+has them.
+
+So substitution adds no saving of its own. What it adds is that the
+batch can be written at all: the second entry names a handle that does
+not exist until the first has answered, and before this milestone a
+caller had no way to write that down.
+
+**Is that worth a mechanism?** The honest comparison is not against
+separate calls but against the other way of removing them. The
+compound protocol request of section 25.7 saves two rendezvous and
+never draws a connection from the server's pool, where the engine saves
+three crossings and one array check per call removed. **For this
+workload, changing the protocol beat changing the kernel.** The
+engine's saving is real, small and fixed; the protocol's is larger and
+grows with what a server can be asked in one message.
+
+**Can an issuing op exist in this tree?** No, and the reason is now
+precise rather than a shrug. Starting work means a device that
+transfers and nothing here transfers. The route that looks open, a read
+that issues against the block store, is an issuing send, which section
+17.3 rules out for a structural reason: a thread with an outstanding
+issuing send is not blocked on it, so the blocked client can no longer
+be the queue slot.
+
+### 14.2 The Figures
+
+| | measured |
+|---|---|
+| `fs_client`, three requests as three calls and a close | 5 submissions, 15 checks, 5 rendezvous, 1 connection |
+| `fs_batch`, one compound request | 4 submissions, 12 checks, 3 rendezvous, 0 connections |
+| `fs_chain`, the same three in one submission | 2 submissions, 12 checks, 5 rendezvous, 1 connection |
+| registers per execution | 4 |
+| three completions waited on in one submission | about 60 ms |
+| the same three waited on one at a time | about 121 ms |
+
+The four counted columns are identical on both ports, at both tiers and
+in every run, and they are asserted rather than printed. The two
+durations describe the host and are reported.
+
+**Read the table across rather than down.** `fs_chain` and `fs_client`
+agree on every column but the first: the same rendezvous, the same
+connection, the same buffers remapped. That is what says substitution
+changed the shape of the call and not the work.
+
+**The two durations show less than they appear to.** A timer does no
+work, so sixty against a hundred and twenty-one is arithmetic about a
+clock rather than evidence that anything ran concurrently. What they do
+show is the engine's shape: several completions outstanding at once,
+waited for in one submission, by one thread with no worker pool.
+
+### 14.3 What the Building Kept Finding
+
+**Words describing something that was not built.** This is the shape,
+and it recurred in four stages out of six.
+
+Stage one said the register file lived on the stack of the call that
+runs the batch, and that this was what made it private to one
+execution. Nothing in the batch path owned one; the check had called
+the initialiser on a local of its own.
+
+Stage three's program was named `fs_chain`, its comment described a
+chain, and it set no link flag on anything.
+
+Stage five said "three things in flight" of two numbers that are
+arithmetic about a clock.
+
+Stage six's cost table asserted nothing at all for a client whose name
+it did not know, and would have passed for ever after a rename.
+
+**A check written to prove one thing proving its opposite.** Stage
+three wrote a check to show its chain aborts, and the check showed that
+it does not: a walk for a name that does not exist *succeeds*, because
+the refusal is in the server's payload and the kernel does not read
+payloads. Section 12.4 requires a status field on the message for
+exactly this and `sys_msg_t` did not have one. The program was safe
+only because a failed walk moves no handle, so the empty register
+stopped the read that the chain should have stopped. Right by luck,
+which is the phrase M10 introduced and the thing this milestone found
+twice.
+
+**Two validators that had to agree and did not.** Adding register
+fields to an entry made the submission path and the prepared-program
+path disagree, and the second says in its own comment that it does the
+same validation as the first. They share one function now.
+
+**And half a fix is the normal outcome of a fix.** The status field was
+set in two of the three servers that can refuse a request. The window
+figure kept counting console regions after the run-wide figure stopped.
+The mean kept the console after the worst case lost it. In each case
+the second half was found by a later review rather than by the change
+that made it necessary.
+
+### 14.4 What Is Still Untested
+
+**The issuing half of section 17**, unchanged from M10 but now with a
+reason rather than an absence. There is no device that transfers, the
+route through the block store is an issuing send, and `PROPOSALS.md`
+carries that.
+
+**Whether error state is the right answer to an abort.** Section 17.5's
+last line is built: a batch that aborts force-signals the timelines it
+was going to signal. But error state is permanent and belongs to the
+timeline rather than to the batch, so an abort poisons an object other
+processes may hold a signal right over. Section 9.3 rule 2 has the same
+shape for a party that has died, and a party that has died cannot
+signal again where a batch that failed once might. Built as the section
+says and unsettled.
+
+**A server that forgets the status field.** Nothing detects it. A
+refusal that reaches only the payload is a successful send, and the
+chain behind it carries on, which is the defect the field exists to
+prevent reappearing one server at a time. Three set it today.
+
+**The fault path on a substituted entry.** A fault between the check
+every entry gets before any entry runs and the check the operation
+makes would have written the status into the copy rather than the
+caller's descriptor. Fixed, and reachable only through a race no check
+here can construct.
+
+**The other writer of a register.** Section 17.4 names two producers,
+a send and the issuing ops. Only one of them exists, so the register
+file has been exercised by one kind of writer and the tag discipline
+has never had to refuse a handle that came from anywhere else.
+
+---
+
+## 15. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -8982,7 +9160,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 15. Ordering: What Is Forced and What Is Chosen
+## 16. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -9013,7 +9191,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 16. What Would Change This Plan
+## 17. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -9048,9 +9226,19 @@ avoid.
 defines the calling convention around a single operation for exactly this
 reason, so nothing else moves.
 
+**Substitution does not pay (M11).** *Answered: not in counts.* A chain
+that carries a connection in a register saves the fixed cost of a call
+multiplied by one fewer than the number of entries, and nothing per
+entry, which is the same law M10 measured for batching without
+dependencies. What it buys is that the batch can be written at all. The
+register file stays, because the cost of expressing a dependency turned
+out to be nothing; had it been more than nothing, section 17.4 would
+have gone and section 23 is arranged so that removing it costs nothing
+else.
+
 ---
 
-## 17. Deliberately Not Scheduled
+## 18. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 
