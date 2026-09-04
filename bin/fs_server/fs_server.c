@@ -619,6 +619,17 @@ main(void)
             break;
         }
 
+
+        /*
+         * Section 12.4: the same answer in the place the kernel looks.
+         * Both of this protocol's reply shapes begin with a sys_err_t,
+         * because section 25.6 says a server reports failure that way
+         * and invents no codes of its own, so one line covers them
+         * both. Without it a refusal is a successful send as far as
+         * the kernel can see, and a chain linked behind it carries on.
+         */
+        reply.status = *(const sys_err_t *)reply.inline_data;
+
         if (sys_msg_reply(peer, &reply) != SYS_OK) {
             return 1;
         }

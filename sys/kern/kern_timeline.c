@@ -266,6 +266,40 @@ timeline_drop_signaler(struct timeline *tl)
 }
 
 /*
+ * Section 17.5's last line: a batch that aborts force-signals every
+ * timeline it was going to signal, in error state.
+ *
+ * A waiter that was going to be released by an entry which now will
+ * never run has nothing to wait for, and nothing else will ever tell
+ * it so. Section 9.3 rule 2 already says what a timeline nobody can
+ * advance does to its waiters, and this is the same thing arrived at
+ * from a different direction: the party that could have satisfied the
+ * wait is gone, so the waiter is told rather than left to a timeout.
+ *
+ * Already in error is left alone, because the first thing to put it
+ * there is what its waiters were told about and a second reason does
+ * not improve on it.
+ */
+void
+timeline_force_error(struct timeline *tl)
+{
+    intr_state_t s = md_intr_disable();
+
+    if (tl->tl_error) {
+        md_intr_restore(s);
+        return;
+    }
+
+    tl->tl_error = true;
+
+    sched_defer();
+    release_all(tl, SYS_ERR_OWNER_DEAD);
+    sched_undefer();
+
+    md_intr_restore(s);
+}
+
+/*
  * A completion timeline is inside its thread or process, so a handle
  * naming it is a pointer into that object. Saying so here is what lets
  * the handle hold the object: without it, dropping the last process

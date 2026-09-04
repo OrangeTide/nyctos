@@ -1753,6 +1753,15 @@ fs_server(void *arg)
             break;
         }
 
+
+        /*
+         * Section 12.4: the same answer where the kernel can read it.
+         * A refusal that lives only in the payload is a successful
+         * send as far as the kernel is concerned, and a chain linked
+         * behind it carries on.
+         */
+        tx.reply.status = rep->fr_status;
+
         if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
             panic("fs: reply failed");
         }
@@ -5271,6 +5280,111 @@ batch_fill(sys_op_t *ops, sys_op_fence_args_t *args, uint32_t n,
 
 
 /*
+ * Section 17.5's last line: what an aborted batch signals.
+ *
+ * A chain that fails partway leaves the entries after it unrun, and a
+ * thread waiting on a timeline one of them was going to signal has
+ * nothing left to wait for. Nothing else will ever tell it so: the
+ * batch is over, the entry is cancelled, and the value it would have
+ * signalled will never arrive.
+ */
+static struct timeline *ab_tl;
+static volatile int ab_woke;
+
+static void
+abort_waiter(void *arg)
+{
+    (void)arg;
+
+    /*
+     * Waiting for a value the batch was going to signal, with no
+     * deadline. A deadline would make this pass on a timeout and
+     * prove nothing: what is being checked is that the waiter is told,
+     * not that it eventually gives up.
+     */
+    ab_woke = (int)timeline_wait(ab_tl, 1, SYS_DEADLINE_NEVER);
+    thread_exit(0);
+}
+
+static void
+abort_checks(void)
+{
+    static sys_op_fence_args_t args[2];
+    static sys_op_t ops[2];
+    struct proc *p = proc_current();
+    sys_handle_t h;
+    uint32_t spin;
+    sys_err_t err;
+    long r;
+
+    cnputs("aborting: what a batch that stops signals, section 17.5\n");
+
+    ab_tl = timeline_create("abort");
+    if (ab_tl == NULL) {
+        panic("abort: no timeline");
+    }
+    err = handle_insert(&p->p_handles, ab_tl, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_SIGNAL | SYS_RIGHT_WAIT, &h);
+    expect("a handle for the timeline nobody will advance", err, SYS_OK);
+
+    ab_woke = 1;
+    sched_ready(thread_create("abort-waiter", PRIO_BOOT + 1,
+      abort_waiter, NULL));
+
+    /* Let it reach the wait before anything is submitted. */
+    for (spin = 0; spin < 1000 && ab_woke == 1; spin++) {
+        sched_yield();
+    }
+
+    /*
+     * A chain whose first entry fails, followed by the entry that
+     * would have signalled. The first fails because its target is not
+     * a timeline it may signal; what matters is only that it fails.
+     */
+    memset(ops, 0, sizeof(ops));
+    memset(args, 0, sizeof(args));
+
+    ops[0].opcode = SYS_OP_FENCE_SIGNAL;
+    ops[0].target = SYS_HANDLE_INVALID;
+    ops[0].flags = SYS_OP_LINK;
+    ops[0].arg_ptr = (uintptr_t)&args[0];
+    ops[0].arg_len = sizeof(args[0]);
+    args[0].value = 1;
+
+    ops[1].opcode = SYS_OP_FENCE_SIGNAL;
+    ops[1].target = h;
+    ops[1].arg_ptr = (uintptr_t)&args[1];
+    ops[1].arg_len = sizeof(args[1]);
+    args[1].value = 1;
+
+    r = run_batch(ops, 2);
+    if (r == SYS_OK) {
+        panic("abort: the chain did not fail");
+    }
+    if (ops[1].status != SYS_ERR_CANCELED) {
+        panic("abort: the second entry said %ld, not canceled",
+          (long)ops[1].status);
+    }
+
+    for (spin = 0; spin < 100000 && ab_woke == 1; spin++) {
+        sched_yield();
+    }
+
+    if (ab_woke == 1) {
+        panic("abort: the waiter is still waiting for a signal that "
+          "will never come");
+    }
+    if (ab_woke != SYS_ERR_OWNER_DEAD) {
+        panic("abort: the waiter was released with %d, not OWNER_DEAD",
+          ab_woke);
+    }
+    cnputs("    a cancelled signal releases its waiter    OK\n");
+
+    expect("giving the handle back", handle_close(&p->p_handles, h),
+      SYS_OK);
+}
+
+/*
  * Section 17.4: an entry whose target is what an earlier entry produced.
  *
  * The pair is the one the design uses to explain itself. A walk answers
@@ -5359,50 +5473,51 @@ substitution_checks(void)
     cnputs("    the entry is unchanged but for status    OK\n");
 
     /*
-     * A reply that carries no handle leaves the register empty, per
-     * section 17.4, rather than writing an invalid handle into it. The
-     * walk fails to find the name, the send itself succeeds because
-     * the message was delivered and answered, and the entry that
-     * depends on the answer is refused on the tag rather than looking
-     * up handle zero.
+     * A walk for a name that is not there, which is now two things at
+     * once and used to be one.
+     *
+     * The send succeeds as transport and the server refuses the
+     * request, and section 12.4's status field is what lets the kernel
+     * tell those apart. The entry fails with what the server said,
+     * which it could not do before this stage: the refusal lived in
+     * the payload and the kernel does not read payloads.
+     *
+     * And no handle moved, so the register is still empty, which is
+     * section 17.4's rule holding underneath. The entry that depends
+     * on it is refused on the tag rather than looking up handle zero.
+     * These two protections are independent and both are wanted: the
+     * second is what held while the first did not exist.
      */
     req = (fs_request_t *)walk.request.inline_data;
     req->fr_name[0] = 'z';
     memset(&read.reply, 0, sizeof(read.reply));
     r = run_batch(ops, 2);
-    expect("a pair whose first entry found nothing",
-      (sys_err_t)r, SYS_ERR_INVALID_ARG);
-    if (ops[0].status != SYS_OK) {
-        panic("substitution: the walk itself failed, %ld",
+    expect("a walk for a name that is not there",
+      (sys_err_t)r, SYS_ERR_NO_ENT);
+    if (ops[0].status != SYS_ERR_NO_ENT) {
+        panic("substitution: the walk said %ld, not what the server did",
           (long)ops[0].status);
+    }
+    if (ops[1].status != SYS_ERR_INVALID_ARG) {
+        panic("substitution: the read said %ld, not refused on the tag",
+          (long)ops[1].status);
     }
     if (read.reply.inline_len != 0) {
         panic("substitution: the read went on an empty register");
     }
-    cnputs("    a reply with no handle leaves it empty   OK\n");
+    cnputs("    the kernel sees a server's refusal       OK\n");
     req->fr_name[0] = 'm';
 
     /*
-     * And the same pair as a chain, whose walk finds nothing.
+     * And the same walk at the head of a chain, which is section
+     * 17.5's abort-on-failure and needed the field above to exist.
      *
-     * What section 17.5 says should happen is that the walk fails and
-     * cancels the rest. What happens is that the walk succeeds: the
-     * message was delivered and answered, and the refusal is in the
-     * server's payload, which the kernel does not read. Section 12.4
-     * requires a status field on the message for exactly this, saying
-     * that without it "a FS_OP_WALK for a file that does not exist is
-     * a completely successful SYS_OP_IPC_SEND as far as the kernel can
-     * see, so a linked chain would carry on and send a read on a
-     * connection that was never returned". The field is not in
-     * sys_msg_t and the rule is not built.
-     *
-     * What stops the read here is the empty register, not the chain.
-     * That is the right outcome reached by the wrong route, and it
-     * holds only because a walk that fails moves no handle. The entry
-     * after the refused one is cancelled, which is the part of section
-     * 17.5 that does work.
+     * The walk fails, so everything linked behind it is cancelled
+     * rather than run and refused one at a time. The difference is
+     * visible in the statuses: CANCELED says an entry was never
+     * attempted, and the register being empty would have said only
+     * that this particular entry could not find its target.
      */
-    req = (fs_request_t *)walk.request.inline_data;
     req->fr_name[0] = 'z';
     ops[0].flags |= SYS_OP_LINK;
     ops[1].flags |= SYS_OP_LINK;
@@ -5417,26 +5532,18 @@ substitution_checks(void)
 
         r = run_batch(three, 3);
         expect("a chain whose walk found nothing",
-          (sys_err_t)r, SYS_ERR_INVALID_ARG);
+          (sys_err_t)r, SYS_ERR_NO_ENT);
 
-        if (three[0].status != SYS_OK) {
-            panic("substitution: the walk reported %ld, so the kernel "
-              "can see a server's refusal after all",
-              (long)three[0].status);
-        }
-        if (three[1].status != SYS_ERR_INVALID_ARG) {
-            panic("substitution: the read said %ld, not refused",
-              (long)three[1].status);
-        }
-        if (three[2].status != SYS_ERR_CANCELED) {
-            panic("substitution: the entry after it said %ld, not "
-              "canceled", (long)three[2].status);
+        if (three[1].status != SYS_ERR_CANCELED ||
+          three[2].status != SYS_ERR_CANCELED) {
+            panic("substitution: the chain said %ld and %ld, not canceled",
+              (long)three[1].status, (long)three[2].status);
         }
         if (read.reply.inline_len != 0) {
-            panic("substitution: a refused entry sent its message");
+            panic("substitution: a cancelled entry sent its message");
         }
     }
-    cnputs("    a refusal cancels the rest of the chain  OK\n");
+    cnputs("    and a refusal cancels the rest of it     OK\n");
 
     ops[0].flags &= ~(uint16_t)SYS_OP_LINK;
     ops[1].flags &= ~(uint16_t)SYS_OP_LINK;
@@ -7451,6 +7558,7 @@ kernel_main(void)
     slice_checks();
 
     substitution_checks();
+    abort_checks();
 
     cnputs("user mode: a program that can be interrupted\n");
     user_interrupt_checks();

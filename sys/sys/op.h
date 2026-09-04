@@ -415,6 +415,26 @@ typedef struct sys_pulse {
 typedef struct sys_msg {
     uint32_t        flags;
     uint32_t        inline_len;
+
+    /*
+     * What the server made of the request, per section 12.4, and the
+     * one field of a reply the kernel reads.
+     *
+     * A transport that succeeded and a request that succeeded are
+     * different things, and without this the kernel cannot tell them
+     * apart: a walk for a file that does not exist is a completely
+     * successful send, and a linked chain carries on to read from a
+     * connection that was never returned. Section 25.6 already makes
+     * servers report failure as sys_err_t and invent no codes of their
+     * own, so this costs a protocol nothing it was not already doing.
+     *
+     * The kernel attaches no meaning to it beyond zero and non-zero,
+     * in exactly the way it attaches none to the cookie. Zero on a
+     * request, where nothing reads it.
+     */
+    sys_err_t       status;
+    uint32_t        _pad0;
+
     sys_handle_t    handle;     /* moved with the message, or INVALID */
 
     /*

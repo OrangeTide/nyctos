@@ -974,6 +974,33 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
     }
 
     /*
+     * What the server made of it, per section 12.4 and section 17.5.
+     *
+     * A send whose message was delivered and answered has succeeded as
+     * transport and may still have been refused as a request, and the
+     * two were the same thing to the kernel until the reply carried a
+     * status. Copying it into the entry is what lets a chain abort on
+     * a server's no: without it a walk that found nothing was a
+     * successful entry, and the read linked behind it went out on a
+     * connection that was never returned.
+     *
+     * The kernel learns nothing about what the value means. Non-zero
+     * is a failure and zero is not, which is the whole of it.
+     *
+     * Before the register capture below, so that a refused request
+     * writes no handle into a register: the reply of a refusal should
+     * not be something a later entry can depend on.
+     */
+    if (err == SYS_OK && op->opcode == SYS_OP_IPC_SEND) {
+        const struct sys_op_send_args *args =
+          (const struct sys_op_send_args *)op->arg_ptr;
+
+        if (args != NULL && args->reply.status != SYS_OK) {
+            err = args->reply.status;
+        }
+    }
+
+    /*
      * The handle the reply moved, into the register the entry named.
      *
      * Only on success, and only if one arrived. Section 17.4 says a

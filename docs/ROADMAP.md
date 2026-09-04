@@ -7373,34 +7373,55 @@ fs_chain   2 submissions, 5 rendezvous, 1 connections, 12 entries, 6 invalidatio
   how it will be noticed. Stage four takes the field.
 
 **4. What a chain does when a server says no, and what an abort
-signals.** *Planned.*
+signals.** *Built.*
 
 *Widened by stage three's review*, which found that the first half of
-this is missing entirely and that a program was relying on it without
+this was missing entirely and that a program was relying on it without
 either of us noticing.
 
-- **The status field of section 12.4.** A reply carries a `status` of
-  type `sys_err_t` outside the opaque payload, and `sys_msg_t` does not
-  have one. Without it a request the server refused is a successful
-  send as far as the kernel can see, so a linked chain carries on.
-  Section 25.6 already makes servers report failure as `sys_err_t`, so
-  this costs the protocols nothing they were not doing; what it costs
-  is a field in a structure every server in the tree fills in.
-- *Check.* `fs_chain` walking for a name that does not exist: the walk
-  entry itself reports the server's refusal, and the entries after it
-  are `SYS_ERR_CANCELED` rather than each being refused on its own. The
-  check stage three left behind asserts today's behaviour and will fail
-  when this lands, which is the point of having written it that way.
-- **And then section 17.5's last line**, that on abort every timeline
-  the batch was going to signal is force-signalled in error state.
-- The set is determinable without executing, and registers are why: a
-  target is either literal, and visible by inspection, or from a
-  register, which an earlier entry either wrote or did not.
-- *Check.* A chain whose second entry fails, followed by an entry that
-  would have signalled a timeline. A thread waiting on that timeline is
-  released with an error rather than waiting for something that will
-  never happen. And the enumeration runs without executing the
-  remaining entries, which is checkable by counting what it visits.
+- **The status field of section 12.4.** A reply now carries a `status`
+  of type `sys_err_t` outside the opaque payload, and the kernel copies
+  it into the entry, treating non-zero as failure and learning nothing
+  else about it. Section 25.6 already makes servers report failure as
+  `sys_err_t`, so the protocols pay nothing they were not paying; both
+  of the filesystem protocol's reply shapes begin with one, which is
+  why one line in each server sets it.
+- *What it changed everywhere else.* A request the server refused is no
+  longer a successful send. `sys_msg_send` returns what the server
+  said, so a caller learns of a refusal without decoding a payload, and
+  the four places in `trespass` that asserted the old split now assert
+  the new one. That is the interface change section 12.4 implies and it
+  is worth saying out loud rather than leaving to be discovered.
+- **And section 17.5's last line.** A batch that aborts force-signals,
+  in error state, every timeline it was going to signal, so a thread
+  waiting for a value that will now never arrive is told rather than
+  left to a timeout.
+- *Not one something else in the batch will still signal.* The chain
+  being cancelled ends at the first entry without the link flag and
+  everything after it runs, so a timeline one of those will advance is
+  not a timeline nobody can advance. Forcing it would break an
+  independent chain for the failure of this one, which is what the
+  first attempt did and what M10's chaining check caught within a
+  minute of it being written.
+- *Check.* A thread waits on a timeline with no deadline, so a pass
+  cannot come from a timeout. A chain whose first entry fails is
+  followed by the entry that would have signalled it. The waiter is
+  released with `SYS_ERR_OWNER_DEAD`.
+- *What settles it.* Three ways to break it. Not reading the reply's
+  status gives `a walk for a name that is not there: expected NO_ENT,
+  got INVALID_ARG`, which is the register catching what the status
+  field should have. Signalling nothing on abort leaves `the waiter
+  still waiting for a signal that will never come`. Forcing a timeline
+  a later entry will signal gives `an independent entry was cancelled
+  with it`.
+- *What this did not settle.* Error state is permanent and belongs to
+  the timeline rather than to the batch, so a batch aborting poisons an
+  object other processes may hold a signal right over. Section 17.5
+  asks for exactly that and section 9.3 rule 2 is the same shape, but
+  the two are not obviously the same situation: a party that has died
+  cannot signal again, and a batch that failed once might. It is built
+  as the section says and recorded here as a question rather than
+  smoothed over.
 
 **5. Whether an issuing op can exist in this tree at all.** *Planned.*
 

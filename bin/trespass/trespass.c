@@ -191,13 +191,13 @@ main(void)
         pair[1].reg_in = SYS_BATCH_REGS;        /* one past the end */
 
         if (sys_op_submit(pair, 2) != SYS_ERR_INVALID_ARG) {
-            return 14;
+            return 20;
         }
         if (pair[1].status != SYS_ERR_INVALID_ARG) {
-            return 15;
+            return 21;
         }
         if (pair[0].status != SYS_ERR_INTERRUPTED) {
-            return 16;
+            return 22;
         }
     }
 
@@ -225,7 +225,14 @@ main(void)
     req = (fs_request_t *)message.inline_data;
     req->fr_op = FS_OP_WALK;
     memcpy(req->fr_name, "..", sizeof(".."));
-    if (sys_msg_send(dir, &message, &reply) != SYS_OK ||
+    /*
+     * The send now reports what the server said, per section 12.4, so
+     * a refusal arrives as the return value and not only in the
+     * payload. Both are checked: they are the same answer in two
+     * places and a protocol that let them differ would be lying to
+     * one of its two readers.
+     */
+    if (sys_msg_send(dir, &message, &reply) != SYS_ERR_PERM_DENIED ||
       status_of(&reply) != SYS_ERR_PERM_DENIED) {
         return 14;
     }
@@ -237,7 +244,7 @@ main(void)
     req = (fs_request_t *)message.inline_data;
     req->fr_op = FS_OP_WALK;
     memcpy(req->fr_name, "../motd", sizeof("../motd"));
-    if (sys_msg_send(dir, &message, &reply) != SYS_OK ||
+    if (sys_msg_send(dir, &message, &reply) != SYS_ERR_PERM_DENIED ||
       status_of(&reply) != SYS_ERR_PERM_DENIED) {
         return 15;
     }
@@ -255,7 +262,7 @@ main(void)
     req = (fs_request_t *)message.inline_data;
     req->fr_op = FS_OP_WALK;
     memcpy(req->fr_name, "a/../b", sizeof("a/../b"));
-    if (sys_msg_send(dir, &message, &reply) != SYS_OK ||
+    if (sys_msg_send(dir, &message, &reply) != SYS_ERR_PERM_DENIED ||
       status_of(&reply) != SYS_ERR_PERM_DENIED) {
         return 16;
     }
@@ -271,7 +278,7 @@ main(void)
     req = (fs_request_t *)message.inline_data;
     req->fr_op = FS_OP_WALK;
     memcpy(req->fr_name, "..quiet", sizeof("..quiet"));
-    if (sys_msg_send(dir, &message, &reply) != SYS_OK ||
+    if (sys_msg_send(dir, &message, &reply) != SYS_ERR_NO_ENT ||
       status_of(&reply) != SYS_ERR_NO_ENT) {
         return 17;
     }
@@ -290,7 +297,7 @@ main(void)
     req = (fs_request_t *)message.inline_data;
     req->fr_op = FS_OP_WALK;
     memcpy(req->fr_name, "..", sizeof(".."));
-    if (sys_msg_send(file, &message, &reply) != SYS_OK ||
+    if (sys_msg_send(file, &message, &reply) != SYS_ERR_NO_ENT ||
       status_of(&reply) != SYS_ERR_NO_ENT) {
         return 18;
     }

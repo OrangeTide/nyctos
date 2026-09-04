@@ -119,4 +119,11 @@ sys_err_t timeline_signal(struct timeline *tl, uint64_t value);
 void timeline_add_signaler(struct timeline *tl);
 void timeline_drop_signaler(struct timeline *tl);
 
+/*
+ * Put a timeline into error state and release its waiters, for section
+ * 17.5: a batch that aborts signals nothing it was going to signal,
+ * and a waiter on one of those has nothing left to wait for.
+ */
+void timeline_force_error(struct timeline *tl);
+
 #endif /* _SYS_TIMELINE_H_ */

@@ -31,6 +31,8 @@
 #include <stdbool.h>
 
 #include <sys/batchreg.h>
+#include <sys/handle.h>
+#include <sys/timeline.h>
 #include <sys/cpu.h>
 #include <sys/measure.h>
 #include <sys/lock.h>
@@ -231,6 +233,90 @@ syscall_body(struct sys_op *op, unsigned long count)
 }
 
 /*
+ * The target an entry would have signalled, or nothing.
+ *
+ * The set is determinable without executing anything, and the
+ * registers are why. An entry naming its target literally is visible
+ * by inspection. An entry taking it from a register can only have got
+ * it from an earlier entry of this same batch, because registers are
+ * emptied at the start of an execution and written only by an entry
+ * that has already run: if that entry ran, the value is here, and if
+ * it did not, the register is empty and there is no timeline for
+ * anything to be waiting on. Both cases are covered and neither needs
+ * the entry to run.
+ *
+ * A language with branches would lose this. Whether a given signal is
+ * reachable would depend on values not yet computed, so the kernel
+ * could not enumerate the set without running the batch.
+ */
+static bool
+signal_target(const sys_op_t *e, struct batch_regs *regs,
+  sys_handle_t *out)
+{
+    if (e->opcode != SYS_OP_FENCE_SIGNAL) {
+        return false;
+    }
+
+    if ((e->flags & SYS_OP_TARGET_FROM_REG) != 0) {
+        return regs_get_handle(regs, e->reg_in, out) == SYS_OK;
+    }
+
+    *out = e->target;
+
+    return true;
+}
+
+/*
+ * Section 17.5's last line: a batch that aborts force-signals every
+ * timeline it was going to signal, in error state, so that a thread
+ * waiting for a value which will now never arrive is told rather than
+ * left to a timeout.
+ *
+ * Not one that something else in the same batch will still signal.
+ * The chain being cancelled ends at the first entry without the link
+ * flag, and everything after that runs: a timeline one of those will
+ * advance is not a timeline nobody can advance, and putting it into
+ * error would break an independent chain for the failure of this one.
+ * The check that caught this was already in the tree.
+ */
+static void
+cancel_signal(struct proc *p, sys_op_t *op, unsigned long count,
+  unsigned long i, struct batch_regs *regs)
+{
+    sys_handle_t target, other;
+    unsigned long j;
+    void *obj;
+
+    if (!signal_target(&op[i], regs, &target)) {
+        return;
+    }
+
+    for (j = i; j < count && (op[j].flags & SYS_OP_LINK) != 0; j++) {
+        /* Walking to the end of the chain this entry is in. */
+    }
+
+    for (j = j + 1; j < count; j++) {
+        if (signal_target(&op[j], regs, &other) && other == target) {
+            return;
+        }
+    }
+
+    /*
+     * The right is checked because a batch may not do through an abort
+     * what it could not have done by running: an entry naming a
+     * timeline it holds no signal right over was going to fail, not
+     * signal, and forcing it into error would be the kernel doing the
+     * caller a favour it was not entitled to.
+     */
+    if (handle_lookup(&p->p_handles, target, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_SIGNAL, &obj) != SYS_OK) {
+        return;
+    }
+
+    timeline_force_error(obj);
+}
+
+/*
  * Execute a validated array of entries, in order, in this thread's
  * context. Shared by a submission and by a prepared program, so that
  * the two cannot drift: section 17.7 wants one implementation of an
@@ -280,6 +366,8 @@ batch_run(sys_op_t *op, unsigned long count)
                  */
                 op[i].status = SYS_ERR_CANCELED;
                 one = SYS_OK;
+
+                cancel_signal(proc_current(), op, count, i, &regs);
             } else {
                 one = sys_op_exec(&op[i], &regs);
 
