@@ -1692,6 +1692,10 @@ Issuing ops are where concurrency comes from. In an in-context engine there is o
 
 An issuing send is not obviously incoherent, since the reply would land in the entry's argument structure, which was validated once at submission and is exactly the fixed buffer a reply needs. What it would break is the description in section 12.2 rather than the mechanism: a thread with an outstanding issuing send is not blocked on it, so the blocked client thread can no longer be the queue slot, and something else has to hold the reply's destination. That is a new object or a new thread state, and it is not a small change. `PROPOSALS.md` carries it.
 
+**What is not built, and why it is not a matter of effort.** The three issuing opcodes are defined and refuse. An issuing op starts work and hands back a timeline, and starting work means a device that transfers; nothing in this tree transfers, so there is nothing for one to start. The route that looks open is a read that issues against the block store, and that is an issuing send, which the paragraph above rules out for a reason that has not changed.
+
+What is missing is narrower than "issuing ops", which is worth stating because the narrower thing is testable. Collecting timelines and waiting on them in one submission is built. Hardware that finishes on its own schedule is built. Three timers armed and then waited on together take about sixty milliseconds where the same three armed and waited for one at a time take about a hundred and twenty, so three things in flight with one thread and no worker pool is a shape this engine already reaches. The missing piece is only an operation that starts device work.
+
 ```{=typst}
 #figure(include "fig/batch.typ", caption: [Issuing ops put three transfers in flight from one thread, with no worker pool and no broken priority relationship.])
 ```

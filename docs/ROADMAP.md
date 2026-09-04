@@ -7443,22 +7443,54 @@ either of us noticing.
   bytes rather than a remainder, so the new field grew the message
   rather than shrinking what a message can carry.
 
-**5. Whether an issuing op can exist in this tree at all.** *Planned.*
+**5. Whether an issuing op can exist in this tree at all.** *Built, and
+the answer is no.*
 
-- `SYS_OP_DMA_ISSUE` and its two neighbours have answered
-  `SYS_ERR_NOT_SUPPORTED` since they were given numbers. M10 recorded
-  that they need a device that transfers on its own, and this tree has
-  none.
-- What it has is a device that finishes work on its own schedule: an
-  interrupt landing on a timeline, which is section 13.2 and is built.
-  Whether that is enough to make an issuing op mean anything, or
-  whether it only looks like one, is the question.
-- *Check.* Either an issuing entry returns a timeline that is signalled
-  while the submitting thread runs on, with a count showing the thread
-  did something between issuing and waiting, or the stage records what
-  is missing and the three opcodes keep refusing, with the reason in
-  section 17 rather than in a commit message. A stage that answers no
-  is not a stage that failed.
+- *The answer, and the reason.* An issuing op starts work and hands
+  back a timeline. Starting work means a device that transfers, and
+  nothing in this tree transfers: there is no driver here that moves
+  bytes without a thread moving them. The three opcodes go on refusing.
+- *The route that looks open and is not.* The block store answers
+  reads, so a read that issues could mean sending a request without
+  blocking and signalling a timeline when the reply lands. That is an
+  issuing send, and section 17.3 rules it out by name for a structural
+  reason rather than a convenient one: a thread with an outstanding
+  issuing send is not blocked on it, so the blocked client can no
+  longer be the queue slot, and something else has to hold the reply's
+  destination. That is a new object or a new thread state.
+  `PROPOSALS.md` carries it.
+- *What the stage found instead, which is narrower and more useful
+  than the question.* The half of section 17.3 that is missing is not
+  "issuing ops". Collecting timelines and waiting on them in one
+  submission is built. Hardware that finishes on its own schedule is
+  built: a timer advances a timeline at a deadline with no thread
+  involved. What is missing is only an operation that starts device
+  work, and it is missing because there is no device work, not because
+  the engine cannot express it.
+- *Check.* Three timers armed one after another and none waited for,
+  then one submission that waits on all three. All three arrive and the
+  submission returns. The same three armed and waited for one at a
+  time, which is what a caller without an issuing op must do, is
+  reported beside it.
+
+```
+    all three at once, in one submission: about 60 ms
+    one at a time, the same three:  about 121 ms
+```
+
+- Counts asserted, durations reported, and the pair is the point:
+  neither number describes this kernel, and the two of them together
+  describe whether the three were running at once, which does. Sixty
+  against a hundred and twenty-one is three things in flight with one
+  thread and no worker pool, which is what section 17.3 claims an
+  issuing op would buy. What the tree cannot do is start the work.
+- *What settles the premise.* All three opcodes are asserted to refuse
+  as unbuilt rather than as unknown. The dispatch check in the tree
+  tries one of them; a premise resting on two opcodes nobody has ever
+  called is not one to leave untested. Making them answer
+  `INVALID_ARG` fails.
+- *A stage that answers no is not a stage that failed.* It is recorded
+  here and in section 17 rather than in a commit message.
 
 **6. What substitution pays.** *Planned.*
 

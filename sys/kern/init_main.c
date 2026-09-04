@@ -5280,6 +5280,194 @@ batch_fill(sys_op_t *ops, sys_op_fence_args_t *args, uint32_t n,
 
 
 /*
+ * Section 17.3, and the half of it this tree can reach.
+ *
+ * An issuing op starts work and hands back a timeline, so that a batch
+ * can start three things and then wait on all three with one thread
+ * and no worker pool. The three opcodes for it have answered
+ * SYS_ERR_NOT_SUPPORTED since they were given numbers, because
+ * starting work means a device that transfers, and nothing in this
+ * tree transfers.
+ *
+ * What is here is the other half. Collecting timelines and waiting on
+ * them in one submission is built, and hardware that finishes on its
+ * own schedule is built: a timer advances a timeline at a deadline
+ * without the thread doing anything. Arming three of them and waiting
+ * on all three in one batch is section 17.3's shape with the issuing
+ * op cut out of it, and it says which part is missing by showing the
+ * part that is not.
+ */
+#define FLIGHT_N    3
+
+static void
+inflight_checks(void)
+{
+    static sys_op_fence_args_t args[FLIGHT_N];
+    static sys_op_t ops[FLIGHT_N];
+    struct proc *p = proc_current();
+    struct timeline *tl[FLIGHT_N];
+    struct timer *tm[FLIGHT_N];
+    sys_handle_t h[FLIGHT_N];
+    sys_time_t began, ended;
+    uint32_t i;
+    long r;
+
+    cnputs("in flight: what section 17.3 asks for, and what is here\n");
+
+    /*
+     * Refused, and distinctly. An opcode nobody has defined is
+     * INVALID_ARG; these three are defined and not built, which is a
+     * different thing for a caller to be told.
+     *
+     * All three, where the dispatch check tries one. That check is
+     * about the entry point telling the two apart; this is about the
+     * premise of this stage, and a premise resting on two opcodes
+     * nobody has ever called is not one to leave untested.
+     */
+    {
+        sys_op_t none;
+        uint16_t code[3] = { SYS_OP_DMA_ISSUE, SYS_OP_READ_ISSUE,
+          SYS_OP_WRITE_ISSUE };
+
+        for (i = 0; i < 3; i++) {
+            memset(&none, 0, sizeof(none));
+            none.opcode = code[i];
+            if (run_batch(&none, 1) != SYS_ERR_NOT_SUPPORTED) {
+                panic("in flight: opcode %u did not refuse as unbuilt",
+                  (unsigned int)code[i]);
+            }
+        }
+    }
+    cnputs("    the three issuing opcodes refuse, as unbuilt OK\n");
+
+    /*
+     * Three timers, armed one after another and none of them waited
+     * for. From here they run without this thread, which is the whole
+     * of what an issuing op would have arranged for a device.
+     */
+    for (i = 0; i < FLIGHT_N; i++) {
+        tl[i] = timeline_create("inflight");
+        if (tl[i] == NULL) {
+            panic("in flight: no timeline");
+        }
+        if (handle_insert(&p->p_handles, tl[i], SYS_OBJ_TIMELINE,
+          SYS_RIGHT_SIGNAL | SYS_RIGHT_WAIT, &h[i]) != SYS_OK) {
+            panic("in flight: no handle slot");
+        }
+    }
+
+    began = time_now();
+    for (i = 0; i < FLIGHT_N; i++) {
+        tm[i] = timer_create("inflight",
+          tl[i], began + time_from_ms(20 * (i + 1)), 0);
+        if (tm[i] == NULL) {
+            panic("in flight: no timer");
+        }
+    }
+
+    /*
+     * And one submission that waits on all three. The last to arrive
+     * is the one that decides when this returns, because the other two
+     * were already running while it did.
+     */
+    memset(ops, 0, sizeof(ops));
+    memset(args, 0, sizeof(args));
+    for (i = 0; i < FLIGHT_N; i++) {
+        ops[i].opcode = SYS_OP_FENCE_WAIT;
+        ops[i].target = h[i];
+        ops[i].arg_ptr = (uintptr_t)&args[i];
+        ops[i].arg_len = sizeof(args[i]);
+        args[i].value = 1;
+        args[i].deadline = SYS_DEADLINE_NEVER;
+    }
+
+    r = run_batch(ops, FLIGHT_N);
+    ended = time_now();
+
+    if (r != SYS_OK) {
+        panic("in flight: the batch returned %ld", r);
+    }
+    for (i = 0; i < FLIGHT_N; i++) {
+        if (timeline_value(tl[i]) != 1) {
+            panic("in flight: timeline %u is at %lu", (unsigned int)i,
+              (unsigned long)timeline_value(tl[i]));
+        }
+        timer_destroy(tm[i]);
+        if (handle_close(&p->p_handles, h[i]) != SYS_OK) {
+            panic("in flight: the handle would not close");
+        }
+    }
+
+    /*
+     * Asserted as a count and reported as a duration, per the rule
+     * this plan keeps arriving at. What is countable is that one
+     * submission waited on three things and all three arrived. How
+     * long it took is the host's business, and it is printed because
+     * the shape of the number is the point: three timers at 20, 40 and
+     * 60 milliseconds take about 60 if they ran together and about 120
+     * if they did not.
+     */
+    cnprintf("    %u waits in one submission, all arrived    OK\n",
+      (unsigned int)FLIGHT_N);
+    cnprintf("    all three at once, in one submission: about %lu ms\n",
+      (unsigned long)((ended - began) / time_from_ms(1)));
+
+    /*
+     * And the same three, armed and waited for one at a time, which is
+     * what a caller without an issuing op has to do. Reported beside
+     * the other because the comparison is the point and neither number
+     * is a property of this kernel: what the two of them together show
+     * is whether the three were running at once, which is.
+     */
+    {
+        sys_time_t s_began = time_now();
+
+        for (i = 0; i < FLIGHT_N; i++) {
+            struct timeline *one = timeline_create("serial");
+            struct timer *t1;
+            sys_handle_t oh;
+            sys_op_fence_args_t a1;
+            sys_op_t o1;
+
+            if (one == NULL) {
+                panic("in flight: no timeline");
+            }
+            if (handle_insert(&p->p_handles, one, SYS_OBJ_TIMELINE,
+              SYS_RIGHT_SIGNAL | SYS_RIGHT_WAIT, &oh) != SYS_OK) {
+                panic("in flight: no handle slot");
+            }
+
+            t1 = timer_create("serial", one,
+              time_now() + time_from_ms(20 * (i + 1)), 0);
+            if (t1 == NULL) {
+                panic("in flight: no timer");
+            }
+
+            memset(&o1, 0, sizeof(o1));
+            memset(&a1, 0, sizeof(a1));
+            o1.opcode = SYS_OP_FENCE_WAIT;
+            o1.target = oh;
+            o1.arg_ptr = (uintptr_t)&a1;
+            o1.arg_len = sizeof(a1);
+            a1.value = 1;
+            a1.deadline = SYS_DEADLINE_NEVER;
+
+            if (run_batch(&o1, 1) != SYS_OK) {
+                panic("in flight: a serial wait failed");
+            }
+
+            timer_destroy(t1);
+            if (handle_close(&p->p_handles, oh) != SYS_OK) {
+                panic("in flight: the handle would not close");
+            }
+        }
+
+        cnprintf("    one at a time, the same three:  about %lu ms\n",
+          (unsigned long)((time_now() - s_began) / time_from_ms(1)));
+    }
+}
+
+/*
  * Section 17.5's last line: what an aborted batch signals.
  *
  * A chain that fails partway leaves the entries after it unrun, and a
@@ -7571,6 +7759,7 @@ kernel_main(void)
 
     substitution_checks();
     abort_checks();
+    inflight_checks();
 
     cnputs("user mode: a program that can be interrupted\n");
     user_interrupt_checks();
