@@ -163,6 +163,10 @@ reply_line(sys_thread_id_t peer, uint32_t want)
     rep->fr_length = take_line((char *)&reply.inline_data[sizeof(*rep)],
       max);
     reply.inline_len = sizeof(*rep) + rep->fr_length;
+
+    /* Section 12.4: the same answer where the kernel can read it. */
+    reply.status = rep->fr_status;
+
     (void)sys_msg_reply(peer, &reply);
 }
 /*
@@ -358,6 +362,9 @@ main(void)
              */
             break;
         }
+
+        /* Section 12.4: the same answer where the kernel can read it. */
+        reply.status = rep->fr_status;
 
         (void)sys_msg_reply(peer, &reply);
     }

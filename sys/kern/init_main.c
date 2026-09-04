@@ -5506,6 +5506,18 @@ substitution_checks(void)
         panic("substitution: the read went on an empty register");
     }
     cnputs("    the kernel sees a server's refusal       OK\n");
+
+    /*
+     * And a refusal that is not about a name. The server answers an
+     * operation it does not implement with INVALID_ARG, per section
+     * 25.3, and the kernel sees that the same way it sees a missing
+     * file: what it reads is the field, not the reason.
+     */
+    req->fr_op = 0xffff;
+    r = run_batch(ops, 1);
+    expect("an operation the server does not implement",
+      (sys_err_t)r, SYS_ERR_INVALID_ARG);
+    req->fr_op = FS_OP_WALK;
     req->fr_name[0] = 'm';
 
     /*

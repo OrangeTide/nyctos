@@ -7422,6 +7422,26 @@ either of us noticing.
   cannot signal again, and a batch that failed once might. It is built
   as the section says and recorded here as a question rather than
   smoothed over.
+- *Reviewed.* The field was added to the interface and set in two
+  servers out of three that can refuse a request. The block store,
+  which answers everything but a read with `NOT_SUPPORTED`, and the
+  console driver both left it zero, so their refusals were still
+  invisible to the kernel and a chain sent to either would still have
+  carried on. That is the defect section 12.4 exists to prevent,
+  surviving in two thirds of the places it applies. Both set it now.
+
+  A server that forgets is not detectable by any check. What a check
+  can reach is the servers it talks to, and the one it talks to is
+  covered twice over: a refusal about a name and a refusal about an
+  operation, so that the field is exercised by more than one path
+  through one server. Making the kernel-side server report `SYS_OK`
+  for everything fails with `a walk for a name that is not there:
+  expected NO_ENT, got INVALID_ARG`, which is the register catching
+  what the field should have.
+
+  Also checked and sound: the inline payload is a fixed sixty-four
+  bytes rather than a remainder, so the new field grew the message
+  rather than shrinking what a message can carry.
 
 **5. Whether an issuing op can exist in this tree at all.** *Planned.*
 

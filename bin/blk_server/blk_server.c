@@ -174,6 +174,14 @@ main(void)
             }
         }
 
+        /*
+         * Section 12.4: the same answer where the kernel can read it.
+         * A refusal that lives only in the payload is a successful
+         * send as far as the kernel is concerned, and a chain linked
+         * behind it carries on.
+         */
+        reply.status = rep->fr_status;
+
         if (sys_msg_reply(peer, &reply) != SYS_OK) {
             return 3;
         }
