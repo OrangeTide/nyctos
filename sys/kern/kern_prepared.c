@@ -32,12 +32,14 @@ prepared_load(struct proc *p, const sys_op_t *entries, uint32_t count,
      * and the answer has to include the ones the loading paid for.
      */
     cpu_self()->cp_checks++;
+    p->p_checks++;
     if (!proc_reaches(p, (uintptr_t)entries, count * sizeof(*entries))) {
         return SYS_ERR_FAULT;
     }
 
     for (i = 0; i < count; i++) {
         cpu_self()->cp_checks++;
+        p->p_checks++;
 
         err = entry_static_check(p, &entries[i]);
         if (err != SYS_OK) {

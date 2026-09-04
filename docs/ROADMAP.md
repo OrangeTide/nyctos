@@ -7563,6 +7563,27 @@ fs_chain   2 submissions, 12 checks, 5 rendezvous, 1 connections
   They are zero at Tier 0, where one address space means a buffer that
   arrives is already where it needs to be, so they are a property of
   the tier and are reported rather than asserted.
+- *Reviewed.* Two defects, and the first is the shape this project
+  keeps finding.
+
+  The table is keyed by image name and the lookup fell off the end
+  without saying anything, so a client with no row asserted nothing and
+  the run passed because it had not looked. A typo in a name, or a
+  fourth client added later, would have removed the milestone's whole
+  measurement in silence. A name that is not in the table is now a
+  table that needs a row: renaming a row fails with `fs_chain: run as a
+  client with no cost recorded for it`.
+
+  And the per-process check count omitted what a prepared program pays
+  at load, where the machine-wide count beside it includes them. None
+  of the three clients loads one, so the table was not wrong, but a
+  counter that means one thing here and another there is a counter
+  waiting to be read wrong. Both count the same events now.
+
+  Checked and sound: `fs_client` is run twice in a boot, from two call
+  sites, and reports the same four counts both times, which is worth
+  knowing because it means the figures do not depend on what ran
+  before.
 
 *Done when* one submission carries a dependency that separate calls
 would have had to carry in user code, and the report says what that

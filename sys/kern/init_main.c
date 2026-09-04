@@ -2151,6 +2151,15 @@ client_cost_check(const char *image, const struct proc *p, uint64_t rounds,
         }
         return;
     }
+
+    /*
+     * A client with no row asserts nothing, which is the shape of
+     * check this project keeps finding: it passes because it did not
+     * look. Every program run through here is one whose cost is the
+     * point, so a name that is not in the table is a table that needs
+     * a row rather than a client that needs excusing.
+     */
+    panic("%s: run as a client with no cost recorded for it", image);
 }
 
 
