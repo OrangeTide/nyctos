@@ -7872,12 +7872,54 @@ aarch64 tier2  stage2 38890 42149 43515 44619 52492   now 26923 28703 30139 3236
   `the loss was reported 0 times, expected once`, which is what the
   first break test of this fix should have said and said nothing.
 
-**4. What is left, which should be the switch alone.** *Planned.*
+**4. What is left, which should be the switch alone.** *Built, and it
+is not.*
 
-- *Check.* The binding region's site is the switch, and its length is
-  the same whichever path reached it. That last part is what makes it a
-  floor rather than the length of one path: a floor does not depend on
-  who arrived at it.
+- The switch is measured across rather than around. A thread about to
+  give up the core stamps the clock, and the thread the core comes back
+  in reads that stamp on its first instruction after its own switch
+  returned. Timing around `thread_switch_to` would measure how long the
+  outgoing thread was away, which is a property of the workload.
+- *The answer.*
+
+```
+                 region   switches   worst switch   mean switch
+riscv64 tier0      4252        469            991            48
+riscv64 tier2      4870       4482           1193            65
+aarch64 tier0     28638        469           5809           249
+aarch64 tier2     29611       4484          10994           427
+```
+
+- **The switch is about one per cent of the region that spans it.** The
+  mean is forty-eight to four hundred and twenty-seven ticks against a
+  region of four to thirty thousand, which is 0.9 to 1.4 per cent in
+  every configuration. Even the worst switch seen is a fifth to a third
+  of the worst region.
+- In microseconds the mean switch is between four and seven on both
+  ports, and the region is between four hundred and twenty-five and
+  four hundred and ninety. The two ports agree about both, which is
+  what says these are properties of the kernel's shape rather than of
+  either machine.
+- *So section 13.3's floor is not the switch.* M9 established that the
+  binding region spans a switch and that no preemption point can
+  therefore break it, and both of those remain true. What does not
+  follow, and what this milestone assumed until it measured, is that
+  the switch is what the region is made of. It is not. The region is
+  the rendezvous work that has to be atomic with the switch, and the
+  switch is a rounding error inside it.
+- *Which means the two remedies M9 named are aimed at one per cent.*
+  Not disabling interrupts across a switch is what stages two and three
+  did, as far as the state allows. Making the switch interruptible
+  would attack the forty-eight ticks and leave the four thousand.
+- *What settles it.* That a switch was measured at all is asserted, for
+  the same reason the crossing region is: a run measuring none has an
+  instrument that stopped rather than a machine that never scheduled.
+  Removing the stamp fails with `no switch was measured`. The durations
+  are the host's and are reported.
+- *The instrument costs what it measures.* Two clock reads per switch,
+  inside the region being measured, which is the same trade M9 recorded
+  for the regions themselves and is worth restating where the figure
+  being read is one per cent of another figure.
 
 **5. Whether the kernel lock puts it back at Tier 2.** *Planned.*
 

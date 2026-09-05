@@ -453,7 +453,9 @@ dispatch(void)
         return;
     }
 
+    switch_leaving();
     thread_switch_to(next);
+    switch_arrived();
 }
 /*
  * Everything below takes an interrupts-disabled critical section, because

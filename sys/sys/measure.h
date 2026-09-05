@@ -178,6 +178,13 @@ void intr_region_end(uintptr_t site);
  */
 void intr_region_console(void);
 
+/*
+ * The switch itself: stamped by the thread leaving the core and read
+ * by whichever thread it comes back in.
+ */
+void switch_leaving(void);
+void switch_arrived(void);
+
 void intr_region_report(void);
 
 /*

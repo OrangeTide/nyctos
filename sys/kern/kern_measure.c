@@ -482,6 +482,52 @@ intr_region_console(void)
     }
 }
 
+/*
+ * The switch itself, measured across it rather than around it.
+ *
+ * A thread about to give up the core stamps the clock; the thread the
+ * core comes back in reads that stamp on its first instruction after
+ * its own switch returned. The difference is the distance from one
+ * thread stopping to another starting, which is what stages two and
+ * three have been separating the rest of the rendezvous from.
+ *
+ * Timing around `thread_switch_to` instead would measure how long the
+ * outgoing thread was away, which is a property of the workload and
+ * not of the switch. A thread running for the first time never returns
+ * from a switch at all and so is not counted, which loses one
+ * measurement per thread and no information about the path.
+ */
+void
+switch_leaving(void)
+{
+    struct cpu *c = cpu_self();
+
+    if (c != NULL) {
+        c->cp_switch_stamp = md_time_now();
+    }
+}
+
+void
+switch_arrived(void)
+{
+    struct cpu *c = cpu_self();
+    uint64_t now, took;
+
+    if (c == NULL || c->cp_switch_stamp == 0) {
+        return;
+    }
+
+    now = md_time_now();
+    took = now >= c->cp_switch_stamp ? now - c->cp_switch_stamp : 0;
+    c->cp_switch_stamp = 0;
+
+    c->cp_switch_count++;
+    c->cp_switch_total += took;
+    if (took > c->cp_switch_worst) {
+        c->cp_switch_worst = took;
+    }
+}
+
 
 void
 intr_region_end(uintptr_t site)
@@ -648,6 +694,21 @@ intr_region_report(void)
         }
 
         /*
+         * And the switch on its own, which is what the region above
+         * was being separated down to. Reported beside it because the
+         * comparison is the point: if the switch is a small part of
+         * the region that spans it, then what section 13.3 calls the
+         * floor is mostly not the switch.
+         */
+        if (c->cp_switch_count != 0) {
+            cnprintf("        the switch itself: %lu of them, longest "
+              "%lu ticks, mean %lu\n",
+              (unsigned long)c->cp_switch_count,
+              (unsigned long)c->cp_switch_worst,
+              (unsigned long)(c->cp_switch_total / c->cp_switch_count));
+        }
+
+        /*
          * And what the instrument did not see, which is as much a part
          * of the figure as what it did.
          *
@@ -709,6 +770,19 @@ intr_region_report(void)
             panic("interrupts off: no region spanned a switch, so the "
               "term section 13.3 is bounded by was never measured");
         }
+
+        /*
+         * And the switch on its own, for the same reason: a run that
+         * measured no switch has an instrument that stopped rather
+         * than a machine that never scheduled.
+         */
+        for (i = 0; i < cpu_count(); i++) {
+            if (cpu_at(i)->cp_switch_count != 0) {
+                return;
+            }
+        }
+
+        panic("interrupts off: no switch was measured");
     }
 }
 

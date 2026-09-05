@@ -185,6 +185,18 @@ struct cpu {
     uintptr_t           cp_cross_end;
 
     /*
+     * The switch itself, which is what stages two and three have been
+     * separating everything else from. Stamped by the thread about to
+     * give up the core and read by whichever thread the core comes
+     * back in, so the figure is the distance across the switch rather
+     * than the time a thread spent away.
+     */
+    uint64_t            cp_switch_stamp;
+    uint64_t            cp_switch_count;
+    uint64_t            cp_switch_worst;
+    uint64_t            cp_switch_total;
+
+    /*
      * The same, over a window a check has cleared, so that asking what
      * one batch cost does not throw away what the run cost. They were
      * one pair of fields, and the run-wide figure survived only
