@@ -711,26 +711,44 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
 
     /*
-     * The reply is in this thread's staging message, put there by
-     * whoever replied, and this thread is running again: its own
-     * memory is the memory that is mapped, so now it can be copied
-     * where the caller asked for it.
-     *
-     * Whether a reply happened is the question, not whether it
-     * succeeded. A handle that failed to move is a reply with an
-     * error in it and a payload the server still wrote, and the
-     * first version of this dropped the payload on the floor for
-     * every error the reply path can report.
+     * The wait is over and this thread's own fields are put back
+     * before anything else can see them, which is what still needs
+     * interrupts off. A reply arriving after this finds `t_reply`
+     * cleared and is refused as stale, which is the right answer: it
+     * would be a second reply to a request already answered.
      */
-    if (self->t_replied) {
-        msg_copy(reply, &self->t_stage);
+    {
+        bool replied = self->t_replied;
+
+        self->t_wait = THREAD_WAIT_NONE;
+        self->t_msg = NULL;
+        self->t_reply = NULL;
+
+        /*
+         * And the region that began in whoever dispatched to this
+         * thread ends here, before the copy rather than after it.
+         *
+         * What is left to do is read this thread's staging message and
+         * write the caller's buffer. The staging message was filled by
+         * the replier before it released this thread and nothing will
+         * write it again; the caller's buffer is this thread's own. A
+         * copy between two things only this thread can reach does not
+         * need interrupts off, and it was the last thing in the region
+         * that did not.
+         */
+        md_intr_restore(s);
+
+        /*
+         * Whether a reply happened is the question, not whether it
+         * succeeded. A handle that failed to move is a reply with an
+         * error in it and a payload the server still wrote, and the
+         * first version of this dropped the payload on the floor for
+         * every error the reply path can report.
+         */
+        if (replied) {
+            msg_copy(reply, &self->t_stage);
+        }
     }
-
-    self->t_wait = THREAD_WAIT_NONE;
-    self->t_msg = NULL;
-    self->t_reply = NULL;
-
-    md_intr_restore(s);
 
     return err;
 }
@@ -916,10 +934,27 @@ channel_recv(struct channel *ch, struct sys_msg *out,
          */
         ipc_donate_arrived(self);
 
+        /*
+         * The region this thread woke into ends here, and not after
+         * the copy below.
+         *
+         * It began in the sender's `channel_send`, ran across the
+         * context switch, and was closing at whichever restore this
+         * function reached. Everything from here on is this thread's
+         * own memory: its staging message, which the sender filled
+         * before it blocked and will not touch again while it waits
+         * for a reply, and the caller's output buffer, which is this
+         * thread's. Neither is shared with anything that could run in
+         * between, so neither needs interrupts off.
+         *
+         * What did need them off is over: the rendezvous is complete,
+         * this thread is running, and its wait state is settled.
+         */
+        md_intr_restore(s);
+
         if (self->t_waitres != SYS_OK) {
             *out_peer = self->t_client;
             *out_cookie = self->t_cookie;
-            md_intr_restore(s);
 
             return self->t_waitres;
         }
@@ -934,12 +969,15 @@ channel_recv(struct channel *ch, struct sys_msg *out,
             pulse_lost_flag(ch, out);
             *out_peer = self->t_client;
             *out_cookie = self->t_cookie;
-            md_intr_restore(s);
 
             return SYS_OK;
         }
 
-        /* Woken for a pulse. Round again to take it, or to wait anew. */
+        /*
+         * Woken for a pulse. Round again to take it, or to wait anew,
+         * with interrupts off as the top of the loop expects.
+         */
+        s = md_intr_disable();
     }
 }
 

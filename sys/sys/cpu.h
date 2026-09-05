@@ -182,6 +182,7 @@ struct cpu {
      */
     uint64_t            cp_cross_worst;
     uintptr_t           cp_cross_site;
+    uintptr_t           cp_cross_end;
 
     /*
      * The same, over a window a check has cleared, so that asking what

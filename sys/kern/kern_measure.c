@@ -554,6 +554,7 @@ intr_region_end(uintptr_t site)
       took > c->cp_cross_worst) {
         c->cp_cross_worst = took;
         c->cp_cross_site = c->cp_intr_site;
+        c->cp_cross_end = site;
     }
 
     if (!c->cp_intr_console) {
@@ -639,10 +640,11 @@ intr_region_report(void)
          */
         if (c->cp_cross_worst != 0) {
             cnprintf("        across a switch: %lu ticks (about %lu us) "
-              "at 0x%lx\n", (unsigned long)c->cp_cross_worst,
+              "from 0x%lx to 0x%lx\n", (unsigned long)c->cp_cross_worst,
               (unsigned long)(hz != 0 ?
                 (c->cp_cross_worst * 1000000UL) / hz : 0),
-              (unsigned long)c->cp_cross_site);
+              (unsigned long)c->cp_cross_site,
+              (unsigned long)c->cp_cross_end);
         }
 
         /*

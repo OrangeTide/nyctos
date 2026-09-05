@@ -7799,13 +7799,55 @@ aarch64 tier2  before 37257 37873 46693 51493 59898   after 38890 42149 43515 44
   incidental when it is the mechanism.
 
 **3. The same wherever else a long stretch shares a region with a
-switch.** *Planned.*
+switch.** *Built, and it changed nothing measurable.*
 
-- `channel_send` on the blocking side, and any other path that
-  disables once and dispatches at the end of it.
-- *Check.* Each split is visible as a region count that went up and a
-  worst case that went down, and the sites are named before and after
-  so that what moved is not in doubt.
+- Two more splits, both on the far side of a `sched_block`. A thread
+  that wakes from a rendezvous was copying a message out before it
+  restored interrupts, and that copy was inside the region the other
+  thread had opened. On the receive side it is the staged message going
+  to the caller's buffer; on the send side it is the reply doing the
+  same.
+- *Why they are safe, argued from the state.* Both copies are between
+  two things only the waking thread can reach: its own staging message,
+  which the other thread filled before it released this one and will
+  not write again, and the caller's buffer, which is this thread's. On
+  the send side the thread's own wait fields are cleared before the
+  restore, so a second reply arriving afterwards finds `t_reply` empty
+  and is refused as stale, which is the right answer to a reply to a
+  request already answered.
+- *What moved.* The region now ends immediately after the wake rather
+  than after the copy. In every configuration it runs from
+  `channel_send` disabling interrupts, across the switch, to
+  `channel_recv` restoring them on the first instruction after waking.
+  Nothing a woken thread does is inside it any more.
+- *What did not move: the figure.* Five runs of each configuration,
+  sorted, in ticks, against the same measure after stage two:
+
+```
+riscv64 tier0  stage2 4381 4413 4514 4774 6228   now 4281 4478 4851 5040 6552
+riscv64 tier2  stage2 4917 5515 5640 6831 7448   now 4871 5147 5728 6100 7574
+aarch64 tier0  stage2 28154 28507 28555 46767 47714   now 25360 31689 37249 38139 41670
+aarch64 tier2  stage2 38890 42149 43515 44619 52492   now 26923 28703 30139 32365 49407
+```
+
+- The medians move in both directions and the ranges overlap almost
+  entirely. The honest reading is that these two splits took nothing
+  measurable out of the region, because what they took out was not
+  much of it.
+- *Which is the finding, and it is for stage four.* What is left in the
+  region is the sender's rendezvous work and the switch. The rendezvous
+  work is the part that genuinely needs exclusion: it pops the
+  channel's receiver list, hands a buffer over between address spaces,
+  walks a donation chain and puts a thread on a queue, all of it shared
+  with whatever else might run. So stage four's question, whether what
+  remains is the switch alone, already has half an answer: **it is not.
+  It is the rendezvous plus the switch**, and the rendezvous is not
+  obviously reducible.
+- *The plan's check for this stage does not work and is recorded as
+  such.* It asked for a region count that went up and a worst case that
+  went down. Stage two established that the count is swamped by
+  run-to-run variation, and the worst case did not go down. What is
+  left is the site, which is deterministic per build and did move.
 
 **4. What is left, which should be the switch alone.** *Planned.*
 
