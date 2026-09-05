@@ -7775,6 +7775,28 @@ aarch64 tier2  before 37257 37873 46693 51493 59898   after 38890 42149 43515 44
   the safety argument rests on, changes nothing that any check notices:
   the run completes. That ordering is argued and not checked, and
   saying so is better than implying the break test covered it.
+- *Reviewed.* Two findings, and the one that mattered went the other
+  way from what was feared.
+
+  Section 13.3 has two terms and this stage moved one of them. Nothing
+  in the stage checked the other, and lowering an interrupts-off region
+  by handing the delay to a deferral would have moved the cost rather
+  than removed it. Measured on the paced session, which is the one that
+  dispatches at all: without the split 1914, 2340 and 2900 ticks; with
+  it 1588, 1609 and 1927. The second term improved too, because an
+  interrupt in the gap is now taken at once where before it waited for
+  the region to end, and the deferral it then waits on is a few
+  instructions long. Both terms down is the answer, and it was worth
+  asking for rather than assuming.
+
+  The comment describing the split was wrong about the mechanism. It
+  said an interrupt arriving in the gap may dispatch to the client
+  itself, and it may not: the deferral suppresses dispatch on the core,
+  which is what a deferral is and is the whole reason it is held. What
+  is true is that the interrupt is taken at once and the thread it
+  wakes waits for the lift, which is the next instruction. The
+  correction matters because the wrong version made the deferral sound
+  incidental when it is the mechanism.
 
 **3. The same wherever else a long stretch shares a region with a
 switch.** *Planned.*

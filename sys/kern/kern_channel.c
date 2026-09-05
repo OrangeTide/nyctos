@@ -1041,10 +1041,18 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
      * By the time the deferral is lifted, none of that is true any
      * more. The client is released and enqueued, this thread has given
      * up what it was holding on the client's behalf, and the only
-     * thing left is the choice of which thread runs next. An interrupt
-     * arriving in the gap finds a consistent pair of threads and may
-     * dispatch to the client itself, which is the same outcome by
-     * another route.
+     * thing left is the choice of which thread runs next.
+     *
+     * The deferral is what moves that choice out of the region.
+     * Without it `sched_ready` dispatches where it stands, which is
+     * inside the region this is trying to end, and the split does not
+     * happen at all.
+     *
+     * Between the restore and the lift nothing can preempt this
+     * thread, because the deferral suppresses dispatch on this core
+     * and that is what a deferral is. An interrupt taken in that gap
+     * is taken at once, which is the whole gain; the thread it makes
+     * runnable waits for the lift, which is the next instruction.
      */
     sched_defer();
     sched_ready(client);
