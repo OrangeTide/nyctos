@@ -7848,6 +7848,29 @@ aarch64 tier2  stage2 38890 42149 43515 44619 52492   now 26923 28703 30139 3236
   went down. Stage two established that the count is swamped by
   run-to-run variation, and the worst case did not go down. What is
   left is the site, which is deterministic per build and did move.
+- *Reviewed, and the split had taken shared state out of its
+  exclusion.* Moving the restore before the copy also moved
+  `pulse_lost_flag` before it, and that is a read-modify-write on the
+  channel: it reads whether pulses were dropped, reports it, and clears
+  it. The other side of that flag is set in `channel_pulse` under
+  `md_intr_disable`, so both sides were protected and this stage
+  unprotected one of them. A pulse arriving from a handler between the
+  read and the clear would have been dropped without anyone being told,
+  which is the whole thing the flag exists to prevent.
+
+  It is a take now: read and cleared while interrupts are still off,
+  and the bit it becomes applied to the caller's message after the
+  copy, because the copy overwrites the flags. The copy stays outside
+  the region and the shared word stays inside it.
+
+- *And the reason that was invisible.* The check for this flag asserted
+  that a loss is not reported twice and never that it is reported once.
+  Making the flag always read false passes that check perfectly: no
+  loss is reported, so none is reported twice. The comment above it
+  said "the receiver was told it missed something" and nothing tested
+  it. Counting the reports and requiring exactly one now fails with
+  `the loss was reported 0 times, expected once`, which is what the
+  first break test of this fix should have said and said nothing.
 
 **4. What is left, which should be the switch alone.** *Planned.*
 

@@ -766,13 +766,14 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
  * receiver could do nothing with, and leaving the flag set would make
  * every later receive claim a loss that had already been reported.
  */
-static void
-pulse_lost_flag(struct channel *ch, struct sys_msg *out)
+static bool
+pulse_take_lost(struct channel *ch)
 {
-    if (ch->c_pulse_lost) {
-        out->flags |= SYS_MSG_PULSE_LOST;
-        ch->c_pulse_lost = false;
-    }
+    bool lost = ch->c_pulse_lost;
+
+    ch->c_pulse_lost = false;
+
+    return lost;
 }
 
 /*
@@ -808,7 +809,9 @@ pulse_take(struct channel *ch, struct sys_msg *out)
      * would make every later receive claim a loss that had already been
      * reported.
      */
-    pulse_lost_flag(ch, out);
+    if (pulse_take_lost(ch)) {
+        out->flags |= SYS_MSG_PULSE_LOST;
+    }
 
     return true;
 }
@@ -820,6 +823,7 @@ channel_recv(struct channel *ch, struct sys_msg *out,
     struct thread *self = thread_current();
     struct thread *client;
     intr_state_t s;
+    bool lost;
 
     s = md_intr_disable();
 
@@ -899,7 +903,9 @@ channel_recv(struct channel *ch, struct sys_msg *out,
 
             self->t_wait = THREAD_WAIT_NONE;
 
-            pulse_lost_flag(ch, out);
+            if (pulse_take_lost(ch)) {
+                out->flags |= SYS_MSG_PULSE_LOST;
+            }
             *out_peer = self->t_client;
             *out_cookie = self->t_cookie;
             md_intr_restore(s);
@@ -935,6 +941,19 @@ channel_recv(struct channel *ch, struct sys_msg *out,
         ipc_donate_arrived(self);
 
         /*
+         * Whether pulses were dropped is read and cleared here, with
+         * interrupts still off, because it is the channel's and a
+         * pulse arriving from a handler sets it. Reading it after the
+         * restore would lose one that arrived in between: the send
+         * side sets the flag under the same exclusion, and taking it
+         * outside was a hole this stage opened and its review found.
+         *
+         * The bit it turns into is applied to the caller's message
+         * after the copy, because the copy overwrites the flags.
+         */
+        lost = self->t_client != 0 && pulse_take_lost(ch);
+
+        /*
          * The region this thread woke into ends here, and not after
          * the copy below.
          *
@@ -966,7 +985,9 @@ channel_recv(struct channel *ch, struct sys_msg *out,
          */
         if (self->t_client != 0) {
             msg_copy(out, &self->t_stage);
-            pulse_lost_flag(ch, out);
+            if (lost) {
+                out->flags |= SYS_MSG_PULSE_LOST;
+            }
             *out_peer = self->t_client;
             *out_cookie = self->t_cookie;
 

@@ -4073,7 +4073,7 @@ pulse_checks(void)
     sys_thread_id_t peer;
     sys_handle_t h;
     uint64_t cookie;
-    uint32_t i, users, systems;
+    uint32_t i, users, systems, told;
 
     cnputs("pulses: a notice that cannot be crowded out\n");
 
@@ -4097,11 +4097,15 @@ pulse_checks(void)
 
     users = 0;
     systems = 0;
+    told = 0;
     for (;;) {
         const sys_pulse_t *p;
 
         if (channel_recv(ch, &got, &peer, &cookie) != SYS_OK) {
             panic("pulse: receiving one failed");
+        }
+        if ((got.flags & SYS_MSG_PULSE_LOST) != 0) {
+            told++;
         }
         if ((got.flags & SYS_MSG_IS_PULSE) == 0) {
             panic("pulse: that was not a pulse");
@@ -4132,6 +4136,18 @@ pulse_checks(void)
     if (systems != 1) {
         panic("pulse: %u death notices, expected one",
           (unsigned int)systems);
+    }
+
+    /*
+     * And that the receiver was told, which the comment below has
+     * claimed since this check was written and nothing asserted. The
+     * negative half was here, that a loss is not reported twice, and
+     * it passes just as well when a loss is never reported at all:
+     * making the flag always read false broke nothing until this.
+     */
+    if (told != 1) {
+        panic("pulse: the loss was reported %u times, expected once",
+          (unsigned int)told);
     }
     if (users >= SYS_PULSE_SLOTS * 2) {
         panic("pulse: %u user pulses survived a queue of %u",
