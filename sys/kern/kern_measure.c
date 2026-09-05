@@ -462,7 +462,7 @@ intr_region_begin(uintptr_t site)
     c->cp_intr_site = site;
     c->cp_intr_open = true;
     c->cp_intr_console = false;
-    c->cp_intr_mark = 0;
+    c->cp_intr_thread = thread_current();
     c->cp_intr_start = md_time_now();
 }
 
@@ -482,33 +482,6 @@ intr_region_console(void)
     }
 }
 
-/*
- * A waypoint in the region that is open, for section 13.3's first term.
- *
- * The binding region runs from a server disabling interrupts to reply,
- * through the context switch, to the client re-enabling them on the
- * other side. M9 established both ends and measured neither middle.
- * Marking the instant the reply stops manipulating state and starts
- * dispatching divides it into the part that is work and the part that
- * is the switch and whatever the client does before it lets interrupts
- * back in.
- *
- * One mark per region and the last one wins, which is enough because
- * one path places one. A region with no mark reports none rather than
- * a zero that would read as "no time before the waypoint".
- */
-void
-intr_region_mark(void)
-{
-    struct cpu *c = cpu_self();
-
-    if (!intr_measuring || c == NULL || !c->cp_intr_open) {
-        return;
-    }
-
-    c->cp_intr_mark = md_time_now();
-    c->cp_mark_thread = thread_current();
-}
 
 void
 intr_region_end(uintptr_t site)
@@ -568,23 +541,19 @@ intr_region_end(uintptr_t site)
      * inside its window today, which is why this had not bitten.
      */
     /*
-     * And the longest region that carried a mark and ended in another
-     * thread, which is the one section 13.3's first term is about.
+     * And the longest region that ended in a thread other than the one
+     * it began in, which is section 13.3's first term: the region that
+     * spans a context switch and therefore contains no preemption
+     * point that could break it.
      *
-     * Both conditions are needed. The mark says the region is a
-     * reply's; the thread having changed says it spanned the context
-     * switch. A reply only switches when the client outranks the
-     * server, so without the second condition the figure on a core
-     * whose server never preempts is a short region that never
-     * switched, reported under a name describing one that did. That
-     * happened: 405 ticks on one core against 6658 on the other, and
-     * only the second was the region being looked for.
+     * Asked of every region rather than marked by the paths that
+     * expect to switch, because a path that switches without meaning
+     * to is exactly what this milestone would want to know about.
      */
-    if (c->cp_intr_mark >= c->cp_intr_start && c->cp_intr_mark != 0 &&
-      thread_current() != c->cp_mark_thread &&
-      took > c->cp_mark_worst) {
-        c->cp_mark_worst = took;
-        c->cp_mark_before = c->cp_intr_mark - c->cp_intr_start;
+    if (thread_current() != c->cp_intr_thread &&
+      took > c->cp_cross_worst) {
+        c->cp_cross_worst = took;
+        c->cp_cross_site = c->cp_intr_site;
     }
 
     if (!c->cp_intr_console) {
@@ -668,12 +637,12 @@ intr_region_report(void)
          * region: reporting only when the two coincide would say
          * nothing in a run where some other path was longer.
          */
-        if (c->cp_mark_worst != 0) {
-            cnprintf("        reply across a switch: %lu ticks, %lu of "
-              "them before the dispatch and %lu after\n",
-              (unsigned long)c->cp_mark_worst,
-              (unsigned long)c->cp_mark_before,
-              (unsigned long)(c->cp_mark_worst - c->cp_mark_before));
+        if (c->cp_cross_worst != 0) {
+            cnprintf("        across a switch: %lu ticks (about %lu us) "
+              "at 0x%lx\n", (unsigned long)c->cp_cross_worst,
+              (unsigned long)(hz != 0 ?
+                (c->cp_cross_worst * 1000000UL) / hz : 0),
+              (unsigned long)c->cp_cross_site);
         }
 
         /*
@@ -729,14 +698,14 @@ intr_region_report(void)
         bool marked = false;
 
         for (i = 0; i < cpu_count(); i++) {
-            if (cpu_at(i)->cp_mark_worst != 0) {
+            if (cpu_at(i)->cp_cross_worst != 0) {
                 marked = true;
             }
         }
 
         if (!marked) {
-            panic("interrupts off: no region carried a mark, so the "
-              "reply path was never measured");
+            panic("interrupts off: no region spanned a switch, so the "
+              "term section 13.3 is bounded by was never measured");
         }
     }
 }

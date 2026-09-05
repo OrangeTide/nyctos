@@ -7715,16 +7715,66 @@ aarch64 tier2   42926 ticks: 22855 before the dispatch, 20071 after
   describe the same thing.
 
 **2. The reply's own work stops sharing a region with the switch.**
-*Planned.*
+*Built.*
 
-- `channel_reply` disables interrupts, moves a handle, unwinds a
-  donation, releases the client and dispatches, all under one
-  disable. What needs them off is the state manipulation, and what
-  needs them off separately is the switch.
-- *Check.* The worst region's beginning site moves off `channel_reply`,
-  and the figure falls by about what stage one attributed to that work.
-  The count of regions rises by one per split, which is the countable
-  half and the one that is asserted.
+- `channel_reply` disabled interrupts once and did everything under it:
+  returning the buffer right, copying the reply, moving a handle,
+  unwinding a donation, releasing the client and dispatching to it. The
+  release and the dispatch are now two regions instead of one, using
+  the deferral the scheduler already has.
+- *Why the split is where it is, argued from the state and not from the
+  figure.* What the work above needs interrupts off for is that the
+  client is being taken apart and put back together: blocked on us, its
+  buffer right returning, a handle moving into its table, a donation
+  unwinding. A thread that saw any of that half done would see a client
+  that is neither blocked nor runnable. By the time the deferral is
+  lifted none of it is true any more: the client is released and
+  enqueued, this thread has given up what it held on the client's
+  behalf, and all that is left is which thread runs next. An interrupt
+  arriving in the gap finds a consistent pair and may dispatch to the
+  client itself, which is the same outcome by another route.
+- *The instrument changed with the stage.* Stage one's waypoint is
+  gone. A region now records which thread was running when it began, so
+  one that ends in another thread is recognised as having spanned a
+  switch without any site opting in. That covers every path, including
+  a path that switches without meaning to, which is a thing this
+  milestone would want to know about.
+- *What is solid.* The binding region no longer begins in
+  `channel_reply`. In all four configurations it now begins in
+  `channel_send`, which is a client blocking and switching away rather
+  than a server replying and switching to it. A site is deterministic
+  per build, so this is the host-independent half of the result.
+- *What is suggestive.* Five runs of each configuration, before and
+  after, sorted, in ticks:
+
+```
+riscv64 tier0  before 4784 5300 5316 5793  5910   after 4381 4413 4514 4774  6228
+riscv64 tier2  before 5679 7310 7413 7721 11377   after 4917 5515 5640 6831  7448
+aarch64 tier0  before 30593 32116 32727 34377 37597   after 28154 28507 28555 46767 47714
+aarch64 tier2  before 37257 37873 46693 51493 59898   after 38890 42149 43515 44619 52492
+```
+
+- The medians fall by seven to twenty-four per cent and the ranges
+  overlap, on aarch64 heavily. These are durations and a maximum of a
+  sample, so the arithmetic is worth exactly what M9 said it is.
+- *What did not happen, which is the finding.* Stage one predicted the
+  floor would fall by a quarter to a half, being what the reply's own
+  work was worth. It fell by much less, because the region behind it is
+  nearly as long: taking `channel_reply` off the top exposed
+  `channel_send`. **The binding region was not unique.** That is what
+  stage three is for, and it now has a reason rather than a
+  completeness argument.
+- *What is not available.* The plan proposed asserting that the region
+  count rises by one per split. It does not move measurably: about
+  22,400 regions either way with a hundred and forty of run-to-run
+  variation, which swamps the hundred and fifty replies that split.
+  The count is not the countable half here; the site is.
+- *What settles it.* Not lifting the deferral fails with `sched: server
+  blocked while preemption was deferred`, which an existing check
+  catches. Moving the restore before the release, which is the ordering
+  the safety argument rests on, changes nothing that any check notices:
+  the run completes. That ordering is argued and not checked, and
+  saying so is better than implying the break test covered it.
 
 **3. The same wherever else a long stretch shares a region with a
 switch.** *Planned.*

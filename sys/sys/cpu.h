@@ -165,36 +165,23 @@ struct cpu {
     uint64_t            cp_intr_lost_begin;
 
     /*
-     * A waypoint inside the region that is open, and where the
-     * waypoint fell in the worst one. Section 13.3's binding region
-     * runs from a server disabling interrupts to reply, through the
-     * switch, to the client re-enabling them on the other side, and
-     * which of those three is the length was never measured. A mark
-     * placed at the moment the reply stops working and starts
-     * dispatching splits it into the part that is work and the part
-     * that is the switch and what follows it.
+     * Which thread was running when this region began, so that a
+     * region ending in another one can be recognised as having
+     * spanned a context switch. Section 13.3's first term is about
+     * exactly those, and asking the question here rather than at each
+     * site means every path is covered without any of them opting in.
      */
-    uint64_t            cp_intr_mark;
+    struct thread      *cp_intr_thread;
 
     /*
-     * The longest region that carried a mark, and how much of it fell
-     * before the mark. Kept apart from the longest region overall
-     * because the two are not always the same one: a run where some
-     * other path is longer would otherwise report nothing at all about
-     * the region this milestone is about.
+     * The longest region that ended in a thread other than the one it
+     * began in, and where it began. Kept apart from the longest
+     * region overall because the two are not always the same one, and
+     * a run in which some other path was longer would otherwise say
+     * nothing about the one this milestone is about.
      */
-    uint64_t            cp_mark_worst;
-    uint64_t            cp_mark_before;
-
-    /*
-     * And which thread marked it, so that the region can be told to
-     * have ended in another one. That is what says it spanned a
-     * context switch. A reply only switches when the client outranks
-     * the server, so without it a core whose server never preempts
-     * reports a short region that never switched under a name
-     * describing one that did.
-     */
-    struct thread      *cp_mark_thread;
+    uint64_t            cp_cross_worst;
+    uintptr_t           cp_cross_site;
 
     /*
      * The same, over a window a check has cleared, so that asking what

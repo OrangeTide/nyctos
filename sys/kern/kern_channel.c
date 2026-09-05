@@ -1022,16 +1022,40 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
     self->t_client = 0;
 
     /*
-     * The waypoint of section 13.3's first term. Everything above is
-     * the reply's own work and everything below is the switch and the
-     * client on the other side of it, and this region covers both
-     * because the client is the one that restores interrupts.
+     * The client is made runnable here and dispatched to below, which
+     * used to be one step and is two so that they are two
+     * interrupts-off regions instead of one.
+     *
+     * Section 13.3's first term was measured as beginning here and
+     * ending in the client's own `channel_send`, which is to say it
+     * covered this reply's work, the context switch, and the client
+     * coming back. A quarter to a half of it was the work above.
+     *
+     * What that work needs interrupts off for is that the client's
+     * state is being taken apart and put back together: it is blocked
+     * on us, its buffer right is being returned, a handle may be
+     * moving into its table, and a donation may be being unwound. A
+     * thread that saw any of that half done would see a client that is
+     * neither blocked nor runnable. None of it is safe to interleave.
+     *
+     * By the time the deferral is lifted, none of that is true any
+     * more. The client is released and enqueued, this thread has given
+     * up what it was holding on the client's behalf, and the only
+     * thing left is the choice of which thread runs next. An interrupt
+     * arriving in the gap finds a consistent pair of threads and may
+     * dispatch to the client itself, which is the same outcome by
+     * another route.
      */
-    intr_region_mark();
-
+    sched_defer();
     sched_ready(client);
 
     md_intr_restore(s);
+
+    /*
+     * And the switch, in a region of its own that begins here rather
+     * than at the top of this function.
+     */
+    sched_undefer();
 
     return err;
 }

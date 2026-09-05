@@ -178,11 +178,6 @@ void intr_region_end(uintptr_t site);
  */
 void intr_region_console(void);
 
-/*
- * A waypoint inside the region that is open, so that the longest one
- * can be reported as two parts rather than one number.
- */
-void intr_region_mark(void);
 void intr_region_report(void);
 
 /*
