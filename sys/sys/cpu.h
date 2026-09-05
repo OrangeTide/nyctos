@@ -187,6 +187,16 @@ struct cpu {
     uint64_t            cp_mark_before;
 
     /*
+     * And which thread marked it, so that the region can be told to
+     * have ended in another one. That is what says it spanned a
+     * context switch. A reply only switches when the client outranks
+     * the server, so without it a core whose server never preempts
+     * reports a short region that never switched under a name
+     * describing one that did.
+     */
+    struct thread      *cp_mark_thread;
+
+    /*
      * The same, over a window a check has cleared, so that asking what
      * one batch cost does not throw away what the run cost. They were
      * one pair of fields, and the run-wide figure survived only

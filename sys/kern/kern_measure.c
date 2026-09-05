@@ -507,6 +507,7 @@ intr_region_mark(void)
     }
 
     c->cp_intr_mark = md_time_now();
+    c->cp_mark_thread = thread_current();
 }
 
 void
@@ -567,12 +568,20 @@ intr_region_end(uintptr_t site)
      * inside its window today, which is why this had not bitten.
      */
     /*
-     * And the longest of the regions that carried a mark, which is
-     * the one section 13.3's first term is about. Tracked separately
-     * from the longest overall because a run in which some other path
-     * is longer would otherwise say nothing about this one.
+     * And the longest region that carried a mark and ended in another
+     * thread, which is the one section 13.3's first term is about.
+     *
+     * Both conditions are needed. The mark says the region is a
+     * reply's; the thread having changed says it spanned the context
+     * switch. A reply only switches when the client outranks the
+     * server, so without the second condition the figure on a core
+     * whose server never preempts is a short region that never
+     * switched, reported under a name describing one that did. That
+     * happened: 405 ticks on one core against 6658 on the other, and
+     * only the second was the region being looked for.
      */
     if (c->cp_intr_mark >= c->cp_intr_start && c->cp_intr_mark != 0 &&
+      thread_current() != c->cp_mark_thread &&
       took > c->cp_mark_worst) {
         c->cp_mark_worst = took;
         c->cp_mark_before = c->cp_intr_mark - c->cp_intr_start;
@@ -660,8 +669,8 @@ intr_region_report(void)
          * nothing in a run where some other path was longer.
          */
         if (c->cp_mark_worst != 0) {
-            cnprintf("        reply to send: %lu ticks, %lu of them "
-              "before the dispatch and %lu after\n",
+            cnprintf("        reply across a switch: %lu ticks, %lu of "
+              "them before the dispatch and %lu after\n",
               (unsigned long)c->cp_mark_worst,
               (unsigned long)c->cp_mark_before,
               (unsigned long)(c->cp_mark_worst - c->cp_mark_before));

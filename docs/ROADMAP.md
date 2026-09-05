@@ -7681,28 +7681,38 @@ stretch of code.
   not always the same one, and reporting only when they coincide said
   nothing at all in one configuration out of four. Tracking the marked
   ones separately answers the question in every run.
-- *The answer.* Neither part dominates, and that is consistent across
-  all four configurations.
+- *The answer.* The reply's own work is between a quarter and a half of
+  the binding region, consistently across all four configurations.
 
 ```
-riscv64 tier0    7263 ticks: 2953 before the dispatch, 4310 after
-riscv64 tier2    8738 ticks: 4729 before the dispatch, 4009 after
-aarch64 tier0   42765 ticks: 20002 before the dispatch, 22763 after
-aarch64 tier2   90650 ticks: 49543 before the dispatch, 41107 after
+riscv64 tier0    5396 ticks: 2382 before the dispatch, 3014 after
+riscv64 tier2    6548 ticks: 3324 before the dispatch, 3224 after
+aarch64 tier0   35978 ticks: 9675 before the dispatch, 26303 after
+aarch64 tier2   42926 ticks: 22855 before the dispatch, 20071 after
 ```
 
-- Between forty-one and fifty-five per cent of the binding region is
-  work `channel_reply` does before it dispatches. So the switch is not
-  most of it, and separating the work should take about half the floor
-  away and leave the switch where it is. That is what stage two is for,
-  and stage one has told it what to expect rather than leaving it to be
-  discovered afterwards.
+- So the switch and what follows it is the larger half everywhere, and
+  the reply's own work is a quarter to a half. Separating that work
+  should take a quarter to a half of the floor away and leave the
+  switch. That is what stage two is for, and stage one has told it what
+  to expect rather than leaving it to be discovered afterwards.
 - *What is asserted and what is reported.* The durations are the host's
   and are reported. What is asserted is that the region was seen at
   all: the reply path is walked hundreds of times in every run, so a
   report with no marked region is an instrument that stopped measuring.
   Removing the mark fails with `no region carried a mark, so the reply
   path was never measured`.
+- *Reviewed, and the first figures were of the wrong region.* A reply
+  dispatches only when the client outranks the server, so a marked
+  region that did not switch is an ordinary short region and not the
+  one section 13.3 is about. The instrument counted both, and named
+  whichever was longest after the path that switches. On one core the
+  figure was a 405-tick region that never switched, sitting beside a
+  6658-tick one that did; on riscv64 at Tier 0 the published 7263 was
+  itself a region that never switched, against 5396 for the real one.
+  The mark now records which thread placed it and the figure takes
+  only regions that ended in another, so the name and the number
+  describe the same thing.
 
 **2. The reply's own work stops sharing a region with the switch.**
 *Planned.*
