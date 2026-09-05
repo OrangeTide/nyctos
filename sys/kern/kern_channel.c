@@ -1021,6 +1021,14 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
     serving_end(self);
     self->t_client = 0;
 
+    /*
+     * The waypoint of section 13.3's first term. Everything above is
+     * the reply's own work and everything below is the switch and the
+     * client on the other side of it, and this region covers both
+     * because the client is the one that restores interrupts.
+     */
+    intr_region_mark();
+
     sched_ready(client);
 
     md_intr_restore(s);

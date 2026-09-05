@@ -7638,6 +7638,140 @@ is what this milestone is for, is the whole difficulty.
 abort enumeration and the honest accounting in stage five are where the
 work is.
 
+---
+
+### M12. The Latency Floor
+
+**Section 13.3's first term: the region that spans a context switch.**
+
+M9 measured both terms of section 13.3 and found the section aimed at
+the wrong region. It says Tier 0 bounds latency by where preemption
+points are placed. The binding region contains no preemption point and
+cannot, because it is the switch itself: all four configurations agree
+that the longest interrupts-disabled region begins in `channel_reply`
+and ends in `channel_send`. A server replies, hands the reply over and
+dispatches to the client, and the region does not close until that
+client is back in the kernel sending again.
+
+M9 named what would lower it and did not attempt either: not disabling
+interrupts across a switch, or making the switch interruptible. This
+milestone attempts the first.
+
+**Why the first and not the second.** Making a switch interruptible
+means an interrupt arriving with half a thread's registers saved, which
+is a port question with a different answer on each architecture and no
+way to get it wrong quietly. Not disabling interrupts across a switch
+is a question about where this kernel chooses to put its
+interrupts-off regions, which is the same kind of question the rest of
+this plan has been answering, and it is answerable without touching
+either port's assembly.
+
+*Needs.* Nothing new. Every part of this exists: the regions are
+instrumented, the figure is reported per core with the console
+separated out, and the window figure can be cleared and read around any
+stretch of code.
+
+**1. Where the time in the binding region actually goes.** *Built.*
+
+- A waypoint inside a region, placed where `channel_reply` stops
+  manipulating state and starts dispatching. Everything before it is
+  the reply's own work; everything after is the context switch and
+  whatever the client does before it lets interrupts back in.
+- *The longest marked region and not the longest region.* The two are
+  not always the same one, and reporting only when they coincide said
+  nothing at all in one configuration out of four. Tracking the marked
+  ones separately answers the question in every run.
+- *The answer.* Neither part dominates, and that is consistent across
+  all four configurations.
+
+```
+riscv64 tier0    7263 ticks: 2953 before the dispatch, 4310 after
+riscv64 tier2    8738 ticks: 4729 before the dispatch, 4009 after
+aarch64 tier0   42765 ticks: 20002 before the dispatch, 22763 after
+aarch64 tier2   90650 ticks: 49543 before the dispatch, 41107 after
+```
+
+- Between forty-one and fifty-five per cent of the binding region is
+  work `channel_reply` does before it dispatches. So the switch is not
+  most of it, and separating the work should take about half the floor
+  away and leave the switch where it is. That is what stage two is for,
+  and stage one has told it what to expect rather than leaving it to be
+  discovered afterwards.
+- *What is asserted and what is reported.* The durations are the host's
+  and are reported. What is asserted is that the region was seen at
+  all: the reply path is walked hundreds of times in every run, so a
+  report with no marked region is an instrument that stopped measuring.
+  Removing the mark fails with `no region carried a mark, so the reply
+  path was never measured`.
+
+**2. The reply's own work stops sharing a region with the switch.**
+*Planned.*
+
+- `channel_reply` disables interrupts, moves a handle, unwinds a
+  donation, releases the client and dispatches, all under one
+  disable. What needs them off is the state manipulation, and what
+  needs them off separately is the switch.
+- *Check.* The worst region's beginning site moves off `channel_reply`,
+  and the figure falls by about what stage one attributed to that work.
+  The count of regions rises by one per split, which is the countable
+  half and the one that is asserted.
+
+**3. The same wherever else a long stretch shares a region with a
+switch.** *Planned.*
+
+- `channel_send` on the blocking side, and any other path that
+  disables once and dispatches at the end of it.
+- *Check.* Each split is visible as a region count that went up and a
+  worst case that went down, and the sites are named before and after
+  so that what moved is not in doubt.
+
+**4. What is left, which should be the switch alone.** *Planned.*
+
+- *Check.* The binding region's site is the switch, and its length is
+  the same whichever path reached it. That last part is what makes it a
+  floor rather than the length of one path: a floor does not depend on
+  who arrived at it.
+
+**5. Whether the kernel lock puts it back at Tier 2.** *Planned.*
+
+- M8 holds one lock at every kernel entry with interrupts off, and puts
+  it down at the switch. If that region spans what stages two and three
+  separated, then Tier 2's floor is unchanged and this milestone's
+  answer is per tier.
+- *Check.* The same measurement at both tiers. A difference is the
+  finding; so is its absence.
+
+**6. What the floor is now, and section 13.3 rewritten around it.**
+*Planned.*
+
+- *Check.* The figures, asserted as counts where they are counts and
+  reported where they are durations, and the section's claim matched to
+  them rather than the other way round. If the floor did not move, the
+  section says that and says why, which is a result and not a failure.
+
+*Done when* the longest interrupts-disabled region is the switch and
+nothing else, or the milestone can say what else is in it and why it
+cannot be taken out.
+
+*Would falsify.* Section 13.3's account of what bounds latency, for the
+second time. M9 corrected it from "preemption point placement" to "the
+switch"; if the switch turns out not to be the floor either, the
+section's per-tier argument needs a third account of what sets it.
+
+*Watch for.* Splitting a region and measuring the split rather than the
+kernel. Every one of these changes adds a region, so the count rises by
+construction and the mean falls by construction, and neither is
+evidence of anything. The worst case and its site are the figures that
+mean something, and M9 caught five measurements of the wrong thing in
+six stages.
+
+*And the other one.* Interrupts enabled where they were off is a
+correctness change wearing a measurement's clothes. Every split has to
+be argued from what the state being manipulated is, not from what the
+figure does afterwards.
+
+*Size.* Medium. The changes are small and the arguments for why each is
+safe are not.
 
 ---
 

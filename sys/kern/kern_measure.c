@@ -462,6 +462,7 @@ intr_region_begin(uintptr_t site)
     c->cp_intr_site = site;
     c->cp_intr_open = true;
     c->cp_intr_console = false;
+    c->cp_intr_mark = 0;
     c->cp_intr_start = md_time_now();
 }
 
@@ -479,6 +480,33 @@ intr_region_console(void)
     if (c != NULL) {
         c->cp_intr_console = true;
     }
+}
+
+/*
+ * A waypoint in the region that is open, for section 13.3's first term.
+ *
+ * The binding region runs from a server disabling interrupts to reply,
+ * through the context switch, to the client re-enabling them on the
+ * other side. M9 established both ends and measured neither middle.
+ * Marking the instant the reply stops manipulating state and starts
+ * dispatching divides it into the part that is work and the part that
+ * is the switch and whatever the client does before it lets interrupts
+ * back in.
+ *
+ * One mark per region and the last one wins, which is enough because
+ * one path places one. A region with no mark reports none rather than
+ * a zero that would read as "no time before the waypoint".
+ */
+void
+intr_region_mark(void)
+{
+    struct cpu *c = cpu_self();
+
+    if (!intr_measuring || c == NULL || !c->cp_intr_open) {
+        return;
+    }
+
+    c->cp_intr_mark = md_time_now();
 }
 
 void
@@ -524,6 +552,7 @@ intr_region_end(uintptr_t site)
         if (took > c->cp_intr_worst_kern) {
             c->cp_intr_worst_kern = took;
             c->cp_intr_worst_kern_site = c->cp_intr_site;
+
         }
     }
 
@@ -537,6 +566,18 @@ intr_region_end(uintptr_t site)
      * right or pass one that was wrong. Nothing measured prints
      * inside its window today, which is why this had not bitten.
      */
+    /*
+     * And the longest of the regions that carried a mark, which is
+     * the one section 13.3's first term is about. Tracked separately
+     * from the longest overall because a run in which some other path
+     * is longer would otherwise say nothing about this one.
+     */
+    if (c->cp_intr_mark >= c->cp_intr_start && c->cp_intr_mark != 0 &&
+      took > c->cp_mark_worst) {
+        c->cp_mark_worst = took;
+        c->cp_mark_before = c->cp_intr_mark - c->cp_intr_start;
+    }
+
     if (!c->cp_intr_console) {
         c->cp_win_regions++;
         if (took > c->cp_win_worst) {
@@ -608,6 +649,25 @@ intr_region_report(void)
           (unsigned long)c->cp_intr_worst_kern_site);
 
         /*
+         * The region section 13.3's first term is about, split at the
+         * moment the reply stops manipulating state and starts
+         * dispatching. Everything before the mark is the reply's own
+         * work; everything after is the context switch and whatever
+         * the client does before it lets interrupts back in.
+         *
+         * The longest such region, which is not always the longest
+         * region: reporting only when the two coincide would say
+         * nothing in a run where some other path was longer.
+         */
+        if (c->cp_mark_worst != 0) {
+            cnprintf("        reply to send: %lu ticks, %lu of them "
+              "before the dispatch and %lu after\n",
+              (unsigned long)c->cp_mark_worst,
+              (unsigned long)c->cp_mark_before,
+              (unsigned long)(c->cp_mark_worst - c->cp_mark_before));
+        }
+
+        /*
          * And what the instrument did not see, which is as much a part
          * of the figure as what it did.
          *
@@ -646,6 +706,28 @@ intr_region_report(void)
         if (c->cp_intr_regions_kern == 0) {
             panic("interrupts off: core %u measured nothing but the "
               "console", (unsigned int)i);
+        }
+    }
+
+    /*
+     * And that the region this milestone is about was seen at all. It
+     * is the reply path, which every run walks hundreds of times, so a
+     * report with no marked region is an instrument that stopped
+     * measuring rather than a run that did not reply. Across cores,
+     * because the core that replies is whichever one the server is on.
+     */
+    {
+        bool marked = false;
+
+        for (i = 0; i < cpu_count(); i++) {
+            if (cpu_at(i)->cp_mark_worst != 0) {
+                marked = true;
+            }
+        }
+
+        if (!marked) {
+            panic("interrupts off: no region carried a mark, so the "
+              "reply path was never measured");
         }
     }
 }

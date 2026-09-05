@@ -165,6 +165,28 @@ struct cpu {
     uint64_t            cp_intr_lost_begin;
 
     /*
+     * A waypoint inside the region that is open, and where the
+     * waypoint fell in the worst one. Section 13.3's binding region
+     * runs from a server disabling interrupts to reply, through the
+     * switch, to the client re-enabling them on the other side, and
+     * which of those three is the length was never measured. A mark
+     * placed at the moment the reply stops working and starts
+     * dispatching splits it into the part that is work and the part
+     * that is the switch and what follows it.
+     */
+    uint64_t            cp_intr_mark;
+
+    /*
+     * The longest region that carried a mark, and how much of it fell
+     * before the mark. Kept apart from the longest region overall
+     * because the two are not always the same one: a run where some
+     * other path is longer would otherwise report nothing at all about
+     * the region this milestone is about.
+     */
+    uint64_t            cp_mark_worst;
+    uint64_t            cp_mark_before;
+
+    /*
      * The same, over a window a check has cleared, so that asking what
      * one batch cost does not throw away what the run cost. They were
      * one pair of fields, and the run-wide figure survived only
