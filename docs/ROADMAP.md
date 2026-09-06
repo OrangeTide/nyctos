@@ -8266,17 +8266,19 @@ process is given back when the process is gone.
   member that lost its place are orphaned by the load that mapped over
   them, and stay lost: section 18.2 is where a place becomes something a
   reap gives back rather than something an exit does.
-- *Not tested: the pager boundary.* A process with a pager is given its
-  image pages from a grant on a fault, at an address the pager did not
-  choose, and those frames belong to the pager's grant rather than to
-  the process. `p_pager_bytes` records where `proc_load` stopped
-  allocating so the reap can start there. Removing it, and freeing the
-  pager's pages as if they were the loader's, breaks nothing that runs
-  today: the frames go back to the allocator while a live grant still
-  names them, and no check looks. `page_free` catches a double free but
-  a grant is never freed, so there is nothing to collide with. The
-  guard is argued from `pager_map_page` and not demonstrated, and
-  demonstrating it is stage four's, which is about exactly this.
+- *The pager boundary, which stage four is what tested.* A process with
+  a pager is given its image pages from a grant on a fault, at an
+  address the pager did not choose, and those frames belong to the
+  pager's grant rather than to the process. `p_pager_bytes` records
+  where `proc_load` stopped allocating so the reap can start there.
+  Removing it broke nothing any check could see when this stage was
+  written: the frames go back to the allocator while a live grant still
+  names them, and nothing looked. `page_free` catches a double free but
+  a grant is never freed, so there was nothing to collide with. The
+  guard was argued from `pager_map_page` and left standing on the
+  argument. Stage four is what demonstrates it: with the boundary
+  removed, the frames the pager supplied stop being held, and its table
+  says so.
 - *Not solved: no shootdown.* `md_tlb_flush_all` is local to the core
   that calls it. A cohort peer running on another core shares the space
   a member's slot was in and can hold a translation to a page just
@@ -8420,7 +8422,7 @@ process is given back when the process is gone.
   had reached the identity-mapped devices, which is exactly the memory
   it must never follow.
 
-**4. What holds a frame that no process holds.** *Planned.*
+**4. What holds a frame that no process holds.** *Built.*
 
 - Buffers lent across a rendezvous, grants mapped into another address
   space, and anything a pager supplied. Each has an owner that is not
@@ -8428,6 +8430,41 @@ process is given back when the process is gone.
 - *Check.* The count returns after a run that used each of them. A
   frame still held is a number that says so, and the stage names what
   holds it rather than freeing it and finding out.
+- *Settled.* Of the three the plan named, **one holds nothing and two
+  hold what they should**, and the boot now prints the table:
+
+  | what | riscv64 | aarch64 | held by |
+  | --- | --- | --- | --- |
+  | a page given away as a grant | 1 | 1 | the grant |
+  | pages a pager supplied | 5 | 6 | the pager's grants |
+  | a buffer lent across a rendezvous | 0 | 0 | nothing |
+  | a client that ran and was reaped | 0 | 0 | nothing |
+
+- *A grant holds the frame its creator allocated.* `grant_create` is
+  handed a physical address and does not own it: the caller found the
+  memory and the grant describes it, so a grant's teardown has nothing
+  to give back. A device grant is the case that makes that right, its
+  memory being a chip and not a frame at all. What would change it is an
+  owning grant, which section 6 does not have and this milestone does
+  not add.
+- *A buffer lent across a rendezvous holds nothing*, which the plan did
+  not expect. It is the client's own memory mapped into the server for
+  the length of the call, so there is no frame to hold, and the tables
+  that describe it where the server sees it were built by the first such
+  call and are reused by every one after.
+- *And the numbers are read from the run rather than written down.* What
+  the pager holds is asserted against the pages the pager supplied,
+  which is why 5 and 6 are both right: the `paged` image is a page
+  larger on one port. A literal there would have been a check on the
+  build rather than on the mechanism, and would have failed on the
+  architecture it was not written for.
+- *This is also where stage two's pager boundary stopped being an
+  argument.* That stage kept the reap off pages a pager supplied and
+  recorded that removing the guard broke nothing any check could see.
+  It breaks this one: freeing them panics with "pages a pager supplied
+  left 0 held, not 5". Giving a second page away panics with "a page
+  given away as a grant left 2 held, not 1", which is what says the
+  grant figure is measured and not a constant that happens to be one.
 
 **5. Whether the system can now run indefinitely.** *Planned.*
 

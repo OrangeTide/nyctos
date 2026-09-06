@@ -2915,6 +2915,42 @@ device_checks(void)
 #endif
 }
 
+
+/*
+ * What holds a frame that no process holds, per M13 stage 4.
+ *
+ * Stages two and three made a process give back everything it cost, and
+ * the count after a spawn and a reap returns to where it started. That
+ * is not the same as the machine giving everything back, because not
+ * every frame belongs to a process. Some belong to an object that
+ * outlives the process it was lent to, and the reap that returns a
+ * process's own memory must not touch those: a grant's memory is the
+ * grant's, wherever it happens to be mapped.
+ *
+ * So this measures rather than frees. Each mechanism is run with the
+ * count read either side, and what stays is reported beside the name of
+ * what is holding it. Freeing them and finding out is the other way to
+ * learn this, and it is the way that hands a live frame to somebody
+ * else.
+ *
+ * The numbers are asserted because they are counts. Two of them are not
+ * written down here but read from the run that produced them, which is
+ * the difference between checking a mechanism and checking a constant:
+ * what the pager holds is the pages the pager supplied, whatever the
+ * image's size turns out to be.
+ */
+static void
+frame_holder(const char *what, uint32_t held, uint32_t expect,
+  const char *who)
+{
+    cnprintf("    %-38s %u, held by %s\n", what, (unsigned int)held, who);
+
+    if (held != expect) {
+        panic("frames: %s left %u held, not %u", what,
+          (unsigned int)held, (unsigned int)expect);
+    }
+}
+
 /*
  * A grant over ordinary memory, given and then taken away.
  *
@@ -7934,7 +7970,22 @@ user_slice(void)
      * cost a third of the round trips and none of the connection pool; if
      * it does not, the section is deleted and section 12.7 with it.
      */
-    kernel_buffer_checks(h_fs_root);
+    {
+        uint32_t a = page_used();
+
+        kernel_buffer_checks(h_fs_root);
+
+        /*
+         * Nothing, which the plan for this stage did not expect. A
+         * buffer lent across a rendezvous is the client's own memory
+         * mapped into the server for the length of the call, so there
+         * is no frame to hold. The tables that describe it where the
+         * server sees it were built by the first such call and are
+         * reused by every one after.
+         */
+        frame_holder("a buffer lent across a rendezvous",
+          page_used() - a, 0, "nothing");
+    }
 
 #if SYS_TIER == 2
     {
@@ -7985,7 +8036,19 @@ user_slice(void)
      */
     frame_cost_checks();
     frame_return_checks();
-    run_client("fs_client", root6, BLK_MOTD_BYTES, SEND_BLOCK_YES);
+    {
+        uint32_t a = page_used();
+
+        run_client("fs_client", root6, BLK_MOTD_BYTES, SEND_BLOCK_YES);
+
+        /*
+         * And the whole of it in one number: a process spawned into the
+         * frames the reclamation has just returned, reading a file
+         * through a server in another address space, and then reaped.
+         */
+        frame_holder("a client that ran and was reaped",
+          page_used() - a, 0, "nothing");
+    }
 }
 
 void
@@ -8169,8 +8232,42 @@ kernel_main(void)
     cnputs("the console: a driver process, and a line typed at it\n");
     console_service();
     device_checks();
-    grant_checks();
-    paging_checks();
+    cnputs("frames: what holds one that no process holds\n");
+
+    {
+        uint32_t a = page_used();
+
+        grant_checks();
+
+        /*
+         * One frame, and it is the one grant_checks allocated before it
+         * made the grant. grant_create is handed a physical address and
+         * does not own it: the caller found the memory and the grant
+         * describes it, so a grant's teardown has nothing to give back.
+         * A device grant is the case that makes that right, its memory
+         * being a chip and not a frame at all.
+         */
+        frame_holder("a page given away as a grant", page_used() - a, 1,
+          "the grant");
+    }
+
+    {
+        uint32_t a = page_used();
+
+        paging_checks();
+
+        /*
+         * The pages the pager answered faults with, still held after the
+         * program that faulted has been reaped. They are its grants'
+         * frames, mapped into the program at an address the pager did
+         * not choose, and p_pager_bytes is what keeps stage two's reap
+         * off them. This is that boundary measured: what is held is what
+         * was supplied, and it is nothing at Tier 0, where a flat
+         * address space never faults.
+         */
+        frame_holder("pages a pager supplied", page_used() - a,
+          pager_pages, "the pager's grants");
+    }
 
     cnputs("the slice again, with both halves in user mode\n");
     user_slice();
