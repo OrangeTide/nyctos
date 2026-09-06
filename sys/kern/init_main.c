@@ -5926,6 +5926,87 @@ substitution_checks(void)
 }
 
 /*
+ * What a process costs in frames, and how many of them come back.
+ *
+ * Section 1 has said since M9 that memory is never reclaimed, and no
+ * milestone has said how much. The frame allocator reports how many are
+ * in use and attributes none of them, so "a process holds frames" has
+ * been a sentence rather than a number.
+ *
+ * Read either side of a spawn and either side of the reap, which are
+ * different moments: a process that has exited still exists while
+ * anything can ask about it, and M11 made the reference count what
+ * decides. What this stage establishes is the first number, and that
+ * the second is zero.
+ *
+ * The two tiers give different first numbers, and the difference is the
+ * milestone's shape. At Tier 0 an image is copied to the address it was
+ * linked for and runs there, in memory the archive already occupies, so
+ * a process costs no frames and there is nothing about it to reclaim. At
+ * Tier 2 the loader allocates and maps the whole slot, which is a
+ * megabyte whatever the program's size, and the tables to reach it. Every
+ * frame this milestone can give back is a Tier 2 frame.
+ *
+ * The program is spin because it needs no namespace: what is being
+ * measured is what a process costs, and a process that had to be handed
+ * connections first would be measuring the handing as well.
+ */
+static void
+frame_cost_checks(void)
+{
+    struct child c;
+    uint32_t before, spawned, reaped;
+    int32_t code;
+
+    cnputs("frames: what a process costs and what comes back\n");
+
+    before = page_used();
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("spin", 20, NULL, 0, NULL, 0));
+    sched_undefer();
+
+    spawned = page_used();
+
+    code = child_join(&c, JOIN_MS);
+    if (code != 0) {
+        panic("frames: the program exited %d", code);
+    }
+
+    /*
+     * The join is the reap: it closes the completion timeline and the
+     * process handle, which are what kept the process alive after it had
+     * finished, and M11 made the last of those the moment the object
+     * goes back. Until this milestone that returns a pool slot and no
+     * frames, which is what the second number reports.
+     */
+    reaped = page_used();
+
+    cnprintf("    a process costs %u frames, %u came back\n",
+      (unsigned int)(spawned - before),
+      (unsigned int)(spawned - reaped));
+
+    /*
+     * The cost is a count. It is the slot rounded to pages plus whatever
+     * the tier's tables need, and neither depends on the host, so it is
+     * the same in every run and may be asserted. The exact figure differs
+     * by architecture because the table shapes do, which is why the floor
+     * is the slot and not a number written down here.
+     */
+#if SYS_TIER == 0
+    if (spawned != before) {
+        panic("frames: a flat-memory process cost %u frames",
+          (unsigned int)(spawned - before));
+    }
+#else
+    if (spawned - before < SYS_USER_SLOT_BYTES / PAGE_SIZE) {
+        panic("frames: a process cost %u frames, fewer than its slot",
+          (unsigned int)(spawned - before));
+    }
+#endif
+}
+
+/*
  * Section 17.4: the registers one execution has, and what they refuse.
  *
  * Checked directly rather than through a submission, because at this
@@ -7885,6 +7966,7 @@ kernel_main(void)
     cnputs("the slice: a file read from another process\n");
     slice_checks();
 
+    frame_cost_checks();
     substitution_checks();
     abort_checks();
     inflight_checks();

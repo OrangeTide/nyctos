@@ -8135,6 +8135,134 @@ safe are not.
 
 ---
 
+### M13. Giving Memory Back
+
+**A process that exits returns what it was given.**
+
+Section 1 has said since M9 that memory is never reclaimed, and every
+retrospective since has repeated it without anyone acting on it. What
+that means precisely: the frame allocator has a working `page_free`
+that nothing calls except a boot check, so a loaded program's image
+pages and, at Tier 2, its page tables are taken at spawn and held for
+ever. There is an `md_as_create` and no `md_as_destroy`.
+
+**So how long this system can run is bounded by how many processes it
+has ever started**, which is a limit the shell reaches by being used.
+Everything else with a lifetime already returns: pool slots go back on
+reap, handles close, connections are released, and the reference counts
+M11 fixed are what decides when. Frames are the exception.
+
+*Needs.* Nothing new. The bitmap allocator frees, the pools free, the
+reference counting that says when an object is finished exists, and the
+report already prints how many frames are in use.
+
+**What this is not.** Not swap, not eviction, not a page cache. Section
+15 rules those out for reasons that have not changed: without dirty
+tracking the kernel cannot know whether a writable page needs writing
+back. This is the narrow thing, which is that what was taken for a
+process is given back when the process is gone.
+
+**1. What a process holds, counted before anything is freed.** *Built.*
+
+- Frames in use were reported and never attributed. Which of them
+  belonged to a process, which to its page tables, and which to the
+  kernel was not recorded anywhere.
+- *Check.* Spawning a process and reaping it, with the frame count read
+  either side, says how many frames a process costs and how many come
+  back. The second number is zero today, and the check asserts the
+  first: a count of frames is a property of the image and the tier, not
+  of the host, so it is the same in every run.
+- *Settled.* **A process costs 264 frames on riscv64 and 262 on
+  aarch64, at Tier 2, and none of them come back.** That is about a
+  megabyte for a program whose image is four kilobytes, and the reason
+  is in `proc_load`: the loader allocates and maps the whole slot,
+  because the archive carries the size of the image and not the size of
+  the memory the program needs. The count is the slot's 256 pages plus
+  the tables to reach it, which is where the two architectures differ.
+- *And at Tier 0 a process costs nothing at all.* A flat-memory image
+  is copied to the address it was linked for and runs in memory the
+  archive already occupies, so there is no per-process allocation and
+  nothing about a process to reclaim. **Every frame this milestone can
+  give back is a Tier 2 frame**, which stages two and three now say
+  rather than assume. The check asserts the two answers separately: at
+  Tier 0 that the cost is exactly zero, at Tier 2 that it is at least
+  the slot. A floor rather than a figure, because the figure is
+  per-architecture and the floor is the claim being made.
+- *Broken to check it.* Raising the floor above what the loader spends
+  panicked with the real count. Reading the count before the spawn
+  instead of after panicked at zero, which is the failure the check
+  exists to catch, since a measurement taken at the wrong moment reads
+  like a system that costs nothing. Making a flat spawn allocate one
+  frame panicked on the Tier 0 arm.
+
+**2. A reaped process gives its image pages back.** *Planned.*
+
+- The pages `proc_spawn_image` took, freed when the last thing that
+  could ask about the process lets go, which is where M11 put the
+  decision.
+- *Check.* The count after a reap returns to the count before the
+  spawn. Spawning and reaping the same program many times leaves the
+  count where it started rather than climbing, which is the difference
+  between reclaiming and merely freeing once.
+  Stage one made this a Tier 2 check: at Tier 0 the count never moved
+  in the first place, and the arm to assert there is that it still does
+  not.
+
+**3. And its page tables, at Tier 2.** *Planned.*
+
+- An `md_as_destroy` on each port, walking what `md_as_create` and the
+  mapping calls built.
+- *Check.* The same as stage two with the tier that has tables, and a
+  count that returns rather than climbs. A table freed while still
+  reachable is the failure this must not have, so the check spawns
+  again afterwards and reads the same file, which would fault on a
+  table that had been handed back and reused.
+
+**4. What holds a frame that no process holds.** *Planned.*
+
+- Buffers lent across a rendezvous, grants mapped into another address
+  space, and anything a pager supplied. Each has an owner that is not
+  the process whose frame it is.
+- *Check.* The count returns after a run that used each of them. A
+  frame still held is a number that says so, and the stage names what
+  holds it rather than freeing it and finding out.
+
+**5. Whether the system can now run indefinitely.** *Planned.*
+
+- *Check.* A loop that spawns, runs and reaps a program many more times
+  than there are frames, with the count read at the start and the end.
+  Before this milestone that loop cannot run at all; the number of
+  iterations it survives is the milestone's headline figure, and it is
+  a count.
+
+**6. What is still held, and section 15 written around it.** *Planned.*
+
+- *Check.* The figures, asserted as counts, and the sections that
+  describe reclamation matched to what was built. What is deliberately
+  not reclaimed is named with the reason, so that the next reader does
+  not have to rediscover which absences are decisions.
+
+*Done when* a program can be run more times than the machine has
+frames, and the count comes back to where it started.
+
+*Would falsify.* Nothing in the design, which is the unusual thing
+about this milestone: section 15 already says memory is reclaimed when
+its owner is gone, and the kernel has simply never done it. What could
+falsify is the assumption that ownership is already known well enough
+to free on: if the reference counting cannot say when a frame is
+finished with, then something about how frames are owned has to change
+rather than something about when they are freed.
+
+*Watch for.* Freeing a frame that something still reaches. Every other
+milestone's mistakes have been visible in a figure; this one's would be
+a program reading another program's memory, which no figure shows and
+which the checks have to be built to catch on purpose.
+
+*Size.* Medium. The freeing is small and knowing what may be freed is
+not.
+
+---
+
 ---
 
 ## 4. Milestone 1, in Retrospect
