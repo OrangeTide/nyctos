@@ -29,6 +29,31 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 12 is done: the latency floor is the rendezvous, not the
+switch.** It attempted the first remedy milestone 9 named, not
+disabling interrupts across a context switch, and made three splits
+that each lowered the region a little and none by more than the spread
+between runs.
+
+```
+                              t0 riscv  t0 aarch  t2 riscv  t2 aarch
+longest across a switch,
+  a kernel thread                  449       559       465       530
+longest with a program current      83       115        60        70
+```
+
+Microseconds, medians of five runs. **The second row is the one that
+matters and this project had never measured it.** The longest region
+that spans a switch is opened by one of the kernel's own threads in
+every run, doing message-passing work in the checks; what a program is
+delayed by is four to eight times less. Every latency figure published
+here since milestone 9 was the first row.
+
+Inside that region the switch itself is nought to three per cent. The
+rest is the work that has to be atomic with it, so lowering the floor
+further means making a rendezvous shorter or making less of it atomic,
+and making the switch interruptible would buy the three per cent.
+
 **Milestone 11 is done: an operation can take its target from a
 register an earlier operation wrote.** The dependency that used to live
 in a local variable between two calls lives in the batch instead, so a
@@ -708,30 +733,24 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). Eleven milestones are finished.
-The eleventh was not in the plan: it came out of the tenth's
-retrospective, which named the experiment that would settle the
-question it could only half answer. What the plan does not schedule,
-and what the last milestones each said would be worth doing next, is
-written down there rather than guessed at here.
-
-The eleventh's answer is worth repeating because it is not the one the
-mechanism was hoping for. Carrying a dependency in a register lets a
-batch express what used to need separate calls, and the saving that
-comes with it is the ordinary saving of making one call instead of
-four: the fixed cost of a call multiplied by one fewer than the number
-of entries, and nothing per entry. Set beside a compound protocol
-request, which saves two round trips and a server-side allocation, the
-kernel mechanism is the smaller of the two answers for the workload
-measured.
+See [docs/ROADMAP.md](docs/ROADMAP.md). Twelve milestones are finished.
+The last two were not in the plan: each came out of the previous one's
+retrospective, which named the experiment that would settle a question
+it could only half answer. What the plan does not schedule, and what
+the last milestones each said would be worth doing next, is written
+down there rather than guessed at here.
 
 Two things are named in more than one retrospective, which is what this
-project treats as a signal. The longest
-interrupts-disabled region spans a context switch and no preemption
-point can shorten it, so lowering the latency floor means not
-disabling interrupts across a switch or making the switch
-interruptible. And nothing has ever run on hardware, so every duration
-published here is the right shape and the wrong magnitude.
+project treats as a signal. Nothing has ever run on hardware, so every
+duration published here is the right shape and the wrong magnitude. And
+memory is never reclaimed: a process that exits gives nothing back, so
+how long the system can run is bounded by how many processes it has
+started.
+
+The latency floor was the second of those signals until milestone 12
+took it. What that milestone left is narrower and harder: the floor is
+the work a rendezvous has to do atomically, and lowering it means
+making that work shorter or making less of it atomic.
 
 The ordering that got here is in the same file, along with what each
 milestone answered and what it left untested. The one choice most likely

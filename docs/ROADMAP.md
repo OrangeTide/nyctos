@@ -4,6 +4,14 @@ subtitle: Roadmap
 revision: "2"
 ---
 
+**The floor is the switch (M12).** *Answered: it is not.* The region
+that spans a switch is nought to three per cent switch; the rest is the
+rendezvous work that has to be atomic with it. Section 13.3's account
+of what bounds latency is corrected for the second time, having been
+"preemption point placement" until M9 and "the switch" until now. What
+would change the plan further is finding that the rendezvous itself can
+be made shorter or less of it atomic, which nothing here attempted.
+
 # Roadmap
 
 This document says what exists, what is being built, and in what order.
@@ -417,6 +425,25 @@ A reply now carries a status the kernel can read, so a request a server
 refused is no longer a successful send and a linked chain aborts on it.
 A batch that aborts force-signals the timelines it was going to signal,
 so a waiter is told rather than left to a timeout.
+
+**Milestone 12 is done, and it changed what section 13.3 claims rather
+than what the kernel does.** It attempted the first of the two remedies
+M9 named for the interrupts-off term: not disabling interrupts across a
+context switch. Three splits were made and none of them moved the
+figure by more than the spread between runs.
+
+What it established instead is what the region is made of. The switch
+is nought to three per cent of it. The rest is the rendezvous work that
+has to be atomic with the switch, and lowering the floor now means
+making that work shorter or making less of it atomic.
+
+And the figure this project has published since M9 is the wrong one.
+The longest region that spans a switch is opened by a kernel thread in
+every run, doing rendezvous work in the checks. What a program is
+delayed by is four to eight times shorter: sixty to a hundred and
+fifteen microseconds against four hundred and fifty to five hundred and
+sixty. Section 13.3 carries both now and says which is which.
+
 
 What does not exist: a device that does direct memory access, and with
 it the half of section 17 about transfers in flight. M11 gave that
@@ -7644,6 +7671,10 @@ work is.
 
 **Section 13.3's first term: the region that spans a context switch.**
 
+**Done.** All six stages are built. Section 15 says what it answered,
+what it could not, what the building kept finding, and what it left
+untested.
+
 M9 measured both terms of section 13.3 and found the section aimed at
 the wrong region. It says Tier 0 bounds latency by where preemption
 points are placed. The binding region contains no preemption point and
@@ -9579,7 +9610,139 @@ has never had to refuse a handle that came from anywhere else.
 
 ---
 
-## 15. Bring-Up Order Within M1
+## 15. Milestone 12, in Retrospect
+
+M12 attempted the first of the two remedies M9 named for section 13.3's
+first term: not disabling interrupts across a switch. It lowered the
+figure a little, established that the figure is mostly not the switch,
+and then found that the figure it had been lowering was not the one the
+section is about.
+
+### 15.1 The Questions
+
+**Can the floor be lowered by not disabling interrupts across a
+switch?**
+
+A little, and less than it looks. Three splits were made, each argued
+from what the state is rather than from what the figure does: a reply's
+own work no longer shares a region with the dispatch that follows it,
+and a thread waking from a rendezvous copies its message out after
+restoring interrupts rather than before. None of the three moved the
+figure by more than the run-to-run spread. The sites moved, which is
+deterministic and therefore the solid half of the result; the durations
+did not, because what remains is the rendezvous itself.
+
+**What is the region made of, if not the switch?**
+
+The switch is between nought and three per cent of it, measured inside
+the region rather than beside it, over twenty runs. The rest is the
+rendezvous work that has to be atomic with the switch: popping the
+channel's receiver list, handing a buffer between address spaces,
+walking a donation chain, queueing a thread. M9's account, that the
+floor is the switch, was half right. The region spans a switch, which
+is why no preemption point can break it. Its length is the work.
+
+**Does M8's kernel lock put it back at Tier 2?**
+
+No, and the mechanism settles it before the measurement does.
+`klock_drop` and `klock_regain` touch the spinlock and not interrupts,
+so the lock is put down across the switch and the interrupts-off region
+is not. The medians agree to within nine per cent between tiers, in
+both directions.
+
+**And the question this milestone did not set out to ask.**
+
+Whose latency is this? The longest region that spans a switch is opened
+by a kernel thread in every run of every configuration, doing
+rendezvous work in the checks. The longest region that begins while a
+program is the current thread is four to eight times shorter. Every
+figure section 13.3 has carried since M9 was the first of those, which
+is the latency of a test harness.
+
+### 15.2 The Figures
+
+| | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
+|---|---|---|---|---|
+| longest across a switch, kernel thread | 449 us | 559 us | 465 us | 530 us |
+| longest with a program current | 83 us | 115 us | 60 us | 70 us |
+| the switch inside that region | 0 to 3 per cent |
+| the switch on its own, mean | 4 to 7 us on either port |
+| switches in a run | 469 at Tier 0, about 4,480 at Tier 2 |
+
+Medians of five runs each for the first two rows. Both ports and both
+tiers agree on the shape of every row, which is what says these
+describe the kernel rather than either machine, and every one of them
+is a duration and so is reported and not asserted.
+
+### 15.3 What the Building Kept Finding
+
+**Measuring the wrong thing, four times, each time differently.** This
+milestone is about a measurement, so the mistakes were all in the
+measuring, and no two were the same mistake.
+
+Stage one's figures were for regions that never switched. A reply
+dispatches only when the client outranks the server, and the instrument
+counted the regions that did not, naming the longest of them after the
+path that does. On one port the published figure, 7263 ticks, was a
+region with no switch in it at all against 5396 for the real one.
+
+Stage four set the mean switch against the worst region and called the
+ratio one per cent. The mean switch is larger than the mean region; the
+ratio looked small only because the numerator was a mean and the
+denominator a maximum. Measured inside the same instance it is one per
+cent after all, so the conclusion survived and the arithmetic did not.
+
+Stage five's review found that the whole milestone had been lowering a
+figure that belongs to the kernel's own threads. Nothing in twelve
+stages of measurement had asked which thread was current.
+
+Stage six published four single runs as though they were the
+measurement, one stage after stage four's review had caught the same
+family of error.
+
+**Splits that took shared state out of its exclusion.** Moving a
+restore before a copy also moved a read-modify-write on the channel's
+dropped-pulse flag, whose other side is set under the same exclusion. A
+pulse arriving in the window would have been lost with nobody told.
+
+**A check that asserts the negative and never the positive.** That
+defect was invisible because the check for the flag required that a
+loss is not reported twice and never that it is reported once. Making
+the flag always read false passed it perfectly.
+
+**And entries describing code that does not do what they say.** A
+comment claimed an interrupt in the gap might dispatch to the client
+itself, which the deferral is there to prevent. A stage claimed three
+assertions where the report makes two.
+
+### 15.4 What Is Still Untested
+
+**The other remedy.** Making the switch interruptible was declined at
+planning time as a port question, and is now known to be worth nought
+to three per cent of the region. That is a better reason to decline it
+than the one the plan gave.
+
+**Whether the rendezvous can be made shorter or less of it atomic**,
+which is what lowering the floor now means. Nothing here attempted it.
+
+**The ordering the splits rest on.** Moving a restore before the state
+it protects changes nothing any check notices; the run completes. Three
+splits are argued from what the state is, and a race no check here can
+construct is what would catch them being wrong.
+
+**Whether the second row is the right bound.** It is the longest region
+that began while a program was the current thread, which includes
+regions a handler opened while that program ran. That is the right
+question for how long the program was delayed and the wrong one for
+what the program's own path costs, and only the first is measured.
+
+**Hardware, still.** Every duration in this section describes an
+emulator, and the two ports agreeing tells us about the kernel's shape
+rather than about either machine's speed.
+
+---
+
+## 16. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -9623,7 +9786,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 16. Ordering: What Is Forced and What Is Chosen
+## 17. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -9654,7 +9817,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 17. What Would Change This Plan
+## 18. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -9701,7 +9864,7 @@ else.
 
 ---
 
-## 18. Deliberately Not Scheduled
+## 19. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 
