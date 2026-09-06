@@ -8177,8 +8177,17 @@ process is given back when the process is gone.
   megabyte for a program whose image is four kilobytes, and the reason
   is in `proc_load`: the loader allocates and maps the whole slot,
   because the archive carries the size of the image and not the size of
-  the memory the program needs. The count is the slot's 256 pages plus
-  the tables to reach it, which is where the two architectures differ.
+  the memory the program needs.
+- *Where they go*, measured by probing the spawn rather than inferred
+  from the total, which is how the first version of this entry got it
+  slightly wrong. **The load costs 257 on both architectures**, being
+  the slot's 256 pages and one leaf table built on the way. **The
+  address space costs the rest**, 7 on riscv64 and 5 on aarch64, which
+  is `md_as_create`'s root table plus what `map_kernel_into` builds.
+  Nothing else in a spawn costs a frame: `proc_create`, the command
+  line and `thread_create` are all pools and all free. So stage two can
+  recover 257 of the 264 and stage three the remaining 7, and neither
+  can recover anything the other does.
 - *And at Tier 0 a process costs nothing at all.* A flat-memory image
   is copied to the address it was linked for and runs in memory the
   archive already occupies, so there is no per-process allocation and
@@ -8188,18 +8197,34 @@ process is given back when the process is gone.
   Tier 0 that the cost is exactly zero, at Tier 2 that it is at least
   the slot. A floor rather than a figure, because the figure is
   per-architecture and the floor is the claim being made.
+- *Measured twice.* `page_used()` counts the whole system, so anything
+  that allocated inside the window would be attributed to the spawn,
+  and at Tier 2 the other core is running while this measures. The
+  check spawns and reaps twice and asserts the two costs agree. That is
+  not proof of no interference, but it is the difference between a
+  number that was measured and a number that was read once, and it puts
+  M9's rule to the test inside a single boot: a count is asserted
+  because it is the same in every run.
 - *Broken to check it.* Raising the floor above what the loader spends
   panicked with the real count. Reading the count before the spawn
   instead of after panicked at zero, which is the failure the check
   exists to catch, since a measurement taken at the wrong moment reads
   like a system that costs nothing. Making a flat spawn allocate one
-  frame panicked on the Tier 0 arm.
+  frame panicked on the Tier 0 arm. Making the second spawn of the same
+  program cost one frame more panicked with "cost 264 then 265".
+  Allocating a frame between the exit and the reap panicked rather than
+  reporting that four billion frames came back, which is what
+  subtracting unsigned counts the other way round would have printed.
+  Reading the before-count after the spawn panicked on the count
+  falling.
 
 **2. A reaped process gives its image pages back.** *Planned.*
 
 - The pages `proc_spawn_image` took, freed when the last thing that
   could ask about the process lets go, which is where M11 put the
   decision.
+  Stage one counted them: 257 of the 264 a process costs, being the
+  slot and one leaf table.
 - *Check.* The count after a reap returns to the count before the
   spawn. Spawning and reaping the same program many times leaves the
   count where it started rather than climbing, which is the difference
@@ -8212,6 +8237,9 @@ process is given back when the process is gone.
 
 - An `md_as_destroy` on each port, walking what `md_as_create` and the
   mapping calls built.
+  Stage one counted these too: the 7 frames on riscv64 and 5 on
+  aarch64 that a process costs beyond its load, which is the root
+  table and what `map_kernel_into` builds on top of it.
 - *Check.* The same as stage two with the tier that has tables, and a
   count that returns rather than climbs. A table freed while still
   reachable is the failure this must not have, so the check spawns

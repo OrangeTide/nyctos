@@ -5944,21 +5944,19 @@ substitution_checks(void)
  * linked for and runs there, in memory the archive already occupies, so
  * a process costs no frames and there is nothing about it to reclaim. At
  * Tier 2 the loader allocates and maps the whole slot, which is a
- * megabyte whatever the program's size, and the tables to reach it. Every
- * frame this milestone can give back is a Tier 2 frame.
+ * megabyte whatever the program's size, and the tables to reach it.
+ * Every frame this milestone can give back is a Tier 2 frame.
  *
  * The program is spin because it needs no namespace: what is being
  * measured is what a process costs, and a process that had to be handed
  * connections first would be measuring the handing as well.
  */
-static void
-frame_cost_checks(void)
+static uint32_t
+frame_cost_once(uint32_t *returned)
 {
     struct child c;
     uint32_t before, spawned, reaped;
     int32_t code;
-
-    cnputs("frames: what a process costs and what comes back\n");
 
     before = page_used();
 
@@ -5982,9 +5980,62 @@ frame_cost_checks(void)
      */
     reaped = page_used();
 
+    /*
+     * Frames coming back is the count falling. A count that rose across
+     * the reap is not a negative number of frames returned, which is
+     * what subtracting the other way round would print: it is something
+     * having allocated while this was watching, and the measurement
+     * saying so is better than it wrapping to four billion.
+     */
+    if (reaped > spawned) {
+        panic("frames: %u more in use after the reap than before it",
+          (unsigned int)(reaped - spawned));
+    }
+
+    *returned = spawned - reaped;
+
+    if (spawned < before) {
+        panic("frames: the count fell across a spawn");
+    }
+
+    return spawned - before;
+}
+
+static void
+frame_cost_checks(void)
+{
+    uint32_t first, second, back, back2;
+
+    cnputs("frames: what a process costs and what comes back\n");
+
+    /*
+     * Twice, because page_used() is the whole system's count and not
+     * this process's: anything else that allocated inside the window
+     * would be attributed to the spawn, and on a Tier 2 machine the
+     * other core is running while this measures. Two spawns that cost
+     * different amounts is that interference showing itself. Two that
+     * agree are not proof it cannot happen, but they are the difference
+     * between a number that was measured and a number that was read
+     * once.
+     *
+     * It is also the count/duration rule of M9 applied to itself. A
+     * count is asserted because it is the same in every run; measuring
+     * it twice in one run is the cheapest test of that claim there is.
+     */
+    first = frame_cost_once(&back);
+    second = frame_cost_once(&back2);
+
     cnprintf("    a process costs %u frames, %u came back\n",
-      (unsigned int)(spawned - before),
-      (unsigned int)(spawned - reaped));
+      (unsigned int)first, (unsigned int)back);
+
+    if (second != first) {
+        panic("frames: the same program cost %u then %u",
+          (unsigned int)first, (unsigned int)second);
+    }
+    if (back2 != back) {
+        panic("frames: %u came back, then %u",
+          (unsigned int)back, (unsigned int)back2);
+    }
 
     /*
      * The cost is a count. It is the slot rounded to pages plus whatever
@@ -5994,14 +6045,14 @@ frame_cost_checks(void)
      * is the slot and not a number written down here.
      */
 #if SYS_TIER == 0
-    if (spawned != before) {
+    if (first != 0) {
         panic("frames: a flat-memory process cost %u frames",
-          (unsigned int)(spawned - before));
+          (unsigned int)first);
     }
 #else
-    if (spawned - before < SYS_USER_SLOT_BYTES / PAGE_SIZE) {
+    if (first < SYS_USER_SLOT_BYTES / PAGE_SIZE) {
         panic("frames: a process cost %u frames, fewer than its slot",
-          (unsigned int)(spawned - before));
+          (unsigned int)first);
     }
 #endif
 }
