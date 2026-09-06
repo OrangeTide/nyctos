@@ -121,6 +121,19 @@ sys_err_t cohort_place(struct cohort *c, const char *image, struct proc *p);
 void cohort_release(struct cohort *c, struct proc *p);
 
 /*
+ * Whether this process still occupies its place in the cohort.
+ *
+ * It may not. cohort_place gives away the place of a member that has
+ * exited without waiting for it to be reaped, so between one member's
+ * exit and its reap a replacement can be loaded at the same address in
+ * the same space. Anything the reap wants to do to that member's memory
+ * has to ask this first: after the place has gone, the mappings at its
+ * address are the replacement's and touching them would take memory out
+ * from under a running program.
+ */
+bool cohort_holds(const struct cohort *c, const struct proc *p);
+
+/*
  * A member faulted, so the domain is gone, per section 18.2. Says which
  * cohort, which thread of which member, and what the teardown that does
  * not exist yet would have to do. Does not return.

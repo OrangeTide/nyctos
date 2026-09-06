@@ -8185,9 +8185,10 @@ process is given back when the process is gone.
   address space costs the rest**, 7 on riscv64 and 5 on aarch64, which
   is `md_as_create`'s root table plus what `map_kernel_into` builds.
   Nothing else in a spawn costs a frame: `proc_create`, the command
-  line and `thread_create` are all pools and all free. So stage two can
-  recover 257 of the 264 and stage three the remaining 7, and neither
-  can recover anything the other does.
+  line and `thread_create` are all pools and all free. Stage two turned
+  out to recover 256 of these and not 257: the leaf table is reached
+  through the address space and goes back with it, which leaves stage
+  three 8 frames on riscv64 and 6 on aarch64 rather than 7 and 5.
 - *And at Tier 0 a process costs nothing at all.* A flat-memory image
   is copied to the address it was linked for and runs in memory the
   archive already occupies, so there is no per-process allocation and
@@ -8218,13 +8219,14 @@ process is given back when the process is gone.
   Reading the before-count after the spawn panicked on the count
   falling.
 
-**2. A reaped process gives its image pages back.** *Planned.*
+**2. A reaped process gives its image pages back.** *Built.*
 
 - The pages `proc_spawn_image` took, freed when the last thing that
   could ask about the process lets go, which is where M11 put the
   decision.
   Stage one counted them: 257 of the 264 a process costs, being the
-  slot and one leaf table.
+  slot and one leaf table. The slot is the 256 this stage returns; the
+  table is reached through the address space and is stage three's.
 - *Check.* The count after a reap returns to the count before the
   spawn. Spawning and reaping the same program many times leaves the
   count where it started rather than climbing, which is the difference
@@ -8232,14 +8234,76 @@ process is given back when the process is gone.
   Stage one made this a Tier 2 check: at Tier 0 the count never moved
   in the first place, and the arm to assert there is that it still does
   not.
+- *Settled.* **256 of the 264 frames come back, and eight processes one
+  after another hold 64 frames rather than 2112.** The 257th, the leaf
+  table the load built on its way, is reached through the address space
+  and goes back with it in stage three, so the residue per process is 8
+  on riscv64 and 6 on aarch64. `proc_free_slot` walks the slot, and for
+  each page that is mapped it unmaps first and frees second, because a
+  frame back in the allocator while an entry still reaches it belongs to
+  two owners at once.
+- *The join is not the reap*, which was the first thing this stage had
+  to find out and which stage one had measured across without knowing.
+  Waiting on the completion timeline says the process exited, and
+  closing its handles says nothing can ask about it any more, but its
+  last thread is *parked* at that point rather than collected:
+  `thread_reap_parked` runs at the top of the next switch and
+  `proc_reap` runs from there. The count read straight after a join is
+  read before any freeing has happened, which is why stage one saw a
+  second spawn appear to cost 8 frames. The check now waits for
+  `pool_lookup` on the process identifier to go stale, which is the reap
+  exactly, and stage one's numbers are the numbers after that wait.
+- *A place can be reused before its occupant is reaped*, which is the
+  defect this stage found and the one that mattered. `cohort_place`
+  gives away the place of a member that has *exited*, not one that has
+  been reaped, and a cohort's address space and slot addresses are
+  reused across generations. So a replacement member can be loaded at
+  the same address in the same space while the previous occupant is
+  still waiting to be reaped, and that reap then unmapped and freed the
+  replacement's memory. It showed up as the replacement faulting on its
+  own first instruction. `proc_free_slot` now asks `cohort_holds` first
+  and frees nothing when the place has moved on. The frames of the
+  member that lost its place are orphaned by the load that mapped over
+  them, and stay lost: section 18.2 is where a place becomes something a
+  reap gives back rather than something an exit does.
+- *Not tested: the pager boundary.* A process with a pager is given its
+  image pages from a grant on a fault, at an address the pager did not
+  choose, and those frames belong to the pager's grant rather than to
+  the process. `p_pager_bytes` records where `proc_load` stopped
+  allocating so the reap can start there. Removing it, and freeing the
+  pager's pages as if they were the loader's, breaks nothing that runs
+  today: the frames go back to the allocator while a live grant still
+  names them, and no check looks. `page_free` catches a double free but
+  a grant is never freed, so there is nothing to collide with. The
+  guard is argued from `pager_map_page` and not demonstrated, and
+  demonstrating it is stage four's, which is about exactly this.
+- *Not solved: no shootdown.* `md_tlb_flush_all` is local to the core
+  that calls it. A cohort peer running on another core shares the space
+  a member's slot was in and can hold a translation to a page just
+  freed. Section 13.3 has no cross-core TLB maintenance and this does
+  not add one. What it means is that reclaiming a cohort member's
+  memory while a peer runs is not safe, and the checks reap processes
+  that are in no cohort.
+- *Broken to check it.* Freeing nothing at the reap panicked with "0 of
+  264 came back". Freeing all but one page panicked with 255. Not
+  waiting for the reap panicked with "cost 264 then 8". Dropping the
+  `cohort_holds` test reproduced the replacement faulting at its entry
+  point.
+- *And the check itself was broken first.* The run of eight processes
+  measures the residue and then asserts the residue, which cannot fail
+  on the thing it is for: with the freeing removed it measured a
+  residue of 264, found 264 of them eight times, and passed. What
+  catches that is asserting what came back against the slot, which is a
+  number the system does not get to choose.
 
 **3. And its page tables, at Tier 2.** *Planned.*
 
 - An `md_as_destroy` on each port, walking what `md_as_create` and the
   mapping calls built.
-  Stage one counted these too: the 7 frames on riscv64 and 5 on
-  aarch64 that a process costs beyond its load, which is the root
-  table and what `map_kernel_into` builds on top of it.
+  Stages one and two counted these: the 8 frames on riscv64 and 6 on
+  aarch64 that a process still holds after its slot has gone back,
+  being the root table, what `map_kernel_into` builds on top of it, and
+  the one leaf table the load built to reach the slot.
 - *Check.* The same as stage two with the tier that has tables, and a
   count that returns rather than climbs. A table freed while still
   reachable is the failure this must not have, so the check spawns

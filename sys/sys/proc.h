@@ -90,6 +90,19 @@ struct proc {
      * nothing stops it.
      */
     struct addrspace    p_as;
+
+    /*
+     * How much of the slot the loader left to the pager, per section
+     * 15.1: the leading pages that hold the image, which a process with
+     * a pager is given from a grant on a fault rather than at load.
+     *
+     * A boundary and not a flag, because a reap needs the inverse of
+     * what proc_load decided page by page. Frames the loader allocated
+     * are this process's to give back. Frames a pager supplied are its
+     * grant's, mapped here at an address the pager did not choose, and
+     * giving those back would free memory another process still holds.
+     */
+    size_t              p_pager_bytes;
 #endif
     uintptr_t           p_startup_va;
 

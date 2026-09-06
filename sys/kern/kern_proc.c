@@ -354,6 +354,7 @@ proc_load(struct proc *p, const struct boot_member *m)
          * the boundary is what would let this obey it.
          */
         if (n > 0 && p->p_pager != NULL) {
+            p->p_pager_bytes = done + PAGE_SIZE;
             done += PAGE_SIZE;
             continue;
         }
@@ -1294,6 +1295,86 @@ proc_as(struct proc *p)
     return &p->p_as;
 }
 
+/*
+ * Give back the frames the loader spent on this process.
+ *
+ * M13 stage 1 counted them: at Tier 2 a process costs its whole slot,
+ * 256 pages, plus one leaf table to reach them, plus the address space
+ * it runs in. This returns the first two. The address space is stage
+ * three's, and is what a cohort's members share, so it cannot go back
+ * when any one of them is reaped.
+ *
+ * Two pages of the slot are deliberately not touched. One is a page the
+ * loader never allocated, which md_lookup reports as unmapped and this
+ * skips: a process with a pager gets its image on a fault and not at
+ * load. The other is a page the pager did supply, mapped here from a
+ * grant at an address the pager chose nothing about, and freeing that
+ * would hand back memory another process still holds. p_pager_bytes is
+ * the boundary proc_load drew, read here the other way round.
+ *
+ * Unmapped before freed, in that order, because a frame that is back in
+ * the allocator while an entry still reaches it is a frame the next
+ * caller and this process's peers both have.
+ */
+static uint32_t
+proc_free_slot(struct proc *p)
+{
+    struct addrspace *as;
+    uintptr_t base;
+    size_t len, off;
+    uint32_t freed = 0;
+
+    if (!proc_slot(p, &base, &len)) {
+        return 0;
+    }
+
+    /*
+     * Unless somebody else is there now. A cohort's address space and
+     * its slots outlive its members, and cohort_place hands a place on
+     * as soon as its occupant has exited rather than waiting for the
+     * reap, so a replacement can be loaded at this address before this
+     * runs. The mappings would then be the replacement's, and freeing
+     * what they point at would take memory out from under a program
+     * that is running.
+     *
+     * The frames this process had are lost in that case, orphaned by
+     * the load that mapped over them rather than by anything here.
+     * Section 18.2 is where that would be fixed, by making a place
+     * something a reap gives back rather than something an exit does.
+     * Losing them is the safe half of the mistake.
+     */
+    if (p->p_cohort != NULL && !cohort_holds(p->p_cohort, p)) {
+        return 0;
+    }
+
+    as = proc_as(p);
+
+    for (off = p->p_pager_bytes; off < len; off += PAGE_SIZE) {
+        uintptr_t pa;
+
+        if (md_lookup(as, base + off, &pa) != SYS_OK) {
+            continue;
+        }
+
+        md_unmap(as, base + off, PAGE_SIZE);
+        page_free(pa);
+        freed++;
+    }
+
+    /*
+     * Locally, which is all any port here can do. A cohort peer running
+     * on another core shares this space and may hold a translation to a
+     * page just freed, and nothing in this kernel can reach across to
+     * tell it. Section 13.3 has no shootdown and M13 does not add one:
+     * what it means is that reclaiming a cohort member's memory while a
+     * peer runs is not yet safe, which is why the check below reaps a
+     * process that is in no cohort.
+     */
+    md_tlb_flush_all();
+
+    return freed;
+}
+
 #endif /* SYS_TIER == 2 */
 
 /*
@@ -1326,6 +1407,16 @@ proc_reap(struct proc *p)
         panic("proc %s: reaped while a channel still says it owns one",
           p->p_name);
     }
+
+    /*
+     * Its memory, before its place in the cohort: a member runs in its
+     * cohort's address space, and releasing the place is what can take
+     * that space away. Nothing else in this teardown looks at the
+     * mappings, so this is also the last moment they say what they say.
+     */
+#if SYS_TIER == 2
+    (void)proc_free_slot(p);
+#endif
 
     if (p->p_cohort != NULL) {
         cohort_release(p->p_cohort, p);

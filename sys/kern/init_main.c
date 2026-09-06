@@ -17,6 +17,7 @@
 #include <sys/grant.h>
 #include <sys/handle.h>
 #include <sys/intr.h>
+#include <sys/pool.h>
 #include <sys/object.h>
 #include <sys/page.h>
 #include <sys/op.h>
@@ -5956,6 +5957,8 @@ frame_cost_once(uint32_t *returned)
 {
     struct child c;
     uint32_t before, spawned, reaped;
+    sys_time_t deadline;
+    sys_id_t id;
     int32_t code;
 
     before = page_used();
@@ -5963,6 +5966,8 @@ frame_cost_once(uint32_t *returned)
     sched_defer();
     child_watch(&c, proc_spawn_image("spin", 20, NULL, 0, NULL, 0));
     sched_undefer();
+
+    id = c.c_proc->p_id;
 
     spawned = page_used();
 
@@ -5972,12 +5977,27 @@ frame_cost_once(uint32_t *returned)
     }
 
     /*
-     * The join is the reap: it closes the completion timeline and the
-     * process handle, which are what kept the process alive after it had
-     * finished, and M11 made the last of those the moment the object
-     * goes back. Until this milestone that returns a pool slot and no
-     * frames, which is what the second number reports.
+     * The join is not the reap, and reading the count straight after
+     * one reads it too early. Waiting on the completion timeline says
+     * the process has exited and closing the handles says nothing can
+     * ask about it any more, but its last thread is parked at that
+     * point, not collected: thread_reap_parked runs at the top of the
+     * next switch, and proc_reap runs from there. Reading the count
+     * after the join reads it before any of that has happened.
+     *
+     * The slot going back is the reap, exactly, so the identifier going
+     * stale is the event to wait for. It is taken before the join
+     * because afterwards this pointer names a slot that may already
+     * have been handed to somebody else.
      */
+    deadline = time_now() + time_from_ms(JOIN_MS);
+    while (pool_lookup(proc_pool(), id) != NULL) {
+        if (time_now() > deadline) {
+            panic("frames: it exited and was never reaped");
+        }
+        sched_yield();
+    }
+
     reaped = page_used();
 
     /*
@@ -6055,6 +6075,81 @@ frame_cost_checks(void)
           (unsigned int)first);
     }
 #endif
+
+    /*
+     * And what came back, asserted and not merely printed. The run of
+     * processes below measures the residue and then checks the residue,
+     * which is a shape that cannot fail on the thing it is for: with
+     * the freeing taken out it measures a residue of 264, finds 264 of
+     * them eight times over, and says nothing. This is the assertion
+     * that does fail. A slot's worth is the claim stage two makes, and
+     * the frames beyond it are the address space, which is stage
+     * three's and not returned yet.
+     */
+#if SYS_TIER == 0
+    if (back != 0) {
+        panic("frames: %u came back from a process that cost nothing",
+          (unsigned int)back);
+    }
+#else
+    if (back < SYS_USER_SLOT_BYTES / PAGE_SIZE) {
+        panic("frames: %u of %u came back, less than the slot",
+          (unsigned int)back, (unsigned int)first);
+    }
+#endif
+}
+
+/*
+ * And what many of them cost, which is the difference between
+ * reclaiming and freeing once.
+ *
+ * A reap that gave back the frames of the process in front of it and
+ * not the one behind would pass the check above and still be a system
+ * bounded by how many processes it has ever started. What says
+ * otherwise is the count after a run of them: it climbs by what a
+ * process holds that this stage does not return yet, once per process,
+ * and by nothing else.
+ *
+ * The residue is measured rather than written down, because it is the
+ * address space and its tables, which stage three returns and which
+ * differ between the two ports. What is asserted here is that the
+ * residue is all there is: at Tier 0 it is zero because a process
+ * costs nothing, and at Tier 2 it is the same small number every time
+ * round rather than the 264 a process costs.
+ */
+#define FRAME_ROUNDS    8u
+
+static void
+frame_return_checks(void)
+{
+    uint32_t before, after, cost, back, residue, grew, i;
+
+    cnputs("frames: what a run of processes leaves behind\n");
+
+    cost = frame_cost_once(&back);
+    residue = cost - back;
+
+    before = page_used();
+    for (i = 0; i < FRAME_ROUNDS; i++) {
+        (void)frame_cost_once(&back);
+    }
+    after = page_used();
+
+    if (after < before) {
+        panic("frames: a run of processes gave back more than it took");
+    }
+
+    grew = after - before;
+
+    cnprintf("    %u processes, one after another, held %u frames, %u each\n",
+      (unsigned int)FRAME_ROUNDS, (unsigned int)grew,
+      (unsigned int)residue);
+
+    if (grew != FRAME_ROUNDS * residue) {
+        panic("frames: %u processes held %u frames, not %u",
+          (unsigned int)FRAME_ROUNDS, (unsigned int)grew,
+          (unsigned int)(FRAME_ROUNDS * residue));
+    }
 }
 
 /*
@@ -8018,6 +8113,7 @@ kernel_main(void)
     slice_checks();
 
     frame_cost_checks();
+    frame_return_checks();
     substitution_checks();
     abort_checks();
     inflight_checks();

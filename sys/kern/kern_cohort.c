@@ -159,6 +159,20 @@ cohort_release(struct cohort *c, struct proc *p)
     }
 }
 
+bool
+cohort_holds(const struct cohort *c, const struct proc *p)
+{
+    uint32_t j;
+
+    for (j = 0; j < c->c_nmembers; j++) {
+        if (c->c_running[j] == p) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void
 cohort_report(void)
 {
