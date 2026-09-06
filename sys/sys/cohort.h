@@ -76,7 +76,7 @@ struct cohort {
      */
     struct proc        *c_running[SYS_COHORT_MEMBERS_MAX];
 
-    /* How many members have ever been placed, for the flush. */
+    /* How many have been placed in the space that exists now, for the flush. */
     uint32_t            c_placed;
 };
 

@@ -6096,8 +6096,8 @@ frame_cost_checks(void)
           (unsigned int)back);
     }
 #else
-    if (back < SYS_USER_SLOT_BYTES / PAGE_SIZE) {
-        panic("frames: %u of %u came back, less than the slot",
+    if (back != first) {
+        panic("frames: %u of the %u a process cost came back",
           (unsigned int)back, (unsigned int)first);
     }
 #endif
@@ -6149,10 +6149,17 @@ frame_return_checks(void)
       (unsigned int)FRAME_ROUNDS, (unsigned int)grew,
       (unsigned int)residue);
 
-    if (grew != FRAME_ROUNDS * residue) {
-        panic("frames: %u processes held %u frames, not %u",
-          (unsigned int)FRAME_ROUNDS, (unsigned int)grew,
-          (unsigned int)(FRAME_ROUNDS * residue));
+    /*
+     * Zero, and not the residue this run measured. Checking a run
+     * against its own measurement is the shape that cannot fail: with
+     * the freeing taken out it measures a residue of 264 and finds 264
+     * of them eight times over. Since stage three there is no residue
+     * to allow for, so the number to assert is the one the system does
+     * not get to choose.
+     */
+    if (grew != 0) {
+        panic("frames: %u processes came and went and held %u frames",
+          (unsigned int)FRAME_ROUNDS, (unsigned int)grew);
     }
 }
 
@@ -7752,7 +7759,7 @@ user_slice(void)
     sys_ns_spec_t ns[2];
     struct channel *ch;
     struct channel *blk;
-    sys_handle_t h_recv, h_blk, store, root, root2, root3, root5;
+    sys_handle_t h_recv, h_blk, store, root, root2, root3, root5, root6;
     sys_err_t err;
 
     boot_report();
@@ -7802,6 +7809,13 @@ user_slice(void)
     expect("a third one, for the client that chains",
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     root5 = cargs.out_handle;
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a fourth one, for the read after everything is reclaimed",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    root6 = cargs.out_handle;
 
 #if SYS_TIER == 2
     /*
@@ -7955,6 +7969,23 @@ user_slice(void)
     death_checks();
     kill_checks();
     cohort_checks();
+
+    /*
+     * Memory given back, and then the same file read again through a
+     * process spawned after it was. M13 stage 3 frees page tables, and
+     * a table freed while something could still reach it is a frame
+     * handed to the next caller with a live mapping pointing into it.
+     * The read is what would find that: it spawns a program into
+     * frames the reclamation has just returned, and takes it across the
+     * trap edge and through a server in another address space.
+     *
+     * Here rather than later in the boot because this is where a
+     * connection to the file server exists. The reclamation wants to
+     * happen before the read and not after, which is the whole point.
+     */
+    frame_cost_checks();
+    frame_return_checks();
+    run_client("fs_client", root6, BLK_MOTD_BYTES, SEND_BLOCK_YES);
 }
 
 void
@@ -8116,8 +8147,6 @@ kernel_main(void)
     cnputs("the slice: a file read from another process\n");
     slice_checks();
 
-    frame_cost_checks();
-    frame_return_checks();
     substitution_checks();
     abort_checks();
     inflight_checks();

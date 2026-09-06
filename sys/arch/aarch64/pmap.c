@@ -176,6 +176,61 @@ md_as_create(struct addrspace *as)
     return SYS_OK;
 }
 
+/*
+ * Give an address space's tables back, per M13 stage 3.
+ *
+ * What is freed is tables and only tables. Every leaf under this root
+ * points at memory somebody else owns: a process's slot, which stage
+ * two returned before this runs, or the kernel's own image and devices,
+ * which map_kernel_into wrote into every space and which freeing would
+ * take out from under the kernel itself.
+ *
+ * Telling one from the other needs the level here, because this format
+ * gives a table and a page the same two bits: 0x3 at level one or two
+ * is a table, and 0x3 at level three is a page. Reading the descriptor
+ * without knowing where it sits would walk into a mapped page and free
+ * whatever its contents happened to look like.
+ *
+ * The tables are private to this space even though what they describe
+ * is not. map_kernel_into calls md_map, and md_map builds its own way
+ * down, which is why an address space costs five frames here and not
+ * one.
+ */
+static void
+free_table(uintptr_t pa, unsigned int level)
+{
+    uint64_t *t = table_at(pa);
+    uint32_t i;
+
+    if (level < 3) {
+        for (i = 0; i < ENTRIES; i++) {
+            if ((t[i] & 0x3u) != DESC_TABLE) {
+                continue;
+            }
+            free_table(t[i] & 0x0000fffffffff000ULL, level + 1);
+        }
+    }
+
+    page_free(pa);
+}
+
+void
+md_as_destroy(struct addrspace *as)
+{
+    if (as->as_root == 0) {
+        return;
+    }
+
+    free_table(as->as_root, 1);
+
+    /*
+     * Cleared, so that a space destroyed twice is caught by proc_as
+     * answering with the kernel's rather than by page_free panicking on
+     * a frame it has already taken back.
+     */
+    as->as_root = 0;
+}
+
 sys_err_t
 md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
   uint32_t flags)

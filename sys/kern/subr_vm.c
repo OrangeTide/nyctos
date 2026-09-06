@@ -134,6 +134,12 @@ vm_as_create(struct addrspace *as)
 }
 
 void
+vm_as_destroy(struct addrspace *as)
+{
+    md_as_destroy(as);
+}
+
+void
 vm_kernel_init(void)
 {
     uintptr_t base, hold;

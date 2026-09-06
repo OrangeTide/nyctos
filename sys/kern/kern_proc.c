@@ -1431,6 +1431,16 @@ proc_reap(struct proc *p)
      */
 #if SYS_TIER == 2
     (void)proc_free_slot(p);
+
+    /*
+     * And the space its slot was in, which is stage three. A member has
+     * none of its own: it runs in its cohort's, and that space outlives
+     * every one of them, so this is asked rather than left to as_root
+     * being zero.
+     */
+    if (p->p_cohort == NULL) {
+        vm_as_destroy(&p->p_as);
+    }
 #endif
 
     if (p->p_cohort != NULL) {

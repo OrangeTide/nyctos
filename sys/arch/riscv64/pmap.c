@@ -143,6 +143,58 @@ md_as_create(struct addrspace *as)
     return SYS_OK;
 }
 
+/*
+ * Give an address space's tables back, per M13 stage 3.
+ *
+ * What is freed is tables and only tables. Every leaf under this root
+ * points at memory somebody else owns: a process's slot, which stage
+ * two returned before this runs, or the kernel's own image and devices,
+ * which map_kernel_into wrote into every space and which freeing would
+ * take out from under the kernel itself. PTE_LEAF is what tells them
+ * apart, and it has to be asked at every level, because the identity
+ * map is made of gigapages and megapages and a leaf at level zero is as
+ * real as one at level two.
+ *
+ * The tables are private to this space even though what they describe
+ * is not. map_kernel_into calls md_map, and md_map builds its own way
+ * down, which is why an address space costs seven frames here and not
+ * one.
+ */
+static void
+free_table(uintptr_t pa, unsigned int level)
+{
+    uint64_t *t = table_at(pa);
+    uint32_t i;
+
+    if (level < 2) {
+        for (i = 0; i < ENTRIES; i++) {
+            if ((t[i] & PTE_V) == 0 || PTE_LEAF(t[i])) {
+                continue;
+            }
+            free_table((uintptr_t)PTE_ADDR(t[i]), level + 1);
+        }
+    }
+
+    page_free(pa);
+}
+
+void
+md_as_destroy(struct addrspace *as)
+{
+    if (as->as_root == 0) {
+        return;
+    }
+
+    free_table(as->as_root, 0);
+
+    /*
+     * Cleared, so that a space destroyed twice is caught by proc_as
+     * answering with the kernel's rather than by page_free panicking on
+     * a frame it has already taken back.
+     */
+    as->as_root = 0;
+}
+
 sys_err_t
 md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
   uint32_t flags)

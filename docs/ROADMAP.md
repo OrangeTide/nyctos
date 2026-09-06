@@ -8327,7 +8327,7 @@ process is given back when the process is gone.
   same answer the per-core count gives and the reason it is printed.
 
 
-**3. And its page tables, at Tier 2.** *Planned.*
+**3. And its page tables, at Tier 2.** *Built.*
 
 - An `md_as_destroy` on each port, walking what `md_as_create` and the
   mapping calls built.
@@ -8340,6 +8340,58 @@ process is given back when the process is gone.
   reachable is the failure this must not have, so the check spawns
   again afterwards and reads the same file, which would fault on a
   table that had been handed back and reused.
+- *Settled.* **Everything a process costs now comes back: 264 of 264 on
+  riscv64, 262 of 262 on aarch64, and eight processes one after another
+  hold nothing at all.** That is the sentence section 1 has carried
+  since M9 stopped being true for the ordinary case. By the end of the
+  boot the machine has taken 10746 frames at its peak and holds 10218,
+  where before the two numbers were the same.
+- *What is freed is tables and only tables.* Every leaf under a root
+  points at memory somebody else owns: the process's slot, which stage
+  two returns before this runs, or the kernel's own image and devices,
+  which `map_kernel_into` wrote into every space and which freeing
+  would take out from under the kernel. The walk asks at every level,
+  because the identity map is made of gigapages and megapages and a
+  leaf at the top is as real as one at the bottom. On aarch64 it also
+  has to know which level it is on: that format gives a table and a
+  page the same two bits, and 0x3 means a table at levels one and two
+  and a page at level three.
+- *The check now reads a file afterwards*, which is why it moved to
+  where a connection to the file server exists. It reclaims, then
+  spawns a program into the frames it has just returned and takes it
+  across the trap edge and through a server in another address space. A
+  table freed while something could still reach it is a frame handed to
+  the next caller with a live mapping into it, and this is what would
+  find that.
+- *And the assertion is zero, not the residue.* Stage two's run
+  measured the residue and then checked against it, which cannot fail
+  on the thing it is for. Since this stage there is no residue, so what
+  is asserted is that a run of processes holds nothing and that every
+  frame a process cost came back, both of which are numbers the system
+  does not get to choose.
+- *A cohort's space goes back when its last member does*, which needed
+  the decision to be read off the array of members rather than off
+  `c_placed`. The two disagree in exactly the case stage two found: a
+  place handed on before its previous holder was reaped is one
+  increment and no decrement, so a count would never reach zero.
+  `c_placed` is reset with the space, which keeps it meaning what
+  `proc_load` reads it for.
+- *Not exercised: that last part.* No check in this boot reaps every
+  member of a cohort, because the members' handles are held until the
+  machine stops, so the path that destroys a cohort's space never runs.
+  Removing it changes not one frame of what the boot reports, which is
+  how that was established rather than assumed. It is kept because the
+  alternative is a class of address space that leaks for ever, and it is
+  written down here because nothing tests it.
+- *Broken to check the rest.* Never destroying the space panicked with
+  "256 of the 264 a process cost came back". Destroying it before
+  freeing the slot panicked on the guard the previous review added, "its
+  memory is in a space it does not have", because the slot walk then had
+  no space to walk. Following a leaf as if it were a table panicked in
+  `page_free` on both ports, at 0xc000000 on riscv64 and 0x9000000 on
+  aarch64, which are the interrupt controller and the console: the walk
+  had reached the identity-mapped devices, which is exactly the memory
+  it must never follow.
 
 **4. What holds a frame that no process holds.** *Planned.*
 

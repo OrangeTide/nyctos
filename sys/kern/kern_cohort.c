@@ -131,7 +131,14 @@ cohort_place(struct cohort *c, const char *image, struct proc *p)
     }
 
 #if SYS_TIER == 2
-    if (c->c_placed == 0) {
+    /*
+     * Built when there is none, rather than when nothing has ever been
+     * placed. Since M13 stage 3 the space goes back when the last
+     * member does, so a cohort can be on its second space and later
+     * ones, and "has anything ever been placed" stopped being the same
+     * question as "is there a space".
+     */
+    if (c->c_as.as_root == 0) {
         sys_err_t err = vm_as_create(&c->c_as);
 
         if (err != SYS_OK) {
@@ -150,13 +157,46 @@ void
 cohort_release(struct cohort *c, struct proc *p)
 {
     uint32_t j;
+    bool found = false;
 
     for (j = 0; j < c->c_nmembers; j++) {
         if (c->c_running[j] == p) {
             c->c_running[j] = NULL;
+            found = true;
+            break;
+        }
+    }
+
+    /*
+     * A process may hold no place by the time it is reaped. cohort_place
+     * gives a place away as soon as its occupant has exited, so a
+     * replacement can already be standing where this one was, and the
+     * space then belongs to the replacement.
+     */
+    if (!found) {
+        return;
+    }
+
+#if SYS_TIER == 2
+    /*
+     * And the space itself, once nobody is left in it. Read off the
+     * array and not off a count, because the count and the array
+     * disagree in exactly the case above: a place handed on before its
+     * previous holder was reaped is one increment and no decrement.
+     *
+     * c_placed goes back to zero with the space, which keeps it meaning
+     * what proc_load reads it for, that something has already been
+     * placed in the space that exists now.
+     */
+    for (j = 0; j < c->c_nmembers; j++) {
+        if (c->c_running[j] != NULL) {
             return;
         }
     }
+
+    vm_as_destroy(&c->c_as);
+    c->c_placed = 0;
+#endif
 }
 
 bool

@@ -140,6 +140,14 @@ void vm_cost_read_core(struct vm_cost *out, uint32_t core);
 sys_err_t md_as_create(struct addrspace *as);
 
 /*
+ * Give one back, freeing the tables under it and nothing they point at.
+ * The leaves name a process's slot, which is returned before this, and
+ * the kernel's own mappings, which every space carries and none owns.
+ * Idempotent: a space with no root is already gone.
+ */
+void md_as_destroy(struct addrspace *as);
+
+/*
  * Map len bytes of virtual addresses onto physical ones. Both addresses
  * and the length must be page-aligned; the port chooses whatever page or
  * block size the range allows, which is invisible above here except in
@@ -220,6 +228,12 @@ void vm_kernel_init(void);
 
 /* Build an address space with the kernel in it, ready for a program. */
 sys_err_t vm_as_create(struct addrspace *as);
+
+/*
+ * And take it down. The kernel's mappings in it are not the kernel's
+ * memory, so what this returns is the tables and the root.
+ */
+void vm_as_destroy(struct addrspace *as);
 
 /* The window loaded programs occupy, which no space maps for the kernel. */
 void vm_user_window(uintptr_t *base, size_t *len);
