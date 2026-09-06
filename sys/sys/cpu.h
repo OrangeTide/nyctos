@@ -55,6 +55,16 @@ struct cpu {
     uintptr_t       cp_as_root;
 
     /*
+     * Which generation of address spaces that root belonged to. A root
+     * is a frame, and since M13 stage 3 a frame goes back and comes out
+     * again, so the same address can name a different space. Without
+     * this a core would recognise the root it already has and skip the
+     * activation, keeping a TLB full of the space that used to be
+     * there. See vm_as_epoch().
+     */
+    uint64_t        cp_as_epoch;
+
+    /*
      * The deferral of section 11: a short run of readies made atomic.
      * Per core because that is what it always meant. Its comment said
      * "one counter for the system, not one per thread", and per system

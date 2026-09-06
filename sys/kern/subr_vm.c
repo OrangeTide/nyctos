@@ -133,10 +133,53 @@ vm_as_create(struct addrspace *as)
     return SYS_OK;
 }
 
+/*
+ * Which generation of address spaces the system is on.
+ *
+ * Bumped every time one is destroyed, and read by the context switch
+ * beside the root it is switching to. Before M13 stage 3 a root was
+ * allocated and never freed, so a root address named one space for the
+ * life of the machine and a core that already had that root was already
+ * in that space. Now a root is a frame like any other: it goes back, it
+ * comes out again, and the allocator hands out the lowest free frame,
+ * so the same root address naming a different space is not a remote
+ * possibility but the likely case for a program spawned twice.
+ *
+ * What that would cost is not a wrong root register, which would still
+ * point at the right table. It is the flush that goes with writing it:
+ * skip the activation and the core keeps translations for the space
+ * that used to be there, at the same addresses, pointing at frames that
+ * have since been given to somebody else.
+ *
+ * A counter rather than a message to each core, because there is no way
+ * to send one: section 13.3 has no cross-core call and M13 did not add
+ * one. Every core notices at its next switch, which is the first moment
+ * it could use a translation anyway.
+ *
+ * Unlocked, and it is the one counter here that can be. Two destroys at
+ * once can lose an increment, which matters for a counter somebody
+ * reads as a total and not for this one: what a core asks is whether
+ * the value differs from the one it cached, and an increment that only
+ * happened once still differs. Nothing but wrapping could return it to
+ * a cached value, and that is 2^64 address spaces away.
+ */
+static uint64_t as_epoch;
+
+uint64_t
+vm_as_epoch(void)
+{
+    return as_epoch;
+}
+
 void
 vm_as_destroy(struct addrspace *as)
 {
+    if (as->as_root == 0) {
+        return;
+    }
+
     md_as_destroy(as);
+    as_epoch++;
 }
 
 void

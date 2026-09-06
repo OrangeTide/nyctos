@@ -370,11 +370,21 @@ thread_switch_to(struct thread *next)
      */
     {
         struct addrspace *as = proc_as(next->t_proc);
+        uint64_t epoch = vm_as_epoch();
 
-        if (as->as_root != current_as_root) {
+        /*
+         * The epoch as well as the root, because a root is a frame and
+         * a frame comes back. Recognising a root this core already has
+         * is only the same space if no space has been destroyed since;
+         * otherwise it is a stale TLB for addresses the new space uses
+         * too. See cp_as_epoch.
+         */
+        if (as->as_root != current_as_root ||
+          epoch != cpu_self()->cp_as_epoch) {
             md_as_activate(as);
             vm_count_switch();
             current_as_root = as->as_root;
+            cpu_self()->cp_as_epoch = epoch;
         }
     }
 #endif

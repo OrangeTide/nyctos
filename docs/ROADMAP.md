@@ -8383,6 +8383,33 @@ process is given back when the process is gone.
   how that was established rather than assumed. It is kept because the
   alternative is a class of address space that leaks for ever, and it is
   written down here because nothing tests it.
+- *And the review found what freeing a root costs.* A root is a frame,
+  and since this stage a frame goes back and comes out again, so the
+  same root address can name a different address space. The context
+  switch decided whether to activate by comparing that address against
+  the one this core already had, which before this stage was a sound
+  identity: a root was allocated once and never freed. Now it is not.
+  What the mistake would cost is not a wrong root register, which would
+  still point at the right table, but the flush that goes with writing
+  one: skip the activation and the core keeps translations for the space
+  that used to be there, at the same addresses, pointing at frames since
+  given to somebody else. The allocator hands out the lowest free frame
+  and the checks spawn the same program eleven times over, so this is
+  the likely case rather than a remote one.
+- *`vm_as_epoch` is the fix*, a count of address spaces destroyed, read
+  by the switch beside the root and cached per core. Any destroy makes
+  every core activate once more, at its next switch, which is the first
+  moment it could use a translation anyway. A counter rather than a
+  message to each core, because section 13.3 has no cross-core call and
+  this milestone did not add one. **It costs two extra activations
+  across a whole boot**, 472 against 470, which is also the measurement
+  that says it does something.
+- *A probe was written first to see whether it could happen today*: a
+  switch that skipped activation while the space was a different object
+  with the same root. It did not fire, because the boot thread is a
+  kernel thread and every switch through it activates the kernel's own
+  space and resets what the core has cached. That is what stands between
+  this system and the fault, and it is not a property anything asserts.
 - *Broken to check the rest.* Never destroying the space panicked with
   "256 of the 264 a process cost came back". Destroying it before
   freeing the slot panicked on the guard the previous review added, "its

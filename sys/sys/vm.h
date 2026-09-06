@@ -235,6 +235,14 @@ sys_err_t vm_as_create(struct addrspace *as);
  */
 void vm_as_destroy(struct addrspace *as);
 
+/*
+ * How many address spaces have been destroyed. The context switch reads
+ * it beside the root it is switching to, because a root that has been
+ * freed and handed out again names a different space at the same
+ * address. See subr_vm.c.
+ */
+uint64_t vm_as_epoch(void);
+
 /* The window loaded programs occupy, which no space maps for the kernel. */
 void vm_user_window(uintptr_t *base, size_t *len);
 
