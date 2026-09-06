@@ -7980,6 +7980,41 @@ aarch64 tier2  32701 34189 35285 36799 43708
   rather than by one code path would look like.
 - *No code changed in this stage.* It is a measurement and a reading of
   two functions, and the check is the comparison itself.
+- *Reviewed, and the figure this milestone has been reporting is not
+  the one that matters.*
+
+  The stage inferred that at Tier 2 a user thread's region opens at the
+  lock and not where the splits are, and did not check it. Recording
+  which kind of thread was current when the binding region opened
+  settles it: **a kernel thread, in every run at both tiers.** The
+  inference holds.
+
+  But the same record answers a question the milestone had not thought
+  to ask. Beside the binding region, the longest crossing region that
+  began while a thread other than the kernel's own was current:
+
+```
+riscv64 tier0   kernel 503 us   with a program current  96 us
+riscv64 tier2   kernel 456 us   with a program current  83 us
+aarch64 tier0   kernel 450 us   with a program current  90 us
+aarch64 tier2   kernel 547 us   with a program current  56 us
+```
+
+- **Four to ten times shorter.** The figure section 13.3 has carried
+  since M9, and every figure this milestone has published, belongs to
+  the kernel's own threads doing rendezvous work in the checks. What a
+  program is actually delayed by is between fifty-six and ninety-six
+  microseconds.
+- *Which thread was current, and not which code did the work.* A
+  handler runs in the context of whatever it interrupted, so a region a
+  timer opens while a program runs counts in the second column. That is
+  the right question for latency, because it is that program the region
+  delays, and the distinction is worth stating because the first
+  reading of these figures had it as "what a program's own path costs",
+  which is a different thing.
+- *This is for stage six.* Section 13.3 is about what bounds the
+  latency a program sees. The number it should carry is the second
+  column, and the first is the latency of a test harness.
 
 **6. What the floor is now, and section 13.3 rewritten around it.**
 *Planned.*

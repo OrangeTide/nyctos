@@ -612,6 +612,16 @@ intr_region_end(uintptr_t site)
         c->cp_cross_site = c->cp_intr_site;
         c->cp_cross_end = site;
         c->cp_cross_switch = c->cp_intr_switch;
+        c->cp_cross_kernel = c->cp_intr_thread != NULL &&
+          c->cp_intr_thread->t_proc == proc_kernel();
+    }
+
+    if (thread_current() != c->cp_intr_thread &&
+      c->cp_intr_thread != NULL &&
+      c->cp_intr_thread->t_proc != proc_kernel() &&
+      took > c->cp_cross_user) {
+        c->cp_cross_user = took;
+        c->cp_cross_user_site = c->cp_intr_site;
     }
 
     if (!c->cp_intr_console) {
@@ -702,8 +712,18 @@ intr_region_report(void)
                 (c->cp_cross_worst * 1000000UL) / hz : 0),
               (unsigned long)c->cp_cross_site,
               (unsigned long)c->cp_cross_end);
-            cnprintf("            of which the switch was %lu\n",
-              (unsigned long)c->cp_cross_switch);
+            cnprintf("            of which the switch was %lu, opened "
+              "by %s\n", (unsigned long)c->cp_cross_switch,
+              c->cp_cross_kernel ? "a kernel thread" : "a program");
+        }
+
+        if (c->cp_cross_user != 0) {
+            cnprintf("        longest with a program current: %lu ticks "
+              "(about %lu us) at 0x%lx\n",
+              (unsigned long)c->cp_cross_user,
+              (unsigned long)(hz != 0 ?
+                (c->cp_cross_user * 1000000UL) / hz : 0),
+              (unsigned long)c->cp_cross_user_site);
         }
 
         /*

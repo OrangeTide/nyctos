@@ -185,6 +185,32 @@ struct cpu {
     uintptr_t           cp_cross_end;
 
     /*
+     * And whether the thread that opened it was one of the kernel's
+     * own. At Tier 2 a user thread enters with interrupts already off
+     * from the trap, so a region it opens begins at the lock and not
+     * where this milestone has been splitting; saying which kind of
+     * thread owns the binding region is how that inference gets
+     * checked rather than asserted.
+     */
+    bool                cp_cross_kernel;
+
+    /*
+     * And the longest crossing region that began while a thread other
+     * than one of the kernel's own was current. Kept apart because
+     * the worst overall turns out to be a kernel thread's in every
+     * run, so without this the milestone would be reporting the
+     * latency of its own checks and calling it the kernel's floor.
+     *
+     * Which thread was current, and not which code did the work: a
+     * handler runs in the context of whatever it interrupted, so a
+     * region a timer opens while a program is running counts here.
+     * That is the right question for latency, because it is that
+     * program the region delays.
+     */
+    uint64_t            cp_cross_user;
+    uintptr_t           cp_cross_user_site;
+
+    /*
      * The switch itself, which is what stages two and three have been
      * separating everything else from. Stamped by the thread about to
      * give up the core and read by whichever thread the core comes
