@@ -8046,16 +8046,37 @@ longest with a program current      83       115        60        70
   cent of it. Lowering it further means making the rendezvous shorter
   or making less of it atomic.
 - *What is asserted and what is reported.* The durations are reported,
-  as this plan's rule has required since M9. What is asserted is that
-  each of the three things the section now rests on was measured at
-  all: a region that spanned a switch, a switch, and the instrument's
-  own blind spot. Removing any of the three fails the run with its own
-  message.
+  as this plan's rule has required since M9. Two things are asserted:
+  that a region spanning a switch was measured at all, and that a
+  switch was. Removing either fails the run with its own message. The
+  instrument's blind spot is reported and not asserted, because there
+  is nothing sensible to assert about it: the count of regions replaced
+  before they closed is about twenty-six a run and moves, so requiring
+  a number would be asserting a threshold on something that is not a
+  property of the kernel. The entry said three and there are two.
 - *If the floor did not move, the section says so.* It did not move
   much: three splits, all argued from the state, none of them shifting
   the figure by more than the run-to-run spread. That is the result,
   and the section says it rather than presenting three changes as an
   improvement.
+- *Reviewed.* Two corrections, both to what the stage said rather than
+  to what it measured.
+
+  It claimed three things were asserted and there are two. The report
+  panics if no region spanning a switch was measured and if no switch
+  was; the instrument's blind spot, the regions replaced before they
+  closed, is reported and nothing checks it. There is nothing sensible
+  to check: the count is about twenty-six a run and moves, so requiring
+  a number would be asserting a threshold on something that is not a
+  property of the kernel.
+
+  And the switch-inside-the-region figures in section 13.3 were four
+  single runs presented as the measurement, which is the mistake stage
+  four's review had already caught once in a different form. Twenty
+  runs, five in each configuration, put it between zero and three per
+  cent, so the claim holds and is now stated as a range. The same
+  twenty confirm on both ports what six runs had confirmed on one: the
+  binding region is opened by a kernel thread every time.
 
 *Done when* the longest interrupts-disabled region is the switch and
 nothing else, or the milestone can say what else is in it and why it
