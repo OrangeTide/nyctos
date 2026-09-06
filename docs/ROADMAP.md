@@ -8017,12 +8017,45 @@ aarch64 tier2   kernel 547 us   with a program current  56 us
   column, and the first is the latency of a test harness.
 
 **6. What the floor is now, and section 13.3 rewritten around it.**
-*Planned.*
+*Built.*
 
-- *Check.* The figures, asserted as counts where they are counts and
-  reported where they are durations, and the section's claim matched to
-  them rather than the other way round. If the floor did not move, the
-  section says that and says why, which is a result and not a failure.
+- Section 13.3 has a new part, written after the measurements rather
+  than before them, and the old table now points at it. What it says is
+  what the five stages found, in the order they found it.
+- *The figures it carries.* Medians of five runs each, in
+  microseconds:
+
+```
+                              t0 riscv  t0 aarch  t2 riscv  t2 aarch
+longest across a switch,
+  kernel thread                    449       559       465       530
+longest with a program current      83       115        60        70
+```
+
+- **The second row is the one the section is about.** It is about the
+  latency a program sees, and the first row is the latency of a test
+  harness: the longest region that spans a switch is opened by a kernel
+  thread in every run at both tiers, doing rendezvous work in the
+  checks. Every figure this section has carried since M9 was the first
+  row.
+- *And the account of the floor changes for the second time.* M9
+  corrected the section from "preemption point placement" to "the
+  switch". M12 corrects it again: the region spans a switch, which is
+  still true and still means no preemption point can break it, but its
+  length is the rendezvous and not the switch, which is about one per
+  cent of it. Lowering it further means making the rendezvous shorter
+  or making less of it atomic.
+- *What is asserted and what is reported.* The durations are reported,
+  as this plan's rule has required since M9. What is asserted is that
+  each of the three things the section now rests on was measured at
+  all: a region that spanned a switch, a switch, and the instrument's
+  own blind spot. Removing any of the three fails the run with its own
+  message.
+- *If the floor did not move, the section says so.* It did not move
+  much: three splits, all argued from the state, none of them shifting
+  the figure by more than the run-to-run spread. That is the result,
+  and the section says it rather than presenting three changes as an
+  improvement.
 
 *Done when* the longest interrupts-disabled region is the switch and
 nothing else, or the milestone can say what else is in it and why it

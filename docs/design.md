@@ -1316,7 +1316,7 @@ Latency is therefore tier-specific and is a measured number per port rather than
 
 Preemption points sit at batch entry boundaries, at message copy chunk boundaries, and at page table walk boundaries.
 
-**The figures, measured at M9 stage six.** Both terms are now measured on both ports and both tiers, under emulation, which means every duration here describes the machine the measurement ran on and not this kernel. The counts do describe this kernel.
+**The figures, measured at M9 stage six.** Both terms are now measured on both ports and both tiers, under emulation, which means every duration here describes the machine the measurement ran on and not this kernel. The counts do describe this kernel. M12 revised what the first row means and added the row that matters; see below.
 
 | | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
 |---|---|---|---|---|
@@ -1340,7 +1340,28 @@ Tier 2 is not worse than Tier 0, which the deviation below might have been expec
 
 The dispatch term passes no preemption point at all, at either tier, on either port. There is no boundary anywhere between an interrupt being taken and the program waiting on it running, so that term is a straight line whose length is its whole bound.
 
-**And the longest region spans a context switch, which no preemption point can bound.** All four measurements agree on both ends: it begins in `channel_reply` and ends in `channel_send`. A server replying disables interrupts, hands the reply over, and dispatches to the client, and the region does not close until that client is back in the kernel sending again. Preemption points at batch entries, message copy boundaries and page table walks lower regions that were never the longest. The floor this section describes is set by the rendezvous and the switch inside it, not by any critical section that could be broken in half, and lowering it means either not disabling interrupts across a switch or making the switch itself interruptible. Neither is a measurement, and neither is done here.
+**And the longest region spans a context switch, which no preemption point can bound.** All four measurements agree on both ends: it begins in `channel_reply` and ends in `channel_send`. A server replying disables interrupts, hands the reply over, and dispatches to the client, and the region does not close until that client is back in the kernel sending again. Preemption points at batch entries, message copy boundaries and page table walks lower regions that were never the longest. The floor this section describes is set by the rendezvous and the switch inside it, not by any critical section that could be broken in half, and lowering it means either not disabling interrupts across a switch or making the switch itself interruptible. Neither is a measurement, and neither is done here. (M12 did the first of them, and the ends named above moved: the region now begins in `channel_send` and ends in `channel_recv`. What did not change is that it spans a switch.)
+
+#### What the floor turned out to be, at M12
+
+M12 set out to lower the first term by not disabling interrupts across a switch, which is one of the two remedies named above. It lowered it a little, found that the region is not mostly the switch, and found that the figure in the table above is not the one a program meets.
+
+**The region that spans a switch is about one per cent switch.** Measured inside the region rather than beside it, for the same instance of it: 4642 ticks of which the switch was 41 on riscv64 at Tier 0, 4929 of which 52 at Tier 2, 27512 of which 240 and 54915 of which 506 on aarch64. The switch on its own has a mean of four to seven microseconds on either port. So the region is the rendezvous work that has to be atomic with the switch, and the switch is a rounding error inside it. Making the switch interruptible, the other remedy named above, would attack the one per cent.
+
+**Two of the three things that were in the region are out of it.** A reply's own work, which was returning a buffer right, copying a message, moving a handle and unwinding a donation, now ends before the dispatch rather than sharing a region with it. A thread waking from a rendezvous copies its message out after restoring interrupts rather than before. Both are argued from what the state is: what needs interrupts off is a client being taken apart and put back together, and by the time the deferral is lifted or the thread has woken, that is over. Neither moved the figure by more than the run-to-run spread, because what remains is the rendezvous itself.
+
+**The kernel lock does not lengthen it.** `klock_drop` and `klock_regain` touch the spinlock and not interrupts, so the lock is put down across the switch and the interrupts-off region is not. The figure agrees: medians within nine per cent between tiers, in both directions.
+
+**And the figure above belongs to the kernel's own threads.** The longest region that spans a switch is opened by a kernel thread in every run at both tiers, doing rendezvous work in the checks. The longest one that begins while a program is the current thread is four to eight times shorter.
+
+| | Tier 0 riscv64 | Tier 0 aarch64 | Tier 2 riscv64 | Tier 2 aarch64 |
+|---|---|---|---|---|
+| longest region across a switch, kernel thread | 449 us | 559 us | 465 us | 530 us |
+| longest with a program current | 83 us | 115 us | 60 us | 70 us |
+
+Medians of five runs each. **The second row is the one this section is about**, because the section is about the latency a program sees, and the first row is the latency of a test harness. It is which thread was current rather than which code did the work: a handler runs in the context of what it interrupted, so a region a timer opens while a program runs is in the second row, and it is that program the region delays.
+
+**So the floor did not move much, and the account of it is different.** M9 corrected this section from "preemption point placement" to "the switch". M12 corrects it again: the binding region spans a switch, which is still true and still means no preemption point can break it, but the length is the rendezvous and not the switch. Lowering it further means making the rendezvous shorter or making less of it atomic, and neither is a measurement.
 
 The means say the other half of it. A typical region is 5 to 16 microseconds and the longest is thirty to a hundred times that, so the figure this section defines is one event in twenty thousand rather than the shape of the system. Both numbers are worth having: the worst case is what a real-time bound is made of, and the mean is what says whether the worst case is representative.
 
