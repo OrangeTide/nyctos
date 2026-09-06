@@ -8495,10 +8495,11 @@ process is given back when the process is gone.
   a count.
 - *Settled.* **A program was spawned and reaped 40000 times, on a
   machine with 32768 frames, and the count came back to where it
-  started.** That run asked the allocator for 10,560,000 frames, three
-  hundred and twenty times what the machine has, and took just under
-  seven minutes of a host's time. Before this milestone the same loop
-  stopped at about the ninety-fifth iteration with no memory left.
+  started.** On riscv64 that run asked the allocator for 10,560,000
+  frames and took 430 seconds; on aarch64, 10,480,000 frames and 413
+  seconds. Either way it is more than three hundred times what the
+  machine has. Before this milestone the same loop stopped at about the
+  ninety-fifth iteration with no memory left.
 - *The boot runs 200 of them*, not 40000, because seven minutes is not
   a check anyone runs. Two hundred cycles still ask for 52800 frames
   against the 32768 that exist, so the boot check is a real one and the
@@ -8520,6 +8521,23 @@ process is given back when the process is gone.
   is something a check is watching for; here the two hundredth exit
   says nothing the first did not, and the check's output would be its
   own noise.
+- *The count at the end is waited for, not snapped*, which the review
+  changed for the reason stage four's review settled on. `page_used()`
+  is the whole machine's count, and asserting it is exactly what it was
+  asserts that nothing else moved a frame in the instant this looked.
+  The last cycle's reap is the one thing certain to be in flight, since
+  the join is not the reap. A leak still fails, because a count that
+  never returns runs out the deadline and panics with what it found.
+- *And the review found something it did not fix.* Running both ports'
+  long tests at once, on one host, made an aarch64 boot panic with "cpu
+  1: started and never answered". The rendezvous that waits for a
+  secondary core spins a million times and then gives up, and a million
+  spins is not an amount of time: it is however long a million spins
+  take on a host that may be running something else. That is M9's rule
+  about counts and durations pointing at the boot, where a count is
+  being used to bound a wait. It is written down here and nowhere else
+  yet, because it is not this milestone's subject and the fix is a
+  change to how the machine starts.
 - *Broken to check it.* Keeping one frame back on every sixteenth reap
   panicked in the stage-two check, "8 processes came and went and held
   1 frames", which is the earlier check doing its job. Making it every

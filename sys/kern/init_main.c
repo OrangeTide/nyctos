@@ -6282,7 +6282,25 @@ frame_endurance_checks(void)
     }
 
     t1 = time_now();
-    after = page_used();
+
+    /*
+     * Waited for rather than snapped, for the reason stage four's
+     * review settled on: the count is the whole machine's, and an
+     * assertion that it is exactly what it was is an assertion that
+     * nothing else moved a frame in the instant this looked. The last
+     * cycle's reap is the one thing certain to be in flight, since
+     * the join is not the reap.
+     */
+    {
+        sys_time_t deadline = time_now() + time_from_ms(JOIN_MS);
+
+        while ((after = page_used()) != before) {
+            if (time_now() > deadline) {
+                break;
+            }
+            sched_yield();
+        }
+    }
 
     exit_quiet = false;
 
