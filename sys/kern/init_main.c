@@ -6019,7 +6019,7 @@ substitution_checks(void)
  * connections first would be measuring the handing as well.
  */
 static uint32_t
-frame_cost_once(uint32_t *returned)
+frame_cost_once(const char *image, uint32_t *returned)
 {
     struct child c;
     uint32_t before, spawned, reaped;
@@ -6036,14 +6036,14 @@ frame_cost_once(uint32_t *returned)
      * of the loading and not of whatever the program then does.
      */
     sched_defer();
-    child_watch(&c, proc_spawn_image("spin", 20, NULL, 0, NULL, 0));
+    child_watch(&c, proc_spawn_image(image, 20, NULL, 0, NULL, 0));
     id = c.c_proc->p_id;
     spawned = page_used();
     sched_undefer();
 
     code = child_join(&c, JOIN_MS);
     if (code != 0) {
-        panic("frames: the program exited %d", code);
+        panic("frames: %s exited %d", image, code);
     }
 
     /*
@@ -6112,8 +6112,8 @@ frame_cost_checks(void)
      * count is asserted because it is the same in every run; measuring
      * it twice in one run is the cheapest test of that claim there is.
      */
-    first = frame_cost_once(&back);
-    second = frame_cost_once(&back2);
+    first = frame_cost_once("spin", &back);
+    second = frame_cost_once("spin", &back2);
 
     cnprintf("    a process costs %u frames, %u came back\n",
       (unsigned int)first, (unsigned int)back);
@@ -6189,6 +6189,13 @@ frame_cost_checks(void)
  */
 #define FRAME_ROUNDS    8u
 
+/*
+ * How many times stage five spawns and reaps. Chosen so that the frames
+ * the run asks for exceed the frames the machine has, which is the
+ * claim, and so that the check still fits in a boot.
+ */
+#define FRAME_CYCLES    200u
+
 static void
 frame_return_checks(void)
 {
@@ -6196,12 +6203,12 @@ frame_return_checks(void)
 
     cnputs("frames: what a run of processes leaves behind\n");
 
-    cost = frame_cost_once(&back);
+    cost = frame_cost_once("spin", &back);
     residue = cost - back;
 
     before = page_used();
     for (i = 0; i < FRAME_ROUNDS; i++) {
-        (void)frame_cost_once(&back);
+        (void)frame_cost_once("spin", &back);
     }
     after = page_used();
 
@@ -6227,6 +6234,90 @@ frame_return_checks(void)
         panic("frames: %u processes came and went and held %u frames",
           (unsigned int)FRAME_ROUNDS, (unsigned int)grew);
     }
+}
+
+/*
+ * Whether the system can now run indefinitely, per M13 stage 5.
+ *
+ * The question the milestone opened with was how long this system can
+ * run, and the answer was that it is bounded by how many processes it
+ * has ever started: a process took frames and nothing gave them back,
+ * so the machine had a lifetime measured in spawns. Stages two and
+ * three made the frames come back. This is the stage that spends them.
+ *
+ * A program is spawned and reaped more times than the machine has
+ * frames, and the count is read at either end. What that demonstrates
+ * is not that the arithmetic in the earlier stages was right, which the
+ * earlier checks already assert, but that it stays right: a reclamation
+ * that returned all but one frame each time round would pass every
+ * check before this one and still be a machine with a lifetime.
+ *
+ * The program is brief, which does nothing. What a cycle costs is then
+ * what a spawn and a reap cost, and the figure below is about this
+ * mechanism rather than about how long some program takes to run.
+ *
+ * The duration is reported and not asserted, per M9's rule: how long
+ * this takes is a property of the host. The count of iterations, the
+ * frames each one moves, and the count at either end are properties of
+ * the kernel, and those are asserted.
+ */
+static void
+frame_endurance_checks(void)
+{
+    uint32_t before, after, i;
+    uint32_t cost, back;
+    uint64_t t0, t1;
+
+    cnputs("frames: a program run more times than the machine has frames\n");
+
+    cost = frame_cost_once("brief", &back);
+
+    exit_quiet = true;
+
+    before = page_used();
+    t0 = time_now();
+
+    for (i = 0; i < FRAME_CYCLES; i++) {
+        (void)frame_cost_once("brief", &back);
+    }
+
+    t1 = time_now();
+    after = page_used();
+
+    exit_quiet = false;
+
+    cnprintf("    %u cycles of %u frames, %lu in all against %u the "
+      "machine has\n", (unsigned int)FRAME_CYCLES, (unsigned int)cost,
+      (unsigned long)((uint64_t)FRAME_CYCLES * cost),
+      (unsigned int)page_count());
+    /*
+     * Above the compared line and never asserted, because how long a
+     * run of spawns takes is a property of the host: M9's rule, and
+     * M12 had to relearn it.
+     */
+    cnprintf("    took %lu ms, a number of the host and not of the "
+      "kernel\n", (unsigned long)((t1 - t0) * 1000ULL / time_hz()));
+
+    if (after != before) {
+        panic("frames: %u cycles left the count at %u, not %u",
+          (unsigned int)FRAME_CYCLES, (unsigned int)after,
+          (unsigned int)before);
+    }
+
+    /*
+     * And that the run was worth making. A cycle that cost nothing
+     * would leave the count where it started for the wrong reason, and
+     * at Tier 0 that is exactly what happens: a process costs no frames
+     * there, so what this stage proves is a Tier 2 claim and the tier
+     * with flat memory has nothing to prove.
+     */
+#if SYS_TIER == 2
+    if ((uint64_t)FRAME_CYCLES * cost <= (uint64_t)page_count()) {
+        panic("frames: %u cycles of %u never exceeded the machine's %u",
+          (unsigned int)FRAME_CYCLES, (unsigned int)cost,
+          (unsigned int)page_count());
+    }
+#endif
 }
 
 /*
@@ -8304,6 +8395,17 @@ kernel_main(void)
     namespace_checks(h_fs_root, h_console);
 
     shell_checks(h_console, h_fs_root);
+
+    /*
+     * After the shell and not before it. This runs a program a few
+     * hundred times and takes a couple of seconds doing it, and the
+     * paced session feeds the shell a line every two seconds from the
+     * moment the machine starts. Put in front of the shell it delays
+     * it past input already sent, and the transcript loses the echo of
+     * the first command typed: a check that changes what it is
+     * checking. Nothing runs after this but the reports.
+     */
+    frame_endurance_checks();
 
     /*
      * The same rate over the whole run and not only over the two

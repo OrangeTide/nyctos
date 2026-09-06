@@ -307,6 +307,8 @@ op_debug_write(struct proc *p, struct sys_op *op)
  * cancelled, which is deliberate: what a shell needs is a program
  * that stops and a parent that hears about it.
  */
+bool exit_quiet;
+
 static sys_err_t
 op_thread_exit(struct proc *p, struct sys_op *op)
 {
@@ -317,7 +319,16 @@ op_thread_exit(struct proc *p, struct sys_op *op)
         return SYS_ERR_INVALID_ARG;
     }
 
-    cnprintf("    %s exited with status %d\n", p->p_name, args->code);
+    /*
+     * Every exit says so, because for most of this boot an exit is
+     * something a check is watching for. M13 stage 5 is the exception:
+     * it runs one program a few hundred times and the two hundredth
+     * exit says nothing the first did not. exit_quiet is how that
+     * stretch asks for silence, and it is off everywhere else.
+     */
+    if (!exit_quiet) {
+        cnprintf("    %s exited with status %d\n", p->p_name, args->code);
+    }
 
     thread_exit(args->code);
 }

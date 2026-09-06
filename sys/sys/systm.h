@@ -148,4 +148,12 @@ void enter_user(unsigned long entry, void *arg, unsigned long sp)
 void machine_halt(int status) __attribute__((noreturn));
 void machine_reset(void) __attribute__((noreturn));
 
+/*
+ * Whether an exiting program's status is printed. On for the whole boot
+ * except the stretch in M13 stage 5 that spawns one program hundreds of
+ * times, where the line would be the check's whole output and would say
+ * nothing after the first.
+ */
+extern bool exit_quiet;
+
 #endif /* _SYS_SYSTM_H_ */

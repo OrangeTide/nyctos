@@ -8486,13 +8486,53 @@ process is given back when the process is gone.
   given away as a grant left 2 held, not 1", which is what says the
   grant figure is measured and not a constant that happens to be one.
 
-**5. Whether the system can now run indefinitely.** *Planned.*
+**5. Whether the system can now run indefinitely.** *Built.*
 
 - *Check.* A loop that spawns, runs and reaps a program many more times
   than there are frames, with the count read at the start and the end.
   Before this milestone that loop cannot run at all; the number of
   iterations it survives is the milestone's headline figure, and it is
   a count.
+- *Settled.* **A program was spawned and reaped 40000 times, on a
+  machine with 32768 frames, and the count came back to where it
+  started.** That run asked the allocator for 10,560,000 frames, three
+  hundred and twenty times what the machine has, and took just under
+  seven minutes of a host's time. Before this milestone the same loop
+  stopped at about the ninety-fifth iteration with no memory left.
+- *The boot runs 200 of them*, not 40000, because seven minutes is not
+  a check anyone runs. Two hundred cycles still ask for 52800 frames
+  against the 32768 that exist, so the boot check is a real one and the
+  headline came from a run made on purpose. Which figure came from
+  where is written here because the two are not the same claim.
+- *The program is `brief`, which does nothing at all.* Every other
+  program in the archive computes something, talks to a server or
+  faults on purpose, and the cheapest of them spends eighty
+  milliseconds doing it, which multiplied by the number of frames in
+  the machine is a check nobody would run. What a cycle of `brief`
+  costs is what a spawn and a reap cost, which is what this stage
+  measures.
+- *The duration is reported and not asserted*, per M9's rule, which M12
+  had to relearn: how long a run of spawns takes is a property of the
+  host. What is asserted is the count of cycles, the frames each moves,
+  and that the count at the end equals the count at the start.
+- *And a stretch of the boot goes quiet.* `exit_quiet` turns off the
+  line every exiting program prints. For the rest of the boot an exit
+  is something a check is watching for; here the two hundredth exit
+  says nothing the first did not, and the check's output would be its
+  own noise.
+- *Broken to check it.* Keeping one frame back on every sixteenth reap
+  panicked in the stage-two check, "8 processes came and went and held
+  1 frames", which is the earlier check doing its job. Making it every
+  hundredth reap got past every check before this one and panicked
+  here: "200 cycles left the count at 10732, not 10730". That is the
+  failure this stage exists for, and a reclamation that returned all
+  but one frame each time is exactly the thing no shorter run can see.
+- *And it had to move to the end of the boot.* Run before the shell it
+  delays it by two seconds, and the paced session feeds the shell a
+  line every two seconds from the moment the machine starts, so the
+  transcript lost the echo of the first command typed. A check that
+  changes what it is checking is worse than no check; nothing runs
+  after this now but the reports.
 
 **6. What is still held, and section 15 written around it.** *Planned.*
 
