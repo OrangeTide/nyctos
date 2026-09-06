@@ -5963,13 +5963,17 @@ frame_cost_once(uint32_t *returned)
 
     before = page_used();
 
+    /*
+     * Both reads happen before the child is let go, which is what the
+     * defer is for. Spinning up a program that allocated nothing made
+     * this look right either way, and the measurement is meant to be
+     * of the loading and not of whatever the program then does.
+     */
     sched_defer();
     child_watch(&c, proc_spawn_image("spin", 20, NULL, 0, NULL, 0));
-    sched_undefer();
-
     id = c.c_proc->p_id;
-
     spawned = page_used();
+    sched_undefer();
 
     code = child_join(&c, JOIN_MS);
     if (code != 0) {
@@ -8266,6 +8270,7 @@ kernel_main(void)
      * said before the numbers that have to be identical everywhere.
      */
     pool_report_cores();
+    page_report_cores();
 
     intr_region_report();
     irq_dispatch_report();

@@ -8295,6 +8295,37 @@ process is given back when the process is gone.
   residue of 264, found 264 of them eight times, and passed. What
   catches that is asserting what came back against the slot, which is a
   number the system does not get to choose.
+- *And the review found the allocator had no lock.* Every other shared
+  structure in the kernel takes one at Tier 2: the pools, the object
+  references, the timer list, the console. The frame allocator took
+  none, and disabling interrupts is exclusion on one core and nothing on
+  two. It had not mattered while the only caller that freed a frame was
+  a boot check, and this stage is what made freeing something a reap
+  does, at the top of whichever core's switch collects the parked
+  thread. `page_alloc`, `page_take` and `page_free` now take a leaf
+  spinlock, on the pool's pattern.
+- *Measured, though, only one core ever enters it*: 43849 operations on
+  riscv64 and 43706 on aarch64, all of them on the core running the boot
+  thread, at two cores and at four. So `page_report_cores` prints the
+  split and, unlike `pool_report_cores`, does not halt a boot in which a
+  core never appears, because that would halt every boot there is. The
+  lock is still right: a fault serviced by a pager, or a spawn made by a
+  program, is this allocator entered from wherever that program runs.
+  **It is correct and untested by contention**, and printing the zero is
+  what keeps that visible.
+- *Two smaller things the review changed.* `proc_as` answers with the
+  kernel's own space for a process that has none, and the slot addresses
+  are mapped there too, so a process reaching the free without a space
+  would have had it free the frames behind the kernel's own mappings.
+  Nothing can reach that today; it is refused rather than assumed,
+  because the failure is silent and total. And the count after the spawn
+  was read after the child had been let go rather than before, which a
+  program that allocates nothing made look right either way.
+- *Broken to check those.* Clearing the address space root before the
+  free panicked with "its memory is in a space it does not have".
+  Removing the frame lock changed nothing that runs today, which is the
+  same answer the per-core count gives and the reason it is printed.
+
 
 **3. And its page tables, at Tier 2.** *Planned.*
 

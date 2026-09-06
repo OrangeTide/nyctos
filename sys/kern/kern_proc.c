@@ -1349,6 +1349,21 @@ proc_free_slot(struct proc *p)
 
     as = proc_as(p);
 
+    /*
+     * Never through the kernel's own space. proc_as answers vm_kernel()
+     * for a process that has no space of its own, and the slot
+     * addresses are mapped there too, so a process that reached here
+     * without one would have this free the frames behind the kernel's
+     * own mappings. Nothing can reach that today, because a Tier 2
+     * spawn makes the space before it loads and panics if it cannot.
+     * It is refused rather than assumed because the failure is silent
+     * and total.
+     */
+    if (as == vm_kernel()) {
+        panic("proc %s: its memory is in a space it does not have",
+          p->p_name);
+    }
+
     for (off = p->p_pager_bytes; off < len; off += PAGE_SIZE) {
         uintptr_t pa;
 

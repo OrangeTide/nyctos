@@ -78,6 +78,9 @@ uintptr_t page_last(void);
 uint32_t page_used(void);
 uint32_t page_highwater(void);
 
+/* Which cores have been inside the allocator; see subr_page.c. */
+void page_report_cores(void);
+
 void page_report(void);
 
 #endif /* _SYS_PAGE_H_ */

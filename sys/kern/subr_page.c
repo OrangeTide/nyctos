@@ -25,7 +25,9 @@
  * machine with more says so at boot rather than silently using less.
  */
 
+#include <sys/cpu.h>
 #include <sys/intr.h>
+#include <sys/lock.h>
 #include <sys/page.h>
 #include <sys/systm.h>
 
@@ -37,6 +39,75 @@ static uintptr_t frame_base;
 static uint32_t frame_count;
 static uint32_t frame_used;
 static uint32_t frame_highwater;
+
+/*
+ * Exclusion, which this did not have.
+ *
+ * Every other shared structure in the kernel takes a lock at Tier 2:
+ * the pools, the object references, the timer list and the console.
+ * The frame allocator did not, and disabling interrupts is exclusion on
+ * one core and nothing at all on two. It was very nearly true that
+ * nothing noticed, because until M13 stage 2 the only caller that freed
+ * a frame was a boot check running on one core.
+ *
+ * That stage is what made it matter. A process is reaped from
+ * thread_reap_parked at the top of a switch, which happens on whichever
+ * core the switch is on, so freeing a slot now runs on either core
+ * while the other may be loading a program. Two cores in this bitmap at
+ * once lose a bit, which is one frame handed to two owners, or lose a
+ * count, which is the number this whole milestone is measured in.
+ *
+ * A leaf, like the pool lock and for the same reason: nothing under it
+ * takes another lock, so it cannot be half of a cycle.
+ */
+#if SYS_TIER == 2
+
+static struct spinlock page_lock = { 0, 0, "frames" };
+
+/*
+ * How many times each core has been in here, for the same reason the
+ * pools count it: a second core that never touched a frame would leave
+ * every number correct for the wrong reason and the lock untested.
+ */
+static uint64_t page_ops[SYS_MAX_CORES];
+
+static intr_state_t
+page_enter(void)
+{
+    intr_state_t s = md_intr_disable();
+
+    spin_lock(&page_lock);
+    page_ops[cpu_self()->cp_index]++;
+
+    return s;
+}
+
+static void
+page_leave(intr_state_t s)
+{
+    spin_unlock(&page_lock);
+    md_intr_restore(s);
+}
+
+#else
+
+/*
+ * Section 13.3 buys Tier 0 a kernel with no internal locking at all,
+ * and one core is what makes disabling interrupts exclusion again.
+ */
+static intr_state_t
+page_enter(void)
+{
+    return md_intr_disable();
+}
+
+static void
+page_leave(intr_state_t s)
+{
+    md_intr_restore(s);
+}
+
+#endif /* SYS_TIER == 2 */
 
 /*
  * What the port asked to be held back, kept so that handing one out
@@ -128,7 +199,7 @@ page_init(uintptr_t base, size_t len, uintptr_t hold, size_t hold_len)
 uintptr_t
 page_alloc(void)
 {
-    intr_state_t s = md_intr_disable();
+    intr_state_t s = page_enter();
     uint32_t w;
 
     for (w = 0; w * BITS_PER_WORD < frame_count; w++) {
@@ -155,7 +226,7 @@ page_alloc(void)
                 panic("page: handing out %p, inside the kernel image",
                   (void *)pa);
             }
-            md_intr_restore(s);
+            page_leave(s);
 
             memset((void *)pa, 0, PAGE_SIZE);
 
@@ -163,7 +234,7 @@ page_alloc(void)
         }
     }
 
-    md_intr_restore(s);
+    page_leave(s);
 
     return 0;
 }
@@ -178,16 +249,16 @@ page_alloc(void)
 bool
 page_take(uintptr_t pa)
 {
-    intr_state_t s = md_intr_disable();
+    intr_state_t s = page_enter();
     uint32_t i;
 
     if ((pa & PAGE_MASK) != 0 || pa < frame_base) {
-        md_intr_restore(s);
+        page_leave(s);
         return false;
     }
     i = (uint32_t)((pa - frame_base) / PAGE_SIZE);
     if (i >= frame_count || taken(i)) {
-        md_intr_restore(s);
+        page_leave(s);
         return false;
     }
 
@@ -197,7 +268,7 @@ page_take(uintptr_t pa)
         frame_highwater = frame_used;
     }
 
-    md_intr_restore(s);
+    page_leave(s);
 
     return true;
 }
@@ -205,9 +276,14 @@ page_take(uintptr_t pa)
 void
 page_free(uintptr_t pa)
 {
-    intr_state_t s = md_intr_disable();
+    intr_state_t s;
     uint32_t i;
 
+    /*
+     * Before the lock, because neither reads anything another core
+     * could be changing, and a panic holding a lock is a panic that
+     * has to be reasoned about.
+     */
     if ((pa & PAGE_MASK) != 0 || pa < frame_base) {
         panic("page: freeing %p, which is not a frame", (void *)pa);
     }
@@ -215,6 +291,9 @@ page_free(uintptr_t pa)
     if (i >= frame_count) {
         panic("page: freeing %p, which is outside the map", (void *)pa);
     }
+
+    s = page_enter();
+
     if (!taken(i)) {
         panic("page: freeing %p, which was already free", (void *)pa);
     }
@@ -222,7 +301,7 @@ page_free(uintptr_t pa)
     give(i);
     frame_used--;
 
-    md_intr_restore(s);
+    page_leave(s);
 }
 
 uint32_t
@@ -265,3 +344,43 @@ page_last(void)
     return frame_base + (uintptr_t)(frame_count - 1) * PAGE_SIZE;
 }
 
+
+/*
+ * Which cores have taken frames and given them back.
+ *
+ * The same question the pools answer about themselves, and here it has
+ * a second use. M13 stage 2 freed a process's memory from the reap, and
+ * a reap runs at the top of whichever core's switch collects the parked
+ * thread. Whether that is really both cores is not something the design
+ * can assert on its own, and a lock nothing contends is a lock that has
+ * never been tried.
+ *
+ * It says so rather than insisting. pool_report_cores halts a boot in
+ * which a core never touched a pool, and the same rule here would halt
+ * every boot there is: measured, every entry to this allocator happens
+ * on the core that runs the boot thread, at two cores and at four. The
+ * lock is still right, because a fault serviced by a pager or a spawn
+ * made by a program is this allocator entered from wherever that
+ * program runs. It is untested by contention, and printing zero is how
+ * that stays visible.
+ */
+void
+page_report_cores(void)
+{
+#if SYS_TIER == 2
+    uint64_t total = 0;
+    uint32_t i;
+
+    for (i = 0; i < cpu_count(); i++) {
+        total += page_ops[i];
+    }
+
+    cnprintf("frames: taken and given back %lu times,",
+      (unsigned long)total);
+    for (i = 0; i < cpu_count(); i++) {
+        cnprintf("%s %lu on core %u", i == 0 ? "" : " and",
+          (unsigned long)page_ops[i], (unsigned int)i);
+    }
+    cnprintf("\n");
+#endif
+}
