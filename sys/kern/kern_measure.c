@@ -463,6 +463,7 @@ intr_region_begin(uintptr_t site)
     c->cp_intr_open = true;
     c->cp_intr_console = false;
     c->cp_intr_thread = thread_current();
+    c->cp_intr_switch = 0;
     c->cp_intr_start = md_time_now();
 }
 
@@ -523,6 +524,15 @@ switch_arrived(void)
 
     c->cp_switch_count++;
     c->cp_switch_total += took;
+
+    /*
+     * And into the region this switch happened inside, which is the
+     * one the thread that left the core opened: interrupts have been
+     * off across the whole of it, so the region open here is that one.
+     */
+    if (c->cp_intr_open) {
+        c->cp_intr_switch += took;
+    }
     if (took > c->cp_switch_worst) {
         c->cp_switch_worst = took;
     }
@@ -601,6 +611,7 @@ intr_region_end(uintptr_t site)
         c->cp_cross_worst = took;
         c->cp_cross_site = c->cp_intr_site;
         c->cp_cross_end = site;
+        c->cp_cross_switch = c->cp_intr_switch;
     }
 
     if (!c->cp_intr_console) {
@@ -691,6 +702,8 @@ intr_region_report(void)
                 (c->cp_cross_worst * 1000000UL) / hz : 0),
               (unsigned long)c->cp_cross_site,
               (unsigned long)c->cp_cross_end);
+            cnprintf("            of which the switch was %lu\n",
+              (unsigned long)c->cp_cross_switch);
         }
 
         /*

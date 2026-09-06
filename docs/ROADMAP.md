@@ -7880,26 +7880,26 @@ is not.*
   in reads that stamp on its first instruction after its own switch
   returned. Timing around `thread_switch_to` would measure how long the
   outgoing thread was away, which is a property of the workload.
-- *The answer.*
+- *The answer, measured inside the region rather than beside it.* How
+  much of the binding region was the switch, for the same instance of
+  it:
 
 ```
-                 region   switches   worst switch   mean switch
-riscv64 tier0      4252        469            991            48
-riscv64 tier2      4870       4482           1193            65
-aarch64 tier0     28638        469           5809           249
-aarch64 tier2     29611       4484          10994           427
+                  region   the switch in it
+riscv64 tier0       4642                 41
+riscv64 tier2       4929                 52
+aarch64 tier0      27512                240
+aarch64 tier2      54915                506
 ```
 
-- **The switch is about one per cent of the region that spans it.** The
-  mean is forty-eight to four hundred and twenty-seven ticks against a
-  region of four to thirty thousand, which is 0.9 to 1.4 per cent in
-  every configuration. Even the worst switch seen is a fifth to a third
-  of the worst region.
-- In microseconds the mean switch is between four and seven on both
-  ports, and the region is between four hundred and twenty-five and
-  four hundred and ninety. The two ports agree about both, which is
-  what says these are properties of the kernel's shape rather than of
-  either machine.
+- **The switch is about one per cent of the region that spans it**, in
+  every configuration, on both ports and at both tiers.
+- The switch on its own, across the whole run, for scale: 469 of them
+  at Tier 0 and about 4,480 at Tier 2, with a mean of forty-eight to
+  four hundred and twenty-seven ticks, which is four to seven
+  microseconds on either port. The two ports agree about that and about
+  the region, which is what says both are properties of the kernel's
+  shape rather than of either machine.
 - *So section 13.3's floor is not the switch.* M9 established that the
   binding region spans a switch and that no preemption point can
   therefore break it, and both of those remain true. What does not
@@ -7910,7 +7910,7 @@ aarch64 tier2     29611       4484          10994           427
 - *Which means the two remedies M9 named are aimed at one per cent.*
   Not disabling interrupts across a switch is what stages two and three
   did, as far as the state allows. Making the switch interruptible
-  would attack the forty-eight ticks and leave the four thousand.
+  would attack the forty ticks and leave the four thousand six hundred.
 - *What settles it.* That a switch was measured at all is asserted, for
   the same reason the crossing region is: a run measuring none has an
   instrument that stopped rather than a machine that never scheduled.
@@ -7920,6 +7920,19 @@ aarch64 tier2     29611       4484          10994           427
   inside the region being measured, which is the same trade M9 recorded
   for the regions themselves and is worth restating where the figure
   being read is one per cent of another figure.
+- *Reviewed, and the first version of this answer was arithmetic
+  between two things that do not belong together.* It set the mean
+  switch against the worst region and reported the ratio as one per
+  cent. The mean switch is sixty-six ticks and the mean region is
+  fifty-four: the switch is *larger* than a typical region, and the
+  only reason the ratio looked small is that the numerator was a mean
+  and the denominator a maximum. The figure is now taken inside the
+  binding region itself, for that one instance, which is the
+  measurement the claim always needed. It comes out at one per cent, so
+  the conclusion stands and the way it was reached did not.
+  Incidentally the same instrument shows the idle path's region is
+  seventy-nine per cent switch, which is what a region that is almost
+  nothing but a switch looks like and is a useful thing to have seen.
 
 **5. Whether the kernel lock puts it back at Tier 2.** *Planned.*
 

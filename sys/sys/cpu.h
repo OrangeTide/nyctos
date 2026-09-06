@@ -192,6 +192,18 @@ struct cpu {
      * than the time a thread spent away.
      */
     uint64_t            cp_switch_stamp;
+
+    /*
+     * How much of the region now open was spent inside a switch, so
+     * that the binding region can be reported as a whole and a part
+     * of itself rather than compared against a figure from somewhere
+     * else. Comparing a mean switch against a worst region is what
+     * this stage did first, and the mean switch is larger than the
+     * mean region, so the comparison flattered the answer by two
+     * orders of magnitude.
+     */
+    uint64_t            cp_intr_switch;
+    uint64_t            cp_cross_switch;
     uint64_t            cp_switch_count;
     uint64_t            cp_switch_worst;
     uint64_t            cp_switch_total;
