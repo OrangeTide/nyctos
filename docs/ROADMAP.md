@@ -8458,6 +8458,26 @@ process is given back when the process is gone.
   larger on one port. A literal there would have been a check on the
   build rather than on the mechanism, and would have failed on the
   architecture it was not written for.
+- *And the review found the number was read too early.* Stage two
+  established that the join is not the reap, and these brackets read the
+  count the moment a check returned, with the process it spawned still
+  holding its slot until the next switch collected its last thread. The
+  figures were right anyway, because each of these checks does enough
+  after its join for the reap to happen, which is luck and not
+  structure. The failure it would produce is a panic naming the wrong
+  culprit: a whole process counted against the grant.
+- *The first fix was the wrong observable.* Waiting for the process
+  pool's count to return to what it was before the check assumes the
+  check is the only thing making processes. Under the paced session it
+  is not: the console has input to deal with while this runs, a process
+  appears that the check never started, and the wait failed on somebody
+  else's work with "1 processes outlived the check that made them". It
+  passed every burst run, which is what made it look right.
+- *What it waits on now is the figure itself.* `frame_holder` reads the
+  count, yields, and reads again until what is held is what is expected
+  or a deadline passes. That needs no theory about which processes are
+  whose: the thing being asserted is the thing being waited for, and a
+  number that never arrives still panics with what it found.
 - *This is also where stage two's pager boundary stopped being an
   argument.* That stage kept the reap off pages a pager supplied and
   recorded that removing the guard broke nothing any check could see.

@@ -2916,6 +2916,8 @@ device_checks(void)
 }
 
 
+
+
 /*
  * What holds a frame that no process holds, per M13 stage 4.
  *
@@ -2938,17 +2940,45 @@ device_checks(void)
  * the difference between checking a mechanism and checking a constant:
  * what the pager holds is the pages the pager supplied, whatever the
  * image's size turns out to be.
+ *
+ * What is measured is what the run left behind. Who holds it is an
+ * argument, printed beside the number and not established by it, so a
+ * figure that changes means something in that run stopped giving a
+ * frame back, and not necessarily the thing named.
+ *
+ * It waits for the number rather than reading it once, because stage
+ * two established that the join is not the reap: a program that has
+ * exited holds its slot until its last thread is collected at the top
+ * of some core's next switch, and a count read before that has a whole
+ * process in it. Waiting on the figure itself is what this settled on
+ * after waiting on a proxy went wrong. The proxy was the process pool's
+ * count returning to what it was before the check, which is not this
+ * check's business to require: under the paced session the console has
+ * input to deal with and a process appears that this never started, and
+ * the wait then failed on somebody else's work.
  */
 static void
-frame_holder(const char *what, uint32_t held, uint32_t expect,
+frame_holder(const char *what, uint32_t before, uint32_t expect,
   const char *who)
 {
-    cnprintf("    %-38s %u, held by %s\n", what, (unsigned int)held, who);
+    sys_time_t deadline = time_now() + time_from_ms(JOIN_MS);
+    uint32_t held;
 
-    if (held != expect) {
-        panic("frames: %s left %u held, not %u", what,
-          (unsigned int)held, (unsigned int)expect);
+    for (;;) {
+        uint32_t now = page_used();
+
+        held = now > before ? now - before : 0;
+        if (held == expect) {
+            break;
+        }
+        if (time_now() > deadline) {
+            panic("frames: %s left %u held, not %u", what,
+              (unsigned int)held, (unsigned int)expect);
+        }
+        sched_yield();
     }
+
+    cnprintf("    %-38s %u, held by %s\n", what, (unsigned int)held, who);
 }
 
 /*
@@ -7983,8 +8013,7 @@ user_slice(void)
          * server sees it were built by the first such call and are
          * reused by every one after.
          */
-        frame_holder("a buffer lent across a rendezvous",
-          page_used() - a, 0, "nothing");
+        frame_holder("a buffer lent across a rendezvous", a, 0, "nothing");
     }
 
 #if SYS_TIER == 2
@@ -8046,8 +8075,7 @@ user_slice(void)
          * frames the reclamation has just returned, reading a file
          * through a server in another address space, and then reaped.
          */
-        frame_holder("a client that ran and was reaped",
-          page_used() - a, 0, "nothing");
+        frame_holder("a client that ran and was reaped", a, 0, "nothing");
     }
 }
 
@@ -8247,8 +8275,7 @@ kernel_main(void)
          * A device grant is the case that makes that right, its memory
          * being a chip and not a frame at all.
          */
-        frame_holder("a page given away as a grant", page_used() - a, 1,
-          "the grant");
+        frame_holder("a page given away as a grant", a, 1, "the grant");
     }
 
     {
@@ -8265,8 +8292,8 @@ kernel_main(void)
          * was supplied, and it is nothing at Tier 0, where a flat
          * address space never faults.
          */
-        frame_holder("pages a pager supplied", page_used() - a,
-          pager_pages, "the pager's grants");
+        frame_holder("pages a pager supplied", a, pager_pages,
+          "the pager's grants");
     }
 
     cnputs("the slice again, with both halves in user mode\n");
