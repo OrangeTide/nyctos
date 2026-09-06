@@ -7934,14 +7934,52 @@ aarch64 tier2      54915                506
   seventy-nine per cent switch, which is what a region that is almost
   nothing but a switch looks like and is a useful thing to have seen.
 
-**5. Whether the kernel lock puts it back at Tier 2.** *Planned.*
+**5. Whether the kernel lock puts it back at Tier 2.** *Built, and it
+does not.*
 
-- M8 holds one lock at every kernel entry with interrupts off, and puts
-  it down at the switch. If that region spans what stages two and three
-  separated, then Tier 2's floor is unchanged and this milestone's
-  answer is per tier.
-- *Check.* The same measurement at both tiers. A difference is the
-  finding; so is its absence.
+- *The mechanism first, because it settles the question before the
+  measurement does.* `klock_drop` and `klock_regain` touch the spinlock
+  and nothing else. The lock is put down across the switch, as M8
+  arranged, and interrupts are not: they were turned off before it was
+  taken and stay off until somebody restores. So the lock's presence
+  does not change the interrupts-off structure at all, and there is
+  nothing for it to put back.
+- *What it does change, which is worth stating.* At Tier 2 a user
+  thread's region is opened by `klock_enter` at the trap, so by the
+  time `channel_send` disables interrupts they are already off and its
+  own restore does nothing. **The splits of stages two and three are
+  no-ops for user threads at Tier 2.** They take effect only for
+  threads that entered the kernel with interrupts on, which means the
+  kernel's own.
+- *And the figure is the same at both tiers anyway*, which says the
+  splits were not what set it. Five runs of each, sorted, in ticks:
+
+```
+riscv64 tier0   4852 4878 5221 5544 6986
+riscv64 tier2   4920 5044 5108 5259 8819
+aarch64 tier0  29263 29804 32330 39147 40923
+aarch64 tier2  32701 34189 35285 36799 43708
+```
+
+- The medians are 5221 against 5108 on riscv64 and 32330 against 35285
+  on aarch64: within nine per cent, in both directions. In
+  microseconds every configuration lands between five hundred and ten
+  and five hundred and seventy. Two ports and two tiers agreeing to
+  that degree is the strongest evidence this milestone has that the
+  figure is a property of the kernel's shape.
+- *The absence is the finding, and it was worth asking for.* M8's
+  deviation raised the count of interrupts-off regions from six hundred
+  to twenty-two thousand and left the longest one untouched, which M9
+  measured. This stage is the same result from the other end: the lock
+  does not lengthen the binding region either, because what the lock
+  contends for and what the region protects are different things.
+- *Where the binding region is.* `channel_send` in ten runs out of
+  eleven, at both tiers, with one run finding `thread_cancel` at a
+  similar length. So it is not one path but a family of them, all of
+  the same size, which is what a floor set by the shape of a rendezvous
+  rather than by one code path would look like.
+- *No code changed in this stage.* It is a measurement and a reading of
+  two functions, and the check is the comparison itself.
 
 **6. What the floor is now, and section 13.3 rewritten around it.**
 *Planned.*
