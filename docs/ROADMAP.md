@@ -9290,6 +9290,25 @@ is released is section 18.3's and stays there.
 - *And it could not spin.* The boot thread outranks a server at
   `PRIO_BOOT - 1`, so waiting for the reply with `sched_yield` never let
   the server run at all. It waits on a timeline the server signals.
+- *And the review found a server left inside a request it had finished.*
+  `channel_reply` answers `SYS_ERR_STALE` and returns before it reaches
+  the point where a reply takes the server off the channel's list of
+  threads inside a request. Nothing else takes it off. That list is what
+  `chain_raise` walks to donate a queued sender's priority down the
+  chain, so a server left on it is a thread raised for work it is no
+  longer doing, and the walk then follows what it is blocked on into
+  somebody else's chain. Every timed-out request would have added one.
+- *Reachable only since this stage.* A stale reply used to mean a double
+  reply or a client that had been cancelled, and cancellation ends the
+  server's serving state by another route. A client that gives up on its
+  own is the first ordinary way to make a server's reply arrive too
+  late.
+- *Cleared only when the client named is the one this server was
+  holding.* A reply to an identifier that was never its own is refused
+  the same way and has nothing to do with the request it does have, so
+  it must not take that request off the list. Leaving the state set
+  panics with "the channel still has a server in a request".
+
 - *Broken to check it.* Arming the timer only for a queued sender
   panicked with "expected TIMEOUT, got OK". Skipping the release the
   woken client does panicked with "it gave up still donating to its

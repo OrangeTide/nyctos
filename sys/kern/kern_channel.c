@@ -1122,6 +1122,26 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
 
     client = thread_by_id(peer);
     if (client == NULL || client->t_reply == NULL) {
+        /*
+         * The client is gone, and this server is still on the
+         * channel's list of threads inside a request. Nothing else
+         * takes it off: a normal reply does it below, and this returns
+         * before reaching there. chain_raise walks that list to donate
+         * a sender's priority down it, so a server left on it is a
+         * thread that gets raised for work it is no longer doing, and
+         * the walk follows what it is blocked on into somebody else's
+         * chain.
+         *
+         * Only when the client named is the one this server was
+         * holding. A reply to an identifier that was never its own is
+         * refused the same way and has nothing to do with the request
+         * it does have.
+         */
+        if (self->t_client == peer) {
+            serving_end(self);
+            self->t_client = 0;
+        }
+
         md_intr_restore(s);
         return SYS_ERR_STALE;
     }

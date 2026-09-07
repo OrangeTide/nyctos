@@ -3710,6 +3710,16 @@ deadline_checks(void)
             panic("deadline: %u connection records left over",
               (unsigned int)(conns->used - before));
         }
+        /*
+         * And the channel has nobody inside a request on it. A server
+         * whose reply was refused is finished with that request as
+         * surely as one whose reply landed, and the list chain_raise
+         * walks has to say so.
+         */
+        if (dl_ch->c_serving != NULL) {
+            panic("deadline: the channel still has a server in a request");
+        }
+
         cnprintf("    %-38s %s\n", "what the server was left holding",
           "nothing it cannot give back");
     }
