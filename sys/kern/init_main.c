@@ -2918,6 +2918,64 @@ device_checks(void)
 
 
 
+
+/*
+ * The frame count, read when nothing is moving it.
+ *
+ * A bracket that takes its baseline the instant a check begins includes
+ * whatever the check before it left in flight, and what is most often
+ * in flight is a reap: a program that exited a moment ago still holds
+ * its slot until the next switch collects its last thread. Its frames
+ * then come back inside the window and are counted against whatever the
+ * window is named after. M14 stage two is what made that visible, by
+ * making a process small enough that the boot reaches the next check
+ * before the last one has finished letting go.
+ *
+ * Both the count and the number of processes waiting to be reaped have
+ * to hold still, and the second is the one that matters: a parked
+ * thread moves no frames, so a count alone reads as quiet right up to
+ * the moment somebody else's memory comes back. Waiting for the number
+ * to reach zero would not do, because a process whose handles are
+ * deliberately held never gets reaped at all.
+ *
+ * Settled rather than delayed: same over several reads with a yield
+ * between them is a statement about the system being quiet and not
+ * about how long that took. The bound is a deadline because a count
+ * that never settles is a system doing something, and saying so beats
+ * waiting for ever.
+ */
+static uint32_t
+frames_quiet(void)
+{
+    sys_time_t deadline = time_now() + time_from_ms(JOIN_MS);
+    uint32_t last = page_used();
+    uint32_t pending = proc_exited_unreaped();
+    uint32_t same = 0;
+
+    while (same < 3) {
+        uint32_t now, left;
+
+        sched_yield();
+        now = page_used();
+        left = proc_exited_unreaped();
+
+        if (now == last && left == pending) {
+            same++;
+        } else {
+            same = 0;
+            last = now;
+            pending = left;
+        }
+        if (time_now() > deadline) {
+            panic("frames: the count never settled, last %u with %u "
+              "processes still to reap", (unsigned int)last,
+              (unsigned int)pending);
+        }
+    }
+
+    return last;
+}
+
 /*
  * What holds a frame that no process holds, per M13 stage 4.
  *
@@ -2979,6 +3037,40 @@ frame_holder(const char *what, uint32_t before, uint32_t expect,
     }
 
     cnprintf("    %-38s %u, held by %s\n", what, (unsigned int)held, who);
+}
+
+/*
+ * A row of the same table measured against its holder rather than
+ * against the machine's free memory, per M14 stage two's review.
+ *
+ * The two rows with a named holder can be asked about it directly:
+ * grant_frames() is the frames grants describe, so a check that hands a
+ * page to a grant should raise it by one and a pager that answers five
+ * faults should raise it by five. That is the quantity the row is
+ * about.
+ *
+ * The window form these used to have is confounded by anything else
+ * giving memory back inside it, and something does: reaping is deferred
+ * to a switch, and work inside one of these checks can release the last
+ * handle to a process that exited during the check before it. Then a
+ * dozen frames come back in the middle of the window and the row reads
+ * as though its holder had let go. Waiting for quiet does not fix it,
+ * because a parked thread moves no frames until it is collected, and
+ * draining first does not either, because the release happens inside
+ * the window rather than before it.
+ */
+static void
+grant_holder(const char *what, uint32_t before, uint32_t expect,
+  const char *who)
+{
+    uint32_t held = grant_frames() - before;
+
+    cnprintf("    %-38s %u, held by %s\n", what, (unsigned int)held, who);
+
+    if (held != expect) {
+        panic("frames: %s left %u held, not %u", what,
+          (unsigned int)held, (unsigned int)expect);
+    }
 }
 
 /*
@@ -6138,11 +6230,17 @@ frame_cost_checks(void)
     }
 
     /*
-     * The cost is a count. It is the slot rounded to pages plus whatever
-     * the tier's tables need, and neither depends on the host, so it is
-     * the same in every run and may be asserted. The exact figure differs
-     * by architecture because the table shapes do, which is why the floor
-     * is the slot and not a number written down here.
+     * The cost is a count. It is what the image needs rounded to pages,
+     * plus a page for the startup record and whatever the tier's tables
+     * take, and none of that depends on the host, so it is the same in
+     * every run and may be asserted. The exact figure differs by
+     * architecture because the table shapes do, which is why the floor
+     * is read from the archive and not written down here.
+     *
+     * The floor was a slot until M14 stage two, which is what a process
+     * cost when the loader mapped one whatever the image was. Comparing
+     * against the image is the same check asking the same question of a
+     * loader that now knows the answer.
      */
 #if SYS_TIER == 0
     if (first != 0) {
@@ -6150,9 +6248,17 @@ frame_cost_checks(void)
           (unsigned int)first);
     }
 #else
-    if (first < SYS_USER_SLOT_BYTES / PAGE_SIZE) {
-        panic("frames: a process cost %u frames, fewer than its slot",
-          (unsigned int)first);
+    {
+        const struct boot_member *m = boot_lookup("spin");
+        uint32_t needs = m != NULL ? m->bm_mem / PAGE_SIZE : 0;
+
+        if (needs == 0) {
+            panic("frames: the archive says nothing about spin");
+        }
+        if (first < needs) {
+            panic("frames: a process cost %u frames, fewer than the %u "
+              "its image needs", (unsigned int)first, (unsigned int)needs);
+        }
     }
 #endif
 
@@ -6204,7 +6310,7 @@ frame_cost_checks(void)
  * the run asks for exceed the frames the machine has, which is the
  * claim, and so that the check still fits in a boot.
  */
-#define FRAME_CYCLES    200u
+#define FRAME_CYCLES    2400u
 
 /*
  * How many frames the ledger at the end of the boot cannot attribute to
@@ -8128,7 +8234,7 @@ user_slice(void)
      * it does not, the section is deleted and section 12.7 with it.
      */
     {
-        uint32_t a = page_used();
+        uint32_t a = frames_quiet();
 
         kernel_buffer_checks(h_fs_root);
 
@@ -8193,7 +8299,7 @@ user_slice(void)
     frame_cost_checks();
     frame_return_checks();
     {
-        uint32_t a = page_used();
+        uint32_t a = frames_quiet();
 
         run_client("fs_client", root6, BLK_MOTD_BYTES, SEND_BLOCK_YES);
 
@@ -8499,7 +8605,7 @@ kernel_main(void)
     cnputs("frames: what holds one that no process holds\n");
 
     {
-        uint32_t a = page_used();
+        uint32_t a = grant_frames();
 
         grant_checks();
 
@@ -8511,11 +8617,11 @@ kernel_main(void)
          * A device grant is the case that makes that right, its memory
          * being a chip and not a frame at all.
          */
-        frame_holder("a page given away as a grant", a, 1, "the grant");
+        grant_holder("a page given away as a grant", a, 1, "the grant");
     }
 
     {
-        uint32_t a = page_used();
+        uint32_t a = grant_frames();
 
         paging_checks();
 
@@ -8528,7 +8634,7 @@ kernel_main(void)
          * was supplied, and it is nothing at Tier 0, where a flat
          * address space never faults.
          */
-        frame_holder("pages a pager supplied", a, pager_pages,
+        grant_holder("pages a pager supplied", a, pager_pages,
           "the pager's grants");
     }
 

@@ -223,6 +223,40 @@ proc_frames_orphaned(void)
     return frames_orphaned;
 }
 
+/*
+ * How many processes have exited and not yet been reaped.
+ *
+ * A measurement of frames wants to know this. A process that has exited
+ * still holds everything it was given until its last thread is
+ * collected, and the collection happens at the top of some core's next
+ * switch, so a count of free memory taken while one is pending will see
+ * that memory come back at a moment nothing chose. M14 stage two is
+ * what made it matter: processes became small enough that the boot
+ * reaches the next check before the last one has finished letting go.
+ *
+ * Not all of them go. A process whose handles are deliberately held
+ * stays exited and unreaped for the rest of the boot, which is why
+ * anything waiting on this waits for the number to settle rather than
+ * for it to reach zero.
+ */
+uint32_t
+proc_exited_unreaped(void)
+{
+    struct pool *pool = proc_pool();
+    uint32_t n = 0;
+    uint32_t i;
+
+    for (i = 0; i < pool->count; i++) {
+        const struct proc *p = pool_at(pool, i);
+
+        if (p != NULL && p->p_exited) {
+            n++;
+        }
+    }
+
+    return n;
+}
+
 #if SYS_TIER == 2
 
 /*
@@ -352,7 +386,7 @@ proc_load(struct proc *p, const struct boot_member *m)
     size_t done = 0;
     sys_err_t err;
 
-    while (done < SYS_USER_SLOT_BYTES) {
+    while (done < m->bm_mem) {
         uintptr_t pa;
         size_t n = m->bm_size > done ? m->bm_size - done : 0;
 
@@ -388,10 +422,11 @@ proc_load(struct proc *p, const struct boot_member *m)
         }
 
         /*
-         * Writable and executable, because a program's text, its data and
-         * its stack are one slot and nothing here knows where one ends.
-         * The linker script does, and teaching the archive to carry it is
-         * what would let this be three mappings instead of one.
+         * Still writable and executable, and still one set of
+         * permissions: M14 stage two is about how much is mapped and
+         * stage three is about what each part of it permits. What has
+         * changed is the bound on the loop above, which was a slot and
+         * is now what the archive says the image needs.
          */
         err = md_map(proc_as(p), va + done, pa, PAGE_SIZE,
           VM_PROGRAM);
@@ -400,6 +435,7 @@ proc_load(struct proc *p, const struct boot_member *m)
         }
 
         last = pa;
+        p->p_own_pages++;
         done += PAGE_SIZE;
     }
 
@@ -411,7 +447,29 @@ proc_load(struct proc *p, const struct boot_member *m)
      * the stack grows down from below it and the image ends a long way
      * under that. Section 20.4 has the loader place the record in the
      * child's memory, and this is a loader.
+     *
+     * It needs a frame of its own now that the loop stops at what the
+     * image needs. Until M14 it was the last page the loop had already
+     * mapped, which is what "the last page of the slot" meant when the
+     * whole slot was mapped. Stage four is where the record moves inside
+     * what the program has and this page stops existing; until then it
+     * is one frame per process on top of the image's own.
      */
+    {
+        uintptr_t rec = page_alloc();
+
+        if (rec == 0) {
+            return SYS_ERR_NO_MEMORY;
+        }
+        err = md_map(proc_as(p), va + SYS_USER_SLOT_BYTES - PAGE_SIZE,
+          rec, PAGE_SIZE, VM_PROGRAM);
+        if (err != SYS_OK) {
+            return err;
+        }
+        last = rec;
+        p->p_own_pages++;
+    }
+
     proc_place_startup(p, last, va + SYS_USER_SLOT_BYTES - PAGE_SIZE);
 
     /*
@@ -1418,9 +1476,11 @@ proc_free_slot(struct proc *p)
          * put the replacement here mapped over the entries that named
          * them. M13 stage 6 reports the total, since a frame nothing
          * can reach is exactly the kind that would otherwise go
-         * unnamed in the ledger.
+         * unnamed in the ledger. The loader counted them as it mapped
+         * them, which since M14 is the only place the number exists:
+         * it is what the image needed and not a slot.
          */
-        frames_orphaned += (uint32_t)(len / PAGE_SIZE);
+        frames_orphaned += p->p_own_pages;
 
         return 0;
     }

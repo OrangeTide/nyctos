@@ -103,6 +103,16 @@ struct proc {
      * giving those back would free memory another process still holds.
      */
     size_t              p_pager_bytes;
+
+    /*
+     * How many frames the loader mapped for this process. Recorded
+     * because the number cannot always be recovered later: a cohort
+     * member whose place moved on has had its mappings written over,
+     * and M13 stage 6 still has to say how many frames that lost. Since
+     * M14 the answer is what the image needed rather than a slot, so
+     * counting it here is the only place it is known.
+     */
+    uint32_t            p_own_pages;
 #endif
     uintptr_t           p_startup_va;
 
@@ -317,6 +327,13 @@ uint32_t proc_frames(struct proc *p);
  * nothing can free them; the count is what says how many there are.
  */
 uint32_t proc_frames_orphaned(void);
+
+/*
+ * How many processes have exited and not yet been reaped. A frame count
+ * taken while one is pending will see its memory come back at a moment
+ * nothing chose.
+ */
+uint32_t proc_exited_unreaped(void);
 
 /*
  * A handle naming this process was made, or destroyed. The second one

@@ -8771,7 +8771,7 @@ slot is ever backed by a frame.
   at its beginning got past the build and was caught by the kernel at
   boot, which is the arm that exists because a build can half change.
 
-**2. A process is mapped as what it needs.** *Planned.*
+**2. A process is mapped as what it needs.** *Built.*
 
 - `proc_load` maps text and rodata, then writable memory, and nothing
   beyond. The slot stays a megabyte of address space and stops being a
@@ -8780,6 +8780,43 @@ slot is ever backed by a frame.
   M13's ledger still balances to zero and its endurance loop still
   returns the count, which is what says the smaller mapping did not
   simply lose the accounting.
+- *Settled.* **A process costs 15 frames on riscv64 and 14 on aarch64,
+  where M13 measured 264 and 262**, and all of it still comes back. For
+  `spin` that is six pages of image and stack, one for the startup
+  record, seven of address space and one leaf table. The reduction is
+  seventeen-fold and it is the whole of what the archive now carrying a
+  layout buys.
+- *One of those frames is the record's*, still in the last page of the
+  slot where nothing else is mapped any more, so the loader allocates
+  one for it rather than reusing a page the loop had already mapped.
+  Stage four is where it moves inside what the program has and that
+  frame stops existing.
+- *And the cohort loss shrank with it.* The frames a restart orphans are
+  the frames the previous member had, which was a slot and is now what
+  its image needed: the ledger's row went from **512 to 14** on riscv64
+  and 16 on aarch64. The count had to move to the loader to stay right,
+  since a member whose place has moved on has had its mappings written
+  over and the number is no longer recoverable from the tables. It is
+  recorded as the loader maps, which is the one place it is known.
+- *The endurance loop needed more cycles to make the same claim.* Its
+  point is that a program runs more times than the machine has frames,
+  and at fifteen frames a cycle that takes 2400 rather than 200: 36000
+  frames against the 32768 that exist. A cycle is cheaper than it was,
+  3.8 milliseconds against 11, but 2400 of them add seven seconds to
+  every boot. That is the price of keeping the claim in the boot rather
+  than in a run made by hand.
+- *M13's own assertion had to change*, because it said a process costs
+  at least a slot and that is exactly what stopped being true. It now
+  reads the floor out of the archive: at least what this image says it
+  needs. The same check asking the same question of a loader that knows
+  the answer.
+- *Broken to check it.* Mapping one page fewer than the image needs
+  broke a program's stack and the boot failed, though at a later check
+  and with a message that names something else: the loader does not
+  notice, and what noticed was a program behaving oddly. Mapping the
+  whole slot again panicked with "264 of the 265 a process cost came
+  back". Leaving the orphan count at a slot's worth panicked in the
+  ledger with "the parts come to more than the whole".
 
 **3. Text is not writable and the stack is not executable.** *Planned.*
 
