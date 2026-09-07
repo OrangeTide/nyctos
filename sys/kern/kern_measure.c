@@ -899,14 +899,14 @@ irq_dispatch_forget(struct thread *t)
  * stamps it; when that thread next returns to user mode the distance is
  * closed.
  *
- * And nothing walks that path in this boot. The comment here said the
- * console driver does, being a loaded program waiting on the UART
- * interrupt's timeline, and the report has always answered "none in
- * this run": the driver in these checks is started without its device
- * and stops. M15 stage four gave this its first sample ever, from a
- * client whose send timed out, and that is not the second term either.
- * The figure this file prints for section 13.3 is one term measured and
- * one term never taken.
+ * Whether that path is walked depends on the session. The console
+ * driver waits on the UART interrupt's timeline, so a line typed while
+ * it is waiting is an interrupt reaching a program and is measured:
+ * the paced session, which is what `make check` runs, takes sixteen of
+ * them. A burst session hands the machine all of its input before the
+ * driver ever blocks, so nothing arrives while anything is waiting and
+ * the report answers "none in this run", which is a fact about the
+ * input and says so.
  */
 void
 irq_dispatch_stamp(struct thread *t)

@@ -873,13 +873,6 @@ treats as a signal: nothing has ever run on hardware, so every duration
 published here is the right shape and the wrong magnitude. That is why
 the milestones that could assert counts rather than durations did.
 
-Milestone 15 found a sharper version of the same thing. Of the two
-figures section 13.3 of the design names, one has never been measured at
-all: the time from a device interrupt to the program waiting on it has
-no sample in any run, and the comment claiming the console driver walks
-that path every time was wrong. What is published for that term is a
-term not taken.
-
 The other signals have been taken. The latency floor went to milestone
 12, which left something narrower and harder: the floor is the work a
 rendezvous has to do atomically, and lowering it means making that work

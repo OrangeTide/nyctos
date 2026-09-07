@@ -498,10 +498,7 @@ computed.
 
 Nothing has run on hardware, so every duration this project has
 published is the right shape and the wrong magnitude. The counts are not
-durations, which is why these milestones assert counts. And one of the
-two figures section 13.3 names has never been measured at all: the time
-from a device interrupt to the program waiting on it has no sample in
-any run, which M15 found while adding the first one that was not that.
+durations, which is why these milestones assert counts.
 
 ---
 
@@ -9387,20 +9384,26 @@ is released is section 18.3's and stays there.
   it. It is now cleared by the timed-out send itself, where the work
   is, so every dispatch that is section 13.3's second term is still
   measured.
-- *Except that there are none, and never have been.* The report answers
-  "none in this run" here, and it answered that in stages one and two as
-  well. The comment above the measurement said the console driver walks
-  the path in every run, being a loaded program waiting on the UART
-  interrupt's timeline. It does not: the driver these checks start is
-  given no device and stops, which the boot says two lines earlier.
-  **M15 stage four gave that measurement its first sample in the life of
-  the project**, from a client whose send timed out, and that is not the
-  second term either. What section 13.3 publishes is one term measured
-  and one term never taken, and the comment now says so.
-- *Not fixed here.* Making the second term real needs a driver that
-  keeps its device and blocks on it, which is a different subject from a
-  deadline on a rendezvous. It is written down rather than left as a
-  figure that reads like a measurement.
+- *And the report answers "none in this run" here, which was read as
+  never.* It is a fact about the input and not about the system. The
+  console driver does wait on the UART interrupt's timeline, and a line
+  typed while it is waiting is an interrupt reaching a program: the
+  paced session, which is what `make check` runs, takes sixteen of them
+  on every configuration, at 87 to 213 microseconds and no preemption
+  points. A burst session hands the machine all of its input before the
+  driver ever blocks, so nothing arrives while anything is waiting.
+  Every run examined while writing this stage was a burst run.
+- *That correction belongs here and was made later.* The claim written
+  at the time, that section 13.3 publishes one term measured and one
+  term never taken, is wrong: both are measured, in the session the
+  check runs. What is true is narrower and is what the comment now says,
+  that whether the path is walked depends on whether input arrives while
+  the driver is waiting.
+- *And the plan already said so.* M12's entry, four sections up, reads
+  "measured on the paced session, which is the one that dispatches at
+  all", and reports the second term improving. A conclusion that
+  contradicts a sentence already in this file should have been checked
+  against it before being written into three more places.
 
 - *Broken to check it.* Not taking the buffer back panicked with
   "patient ran again with its buffer still lent out", which is the
@@ -11523,13 +11526,18 @@ exactly like one that did.
 in the unwait hook, which cancellation reaches too, and came out at
 exactly double what the checks ask for.
 
-**A measurement silenced rather than narrowed**, and behind it a figure
-that had never been taken at all. Section 13.3's second term is the time
-from a device interrupt to the program waiting on it, and the comment
-above it said the console driver walks that path in every run. It does
-not: the report has always answered "none in this run", and this
-milestone's own timeout gave that measurement its first sample in the
-life of the project.
+**A measurement silenced rather than narrowed.** Section 13.3's second
+term is the time from a device interrupt to the program waiting on it,
+and clearing the dispatch stamp for every thread a deadline wakes
+removed it rather than excluding the one case that had work to do.
+
+**And a conclusion drawn from the wrong runs.** The report answers "none
+in this run" in a burst session, and that was read as never measured
+anywhere, then written into this section, into section 1, into the
+README and into the code. It is measured: the paced session that `make
+check` runs takes sixteen samples on every configuration, and M12's own
+entry says "the paced session, which is the one that dispatches at all".
+The correction is in stage four's entry.
 
 **And a misreading of a state number**, which produced an assertion that
 asserted the opposite of what was true and fired on all four
