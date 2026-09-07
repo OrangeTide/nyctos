@@ -3256,6 +3256,30 @@ startup_record_checks(void)
     if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
         panic("startup: the spawn returned no process");
     }
+
+#if SYS_TIER == 2
+    /*
+     * Where the loader actually put it, against where the archive says
+     * it has to be. Poking the address alone does not settle this:
+     * proc_prot makes the last page of a program's memory read-only
+     * wherever the record went, so a record placed somewhere else would
+     * leave this page read-only, the poke would fault, and the check
+     * would pass with the record misplaced. Comparing the addresses is
+     * what makes the fault below mean what it says.
+     *
+     * Tier 2 only, because at Tier 0 the record is not in the
+     * program's memory at all: there is one address space and the
+     * record lives in the process object, which a program can read
+     * because nothing stops it. Section 15.2 is the same division
+     * everywhere else in this milestone.
+     */
+    if (((struct proc *)obj)->p_startup_va != rec) {
+        panic("startup: the loader put the record at 0x%lx, not 0x%lx",
+          (unsigned long)((struct proc *)obj)->p_startup_va,
+          (unsigned long)rec);
+    }
+#endif
+
     child_watch(&c, obj);
     sched_undefer();
 

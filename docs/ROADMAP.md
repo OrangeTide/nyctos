@@ -8939,6 +8939,27 @@ slot is ever backed by a frame.
   placed where nothing is mapped is a program that faults on its first
   instruction with nothing saying why. The loader now looks it up in the
   space it just built and refuses rather than starting the program.
+- *And the review found the check could pass with the record
+  misplaced.* Poking the address the record should be at proves that
+  page is read-only, and `proc_prot` makes the last page of a program's
+  memory read-only wherever the record actually went. So a loader that
+  placed it somewhere else would leave that page read-only, the poke
+  would still fault, and the row would read as though nothing were
+  wrong. The check now compares the address the loader chose against
+  the one the archive implies, which is what makes the fault mean what
+  it says. Expecting the record a page lower panics with "the loader
+  put the record at 0x81f07000, not 0x81f06000".
+- *That comparison is Tier 2 only*, because at Tier 0 the record is not
+  in the program's memory at all: there is one address space, and the
+  record lives in the process object where a program can read it
+  because nothing stops it. The same division as everywhere else in
+  this milestone, found by the check panicking on a tier it was not
+  written for, which is the second time that has happened here.
+- *Moving the record a page lower in the loader is caught*, but by a
+  check four earlier: the record lands on the stack, a program's frame
+  is overwritten, and something unrelated dies first. The address
+  comparison is what would catch a misplacement that corrupts nothing,
+  and that is the case it exists for.
 - *Broken to check it.* Leaving the record at the slot's end, where it
   was before this milestone, panicked with "its startup record at
   0x805ff000 is not mapped", naming the image. Without that guard the
