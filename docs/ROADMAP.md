@@ -9025,12 +9025,50 @@ slot is ever backed by a frame.
   a line on aarch64. `brief` does nothing, which is what these checks
   want measured. The shell is back to two seconds from three.
 
-**6. What it cost, and section 15 written around it.** *Planned.*
+**6. What it cost, and section 15 written around it.** *Built.*
 
 - *Check.* The figures, asserted as counts, in all four configurations,
   and sections 15.1, 15.2 and 24.4 matched to what the archive now
   carries. What a slot is for, once it is not what a process costs, is
   named rather than left as a number nobody revisits.
+- *Settled.* **A process costs 15 frames on riscv64 and 14 on aarch64**,
+  where M13 measured 264 and 262, and the boot now prints the figure
+  broken in two: seven of the fifteen are what the image needs and eight
+  are the space it runs in, and on aarch64 eight and six. The two halves
+  answer to different things, which is why they are printed apart: the
+  first changes when a program does, the second when a port's table
+  shape does.
+- *The figure is asserted twice, by two measurements that share
+  nothing.* What the allocator says a spawn took is a difference of
+  frame counts; what the process is holding is a walk of its own address
+  space. A loader that allocated a frame it did not map, or mapped a
+  page twice, moves one and not the other. Allocating one frame more
+  than it maps panics with "brief took 16 frames and is holding 15";
+  leaving the address space out of the walk panics with "took 15 frames
+  and is holding 7".
+- *What the machine holds at the end fell with it*, from 10732 frames to
+  8519, of which the processes still running account for 119 across ten
+  of them where they used to account for 2352. The archive itself grew,
+  because this milestone added three programs, so what was spent before
+  anything ran went from 7836 to 8354. The ledger still balances to
+  zero.
+- *And the cohort loss fell out of it.* Section 18.2's restart orphans
+  what the previous member was mapped, which was a slot and is now an
+  image: **512 frames across a boot became 14.**
+- *Section 15.5 is new* and says what a program is made of: the two
+  offsets, what each region permits, that the bytes may cross the first
+  boundary, and that both numbers come from the link rather than from
+  the command line that assembles the archive. Section 15.1 gained the
+  reason a loader has to be told which segments are writable, and that
+  the pager supplying only read-only pages is a property of what it is
+  asked for as much as of what it answers. Section 24.4 records the
+  layout and the format version. Section 18.2's cost is now the image's
+  pages rather than a slot's.
+- *And what a slot is for is written down.* It is an address range and
+  not an amount of memory: what keeps two programs from overlapping, and
+  what one may grow into. Making it smaller would save nothing, because
+  nothing is spent on the part that is not mapped, and what would change
+  it is a loader that relocates, which section 15.2 already names.
 
 *Done when* a program is mapped as text that cannot be written and data
 that cannot be executed, costs what it needs, and the frame ledger

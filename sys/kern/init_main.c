@@ -6603,6 +6603,28 @@ frame_cost_once(const char *image, uint32_t *returned)
     child_watch(&c, proc_spawn_image(image, 20, NULL, 0, NULL, 0));
     id = c.c_proc->p_id;
     spawned = page_used();
+
+#if SYS_TIER == 2
+    /*
+     * The same number reached the other way, per M14 stage six. What
+     * the allocator says a spawn took and what the process is holding
+     * are two measurements of one thing, taken through the frame count
+     * and through a walk of the process's own address space, and
+     * neither is derived from the other. A loader that mapped a page
+     * twice, or allocated one it did not map, would move one and not
+     * the other.
+     */
+    {
+        uint32_t walked = proc_frames(c.c_proc);
+
+        if (walked != spawned - before) {
+            panic("frames: %s took %u frames and is holding %u",
+              image, (unsigned int)(spawned - before),
+              (unsigned int)walked);
+        }
+    }
+#endif
+
     sched_undefer();
 
     code = child_join(&c, JOIN_MS);
@@ -6681,6 +6703,23 @@ frame_cost_checks(void)
 
     cnprintf("    a process costs %u frames, %u came back\n",
       (unsigned int)first, (unsigned int)back);
+
+#if SYS_TIER == 2
+    {
+        const struct boot_member *bm = boot_lookup("brief");
+
+        /*
+         * Broken out, because the two halves answer to different
+         * things. What the image needs is the archive's number and
+         * changes when the program does; what the address space costs
+         * is the port's and changes when the table shape does.
+         */
+        cnprintf("    %u of them are what its image needs, %u are the "
+          "space it runs in\n",
+          (unsigned int)(bm->bm_mem / PAGE_SIZE),
+          (unsigned int)(first - bm->bm_mem / PAGE_SIZE));
+    }
+#endif
 
     if (second != first) {
         panic("frames: the same program cost %u then %u",

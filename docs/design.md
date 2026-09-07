@@ -1525,9 +1525,9 @@ Mapping exists to bring in **read-only shared library and program text**. It is 
 
 Three things follow, and each removes rather than adds machinery.
 
-* **No copy-on-write.** Writable segments are copied eagerly at load. A write fault against a demand-paged region is a program error, not a request to a pager.
+* **No copy-on-write.** Writable segments are copied eagerly at load. A write fault against a demand-paged region is a program error, not a request to a pager. **Which segments those are is something the loader has to be told**, and until M14 it was not: a flat image is a run of bytes, so a loader given only a length has to treat every byte-carrying page the same way. It left them all to the pager, and a program with initialised data would have had that data arrive read-only and fault on its first write. Section 24.4 is where the boundary is carried now.
 * **No swap.** Without dirty tracking the kernel cannot know whether an evicted writable page needs writing back, so writable memory is never reclaimed. Clean pages remain reclaimable because they can be re-read.
-* **The pager only ever supplies read-only pages.** The fault message's access field is `READ` or `EXEC`, never `WRITE`.
+* **The pager only ever supplies read-only pages.** The fault message's access field is `READ` or `EXEC`, never `WRITE`. That is a property of what the pager is asked for as much as of what it answers: the loader asks it only for pages below the image's writable boundary, and everything at or above that boundary is mapped before the program runs.
 
 This is the right position for a real-time system independently of the simplification, because paging out a real-time task's working set is unacceptable regardless. The consequence to state plainly is that the total writable working set of the system must fit in RAM. Demand paging is a mechanism for loading code lazily, not for overcommitting memory.
 
@@ -1552,7 +1552,7 @@ That tier exists now. At Tier 2 the loader maps the image into an address space 
 
 The two paths differ in teardown, which is the part worth specifying. An XIP process owns no text memory, so its teardown reclaims only its data segment, stacks, and kernel objects. A RAM-loaded process holds a region owned by the **loader service**, which must reclaim it. The loader therefore waits on the process's completion timeline from section 10.4 and releases the region when it advances. Reclaim is a userspace responsibility, and the mechanism it uses is the one already specified for supervision.
 
-That is the shape once a loader service exists. Today the kernel is the loader, so it does this itself and at the reap rather than on the completion timeline, for the reason section 15.5 gives: an exit is not the moment nothing can ask about a process any more. When the loader moves out of the kernel the mechanism moves with it, and the moment does not change.
+That is the shape once a loader service exists. Today the kernel is the loader, so it does this itself and at the reap rather than on the completion timeline, for the reason section 15.6 gives: an exit is not the moment nothing can ask about a process any more. When the loader moves out of the kernel the mechanism moves with it, and the moment does not change.
 
 ### 15.3 Faults Are Messages the Faulting Thread Sends
 
@@ -1589,11 +1589,22 @@ Three rules follow.
 
 The kernel enforces rule 1 at `sys_thread_set_pager()` by walking the chain and rejecting a cycle or an unterminated chain with `SYS_ERR_DEADLOCK`.
 
-### 15.5 What a Process Gives Back
+### 15.5 What a Program Is Made Of
+
+**A member record carries a layout and not only a length.** Two offsets from the load address: where writable memory begins, and where the program's memory ends. Below the first is text and rodata, read and executed and never written. Between them is data, bss and stack, read and written and never executed, with the startup record of section 20.4 in the last page of it, read-only. The bytes the archive carries may cross the first boundary, because a program with initialised data has some of them above it, and everything from the end of those bytes to the end of the memory is zero.
+
+Both boundaries come from the link, which was already creating them: the user linker script page-aligns the start of writable memory so that no page is both text and data, and reserves a page above the stack for the record. The build records them beside the binary and the tool writing the archive reads them from there, so the numbers cannot drift from the link that produced them. The kernel checks every member's layout once, before the first program loads, because every way a build half-changes produces plausible numbers.
+
+**A slot is an address range and not an amount of memory.** Programs are linked at fixed addresses a megabyte apart, so a slot is what keeps two of them from overlapping, and it is what a program may grow into rather than what it is given. Until M14 the loader mapped the whole of one, which made a slot the size of a process: 264 frames on riscv64 for an image of four kilobytes. Mapping what the layout describes makes a process cost what its image needs plus the address space it runs in, which measured is **15 frames on riscv64 and 14 on aarch64**, of which 7 and 8 respectively are the image.
+
+What a slot is still for, once it is not what a process costs, is the address arithmetic: `PROG_LOAD_SLOT` in each program's makefile, the stride that separates them, and the window the kernel identity-maps at Tier 0. Making it smaller would save nothing, because nothing is spent on the part that is not mapped. What would change it is a loader that relocates, which section 15.2 already names.
+
+
+### 15.6 What a Process Gives Back
 
 **A process returns its memory when the last thing that could ask about it lets go.** Not when it exits: section 10.4 keeps its status readable through a handle after the object has ended, so a process that has exited is not yet a process nobody can ask about. It becomes one when the last handle closes and its last thread is collected, which is where section 8's reference counting already put the decision, and the reap that follows is where the frames go back.
 
-What goes back is what the loader took. At Tier 2 that is the slot it mapped the image into, and the tables of the address space it built to reach it. At Tier 0 it is nothing, because there is nothing: a flat image is copied to the address it was linked for and runs in memory the archive already occupies, so no frame was spent on the process and none can be returned. Every frame this reclaims is a Tier 2 frame.
+What goes back is what the loader took. At Tier 2 that is the pages the layout of section 15.5 describes, and the tables of the address space built to reach them. At Tier 0 it is nothing, because there is nothing: a flat image is copied to the address it was linked for and runs in memory the archive already occupies, so no frame was spent on the process and none can be returned. Every frame this reclaims is a Tier 2 frame.
 
 **The join is not the reap**, and anything measuring this has to know it. Waiting on a completion timeline says the process has exited and closing its handles says nothing can ask about it any more, but its last thread is parked at that point rather than collected, and the collection happens at the top of whichever core's next context switch reaches it. A count of free memory read between those two moments has a whole process still in it.
 
@@ -1843,7 +1854,7 @@ On teardown the kernel revokes every handle held by every member, force-signals 
 
 **The kernel ends the members and stops there.** Section 18.3 keeps restart policy out of it, so what happens next is a supervisor's decision. What the teardown leaves behind is a cohort with every place free and its address space intact, so a restart maps each member's slot over the one its predecessor left.
 
-**That mapping-over loses the predecessor's frames, and this is the one place in the system where memory goes unrecoverably.** A place is free once its occupant has *exited*, which is earlier than the moment its occupant is *reaped*, and the reap is what returns a process's memory per section 15.5. So a replacement can be loaded at the same address in the same space while its predecessor is still waiting to be reaped, and the load overwrites the only entries that named the predecessor's frames. The reap then finds a slot that is no longer its own, must free nothing, and the frames are unreachable. Making a place something a reap gives back rather than something an exit does is what would fix it; the cost of not fixing it is a slot's worth of frames per restart, which the ledger of section 15.5 reports rather than hides.
+**That mapping-over loses the predecessor's frames, and this is the one place in the system where memory goes unrecoverably.** A place is free once its occupant has *exited*, which is earlier than the moment its occupant is *reaped*, and the reap is what returns a process's memory per section 15.6. So a replacement can be loaded at the same address in the same space while its predecessor is still waiting to be reaped, and the load overwrites the only entries that named the predecessor's frames. The reap then finds a slot that is no longer its own, must free nothing, and the frames are unreachable. Making a place something a reap gives back rather than something an exit does is what would fix it; the cost of not fixing it is what the previous member was mapped, which the ledger of section 15.6 reports rather than hides. That was a slot's worth until section 15.5 made the loader map what an image needs, and is now the image's own pages: measured, it fell from 512 frames across a boot to 14.
 
 ```{=typst}
 #figure(include "fig/cohortfault.typ", caption: [A cohort fault. Member B is torn down although it did not fault, every outside party is released with an error rather than a timeout, and the supervisor decides what happens next.])
@@ -2333,6 +2344,8 @@ Alignment is the detail worth getting right the first time, because section 2.9 
 **Root walks the archive, and so does the romfs server.** The walk is a loop over fixed-size records, on the order of forty lines, and it is not a filesystem implementation: it speaks no protocol and resolves no paths. Duplicating it in two programs is the correct trade, because the alternative is a server in the boot path before root is able to spawn anything.
 
 **Spawning from the archive is nearly free below Tier 2.** Text and rodata are already at their final addresses in flash, so root points the new process at the member and copies only writable data. The full loader service of section 15.2 is an ordinary child that root spawns for runtime RAM loading, and the bootstrap does not need it.
+
+**A record carries a layout as well as a length**, per section 15.5: where writable memory begins and where the program's memory ends, both as offsets from the load address. A flat binary says neither, and a loader given only a length has to map a whole slot with every permission, which is what this system did until M14. The numbers come from the link that produced the image rather than from the command line that assembles the archive, so they cannot disagree with it. Adding them took the format to version 2, and the kernel refuses an archive of any other version rather than reading fields that may not be there.
 
 ### 24.5 Startup Order and Readiness
 
