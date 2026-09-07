@@ -1110,6 +1110,25 @@ In both cases the server then does its work and calls `sys_msg_reply()`, which c
 
 **A server that must not have its work discarded should not be given a deadline to discard it.** This is a statement about how clients are written rather than a mechanism: a request with a side effect on the server, and a client-side deadline shorter than the operation, is a request whose completion the client will not learn about. Deadlines belong on operations a client can meaningfully abandon.
 
+#### What was built, and what a deadline does not do
+
+**The deadline is read only when the entry says it is there.** `SYS_DEADLINE_NOW` is zero and zero is what a program's `memset` leaves in a field it has not thought about, so a deadline read unconditionally would turn every client written before deadlines existed into one that polls and never blocks. Section 14.3 fixes both sentinels' values, so no choice of constant removes the ambiguity: what removes it is the caller saying whether it filled the field in. An entry carrying that flag on an operation that cannot wait is refused, the way section 17.4's result register is.
+
+**A program cannot construct a deadline yet.** Section 14.3 wants an absolute instant and section 6.2 names what makes that affordable, a shared page a program reads without a syscall. That page does not exist, so a program has no way to read the clock at all, and the only deadlines in this system are made by the kernel. This is the gap that keeps deadlines out of the programs that would use them.
+
+**Expiry does the pointer work in the timer and the rest in the thread.** What has to happen when the deadline fires is what makes a late reply stale, and that is small: a client with no reply slot is answered `SYS_ERR_STALE` by `sys_msg_reply()`. What can wait is the memory and the priority, and it must: undonating and taking a buffer back both charge their work to the running thread, and in a timer interrupt there may not be one.
+
+**A reply that is refused ends the server's request as surely as one that lands.** The server comes off the channel's list of threads inside a request on that path too, or a queued sender's priority would be donated down a chain to a server that is no longer serving.
+
+**A deadline that arrives after the wait has ended does nothing.** Whichever of the two came first, the other is stale: the registration is withdrawn by the woken thread, so there is a window in which a reply has already landed and the timer has not yet been told. Firing in that window would overwrite the answer and make a runnable thread runnable twice.
+
+Three things a deadline is not.
+
+* **Not a deadline on receive.** A server waiting for work is not waiting for a party that can fail it, so `sys_msg_recv()` takes none. What a server does about a client that never comes is section 24.3's question.
+* **Not restart policy.** What happens to a client after it is released is its own business and its supervisor's, per section 18.3. The kernel returns an error and stops.
+* **Not a way to abandon work safely.** A request with a side effect on the server, and a client-side deadline shorter than the operation, is a request whose completion the client will not learn about. Deadlines belong on operations a client can meaningfully abandon, which is a statement about how clients are written and not a mechanism.
+
+
 ### 12.2 Reply Addressing
 
 `sys_msg_recv()` returns the client's `sys_thread_id_t`, and `sys_msg_reply()` takes it.
@@ -1480,6 +1499,8 @@ Every blocking call takes an **absolute deadline** on the system timebase, not a
 Relative timeouts drift. A wait that is interrupted and restarted with the same relative value extends its own deadline by however long it had already waited, so a periodic task accumulates phase error proportional to its own scheduling jitter, which is precisely the error real-time code exists to avoid. Absolute deadlines have no such failure mode and make restart-after-interruption exact.
 
 The cost is a clock read when constructing a deadline, and section 6.2 is what makes that affordable: `sys_syspage_uptime()` reads the shared page with no syscall. Relative helpers live in libc.
+
+**Neither exists yet, which is what keeps deadlines out of programs.** A program has no way to read the clock at all, so the only deadlines this system has are made by the kernel, and a program given one is handed it as an argument. Section 12.1 records what that costs.
 
 Two sentinels are defined: `SYS_DEADLINE_NOW` polls without blocking, and `SYS_DEADLINE_NEVER` blocks indefinitely.
 

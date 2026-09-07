@@ -78,6 +78,15 @@ struct channel {
 extern uint64_t channel_rendezvous;
 
 /*
+ * Sends that gave up at their deadline: one count for a client still on
+ * the queue, which no server had seen, and one for a client whose
+ * message a server was holding. Section 12.1 has the two differ in what
+ * the server learns, so they are counted apart.
+ */
+extern uint64_t channel_gave_up_queued;
+extern uint64_t channel_gave_up_working;
+
+/*
  * Whether any channel still names this process as its owner. A channel
  * keeps that pointer and takes no reference for it, so reaping an owner
  * would leave it naming a freed slot. See the implementation.
@@ -141,5 +150,12 @@ sys_err_t channel_reply(sys_thread_id_t peer, const struct sys_msg *reply);
 
 /* Take a sender or receiver off a channel, for a wake from elsewhere. */
 void channel_unwait_thread(void *obj, struct thread *t);
+
+/*
+ * Count a send that gave up at its deadline, apart by which state it
+ * was in. Called from the deadline path only: the unwait hook is
+ * reached by cancellation too.
+ */
+void channel_gave_up(const struct thread *t);
 
 #endif /* _SYS_CHANNEL_H_ */

@@ -9444,13 +9444,45 @@ is released is section 18.3's and stays there.
   "thread boot: made runnable while already runnable", on all four
   configurations.
 
-**6. What it cost, and section 12.1 written around it.** *Planned.*
+**6. What it cost, and section 12.1 written around it.** *Built.*
 
 - *Check.* The figures, asserted as counts, and section 12.1 matched to
   what was built. What a deadline does not do is named: no deadline on
   receive, nothing about restart, and the rule that a server which must
   not have its work discarded should not be given a deadline to discard
   it.
+- *Settled.* The boot reports **one send that gave up on the queue and
+  two that gave up with a server working**, the same in all four
+  configurations, and both are asserted. They are counted apart because
+  section 12.1 says the two states differ and that the difference is
+  what the server sees: one number would report the thing the section
+  says not to.
+- *And the first version of that count was measuring something else.*
+  It counted in `channel_unwait_thread`, which is where the two states
+  are told apart, and that hook is reached by cancellation as well as by
+  a deadline. The figure came out at exactly double what the checks ask
+  for, which is what said so. It is counted on the deadline path now,
+  and a thread taken off a channel for any other reason is not a send
+  that gave up.
+- *Section 12.1 gained what was built.* That the deadline is read only
+  when the entry says so, and why no choice of constant could have
+  replaced the flag. That expiry does the pointer work in the timer and
+  the rest in the thread, because undonating and taking a buffer back
+  charge their work to a running thread and a timer may not have one.
+  That a refused reply ends the server's request as surely as one that
+  lands. And that a deadline arriving after the wait has ended does
+  nothing.
+- *Section 14.3 gained the absence.* It says what makes an absolute
+  deadline affordable and that is a shared page section 6.2 describes;
+  the page does not exist, a program cannot read the clock at all, and
+  the only deadlines in this system are made by the kernel. That is what
+  keeps deadlines out of the programs that would use them, and it is
+  written where the claim is rather than left to be discovered.
+- *Broken to check it.* Moving an expected count panicked with "2 gave
+  up with a server working, not 3". Counting in the unwait hook again,
+  which is the mistake this stage started with, panicked with "0 gave up
+  on the queue, not 1", because cancellation reaches that hook with a
+  wait state the queued arm does not match.
 
 *Done when* a client sending to a server that never replies is released
 at its deadline, the server learns when it replies, and neither the

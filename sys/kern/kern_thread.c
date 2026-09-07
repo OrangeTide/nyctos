@@ -130,6 +130,8 @@ thread_wake_timeout(struct thread *t)
         return;
     }
 
+    channel_gave_up(t);
+
     if (t->t_unwait != NULL && t->t_blocked_on != NULL) {
         t->t_unwait(t->t_blocked_on, t);
     }

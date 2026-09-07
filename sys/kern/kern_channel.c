@@ -89,6 +89,30 @@ list_remove(struct thread **head, struct thread *t)
 
 static void channel_thread_release(struct thread *t, bool tell);
 
+/*
+ * Count a send that gave up at its deadline, in whichever of section
+ * 12.1's two states it was in.
+ *
+ * Counted here rather than in channel_unwait_thread, which is where the
+ * two states are told apart, because that hook is reached by
+ * cancellation as well: a thread taken off a channel because somebody
+ * cancelled it is not a send that gave up, and counting it as one made
+ * this figure exactly double what the checks ask for.
+ *
+ * A thread blocked on anything else is not counted at all, which is
+ * what the two wait states are for.
+ */
+void
+channel_gave_up(const struct thread *t)
+{
+    if (t->t_wait == THREAD_WAIT_REPLY) {
+        channel_gave_up_working++;
+    } else if (t->t_wait == THREAD_WAIT_SEND) {
+        channel_gave_up_queued++;
+    }
+}
+
+
 void
 channel_unwait_thread(void *obj, struct thread *t)
 {
@@ -526,6 +550,15 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
  * of round trips.
  */
 uint64_t channel_rendezvous;
+
+/*
+ * How many sends gave up at their deadline, told apart by which of
+ * section 12.1's two states they were in. The section says the two
+ * differ and that the difference is what the server sees, so counting
+ * them together would report the thing the section says not to.
+ */
+uint64_t channel_gave_up_queued;
+uint64_t channel_gave_up_working;
 
 /*
  * Whether this sender may describe this memory to this receiver.

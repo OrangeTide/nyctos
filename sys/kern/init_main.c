@@ -931,6 +931,16 @@ child_watch(struct child *c, struct proc *p)
  */
 #define DEADLINE_MS 50u
 
+/*
+ * How many sends give up in a boot, and from which of section 12.1's
+ * two states. One queued send times out with nobody receiving; one
+ * client gives up while a server holds its message, and one program
+ * does the same with a buffer lent. Asserted because they are counts of
+ * what the checks ask for and not of how fast the host is.
+ */
+#define DEADLINE_QUEUED_EXPECTED    1u
+#define DEADLINE_WORKING_EXPECTED   2u
+
 static int32_t
 child_join(struct child *c, uint32_t within_ms)
 {
@@ -9893,6 +9903,31 @@ kernel_main(void)
      * configuration where that file is one per tier.
      */
     cpu_idle_report();
+
+    /*
+     * And what the deadlines did, per M15 stage six. Counts rather than
+     * durations: how many sends gave up, and which of section 12.1's
+     * two states each was in, are properties of what the checks asked
+     * for and are the same in every run. How long any of them waited is
+     * the host's and is printed where it is measured.
+     */
+    cnputs("deadlines: what gave up, and from where\n");
+    cnprintf("    %-38s %lu queued, %lu with a server working\n",
+      "sends that gave up",
+      (unsigned long)channel_gave_up_queued,
+      (unsigned long)channel_gave_up_working);
+
+    if (channel_gave_up_queued != DEADLINE_QUEUED_EXPECTED) {
+        panic("deadlines: %lu gave up on the queue, not %u",
+          (unsigned long)channel_gave_up_queued,
+          (unsigned int)DEADLINE_QUEUED_EXPECTED);
+    }
+    if (channel_gave_up_working != DEADLINE_WORKING_EXPECTED) {
+        panic("deadlines: %lu gave up with a server working, not %u",
+          (unsigned long)channel_gave_up_working,
+          (unsigned int)DEADLINE_WORKING_EXPECTED);
+    }
+
 
     cnprintf("frames: %u of %u used at most, %u still held\n",
       (unsigned int)page_highwater(), (unsigned int)page_count(),
