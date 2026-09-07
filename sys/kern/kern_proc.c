@@ -15,6 +15,7 @@
 #include <sys/sched.h>
 #include <sys/proc.h>
 #include <sys/systm.h>
+#include <sys/time.h>
 #include <sys/thread.h>
 #include <sys/timeline.h>
 
@@ -467,7 +468,27 @@ proc_load(struct proc *p, const struct boot_member *m)
      * slot, which was the one place a program's own layout did not
      * reach while the whole slot was mapped; nothing maps the whole
      * slot now, so the place it went is a place that does not exist.
+     *
+     * The system page of section 6.2 goes above all of it, one page
+     * further out, mapped read-only. One frame serves the whole
+     * machine, so a reap must not give it back: see p_syspage_off.
      */
+    p->p_syspage_off = m->bm_mem;
+    err = md_map(proc_as(p), va + m->bm_mem, syspage_frame(), PAGE_SIZE,
+      VM_READ | VM_USER);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    /*
+     * And the address of it goes in the record, which is how a program
+     * finds it. Set before the record is written out and not after:
+     * place_startup copies p_startup into the page, so a field written
+     * afterwards is a field the program never sees. It was written
+     * afterwards first, and the program read a null pointer.
+     */
+    p->p_startup.syspage = va + m->bm_mem;
+
     proc_place_startup(p, last, va + m->bm_mem - PAGE_SIZE);
 
     /*
@@ -581,6 +602,15 @@ proc_spawn_image(const char *image, uint8_t prio,
 #else
     p->p_entry = boot_load(m);
     p->p_startup_va = (uintptr_t)&p->p_startup;
+
+    /*
+     * The system page at the address it really is, because flat memory
+     * has no other. Section 6.2 has a program find the page through
+     * its record rather than at an address it assumes, and that is
+     * what makes one program work on both tiers: the number differs
+     * and the way of learning it does not.
+     */
+    p->p_startup.syspage = syspage_frame();
 #endif
 
     t = thread_create(image, prio, proc_user_start, &p->p_startup);
@@ -628,6 +658,15 @@ proc_prot(const struct proc *p, uintptr_t va)
 
     if (off < p->p_rw_bytes) {
         return VM_READ | VM_EXEC | VM_USER;
+    }
+
+    /*
+     * The system page sits just above what the program needs and is
+     * read-only: it is the machine's, mapped into every process, and
+     * nothing in a program may write it.
+     */
+    if (p->p_syspage_off != 0 && off == p->p_syspage_off) {
+        return VM_READ | VM_USER;
     }
 
     /*
@@ -689,6 +728,11 @@ proc_frames(struct proc *p)
         if (as != vm_kernel()) {
             for (off = 0; off < len; off += PAGE_SIZE) {
                 uintptr_t pa;
+
+                /* The system page is the machine's, not this one's. */
+                if (p->p_syspage_off != 0 && off == p->p_syspage_off) {
+                    continue;
+                }
 
                 if (md_lookup(as, base + off, &pa) == SYS_OK) {
                     n++;
@@ -1389,6 +1433,15 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
 #else
     p->p_entry = boot_load(m);
     p->p_startup_va = (uintptr_t)&p->p_startup;
+
+    /*
+     * The system page at the address it really is, because flat memory
+     * has no other. Section 6.2 has a program find the page through
+     * its record rather than at an address it assumes, and that is
+     * what makes one program work on both tiers: the number differs
+     * and the way of learning it does not.
+     */
+    p->p_startup.syspage = syspage_frame();
 #endif
     thread_set_proc(t, p);
     sched_ready(t);
@@ -1588,6 +1641,15 @@ proc_free_slot(struct proc *p)
 
     for (off = p->p_pager_bytes; off < len; off += PAGE_SIZE) {
         uintptr_t pa;
+
+        /*
+         * Except the system page. One frame serves every process, and
+         * giving it back here would hand the next process's clock to
+         * whatever asked for a frame next.
+         */
+        if (p->p_syspage_off != 0 && off == p->p_syspage_off) {
+            continue;
+        }
 
         if (md_lookup(as, base + off, &pa) != SYS_OK) {
             continue;

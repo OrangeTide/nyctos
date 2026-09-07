@@ -30,7 +30,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SYS_STARTUP_VERSION     1u
+#define SYS_STARTUP_VERSION     2u
 
 /*
  * The table is a flat array of handle-sized words in pairs: an identifier
@@ -178,6 +178,18 @@ typedef struct sys_startup {
      * namespace does not have to.
      */
     uintptr_t       ns_names;   /* char *, SYS_NS_NAME_BYTES of them */
+
+    /*
+     * The system page of section 6.2, mapped read-only into this
+     * process. An address rather than a fixed location, for the reason
+     * that section gives: what a program dereferences comes from its
+     * own description of itself, so nothing is assumed about where a
+     * page lands in an address space that is not shared.
+     *
+     * Zero for a process that has none, which is any process the
+     * kernel built rather than loaded.
+     */
+    uintptr_t       syspage;
 } sys_startup_t;
 
 /*
@@ -219,7 +231,7 @@ sys_ns_name(const char *names, uint32_t words, uint32_t slot)
     return names + (size_t)slot * SYS_NS_NAME_MAX;
 }
 
-_Static_assert(sizeof(sys_startup_t) == 16 + 4 * sizeof(uintptr_t),
+_Static_assert(sizeof(sys_startup_t) == 16 + 5 * sizeof(uintptr_t),
   "sys_startup_t is an ABI structure: four words then four pointers");
 
 #endif /* _SYS_STARTUP_H_ */

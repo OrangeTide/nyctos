@@ -18,6 +18,7 @@
 #define _OS_SYS_H_
 
 #include <sys/op.h>
+#include <sys/syspage.h>
 #include <sys/startup.h>
 
 #include <stddef.h>
@@ -32,6 +33,12 @@
  * section 23.3.
  */
 sys_err_t sys_op_submit(sys_op_t *ops, unsigned long count);
+
+/*
+ * The system page of section 6.2, mapped read-only into this process,
+ * or NULL for one that has none. What it carries is in sys/syspage.h.
+ */
+const sys_syspage_t *sys_syspage(void);
 
 /*
  * Blocks until a server receives the request and replies to it. target

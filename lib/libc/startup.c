@@ -22,10 +22,22 @@
  */
 
 #include <ns.h>
+#include <os/sys.h>
 
 #include <stddef.h>
 
 static sys_handle_t ns_table[SYS_NS_WORDS];
+
+/*
+ * The system page of section 6.2, from the startup record. Kept because
+ * the record itself is not: this library copies what it needs out of it
+ * and the record's address is not something a program is given twice.
+ *
+ * NULL for a process the kernel built rather than loaded, and for one
+ * whose record this library refused, so a caller checks rather than
+ * assuming every process has one.
+ */
+static const sys_syspage_t *syspage;
 static uint32_t ns_words;
 
 /*
@@ -99,9 +111,17 @@ __libc_startup(const sys_startup_t *startup)
     ns_words = 0;
     arg_count = 0;
     arg_vec[0] = NULL;
+    syspage = NULL;
     if (startup == NULL || startup->version != SYS_STARTUP_VERSION) {
         return;
     }
+
+    /*
+     * Before the namespace, because it is one word and needs no
+     * copying: the page is mapped for as long as this process is, so
+     * keeping the address is keeping all of it.
+     */
+    syspage = (const sys_syspage_t *)startup->syspage;
 
     n = startup->ns_words;
     if (n > SYS_NS_WORDS) {
@@ -197,4 +217,18 @@ ns_name_of(sys_ns_id_t id)
     }
 
     return "";
+}
+
+/*
+ * The system page, or NULL for a process that has none.
+ *
+ * Section 6.2 has a program reach it through its own description of
+ * itself rather than at a fixed address, and this is where that
+ * description was read. A caller checks for NULL because a process the
+ * kernel built rather than loaded has no page and no record.
+ */
+const sys_syspage_t *
+sys_syspage(void)
+{
+    return syspage;
 }

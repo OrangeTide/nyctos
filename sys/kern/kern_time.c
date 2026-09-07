@@ -15,6 +15,7 @@
 #include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
+#include <sys/syspage.h>
 #include <sys/time.h>
 #include <sys/timeline.h>
 
@@ -85,6 +86,52 @@ uint64_t
 time_hz(void)
 {
     return md_time_hz();
+}
+
+/*
+ * The system page of section 6.2, built once at boot.
+ *
+ * A frame like any other, filled in before anything is loaded and never
+ * written again. What it carries is in sys/syspage.h; what it does not
+ * carry, and why, is there too.
+ *
+ * Allocated early on purpose, so that the frame ledger of section 15.6
+ * counts it among what the port had spent before anything ran. It
+ * belongs to the system rather than to any process, and a process being
+ * reaped must not give it back: proc_free_slot skips the page the
+ * loader mapped for it.
+ */
+static uintptr_t syspage_pa;
+
+void
+syspage_build(void)
+{
+    sys_syspage_t *p;
+
+    /*
+     * One frame, allocated once. Called again it refills what is
+     * already there, which is what lets a check that deliberately
+     * corrupts the page put it back: at Tier 0 nothing stops a program
+     * writing here, and a boot that carried on with a broken clock
+     * would be the check damaging the run it is part of.
+     */
+    if (syspage_pa == 0) {
+        syspage_pa = page_alloc();
+        if (syspage_pa == 0) {
+            panic("syspage: no frame for it");
+        }
+    }
+
+    p = (sys_syspage_t *)syspage_pa;
+    p->version = SYS_SYSPAGE_VERSION;
+    p->_reserved = 0;
+    p->hz = time_hz();
+}
+
+uintptr_t
+syspage_frame(void)
+{
+    return syspage_pa;
 }
 
 sys_time_t

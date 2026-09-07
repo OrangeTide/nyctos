@@ -99,7 +99,8 @@ $(OBJTOP)/bin/fs_chain/fs_chain.bin \
 $(OBJTOP)/bin/brief/brief.bin \
 $(OBJTOP)/bin/poke_addr/poke_addr.bin \
 $(OBJTOP)/bin/leap/leap.bin \
-    $(OBJTOP)/bin/patient/patient.bin
+    $(OBJTOP)/bin/patient/patient.bin \
+    $(OBJTOP)/bin/tick/tick.bin
 
 BOOT_LAYOUTS := $(BOOT_BINS:.bin=.bin.layout)
 
@@ -141,6 +142,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) $(BOOT_BINS) $(BOOT_LAYOUTS)
 	    brief=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 28 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/brief/brief.bin \
 	    poke_addr=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 29 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/poke_addr/poke_addr.bin \
 	    leap=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 30 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/leap/leap.bin \
-	    patient=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 31 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/patient/patient.bin
+	    patient=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 31 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/patient/patient.bin \
+	    tick=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 32 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/tick/tick.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)

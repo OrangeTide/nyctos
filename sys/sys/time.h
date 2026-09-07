@@ -62,6 +62,13 @@ void time_init(void);
 /* Now, on the monotonic timebase. */
 sys_time_t time_now(void);
 uint64_t time_hz(void);
+
+/*
+ * Build the system page of section 6.2, once at boot, and the frame it
+ * lives in. See sys/syspage.h.
+ */
+void syspage_build(void);
+uintptr_t syspage_frame(void);
 sys_time_t time_from_ms(uint64_t ms);
 
 /*

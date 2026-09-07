@@ -123,6 +123,16 @@ struct proc {
      */
     uint32_t            p_rw_bytes;
     uint32_t            p_mem_bytes;
+
+    /*
+     * Where the system page of section 6.2 is mapped in this process,
+     * as an offset into its slot, or zero for a process that has none.
+     *
+     * Kept because the reap has to skip it. One frame serves every
+     * process, so a process giving back everything mapped in its slot
+     * would give back the page the next one is still reading.
+     */
+    uint32_t            p_syspage_off;
 #endif
     uintptr_t           p_startup_va;
 

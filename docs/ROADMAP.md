@@ -9645,15 +9645,43 @@ something needs it, not because the section lists it.
   the kernel to do. Removing both marks panics with "the kernel never
   ran, which cannot be".
 
-**2. The page, mapped read-only into every process.** *Planned.*
+**2. The page, mapped read-only into every process.** *Built.*
 
-- Whatever stage one decides it must carry, at an address a program is
-  told rather than one it assumes.
-- *Check.* A program reads a field and gets what the kernel put there.
-  A program that writes to the page faults, with the kind and the
-  address that say so, which is `poke_addr` pointed at it. The address
-  comes from the startup record, so a program that never looks at the
-  record cannot reach the page at all.
+- One frame for the whole machine, filled at boot before the ledger's
+  baseline is taken, so it is part of what the kernel costs rather than
+  something a process is charged for. It carries a version and the tick
+  frequency, which is what stage one decided it should carry instead of
+  the stored uptime section 6.2 describes.
+- Mapped read-only one page past everything the image asked for, at both
+  tiers by the same rule and by different means: Tier 2 maps the frame
+  into the slot, Tier 0 hands out the frame's own address because flat
+  memory has no other. `p_syspage_off` keeps the reap off it, because one
+  frame serving every process must not be given back when one of them
+  ends.
+- The address travels in the startup record, which is `SYS_STARTUP_VERSION`
+  2 and one word longer. libc keeps it when it consumes the record and
+  hands it back through `sys_syspage()`, which answers NULL for a process
+  the kernel built rather than loaded.
+- *Check.* `tick` follows the pointer and returns the frequency it finds;
+  the kernel compares that against `time_hz()`. Then `poke_addr` is aimed
+  at the same page.
+- *Settled.* The program reads 10 MHz on riscv64 and 62.5 MHz on aarch64,
+  which is what the kernel has. At Tier 2 the write is refused,
+  `SYS_FAULT_ACCESS` at exactly the page's address. At Tier 0 it is
+  permitted, and the check asserts that the write reached the shared frame
+  rather than a copy: one program moved the clock every other program
+  reads. The check then puts the page back, because leaving it broken
+  would make every later stage measure the damage.
+- *The read and the write are one check in two parts.* An unmapped page
+  refuses a write with the same kind at the same address as a read-only
+  one, so the fault alone would pass against a loader that mapped nothing.
+  What rules that out is the program having read the right number through
+  the same address first. Removing the mapping was tried: `tick` faults.
+- *And the record is written once.* The address was set after
+  `proc_place_startup` at first, which copies the record into the child's
+  page, so the program read a null pointer and said so at all four
+  configurations. Making the page writable, and putting the wrong
+  frequency in it, were each caught by the check they were for.
 
 **3. A clock a program can read.** *Planned.*
 

@@ -25,6 +25,7 @@
 #include <sys/peer.h>
 #include <sys/proc.h>
 #include <sys/sched.h>
+#include <sys/syspage.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
 #include <sys/time.h>
@@ -3974,6 +3975,181 @@ deadline_checks(void)
       handle_close(&self->p_handles, to), SYS_OK);
     expect("giving the channel back",
       handle_close(&self->p_handles, h_recv), SYS_OK);
+}
+
+/*
+ * The system page of section 6.2, per M16 stage two.
+ *
+ * Two questions, and the second is the one that makes the first mean
+ * anything. A program reads a field and gets what the kernel put there,
+ * which says the mapping exists and points at the right frame. A
+ * program writes to it and is refused, which says the mapping is
+ * read-only rather than merely present: a page a program could write
+ * would be a program that can move every other program's clock.
+ *
+ * The address is not written down here or there. The kernel puts it in
+ * the startup record, libc keeps it, and the program asks for it, so a
+ * program that never looks at its record cannot reach the page at all.
+ * What this check knows is where the loader puts it, which is the end
+ * of the slot, and that is what it points poke_addr at.
+ */
+static void
+syspage_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    const struct boot_member *m;
+    struct sys_op_status_args sargs;
+    int32_t want;
+    char addr[19];
+    const char *argv[2];
+    uintptr_t where;
+    sys_handle_t h;
+    struct child c;
+    void *obj;
+
+    cnputs("the system page: what a program can read of the clock\n");
+
+    sched_defer();
+    if (proc_spawn_op(self, "tick", PRIO_BOOT - 1, NULL, 0,
+      NULL, 0, &h) != SYS_OK) {
+        panic("syspage: could not start tick");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("syspage: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    (void)child_join(&c, JOIN_MS);
+
+    memset(&sargs, 0, sizeof(sargs));
+    if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) != SYS_OK) {
+        panic("syspage: no status for tick");
+    }
+    if (sargs.out_fault != SYS_FAULT_NONE) {
+        panic("syspage: tick faulted, kind %u",
+          (unsigned int)sargs.out_fault);
+    }
+
+    /*
+     * The frequency and not a token, because a token would pass against
+     * a page of zeroes with a version written into it. This is the one
+     * number the kernel and the program can both name, and comparing it
+     * is how the check knows the program read the frame the kernel
+     * filled rather than some other page that happened to be mapped.
+     */
+    want = (int32_t)(time_hz() & 0x7fffffffu);
+    if (sargs.out_code != want) {
+        panic("syspage: tick said %ld, the kernel has %ld",
+          (long)sargs.out_code, (long)want);
+    }
+    cnprintf("    %-38s %lu ticks a second\n", "what the program read",
+      (unsigned long)time_hz());
+
+    expect("giving tick's handle back", handle_close(ht, h), SYS_OK);
+
+    /*
+     * And the write. poke_addr is pointed at where its own page is,
+     * which is the end of its slot: one frame past everything the image
+     * asked for, because that is where proc_load puts it.
+     */
+    m = boot_lookup("poke_addr");
+    if (m == NULL) {
+        panic("syspage: no poke_addr in the archive");
+    }
+
+#if SYS_TIER == 2
+    where = (uintptr_t)m->bm_load + m->bm_mem;
+#else
+    where = syspage_frame();
+#endif
+    hex_into(addr, where);
+
+    argv[0] = "poke_addr";
+    argv[1] = addr;
+
+    sched_defer();
+    if (proc_spawn_op(self, "poke_addr", PRIO_BOOT - 1, NULL, 0,
+      argv, 2, &h) != SYS_OK) {
+        panic("syspage: could not start poke_addr");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("syspage: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    (void)child_join(&c, JOIN_MS);
+
+    memset(&sargs, 0, sizeof(sargs));
+    if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) != SYS_OK) {
+        panic("syspage: no status for poke_addr");
+    }
+
+#if SYS_TIER == 2
+    if (sargs.out_fault != SYS_FAULT_ACCESS) {
+        panic("syspage: a program wrote the clock and lived, kind %u",
+          (unsigned int)sargs.out_fault);
+    }
+
+    /*
+     * The address as well as the kind. What it rules out is a fault
+     * somewhere else wearing the same kind, which a program stopped
+     * for some other reason would give. It does not rule out a loader
+     * that mapped nothing here, because an unmapped page refuses a
+     * write at the same address for the same kind: what rules that out
+     * is the read above, and the two are one check in two parts.
+     */
+    if (sargs.out_fault_addr != where) {
+        panic("syspage: reported 0x%lx, wrote 0x%lx",
+          (unsigned long)sargs.out_fault_addr, (unsigned long)where);
+    }
+    cnprintf("    %-38s %s at 0x%lx\n", "a program writing the clock",
+      fault_name(sargs.out_fault),
+      (unsigned long)sargs.out_fault_addr);
+#else
+    /*
+     * Flat memory permits it, and says so rather than being left out.
+     * There is one frame and every process sees the same one, so at
+     * Tier 0 a program really can move the clock everything else
+     * reads. Section 13.3 already names the tier as the tier without
+     * protection, and this is one more thing it does not protect.
+     */
+    if (sargs.out_fault != SYS_FAULT_NONE) {
+        panic("syspage: flat memory refused a write, kind %u",
+          (unsigned int)sargs.out_fault);
+    }
+
+    /*
+     * And the write landed on the page everything reads, which is the
+     * part worth asserting. "Permitted" on its own would also be true
+     * of a store that went into a copy nobody else sees, and the cost
+     * being named here is that there are no copies: one frame, every
+     * process, and any of them can move it.
+     */
+    {
+        const sys_syspage_t *sp = (const sys_syspage_t *)syspage_frame();
+
+        if (sp->version == SYS_SYSPAGE_VERSION) {
+            panic("syspage: the write did not reach the shared page");
+        }
+        cnprintf("    %-38s %s\n", "a program writing the clock",
+          "permitted, and the whole machine's page changed");
+
+        /*
+         * Put it back. The check broke a page the rest of this boot
+         * reads, and leaving it broken would make every later stage
+         * measure the damage rather than the system.
+         */
+        syspage_build();
+        if (sp->version != SYS_SYSPAGE_VERSION || sp->hz != time_hz()) {
+            panic("syspage: could not put the page back");
+        }
+    }
+#endif
+
+    expect("giving poke_addr's handle back", handle_close(ht, h), SYS_OK);
 }
 
 /*
@@ -9694,6 +9870,13 @@ kernel_main(void)
     page_checks();
 
     /*
+     * The system page of section 6.2, before the count below is taken,
+     * so the ledger counts it among what the port had spent rather than
+     * as a frame nobody claims.
+     */
+    syspage_build();
+
+    /*
      * What the port had spent before any of this ran: the kernel's own
      * image, the boot archive, and whatever the early mapping built.
      * The ledger at the end of the boot subtracts it, because none of
@@ -9777,6 +9960,7 @@ kernel_main(void)
     console_service();
     device_checks();
     permission_checks();
+    syspage_checks();
     startup_record_checks();
     deadline_checks();
 
