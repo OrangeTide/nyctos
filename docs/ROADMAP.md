@@ -9226,6 +9226,28 @@ is released is section 18.3's and stays there.
   that goes on to be served. Without that case, removing the cancel
   changed nothing any check could see; with it, the boot no longer
   finishes.
+- *And the review found a priority the raiser leaves behind.* A sender
+  that queues calls `chain_raise`, which lifts every blocked server down
+  the chain to the sender's priority. Nothing records who raised whom,
+  so when that sender gives up there is nothing to take back: the boost
+  is withdrawn later, when each of those servers' own calls complete and
+  their own donors undonate them. It is bounded rather than leaked, and
+  it is still the thing `channel_thread_release` refuses to allow one
+  level in, where it says in as many words that a server serving a
+  client that has been cancelled has no reason to keep running at that
+  client's priority. The same argument reaches one level further out and
+  the mechanism does not.
+- *Not fixed, and not reached.* Lowering a chain safely needs a record
+  of what this sender raised, because a boost may be owed to somebody
+  else by the time it is given up, and that record is section 12.3's
+  mechanism rather than this stage's. No check here reaches it either:
+  the channel these checks use has nobody inside a request, so
+  `chain_raise` returns before raising anything.
+- *And a REPLY-blocked client's deadline is still ignored*, which is
+  stage three and is said here so that the flag is not read as working
+  everywhere it is accepted. A send that finds a server already waiting
+  arms no timer. The stage's own new case goes through the queue on both
+  ports, which the cancel break confirms by failing on both.
 - *Broken to check it.* Leaving the client on the queue when the timer
   fires panicked with "a client that gave up is still queued". Never
   cancelling a served sender's deadline stopped the boot part way
