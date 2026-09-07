@@ -128,6 +128,9 @@ long
 syscall_handler(struct sys_op *op, unsigned long count)
 {
     intr_state_t s = klock_enter();
+
+    /* A moment a stored uptime could be refreshed. M16 stage one. */
+    clock_mark();
     long r = syscall_body(op, count);
 
     klock_exit(s);

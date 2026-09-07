@@ -9923,6 +9923,37 @@ kernel_main(void)
      */
     cpu_idle_report();
 
+
+    /*
+     * And how stale a stored uptime would be, per M16 stage one.
+     * Section 6.2 has the system page carry a field the kernel writes
+     * and a program reads; this says what the writing would look like
+     * in a kernel that arms the hardware for the next event and for
+     * nothing else.
+     */
+    {
+        uint64_t worst = 0;
+        uint64_t marks = clock_mark_count(&worst);
+
+        cnputs("the clock: how often a stored uptime could be written\n");
+        cnprintf("    %-38s %lu\n", "moments the kernel was running",
+          (unsigned long)marks);
+        cnprintf("    %-38s %lu ticks, about %lu us\n",
+          "longest gap between two of them", (unsigned long)worst,
+          (unsigned long)(worst * 1000000ULL / time_hz()));
+
+        /*
+         * The count is asserted and the gap is not. How many times the
+         * kernel ran is a property of what the checks ask it to do; how
+         * long the longest gap was is a property of the host, which is
+         * M9's rule and the reason this stage reports a duration rather
+         * than checking one.
+         */
+        if (marks == 0) {
+            panic("the clock: the kernel never ran, which cannot be");
+        }
+    }
+
     /*
      * And what the deadlines did, per M15 stage six. Counts rather than
      * durations: how many sends gave up, and which of section 12.1's

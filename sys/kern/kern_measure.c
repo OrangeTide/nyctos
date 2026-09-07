@@ -819,6 +819,58 @@ intr_region_report(void)
     }
 }
 
+
+/*
+ * How stale a stored uptime would be, per M16 stage one.
+ *
+ * Section 6.2 has the system page carry a 64-bit uptime the kernel
+ * writes and a program reads under a seqlock. A kernel writes such a
+ * field at the moments it is already running: a system call, an
+ * interrupt, a context switch. This kernel is tickless, so between two
+ * events there is nothing running to refresh it, and a program that
+ * built a deadline from a stale value would get one that expires
+ * earlier than it meant.
+ *
+ * What this measures is the gap. Every moment the kernel could refresh
+ * such a field is counted, and the longest interval between two of them
+ * is kept. If that interval is short, the field section 6.2 describes
+ * is a clock; if it is long, it is a description of a design this
+ * kernel is not.
+ *
+ * The count is a count and is asserted where it is reported. The
+ * interval is a duration, so it is reported and never asserted, per
+ * M9's rule.
+ */
+static uint64_t clock_marks;
+static uint64_t clock_last;
+static uint64_t clock_worst;
+
+void
+clock_mark(void)
+{
+    uint64_t now = md_time_now();
+
+    clock_marks++;
+
+    if (clock_last != 0 && now > clock_last) {
+        uint64_t gap = now - clock_last;
+
+        if (gap > clock_worst) {
+            clock_worst = gap;
+        }
+    }
+
+    clock_last = now;
+}
+
+uint64_t
+clock_mark_count(uint64_t *worst)
+{
+    *worst = clock_worst;
+
+    return clock_marks;
+}
+
 /*
  * A preemption point, per section 13.3: a place where the kernel could
  * be preempted, and therefore a boundary on how long it cannot be.

@@ -132,6 +132,14 @@ struct thread;
  */
 void preempt_point(void);
 
+/*
+ * Mark a moment the kernel could refresh a stored uptime, and read back
+ * how many there were and the longest gap between two. See
+ * kern_measure.c and M16 stage one.
+ */
+void clock_mark(void);
+uint64_t clock_mark_count(uint64_t *worst);
+
 struct thread;
 
 /*

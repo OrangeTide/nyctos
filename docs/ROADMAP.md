@@ -9550,6 +9550,137 @@ sentinels are already in the interface. The race in stage five is the
 part with no precedent.
 
 ---
+### M16. A Clock a Program Can Read
+
+**Section 6.2's system page, and the deadlines it was written to make
+affordable.**
+
+M15 gave a rendezvous a deadline and then could not give one to a
+program. Section 14.3 wants an absolute instant on the monotonic
+timebase; a program has no way to obtain one, so the only program in
+this system that uses a deadline is handed it on its command line by
+the kernel that starts it. Section 6.2 already says what would fix
+that: a page mapped read-only into every process, carrying the timebase
+among other things, read with no syscall.
+
+*None of it exists.* There is no page, no accessor, and nothing in the
+startup record that points at one. Section 6.2 describes
+`SYS_SYSPAGE_ENTRY()` and `sys_syspage_uptime()` and neither name
+appears anywhere in the tree.
+
+**And the section may specify the wrong thing.** It has the page carry a
+64-bit `uptime_ticks` field protected by a seqlock, which is a value the
+kernel writes and a program reads. This kernel is tickless: section 14.2
+arms the hardware for the next event and for nothing else, so between
+two events there is nothing running that would refresh such a field. A
+deadline built from a stale value is a deadline that expires earlier
+than the caller meant, which is the failure absolute deadlines exist to
+avoid. The alternative is that the page carries what a program needs to
+read the counter itself, which both ports have and neither currently
+permits from user mode.
+
+*Which of those is right is stage one's question, and it is a
+measurement rather than an argument.*
+
+*Needs.* A per-port bit if the counter is to be read directly:
+`scounteren` on riscv64 and `CNTKCTL_EL1` on aarch64. Nothing else new.
+
+**What this is not.** Not a general shared-memory interface between the
+kernel and programs. Section 6.2 names four things the page carries and
+this milestone builds what the deadline needs; the rest is added when
+something needs it, not because the section lists it.
+
+**1. How stale a stored value would be.** *Built.*
+
+- The kernel would refresh `uptime_ticks` at the moments it already
+  runs. In a tickless kernel those moments are not evenly spaced.
+- *Check.* The boot reports the longest gap between two consecutive
+  moments the kernel could have refreshed such a field, and the count of
+  those moments. The count is asserted; the gap is a duration and is
+  reported. What the gap turns out to be decides stage two, and the
+  entry records the decision with the number beside it.
+- *Settled, and it decides the milestone.* The kernel runs about 3200
+  times in a boot, and **the longest gap between two of those moments is
+  103 to 141 milliseconds** across the four configurations. M15's own
+  checks use a deadline of fifty. A program that read a stored uptime
+  and added fifty milliseconds to it would, at the worst moment, be
+  naming an instant already ninety milliseconds in the past: the send
+  would poll and return at once rather than wait, which is the failure
+  absolute deadlines exist to prevent.
+- *So the field section 6.2 describes cannot carry what section 6.2
+  wants it for*, and stage two builds the other thing: the page carries
+  what a program needs to read the counter itself. The seqlock the
+  section describes is for a value the kernel writes, and there will not
+  be one.
+- *The argument is structural and the number is the illustration.* A
+  tickless kernel arms the hardware for the next event and for nothing
+  else, so an idle system does not refresh such a field at all: the gap
+  is bounded by when the kernel next has something to do, which is a
+  property of the workload rather than of the host. A faster machine
+  makes the number smaller and does not make the field current.
+- *The gap is reported and never asserted*, per M9's rule, and the count
+  of moments is asserted because it is a property of what the checks ask
+  the kernel to do. Removing both marks panics with "the kernel never
+  ran, which cannot be".
+
+**2. The page, mapped read-only into every process.** *Planned.*
+
+- Whatever stage one decides it must carry, at an address a program is
+  told rather than one it assumes.
+- *Check.* A program reads a field and gets what the kernel put there.
+  A program that writes to the page faults, with the kind and the
+  address that say so, which is `poke_addr` pointed at it. The address
+  comes from the startup record, so a program that never looks at the
+  record cannot reach the page at all.
+
+**3. A clock a program can read.** *Planned.*
+
+- *Check.* A program reads the time twice and the second reading is not
+  before the first, and both lie between two readings the kernel takes
+  either side of the program's run. That brackets it: a clock that
+  reads a constant, or one in different units, fails the bracket rather
+  than the eye.
+
+**4. A deadline a program made for itself.** *Planned.*
+
+- *Check.* `patient` stops being handed its deadline and computes one,
+  and still gives up at it. The kernel no longer passes an argument it
+  had no business knowing, and M15's check reads the same as before.
+
+**5. What the read costs.** *Planned.*
+
+- *Check.* A program reads the clock and its count of submissions does
+  not change. Section 6.2's whole claim is that this costs no syscall,
+  and a count of crossings is what says so: M11 already counts them per
+  process.
+
+**6. What it cost, and section 6.2 written around it.** *Planned.*
+
+- *Check.* The figures, and the section matched to what was built:
+  what the page carries, what it does not, where a program finds it,
+  and whether the seqlock the section describes turned out to be the
+  mechanism or a description of a different design.
+
+*Done when* a program constructs an absolute deadline from a clock it
+read itself, a send gives up on it, and reading that clock costs no
+crossing of the trap edge.
+
+*Would falsify.* That the page is the right shape for what section 14.3
+needs. If a stored field is too stale to build a deadline from and the
+counter cannot be exposed on some port, then absolute deadlines are not
+affordable on that port and section 14.3's cost argument is wrong rather
+than the code.
+
+*Watch for.* A clock that looks right because both readings came from
+the same place. The check has to bracket a program's readings with the
+kernel's own, or a program reading a constant it was handed passes as
+easily as one reading a clock.
+
+*Size.* Small to medium. The page is a page; what is unknown is whether
+the field the section specifies can carry the value it is for.
+
+---
+
 
 ## 4. Milestone 1, in Retrospect
 

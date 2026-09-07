@@ -166,6 +166,9 @@ irq_dispatch(void)
 {
     intr_state_t s = klock_enter();
 
+    /* And here, for the same reason. M16 stage one. */
+    clock_mark();
+
     /*
      * Marked so that a thread made runnable in here is known to have
      * been made runnable by an interrupt, which is what section 13.3's
