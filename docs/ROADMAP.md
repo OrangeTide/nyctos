@@ -8810,6 +8810,16 @@ slot is ever backed by a frame.
   reads the floor out of the archive: at least what this image says it
   needs. The same check asking the same question of a loader that knows
   the answer.
+- *And the review found the rows that expect nothing could not fail.*
+  Two of the four measure a window and expect it to hold nothing, and
+  the difference was clamped at zero before being compared: anything
+  else giving memory back inside the window drives it negative, the
+  clamp reads that as nothing held, and a leak of the check's own would
+  sit hidden under it. Both are signed and exact now. Freeing one frame
+  inside the window panics with "left -1 held, not 0" where it used to
+  pass. The rows measured against a holder were made signed for the same
+  reason, though nothing destroys a grant today, so that one is a
+  refusal to wrap rather than a fault found.
 - *Broken to check it.* Mapping one page fewer than the image needs
   broke a program's stack and the boot failed, though at a later check
   and with a message that names something else: the loader does not

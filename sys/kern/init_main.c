@@ -3020,23 +3020,31 @@ frame_holder(const char *what, uint32_t before, uint32_t expect,
   const char *who)
 {
     sys_time_t deadline = time_now() + time_from_ms(JOIN_MS);
-    uint32_t held;
+    int64_t held;
 
+    /*
+     * Signed, and exact. This used to clamp a count that had fallen to
+     * zero and compare that, which for a row expecting nothing held is
+     * a check that cannot fail: anything else giving memory back inside
+     * the window drives the difference negative, the clamp reads it as
+     * nothing held, and a leak of this check's own would be hidden
+     * under it. Fewer frames than there were is not nothing held, it is
+     * a window that had somebody else's work in it, and saying so is
+     * the only way the row means anything.
+     */
     for (;;) {
-        uint32_t now = page_used();
-
-        held = now > before ? now - before : 0;
-        if (held == expect) {
+        held = (int64_t)page_used() - (int64_t)before;
+        if (held == (int64_t)expect) {
             break;
         }
         if (time_now() > deadline) {
-            panic("frames: %s left %u held, not %u", what,
-              (unsigned int)held, (unsigned int)expect);
+            panic("frames: %s left %ld held, not %u", what,
+              (long)held, (unsigned int)expect);
         }
         sched_yield();
     }
 
-    cnprintf("    %-38s %u, held by %s\n", what, (unsigned int)held, who);
+    cnprintf("    %-38s %ld, held by %s\n", what, (long)held, who);
 }
 
 /*
@@ -3063,13 +3071,20 @@ static void
 grant_holder(const char *what, uint32_t before, uint32_t expect,
   const char *who)
 {
-    uint32_t held = grant_frames() - before;
+    /*
+     * Signed for the reason the other one is: a count that fell is not
+     * nothing held, and reading it as nothing is how a row stops being
+     * able to fail. Nothing destroys a grant today, so this cannot go
+     * negative yet, and the day something does the row will say so
+     * rather than wrap to four billion.
+     */
+    int64_t held = (int64_t)grant_frames() - (int64_t)before;
 
-    cnprintf("    %-38s %u, held by %s\n", what, (unsigned int)held, who);
+    cnprintf("    %-38s %ld, held by %s\n", what, (long)held, who);
 
-    if (held != expect) {
-        panic("frames: %s left %u held, not %u", what,
-          (unsigned int)held, (unsigned int)expect);
+    if (held != (int64_t)expect) {
+        panic("frames: %s left %ld held, not %u", what,
+          (long)held, (unsigned int)expect);
     }
 }
 
