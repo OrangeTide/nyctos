@@ -3456,6 +3456,58 @@ dl_hold_server(void *arg)
     thread_exit(0);
 }
 
+static sys_err_t dl_race_reply = SYS_ERR_INTERRUPTED;
+
+/* The client's deadline, so the server can hold the core past it. */
+static volatile uint64_t dl_race_until;
+
+/*
+ * A server that answers in time and then keeps the core.
+ *
+ * It replies at once, which makes the client runnable, and then waits
+ * past the client's deadline without giving the core up to it. The
+ * client outranks nothing here: it is below this thread, so it does not
+ * run until this one blocks, and the timer fires in between.
+ *
+ * That is the race of M15 stage five, arranged rather than waited for.
+ * The reply happens first and the deadline arrives second, on a thread
+ * that has its answer and has not yet been back to collect it.
+ */
+static void
+dl_race_server(void *arg)
+{
+    struct sys_msg msg, rep;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(dl_ch, &msg, &peer, &cookie) != SYS_OK) {
+        thread_exit(1);
+    }
+
+    memset(&rep, 0, sizeof(rep));
+    rep.handle = SYS_HANDLE_INVALID;
+    dl_race_reply = channel_reply(peer, &rep);
+
+    /*
+     * Past the client's deadline, holding the core. Spun rather than
+     * slept: blocking hands the core to the client at once, and then
+     * it runs and collects its answer before the timer ever fires,
+     * which is the ordinary case and not this one. Interrupts stay on
+     * through a spin, so the timer arrives while the client is runnable
+     * and has not run.
+     */
+    while (time_now() < dl_race_until) {
+        md_cpu_relax();
+    }
+
+    (void)timeline_signal(&dl_done, 1);
+
+    thread_exit(0);
+}
+
 /*
  * A deadline on a send, per M15 stage one.
  *
@@ -3832,6 +3884,58 @@ deadline_checks(void)
 
         expect("giving its handle back",
           handle_close(&self->p_handles, h), SYS_OK);
+    }
+
+    /*
+     * And the race, per M15 stage five: the reply and the deadline
+     * arriving together. Arranged rather than waited for. The server
+     * outranks this thread, so it replies, this thread becomes runnable
+     * without running, and the server then holds the core past the
+     * deadline. The timer fires on a thread that already has its
+     * answer.
+     *
+     * Without a guard the timer overwrites that answer with
+     * SYS_ERR_TIMEOUT and enqueues a thread that is already on a run
+     * queue, which enqueue panics on. What is asserted is that exactly
+     * one of the two happened: the reply.
+     */
+    {
+        sys_op_t send;
+
+        timeline_init(&dl_done, "dl-race-done");
+        dl_race_reply = SYS_ERR_INTERRUPTED;
+
+        srv = thread_create("dl-race", PRIO_BOOT + 1, dl_race_server, NULL);
+        sched_ready(srv);
+
+        memset(&args, 0, sizeof(args));
+        args.request.handle = SYS_HANDLE_INVALID;
+        args.deadline = time_now() + time_from_ms(DEADLINE_MS);
+        dl_race_until = args.deadline + time_from_ms(DEADLINE_MS);
+
+        memset(&send, 0, sizeof(send));
+        send.opcode = SYS_OP_IPC_SEND;
+        send.target = to;
+        send.flags = SYS_OP_DEADLINE;
+        send.arg_ptr = (uintptr_t)&args;
+        send.arg_len = sizeof(args);
+
+        expect("a send answered just before its deadline",
+          (sys_err_t)run_batch(&send, 1), SYS_OK);
+        expect("and the reply that answered it", dl_race_reply, SYS_OK);
+
+        /*
+         * And the deadline really did arrive while this thread held its
+         * answer. Without that the check is a send that was answered,
+         * which stage two already makes.
+         */
+        if (time_now() < args.deadline) {
+            panic("deadline: it returned before its own deadline");
+        }
+
+        expect("waiting for the server to finish",
+          timeline_wait(&dl_done, 1,
+            time_now() + time_from_ms(JOIN_MS)), SYS_OK);
     }
 
     cnprintf("    %-38s %s\n", "what decides whether it waits",

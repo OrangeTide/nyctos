@@ -9386,7 +9386,7 @@ is released is section 18.3's and stays there.
   "patient ran again with its buffer still lent out", which is the
   sentence M13 left in that path for whenever a deadline arrived.
 
-**5. A deadline that expires while the reply is in flight.** *Planned.*
+**5. A deadline that expires while the reply is in flight.** *Built.*
 
 - The race the other stages assume away: the server replies at the
   moment the timer fires.
@@ -9395,6 +9395,34 @@ is released is section 18.3's and stays there.
   that received a reply is not also failed. Constructed rather than
   waited for: the check arranges the two to coincide rather than hoping
   they do.
+- *It is not a data race.* A reply arrives through a system call and a
+  deadline through an interrupt, and both take the kernel lock, so at
+  Tier 2 they cannot be inside the channel at once. What is left is an
+  ordering question, and one of the two orders was a panic.
+- *Settled.* The reply first, then the timer: the reply writes the
+  client's answer and makes it runnable, the deadline arrives before the
+  client has run, and `thread_wake_timeout` overwrote that answer with
+  `SYS_ERR_TIMEOUT` and enqueued a thread already on a run queue, which
+  `enqueue` panics on. A deadline that fires on a thread which is no
+  longer blocked now does nothing at all: whatever it was waiting for
+  arrived first, and section 14.3's rule is that the other of the two is
+  then stale.
+- *This was never about sends.* The same window exists for every
+  deadline the system has, because the registration is withdrawn by the
+  waking thread in `time_sleep_cancel` and that happens when it runs. A
+  fence signalled a moment before its deadline has had the same shape
+  since M1, and nothing had constructed it.
+- *The race had to be built twice.* The first version had the server
+  reply and then wait on a timeline, which blocks: the core goes to the
+  client at once, it collects its answer, and the timer finds nothing
+  interesting. The check caught its own arrangement, panicking that the
+  send returned before its own deadline, which is the assertion that
+  exists so a race that did not happen cannot read as one that did. The
+  server now spins past the deadline instead, holding the core with
+  interrupts on.
+- *Broken to check it.* Letting a stale deadline fire panicked with
+  "thread boot: made runnable while already runnable", on all four
+  configurations.
 
 **6. What it cost, and section 12.1 written around it.** *Planned.*
 

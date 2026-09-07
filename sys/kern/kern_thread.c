@@ -111,6 +111,24 @@ thread_exited(void)
 void
 thread_wake_timeout(struct thread *t)
 {
+    /*
+     * Unless the wait is already over. Whatever the thread was waiting
+     * for may have arrived between the deadline being registered and
+     * this firing: a reply, a signal, a cancellation. The thread is
+     * then runnable, or running, with its answer already written, and
+     * this would overwrite it with SYS_ERR_TIMEOUT and enqueue a thread
+     * that is already on a run queue, which enqueue panics on.
+     *
+     * The deadline is withdrawn by whoever wakes up, in time_sleep_cancel,
+     * but that happens when the thread runs and the window is until
+     * then. Section 14.3's rule is that whichever of the two happens
+     * first leaves the other stale; this is the half that says so from
+     * the timer's side.
+     */
+    if (t->t_state != THREAD_BLOCKED) {
+        return;
+    }
+
     if (t->t_unwait != NULL && t->t_blocked_on != NULL) {
         t->t_unwait(t->t_blocked_on, t);
     }
