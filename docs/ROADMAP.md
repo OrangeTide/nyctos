@@ -452,9 +452,28 @@ something that transfers, and the one route that looks open through the
 block store is an issuing send, which section 17.3 rules out on
 structural grounds.
 
-Memory is still never reclaimed and a rendezvous still carries no
-deadline. Nothing has run on hardware, so every duration this project
-has published is the right shape and the wrong magnitude.
+**M13 made a process give back what it was given.** A process costs 264
+frames on riscv64 at Tier 2 and 262 on aarch64, a megabyte of slot for
+an image of four kilobytes, and all of it now comes back when the last
+thing that could ask about the process lets go. A program was spawned
+and reaped 40000 times on a machine with 32768 frames and the count
+returned to where it started; before M13 the same loop stopped at about
+the ninety-fifth iteration. At Tier 0 a process costs nothing, because
+a flat image runs in memory the archive already occupies.
+
+The boot ends with a ledger of every frame the machine has spent, and
+it balances: what was spent before anything ran, what live processes
+hold, what cohort address spaces hold, what grants hold, what a cohort
+restart orphaned, what the kernel's own space has grown by, and nothing
+left over. One row of it is a real loss: section 18.2 frees a cohort
+place when its occupant exits rather than when it is reaped, so a
+restart maps over the previous member's frames and 256 of them become
+unreachable.
+
+A rendezvous still carries no deadline. Nothing has run on hardware, so
+every duration this project has published is the right shape and the
+wrong magnitude. The counts are not durations, which is why this
+milestone asserts counts.
 
 ---
 
@@ -8139,6 +8158,10 @@ safe are not.
 
 **A process that exits returns what it was given.**
 
+**Done.** All six stages are built. Section 16 says what it answered,
+what it cost, what the building kept finding, and what it left
+untested.
+
 Section 1 has said since M9 that memory is never reclaimed, and every
 retrospective since has repeated it without anyone acting on it. What
 that means precisely: the frame allocator has a working `page_free`
@@ -10245,7 +10268,162 @@ rather than about either machine's speed.
 
 ---
 
-## 16. Bring-Up Order Within M1
+## 16. Milestone 13, in Retrospect
+
+M13 set out to make a process give back what it was given, which
+section 1 had said since M9 was not happening. It did that, and the
+work was almost entirely in finding out what a process actually holds
+and when nothing can reach it any more. The freeing itself is about
+eighty lines.
+
+### 16.1 The Questions
+
+**What does a process cost?**
+
+At Tier 2, 264 frames on riscv64 and 262 on aarch64: a megabyte of a
+slot for a program whose image is four kilobytes, plus the tables to
+reach it. `proc_load` allocates and maps the whole slot because the
+archive carries the size of the image and not the size of the memory
+the program needs.
+
+**At Tier 0 it costs nothing at all**, which changed the milestone's
+shape at its first stage. A flat image is copied to the address it was
+linked for and runs in memory the archive already occupies, so there is
+no per-process allocation and nothing about a process to reclaim. Every
+frame this milestone gives back is a Tier 2 frame.
+
+**Can the system now run indefinitely?**
+
+A program was spawned and reaped 40000 times on a machine with 32768
+frames, and the count came back to where it started. That run asked the
+allocator for 10,560,000 frames on riscv64 and 10,480,000 on aarch64,
+more than three hundred times what the machine has, in about seven
+minutes each. Before this milestone the same loop stopped at about the
+ninety-fifth iteration with no memory left. The boot check runs 200
+cycles, which still asks for 52800 frames against the 32768 that exist.
+
+**When is a process finished with?**
+
+At the reap, and the reap is not the join. Waiting on a completion
+timeline says a process has exited and closing its handles says nothing
+can ask about it any more, but its last thread is *parked* at that
+point rather than collected, and the collection happens at the top of
+whichever core's next switch reaches it. Every measurement in this
+milestone had to learn that: the first version of stage one saw a
+second spawn appear to cost 8 frames instead of 264, because it read
+the count in the gap.
+
+**Was ownership already known well enough to free on?**
+
+Yes, and that was the milestone's open question. The reference counting
+M11 fixed says exactly when a process object is finished with, and the
+frames follow it without anything new. What was *not* already known is
+which frames in a process's address space are the process's: pages a
+pager supplied are its grants', and a cohort member's slot may belong
+to a replacement by the time the reap runs. Both are ownership
+questions the design had answered on paper and nothing had ever had to
+act on.
+
+### 16.2 What It Cost
+
+The freeing is `proc_free_slot`, `md_as_destroy` on each port, and a
+call in the reap. What surrounds it is larger: a boundary recording
+where the loader stopped allocating, a test that a cohort member still
+holds its place, a lock for the frame allocator, a generation count for
+address spaces, and a ledger with six rows and five new accessors
+behind it.
+
+**The frame allocator had no lock.** Every other shared structure takes
+one at Tier 2, and this one relied on disabling interrupts, which is
+exclusion on one core and nothing on two. It had not mattered while the
+only caller that freed a frame was a boot check. Making freeing
+something a reap does is what made it matter, since a reap runs on
+whichever core collects the parked thread. Measured, only the boot
+thread's core ever enters the allocator, 43849 times on riscv64 with
+nothing on the other core, so the lock is correct and untested by
+contention. The report prints the zero rather than asserting the lock
+is exercised.
+
+**A root is a frame, and freeing one made a root address ambiguous.**
+The context switch decided whether to load the root register by
+comparing addresses, which was a sound identity only while roots were
+never freed. Skipping the load keeps translations for the space that
+used to be there, at the same addresses, pointing at frames since given
+to somebody else, and the allocator hands out the lowest free frame
+while the checks spawn one program eleven times in a row.
+`vm_as_epoch` costs two extra activations across a whole boot, 472
+against 470.
+
+**One place loses memory unrecoverably**, and it is a consequence of
+section 18.2 rather than of anything here. A cohort place is free once
+its occupant has exited, which is earlier than when its occupant is
+reaped, so a replacement can be loaded over the previous member's
+mappings while that member waits to be reaped. Its frames become
+unreachable, the reap must free nothing, and the ledger counts the
+event at 256 frames a time. Two such restarts happen in this boot.
+
+### 16.3 What the Building Kept Finding
+
+**Checks that cannot fail on the thing they are for.** Stage two's run
+of eight processes measured the residue and then asserted the residue.
+With the freeing removed it measured 264, found 264 of them eight times
+over, and passed. The fix is to assert against a number the system does
+not choose, which is the slot's size.
+
+**Numbers read too early.** Stage one measured across the reap it had
+not waited for. Stage four read the count the moment a check returned.
+Stage five snapped the final count rather than waiting for it. The same
+error three times, each time because the join looks like the end of a
+process and is not.
+
+**And a proxy that was not the thing.** The first fix for stage four
+waited for the process pool's count to return to what it was, which
+assumes the check is the only thing making processes. Under the paced
+session the console has input to deal with and a process appears that
+the check never started. Waiting on the figure being asserted needs no
+theory about whose processes are whose.
+
+**Guards argued rather than demonstrated.** Stage two kept the reap off
+pages a pager supplied and could not make any check fail without it.
+Stage four is what demonstrated it, two stages later. The habit of
+writing down which protections are untested is what made that findable.
+
+**A build error read as a result.** Tier 0 reported old figures through
+several rounds of stage six because a function had been written inside
+the Tier 2 guard: the link failed, the build carried on with the
+previous kernel, and the run repeated what it had said before.
+
+### 16.4 What Is Still Untested
+
+**The cohort address space path.** A cohort's space now goes back when
+its last member is reaped, and no check in this boot reaps every member
+of a cohort, because their handles are held until the machine stops.
+Removing the code changes not one frame of what the boot reports, which
+is how that was established rather than assumed.
+
+**The frame lock under contention.** Only the boot thread's core ever
+enters the allocator. A fault serviced by a pager, or a spawn made by a
+program, would enter it from wherever that program runs, and nothing in
+this system does either from another core.
+
+**Cross-core TLB maintenance, which does not exist.**
+`md_tlb_flush_all` is local to the calling core, so reclaiming a cohort
+member's memory while a peer runs on another core is not safe. The
+checks reap processes that are in no cohort.
+
+**Whether a slot has to be a megabyte.** Every figure in this milestone
+is dominated by the loader allocating a whole slot for an image of a
+few tens of kilobytes. Teaching the archive to carry the size of the
+memory a program needs would change every number here, and nothing
+attempted it.
+
+**Hardware, still.** The durations in this section describe an
+emulator. The counts do not, which is the whole reason the counts are
+what this milestone asserts.
+
+---
+
+## 17. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -10289,7 +10467,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 17. Ordering: What Is Forced and What Is Chosen
+## 18. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -10320,7 +10498,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 18. What Would Change This Plan
+## 19. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -10367,7 +10545,7 @@ else.
 
 ---
 
-## 19. Deliberately Not Scheduled
+## 20. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

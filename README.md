@@ -29,6 +29,44 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 13 is done: a process gives back what it was given.** Until
+now nothing ever freed a frame, so how long this system could run was
+bounded by how many processes it had ever started.
+
+```
+                                    t0 riscv  t0 aarch  t2 riscv  t2 aarch
+what a process costs, in frames            0         0       264       262
+how many come back                         0         0       264       262
+what 8 of them leave behind                0         0         0         0
+```
+
+A process at Tier 2 costs a whole megabyte slot for an image of four
+kilobytes, because the archive carries the size of the image and not
+the size of the memory a program needs. At Tier 0 it costs nothing: a
+flat image runs in memory the archive already occupies, so there is
+nothing to give back and every frame this reclaims is a Tier 2 frame.
+
+**A program was spawned and reaped 40000 times on a machine with 32768
+frames, and the count came back to where it started.** That asked the
+allocator for more than ten million frames, three hundred times what
+the machine has. Before this the same loop stopped at about the
+ninety-fifth iteration with no memory left.
+
+The boot ends with a ledger of every frame the machine has spent, and
+it balances to zero: what was spent before anything ran, what live
+processes hold, what cohort address spaces hold, what grants hold, what
+a cohort restart orphaned, what the kernel's own address space has
+grown by, and nothing unaccounted. A ledger is weaker than "nothing
+leaks", since most of those rows are frames nothing will ever return.
+It is stronger than a total, because it fails when a new way of holding
+a frame appears and nobody writes it down.
+
+One row of it is a real loss. A cohort place becomes free when its
+occupant exits rather than when it is reaped, so a restarted member is
+loaded over the previous one's mappings and 256 frames become
+unreachable. That is a consequence of how cohort restart is specified,
+and the ledger reports it rather than hiding it.
+
 **Milestone 12 is done: the latency floor is the rendezvous, not the
 switch.** It attempted the first remedy milestone 9 named, not
 disabling interrupts across a context switch, and made three splits
@@ -339,9 +377,7 @@ it back where it started, where the old code left it at 230 instead of
 1.
 
 What does not exist: a device that does direct memory access, and with
-it the half of section 17 about transfers in flight. Memory is still
-never reclaimed, so a slot comes back and the megabyte a process was loaded
-into does not, and no address space is ever torn down. A rendezvous
+it the half of section 17 about transfers in flight. A rendezvous
 carries no deadline, so a wedged server hangs its client until a
 supervisor ends it, and nothing yet notices on its own that one should.
 The reference counts that decide when an object is freed are still
@@ -710,11 +746,19 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   (selected via `ARCH` and `TIER`). This keeps the build system's
   variables simple and unambiguous instead of juggling per-configuration
   state in a single run; building all four is four commands.
-- Memory is never reclaimed. Pool slots come back, but the megabyte a
-  process was loaded into does not, nor do its page tables, and a spawn
-  that fails partway leaks the frames it had allocated. Freeing them
-  needs the loader to record which pages it allocated, because a
-  demand-paged process runs on frames belonging to its pager.
+- A spawn that fails partway leaks the frames it had allocated.
+  Milestone 13 made a process give back its slot and its page tables
+  when it is reaped, and left the partial-spawn path alone: nothing
+  records what a spawn had allocated at the point it failed, and every
+  failure there is a panic today.
+- A cohort restart loses the previous member's memory. A place becomes
+  free when its occupant exits rather than when it is reaped, so the
+  replacement is loaded over the mappings that named the old member's
+  frames and 256 of them become unreachable. The boot's frame ledger
+  counts them.
+- No cross-core TLB maintenance. Reclaiming a cohort member's memory
+  while a peer runs on another core is not safe, and the checks reap
+  processes that are in no cohort.
 - A rendezvous carries no deadline, so a server that stops answering
   hangs its client until something cancels it. Cancellation exists;
   nothing yet notices on its own that it is needed.
@@ -740,17 +784,19 @@ it could only half answer. What the plan does not schedule, and what
 the last milestones each said would be worth doing next, is written
 down there rather than guessed at here.
 
-Two things are named in more than one retrospective, which is what this
-project treats as a signal. Nothing has ever run on hardware, so every
-duration published here is the right shape and the wrong magnitude. And
-memory is never reclaimed: a process that exits gives nothing back, so
-how long the system can run is bounded by how many processes it has
-started.
+One thing is named in every retrospective, which is what this project
+treats as a signal: nothing has ever run on hardware, so every duration
+published here is the right shape and the wrong magnitude. That is why
+the milestones that could assert counts rather than durations did.
 
-The latency floor was the second of those signals until milestone 12
-took it. What that milestone left is narrower and harder: the floor is
+The other two signals have been taken. The latency floor went to
+milestone 12, which left something narrower and harder: the floor is
 the work a rendezvous has to do atomically, and lowering it means
-making that work shorter or making less of it atomic.
+making that work shorter or making less of it atomic. Memory never
+being reclaimed went to milestone 13, which left the slot itself as the
+next obvious question: a process costs a megabyte because the archive
+carries the size of an image and not the size of the memory a program
+needs.
 
 The ordering that got here is in the same file, along with what each
 milestone answered and what it left untested. The one choice most likely
