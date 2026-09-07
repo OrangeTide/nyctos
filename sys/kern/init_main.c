@@ -3420,6 +3420,43 @@ dl_slow_server(void *arg)
 }
 
 /*
+ * A server that takes a message and never answers.
+ *
+ * It takes the client's message, and with it the client's buffer, and
+ * then waits past the client's deadline without answering. That is a
+ * server that has stopped serving, which is what a client's deadline is
+ * for, and it holds the buffer for as long as the client is willing to
+ * wait.
+ */
+static void
+dl_hold_server(void *arg)
+{
+    struct sys_msg msg;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(dl_ch, &msg, &peer, &cookie) != SYS_OK) {
+        thread_exit(1);
+    }
+    dl_slow_took = 1;
+
+    /*
+     * And then it holds, until past the client's deadline, and ends.
+     * An earlier version blocked in a second receive for the rest of
+     * the boot, which left a thread above the boot thread parked on
+     * this channel and moved what a later check counts on the way from
+     * an interrupt to a program. A check that outlives itself is a
+     * check that breaks the next one.
+     */
+    (void)timeline_wait(&dl_tl, 1, time_now() + time_from_ms(DEADLINE_MS * 3));
+
+    thread_exit(0);
+}
+
+/*
  * A deadline on a send, per M15 stage one.
  *
  * Section 14.3 has every blocking call take an absolute deadline and
@@ -3722,6 +3759,79 @@ deadline_checks(void)
 
         cnprintf("    %-38s %s\n", "what the server was left holding",
           "nothing it cannot give back");
+    }
+
+    /*
+     * And a client that lent memory, per M15 stage four. Section 6.1
+     * hands the buffer to the server for the length of the call, which
+     * at Tier 2 is a real mapping: the pages leave the client's address
+     * space. A client that gives up has to get them back with the
+     * permissions they had, and the program is what says it did, by
+     * writing them afterwards and reading them back.
+     *
+     * A user program rather than a thread here, because a kernel thread
+     * shares the kernel's address space and there is nothing to take
+     * away from it: what this stage is about only exists between two
+     * address spaces.
+     */
+    {
+        struct sys_op_connect_args pargs;
+        sys_ns_spec_t ns[1];
+        const char *argv[2];
+        char dl[19];
+        sys_handle_t h;
+        struct child c;
+        void *obj;
+        int32_t code;
+
+        memset(&pargs, 0, sizeof(pargs));
+        pargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+        expect("a connection for the program that lends",
+          run(SYS_OP_CHAN_CONNECT, h_recv, &pargs, sizeof(pargs)), SYS_OK);
+
+        dl_slow_took = 0;
+        srv = thread_create("dl-hold", PRIO_BOOT + 1, dl_hold_server, NULL);
+        sched_ready(srv);
+
+        /*
+         * The deadline is computed here and handed over, because a
+         * program has no way to read the clock: section 6.2's shared
+         * page is what would let it, and that page does not exist.
+         */
+        hex_into(dl, (uintptr_t)(time_now() + time_from_ms(DEADLINE_MS)));
+        argv[0] = "patient";
+        argv[1] = dl;
+
+        memset(ns, 0, sizeof(ns));
+        ns[0].id = SYS_NS_SERVICE;
+        ns[0].handle = pargs.out_handle;
+
+        sched_defer();
+        if (proc_spawn_op(proc_current(), "patient", PRIO_BOOT - 1, ns, 1,
+          argv, 2, &h) != SYS_OK) {
+            panic("deadline: could not start the program that lends");
+        }
+        if (handle_lookup(&self->p_handles, h, SYS_OBJ_PROCESS, 0,
+          &obj) != SYS_OK) {
+            panic("deadline: the spawn returned no process");
+        }
+        child_watch(&c, obj);
+        sched_undefer();
+
+        code = child_join(&c, JOIN_MS);
+
+        if (dl_slow_took == 0) {
+            panic("deadline: the holder never took the message");
+        }
+        if (code != 0) {
+            panic("deadline: the program that lent its buffer exited %d",
+              code);
+        }
+        cnprintf("    %-38s %s\n", "a client that lent and gave up",
+          "wrote its buffer afterwards");
+
+        expect("giving its handle back",
+          handle_close(&self->p_handles, h), SYS_OK);
     }
 
     cnprintf("    %-38s %s\n", "what decides whether it waits",

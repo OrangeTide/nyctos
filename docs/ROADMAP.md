@@ -9321,7 +9321,7 @@ is released is section 18.3's and stays there.
   reply that arrives in the window between the timer firing and the
   client running, which is stage five.
 
-**4. The buffer a client lent.** *Planned.*
+**4. The buffer a client lent.** *Built.*
 
 - A REPLY-blocked client has its memory mapped in the server. Giving up
   has to take it back, and M14 made a page's permissions part of what
@@ -9330,6 +9330,40 @@ is released is section 18.3's and stays there.
   again, with the permissions it had and not more, and the server
   writing into what it still thinks is the client's buffer does not
   reach the client's memory.
+- *Settled.* The take-back was already in stage three, because the panic
+  that says a thread ran again with its buffer still lent out would have
+  fired otherwise. What this stage adds is the check, and the check
+  needed a **user program**: a kernel thread shares the kernel's address
+  space, so there is nothing to take away from it, and what this stage
+  is about exists only between two address spaces. `patient` lends a
+  page, gives up, then writes it and reads it back. If the page came
+  back read-only, which is what asking the wrong process for its
+  permissions would do, it faults there instead of returning.
+- *A program cannot make a deadline.* Section 14.3 has every blocking
+  call take an absolute one, and section 6.2 names what makes that
+  affordable: a shared page a program reads without a syscall. That page
+  does not exist, so a program has no way to read the clock at all. The
+  kernel computes the instant and passes it as an argument, the way
+  `paged` is passed the bounds of its own image, and the entry says so
+  because it is an absence rather than a decision.
+- *And the timeout put preemption points where an assertion says there
+  are none.* Section 13.3's second term is the time from a device
+  interrupt to the thread waiting on it, and the boot asserts that no
+  such dispatch passes a preemption point. A client that gave up has a
+  page to unmap and map on its way out, which is two page-table charges
+  and two points, and `patient` arrived with exactly those two. The
+  stamp is not taken for a thread woken by its own deadline: the timer
+  is what tells the time, not what it was waiting for, and the same
+  function already declines to measure kernel threads for the same kind
+  of reason. **The assertion is right about the path it is named for**,
+  so what changed is which dispatches are that path.
+- *Not checked: that the server cannot reach it.* The holder here is a
+  kernel thread, and the kernel can reach any memory whatever its page
+  tables say, so nothing it did afterwards would prove anything. What is
+  checked is the client's half, which is where the permissions live.
+- *Broken to check it.* Not taking the buffer back panicked with
+  "patient ran again with its buffer still lent out", which is the
+  sentence M13 left in that path for whenever a deadline arrived.
 
 **5. A deadline that expires while the reply is in flight.** *Planned.*
 

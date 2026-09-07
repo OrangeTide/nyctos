@@ -117,6 +117,28 @@ thread_wake_timeout(struct thread *t)
 
     t->t_waitres = SYS_ERR_TIMEOUT;
     sched_ready(t);
+
+    /*
+     * And not measured as an interrupt dispatched to a program.
+     * Section 13.3's second term is the time from a device interrupt to
+     * the thread waiting on it, which is the console driver waiting on
+     * its timeline. A thread woken because its own deadline arrived is
+     * not waiting on an interrupt: the timer is what tells the time,
+     * not what it was waiting for.
+     *
+     * It matters because such a thread may have work to do on the way
+     * out. A client that gave up on a send has a lent buffer to take
+     * back, which is an unmap and a map and two page-table charges, and
+     * those are preemption points on a path the measurement asserts has
+     * none. The stamp is cleared rather than the assertion loosened,
+     * because the assertion is right about the path it is named for.
+     *
+     * Cleared after readying rather than before, because readying is
+     * what sets it. Safe here: this runs with interrupts off inside the
+     * timer, so the thread cannot have run yet.
+     */
+    t->t_irq_stamp = 0;
+    t->t_irq_points = 0;
 }
 
 void
