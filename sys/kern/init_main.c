@@ -122,7 +122,8 @@ run_batch(sys_op_t *ops, unsigned long n)
 }
 
 static sys_err_t
-run(uint16_t opcode, sys_handle_t target, void *args, uint32_t arg_len)
+run_flagged(uint16_t opcode, sys_handle_t target, void *args,
+  uint32_t arg_len, uint32_t flags)
 {
     struct sys_op op;
     struct batch_regs regs;
@@ -142,6 +143,7 @@ run(uint16_t opcode, sys_handle_t target, void *args, uint32_t arg_len)
     op.target = target;
     op.arg_ptr = (uintptr_t)args;
     op.arg_len = arg_len;
+    op.flags = flags;
     op.status = SYS_ERR_INTERRUPTED;    /* so a missing write is visible */
 
     err = sys_op_exec(&op, &regs);
@@ -151,6 +153,17 @@ run(uint16_t opcode, sys_handle_t target, void *args, uint32_t arg_len)
     }
 
     return err;
+}
+
+/*
+ * The same, with no flags, which is what almost every check wants. The
+ * flags exist for M15's deadline, which is read only when the entry
+ * says it is there.
+ */
+static sys_err_t
+run(uint16_t opcode, sys_handle_t target, void *args, uint32_t arg_len)
+{
+    return run_flagged(opcode, target, args, arg_len, 0);
 }
 
 /*
@@ -3313,6 +3326,116 @@ startup_record_checks(void)
     expect("giving poke_addr's handle back", handle_close(ht, h), SYS_OK);
 }
 
+
+/*
+ * The channel a deadline check sends on, and the one thread that ever
+ * receives on it.
+ */
+static struct channel *dl_ch;
+static sys_err_t dl_served = SYS_ERR_INTERRUPTED;
+
+static void
+dl_server(void *arg)
+{
+    struct sys_msg msg, rep;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    dl_served = channel_recv(dl_ch, &msg, &peer, &cookie);
+    if (dl_served != SYS_OK) {
+        thread_exit(1);
+    }
+
+    memset(&rep, 0, sizeof(rep));
+    rep.handle = SYS_HANDLE_INVALID;
+    (void)channel_reply(peer, &rep);
+
+    thread_exit(0);
+}
+
+/*
+ * A deadline on a send, per M15 stage one.
+ *
+ * Section 14.3 has every blocking call take an absolute deadline and
+ * gives SYS_DEADLINE_NOW as the one that polls. Section 12.1 says what
+ * a send does with it: a client that finds no server and will not wait
+ * was never queued, so the server never learns it existed.
+ *
+ * The flag is the half worth checking twice, and the two halves are the
+ * same send with the same zeroed field. A deadline read unconditionally
+ * would turn every program that clears its arguments into one that
+ * polls, because SYS_DEADLINE_NOW is zero, so the flag has to be what
+ * decides: with it, the send returns at once; without it, the send
+ * waits for a server that is not there yet, which is what every client
+ * written before deadlines existed does.
+ */
+static void
+deadline_checks(void)
+{
+    struct proc *self = proc_current();
+    struct sys_op_send_args args;
+    struct sys_op_connect_args cargs;
+    struct thread *srv;
+    sys_handle_t h_recv, to;
+    sys_err_t err;
+
+    cnputs("deadlines: a send that will not wait\n");
+
+    dl_ch = channel_create("deadline", self);
+    if (dl_ch == NULL) {
+        panic("deadline: no channel");
+    }
+    err = handle_insert(&self->p_handles, dl_ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_recv);
+    expect("a channel nobody is receiving on yet", err, SYS_OK);
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to it",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    to = cargs.out_handle;
+
+    /*
+     * A deadline already past, with nobody at a receive point. Nothing
+     * can complete this and the caller said it would not wait.
+     */
+    memset(&args, 0, sizeof(args));
+    args.request.handle = SYS_HANDLE_INVALID;
+    args.deadline = SYS_DEADLINE_NOW;
+
+    expect("a send that will not wait, with nobody to answer",
+      run_flagged(SYS_OP_IPC_SEND, to, &args, sizeof(args),
+        SYS_OP_DEADLINE), SYS_ERR_TIMEOUT);
+
+    /*
+     * The same send, the same zeroed deadline, and no flag. This one
+     * has to wait, so a server is started below it: if the field were
+     * read anyway, this would return SYS_ERR_TIMEOUT before the server
+     * ever ran.
+     */
+    srv = thread_create("dl-server", PRIO_BOOT - 1, dl_server, NULL);
+    sched_ready(srv);
+
+    memset(&args, 0, sizeof(args));
+    args.request.handle = SYS_HANDLE_INVALID;
+    args.deadline = SYS_DEADLINE_NOW;
+
+    expect("the same send with the field left alone",
+      run(SYS_OP_IPC_SEND, to, &args, sizeof(args)), SYS_OK);
+    expect("and the server it waited for", dl_served, SYS_OK);
+
+    cnprintf("    %-38s %s\n", "what decides whether it waits",
+      "the flag, not the field");
+
+    expect("giving the connection back",
+      handle_close(&self->p_handles, to), SYS_OK);
+    expect("giving the channel back",
+      handle_close(&self->p_handles, h_recv), SYS_OK);
+}
+
 /*
  * What the two regions of a program permit, per M14 stage three.
  *
@@ -4834,7 +4957,7 @@ pulse_checks(void)
             memset(&req, 0, sizeof(req));
             req.handle = SYS_HANDLE_INVALID;
             expect("and sending it",
-              channel_send(ch, 0, &req, &rep), SYS_OK);
+              channel_send(ch, 0, &req, &rep, SYS_DEADLINE_NEVER), SYS_OK);
         }
 
         channel_pulse(ch, SYS_PULSE_USER_BASE, 0xbeef);
@@ -9115,6 +9238,7 @@ kernel_main(void)
     device_checks();
     permission_checks();
     startup_record_checks();
+    deadline_checks();
 
     cnputs("frames: what holds one that no process holds\n");
 

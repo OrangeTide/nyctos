@@ -9108,6 +9108,145 @@ programs that prove the permissions do not exist yet.
 
 ---
 
+### M15. A Deadline on a Rendezvous
+
+**A client that sends to a server which stops answering gets its thread
+back.**
+
+Section 1 has said since M9 that a rendezvous carries no deadline, and
+it is the last of the absences this project named more than once and did
+not take. What it means is that a wedged server hangs its client for
+ever: cancellation exists and something outside has to notice and use
+it, and nothing notices on its own.
+
+*The design already says all of it.* Section 14.3 has every blocking
+call take an absolute deadline and names both sentinels. Section 12.1
+goes further and specifies the two cases: a SEND-blocked client is
+removed from the queue and the server never learns it existed, and a
+REPLY-blocked client abandons work in progress, so the server's reply
+returns `SYS_ERR_STALE` and releases whatever it committed on that path.
+`sys_msg_send()` is documented as taking a deadline. It does not have
+one.
+
+*And most of the mechanism is built.* `THREAD_WAIT_SEND` and
+`THREAD_WAIT_REPLY` are already distinct states, because section 22.2
+needs to report them apart. `timeline_wait` already takes an absolute
+deadline and arms a one-shot timer for it.
+`channel_thread_release` already undonates a lent priority, takes back a
+buffer, clears the message state and tells the server, because M8 needed
+all of that for cancellation and death. What is missing is the deadline
+itself, the timer for a blocked sender, and the answer to what happens
+when the reply and the deadline arrive together.
+
+**What this is not.** Not a deadline on receive: a server waiting for
+work is not waiting for a party that can fail it, and section 12.1 says
+so. Not a watchdog, and not restart policy: what happens after a client
+is released is section 18.3's and stays there.
+
+**1. A send carries a deadline.** *Built.*
+
+- The argument gains an absolute deadline, and the kernel reads it.
+- *Check.* A send with a deadline already past, to a channel nobody is
+  receiving on, returns `SYS_ERR_TIMEOUT` without blocking, which is
+  what section 14.3 says `SYS_DEADLINE_NOW` means. Every existing
+  client keeps working unchanged, which is most of the boot.
+- *Settled, and the trap decided.* The deadline is read only when the
+  entry carries `SYS_OP_DEADLINE`. Without the flag a send waits for
+  ever, which is what every client written before this did and still
+  does. **A field read unconditionally would have turned every one of
+  them into a poll**, because `SYS_DEADLINE_NOW` is zero and zero is
+  what `memset` leaves in a structure a program has not thought about.
+  Section 14.3 fixes both sentinels' values, so no choice of constant
+  removes the ambiguity; what removes it is the caller saying whether
+  it filled the field in.
+- *The check is the same send twice*, with the same zeroed deadline.
+  With the flag and nobody receiving, it returns at once. Without the
+  flag it waits, and a server started below it arrives to prove that it
+  did: had the field been read anyway, that send would have returned
+  `SYS_ERR_TIMEOUT` before the server ever ran.
+- *The poll is asked where the thread would queue*, not at the top of
+  the function. A send that finds a server already waiting completes
+  without blocking, and a deadline has nothing to say about it. It is
+  also asked before the priority chain is raised, so there is nothing
+  to undo.
+- *Broken to check it.* Reading the deadline whether or not the flag is
+  there took the boot down at the first client that clears its
+  arguments, which is the trap this stage exists to avoid, reported as
+  "client: send failed". Ignoring the flag, and refusing to poll at
+  all, both stop the boot at this check with the connection made and no
+  answer: a send with no deadline is a thread that does not come back,
+  so the failure is a boot that stops rather than a panic that names
+  it.
+
+**2. A SEND-blocked client gives up, and the server never learns.**
+*Planned.*
+
+- A timer for a queued sender, and expiry that takes it off the queue.
+- *Check.* A client sends with a deadline to a channel no server ever
+  receives on. It returns `SYS_ERR_TIMEOUT`. A server that receives
+  afterwards finds nothing, the channel's queue is empty, and no
+  per-connection state was ever allocated: section 12.1 calls this case
+  clean and the check is what says it is.
+
+**3. A REPLY-blocked client gives up, and the reply says so.**
+*Planned.*
+
+- Expiry for a client whose message a server is holding, and a reply
+  path that discovers it.
+- *Check.* A server receives a message and does not reply until after
+  the client's deadline. The client returns `SYS_ERR_TIMEOUT`; the
+  server's reply returns `SYS_ERR_STALE`; the server's per-connection
+  record is released on that path and the count says so.
+
+**4. The buffer a client lent.** *Planned.*
+
+- A REPLY-blocked client has its memory mapped in the server. Giving up
+  has to take it back, and M14 made a page's permissions part of what
+  taking it back means.
+- *Check.* After a timeout the client can read and write its buffer
+  again, with the permissions it had and not more, and the server
+  writing into what it still thinks is the client's buffer does not
+  reach the client's memory.
+
+**5. A deadline that expires while the reply is in flight.** *Planned.*
+
+- The race the other stages assume away: the server replies at the
+  moment the timer fires.
+- *Check.* Exactly one of the two outcomes happens. A client that was
+  given `SYS_ERR_TIMEOUT` does not also receive a reply, and a client
+  that received a reply is not also failed. Constructed rather than
+  waited for: the check arranges the two to coincide rather than hoping
+  they do.
+
+**6. What it cost, and section 12.1 written around it.** *Planned.*
+
+- *Check.* The figures, asserted as counts, and section 12.1 matched to
+  what was built. What a deadline does not do is named: no deadline on
+  receive, nothing about restart, and the rule that a server which must
+  not have its work discarded should not be given a deadline to discard
+  it.
+
+*Done when* a client sending to a server that never replies is released
+at its deadline, the server learns when it replies, and neither the
+client's memory nor the server's records are left in the other's hands.
+
+*Would falsify.* That the two blocked states can be released the same
+way. Section 12.1 says they differ and the difference is the server's
+view; if releasing them turns out to need one path and not two, then
+12.1 is describing a distinction the implementation does not have and
+the section is wrong rather than the code.
+
+*Watch for.* A check that passes because the timeout never happened. A
+deadline that is never reached and an operation that succeeds look
+identical from the outside, so every check here has to assert that the
+wait actually expired and not only that the call returned.
+
+*Size.* Medium. The release path exists, the timers exist, and the two
+sentinels are already in the interface. The race in stage five is the
+part with no precedent.
+
+---
+
 ## 4. Milestone 1, in Retrospect
 
 The slice was chosen as the smallest thing that could falsify the design

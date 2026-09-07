@@ -151,8 +151,14 @@ pager_fault(uintptr_t addr, uintptr_t pc, uint32_t access)
 
     p->p_faults++;
 
+    /*
+     * With no deadline. A fault is not an operation the faulting thread
+     * chose, so there is nobody to have expressed a willingness to wait,
+     * and section 15.4 has the chain terminate in a process that cannot
+     * fault rather than in a timeout.
+     */
     if (channel_send(p->p_pager->cn_channel, p->p_pager->cn_cookie,
-      &req, &reply) != SYS_OK) {
+      &req, &reply, SYS_DEADLINE_NEVER) != SYS_OK) {
         return false;
     }
     if (reply.handle == SYS_ID_INVALID) {

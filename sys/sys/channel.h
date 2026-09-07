@@ -123,8 +123,15 @@ struct channel *channel_create(const char *name, struct proc *owner);
  * thread rather than shared, so neither side holds a pointer into the
  * other; see section 12.4 on why the inline payload exists at all.
  */
+/*
+ * Send and wait for the reply. The deadline is absolute, on the
+ * monotonic timebase, and SYS_DEADLINE_NEVER is what a caller with
+ * nothing to say about time passes. A deadline already past makes this
+ * a poll: it completes if a server is waiting and returns
+ * SYS_ERR_TIMEOUT if none is.
+ */
 sys_err_t channel_send(struct channel *ch, uint64_t cookie,
-  const struct sys_msg *req, struct sys_msg *reply);
+  const struct sys_msg *req, struct sys_msg *reply, uint64_t deadline);
 
 /* Receive, filling out_peer with the id to reply to. */
 sys_err_t channel_recv(struct channel *ch, struct sys_msg *out,

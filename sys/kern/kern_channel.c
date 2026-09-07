@@ -561,7 +561,7 @@ buf_may_deliver(struct proc *from, struct proc *to, uintptr_t va, size_t len)
 
 sys_err_t
 channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
-  struct sys_msg *reply)
+  struct sys_msg *reply, uint64_t deadline)
 {
     struct thread *self = thread_current();
     struct thread *server;
@@ -667,12 +667,30 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         self->t_wait = THREAD_WAIT_REPLY;
     } else {
         /*
-         * Nobody is at a receive point, so this thread queues. Section
-         * 12.3 has the queue being priority-ordered serve it, and that
-         * is only half: whoever is inside a request on this channel
-         * may be blocked further down, and everything below is running
-         * at the priority of the client it is serving rather than of
-         * this one.
+         * Nobody is at a receive point, so this thread would queue.
+         * Unless it was not willing to wait: section 14.3 makes
+         * SYS_DEADLINE_NOW a poll, and a poll that finds no server has
+         * its answer. Nothing was queued and nothing was delivered,
+         * which is the case section 12.1 calls clean.
+         *
+         * Before the raise rather than after, so that there is nothing
+         * to undo. Asked here rather than at the top of the function,
+         * because a send that finds a server waiting completes without
+         * blocking and a deadline has nothing to say about it.
+         */
+        if (deadline <= time_now()) {
+            self->t_msg = NULL;
+            self->t_reply = NULL;
+            md_intr_restore(s);
+            return SYS_ERR_TIMEOUT;
+        }
+
+        /*
+         * Section 12.3 has the priority-ordered queue serve it, and
+         * that is only half: whoever is inside a request on this
+         * channel may be blocked further down, and everything below is
+         * running at the priority of the client it is serving rather
+         * than of this one.
          */
         err = chain_raise(ch, self->t_prio);
         if (err != SYS_OK) {

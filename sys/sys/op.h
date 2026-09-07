@@ -323,6 +323,23 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_TARGET_FROM_REG  (1u << 1)
 #define SYS_OP_RESULT_TO_REG    (1u << 2)
 
+/*
+ * SYS_OP_DEADLINE says the deadline in the argument structure means
+ * something. Without it a blocking operation waits for ever, which is
+ * SYS_DEADLINE_NEVER.
+ *
+ * A flag rather than a field that is always read, because
+ * SYS_DEADLINE_NOW is zero and zero is what memset leaves behind. Every
+ * program here clears its argument structure before filling in the
+ * parts it cares about, so a deadline read unconditionally would turn
+ * each of them into a poll, and the ones that meant to poll would be
+ * indistinguishable from the ones that had never heard of deadlines.
+ * Section 14.3 fixes both sentinels' values, so the ambiguity is in the
+ * interface and not something a different constant could remove: what
+ * removes it is saying whether the field was filled in.
+ */
+#define SYS_OP_DEADLINE         (1u << 3)
+
 
 /*
  * How many registers one execution has, per section 17.4.
@@ -481,6 +498,15 @@ typedef struct sys_op_connect_args {
 typedef struct sys_op_send_args {
     sys_msg_t       request;
     sys_msg_t       reply;      /* written by the kernel */
+
+    /*
+     * Absolute, on the monotonic timebase, and read only when the entry
+     * carries SYS_OP_DEADLINE. Section 12.1: a client that gives up
+     * before a server answers is released with SYS_ERR_TIMEOUT, and
+     * what the server sees depends on whether it had taken the message
+     * yet.
+     */
+    uint64_t        deadline;
 } sys_op_send_args_t;
 
 typedef struct sys_op_recv_args {

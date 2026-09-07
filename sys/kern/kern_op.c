@@ -3,6 +3,7 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  */
 
+
 /*
  * The operation entry point of section 23.
  *
@@ -63,6 +64,28 @@ op_fence(struct proc *p, struct sys_op *op, bool signalling)
       : timeline_wait(tl, args->value, args->deadline);
 }
 
+
+/*
+ * What deadline a send entry carries.
+ *
+ * The field is read only when the entry says so. SYS_DEADLINE_NOW is
+ * zero, and zero is what a program's memset leaves in a structure it
+ * has not thought about, so a deadline read unconditionally would turn
+ * every existing client into one that polls and never blocks. Section
+ * 14.3 fixes both sentinels' values, so this is not something a
+ * different constant could fix: what fixes it is the caller saying
+ * whether it filled the field in.
+ */
+static uint64_t
+send_deadline(const struct sys_op *op, const struct sys_op_send_args *args)
+{
+    if ((op->flags & SYS_OP_DEADLINE) == 0) {
+        return SYS_DEADLINE_NEVER;
+    }
+
+    return args->deadline;
+}
+
 static sys_err_t
 op_send(struct proc *p, struct sys_op *op)
 {
@@ -87,7 +110,7 @@ op_send(struct proc *p, struct sys_op *op)
         struct connection *cn = obj;
 
         return channel_send(cn->cn_channel, cn->cn_cookie, &args->request,
-          &args->reply);
+          &args->reply, send_deadline(op, args));
     }
     if (err != SYS_ERR_WRONG_TYPE) {
         return err;
@@ -100,7 +123,8 @@ op_send(struct proc *p, struct sys_op *op)
     }
     ch = obj;
 
-    return channel_send(ch, 0, &args->request, &args->reply);
+    return channel_send(ch, 0, &args->request, &args->reply,
+      send_deadline(op, args));
 }
 
 static sys_err_t
