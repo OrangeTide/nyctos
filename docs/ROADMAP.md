@@ -8661,6 +8661,168 @@ not.
 
 ---
 
+### M14. What an Image Actually Needs
+
+**The archive carries a layout, and the loader maps what a program has
+rather than a slot.**
+
+M13 measured what a process costs and found the answer was a megabyte:
+`proc_load` allocates and maps the whole slot, one region, writable and
+executable, because the archive carries the size of an image and not
+the size of the memory a program needs. That single gap costs three
+separate things.
+
+**It costs memory.** Measured against the images that exist, a program
+needs seven to eleven pages of the two hundred and fifty-six it is
+given: one or two of text and rodata, five of bss and stack. The
+smallest program in the archive is handed thirty-six times what it
+uses.
+
+**It costs protection.** One region means one set of permissions, and
+the one that lets a program run is read, write and execute. Every
+program's text is writable and every program's stack is executable, on
+the tier whose whole purpose is that the hardware enforces boundaries.
+`proc_load` says so in as many words and names the archive as the
+reason.
+
+**And it costs section 15.1.** That section has writable segments
+copied eagerly and read-only ones supplied on demand, which the loader
+cannot obey while it cannot see where text ends. The pager path skips
+image pages wholesale and the comment there says a program with
+initialised writable data would break it. No program has any, so
+nothing has.
+
+*The boundary already exists.* The user linker script page-aligns the
+start of writable memory and says why: "so that no page of this image
+is both text and data", and "a boundary the loader can see". It is in
+the link and it stops there. What this milestone does is carry it four
+steps further: into the archive, into the loader, into the mapping, and
+into what a fault means.
+
+**Tier 0 gets the archive change and none of the rest**, the same
+division M13 found. There is no MMU, so there are no permissions to
+set and no per-process memory to save: a flat image runs in place in
+memory the archive already occupies. Every claim below about cost and
+protection is a Tier 2 claim, and the entry says which are which rather
+than discovering it at stage one again.
+
+*Needs.* Nothing new in the kernel. The linker script has the
+boundary, `md_map` takes permissions and is already called per page,
+the archive record has room to grow, and M13's ledger and endurance
+loop are the checks that will say whether the smaller mapping still
+adds up.
+
+**What this is not.** Not ELF loading: the archive stays a table of
+flat images at fixed addresses, and section 15.2 is still where a
+loader starts placing them. Not a variable slot: the address stride
+stays a megabyte, because slots are assigned by link address and
+changing that is a different milestone. What changes is how much of a
+slot is ever backed by a frame.
+
+**1. The archive carries a layout, not a size.** *Built.*
+
+- The linker script names the boundary it already creates and the end
+  of what a program needs. The tool records both. The kernel reads them
+  back.
+- *Check.* The boot prints, for every member, what it needs against
+  what a slot is, and the figures agree with the link map to the page.
+  A member whose recorded boundary is not page-aligned, or lies outside
+  its own image, is refused at load rather than mapped wrong.
+- *Settled.* Every image in the archive now says what it is made of,
+  and **the answer is six to eleven pages of the two hundred and
+  fifty-six a slot is**: `brief` 1+5, `fs_server` 2+5, `console` 2+6,
+  `threads` 1+7, `paged` 5+5, where the pair is read-only pages plus
+  writable ones. The figures were checked against `llvm-nm` on the
+  linked image for seven programs and agree exactly.
+- *How the numbers travel.* `_rw_start` and `_mem_end` are symbols the
+  linker script defines at boundaries it was already creating. The link
+  rule writes them beside the binary as offsets from the load address,
+  and `mkbootarch` reads that file rather than taking the numbers as
+  arguments: a tool told the layout on a command line would let the
+  archive and the link disagree with nothing to notice. The record grew
+  two fields and the format went to version 2.
+- *And the first thing it found is a program with initialised data.*
+  `peer_b` has four bytes of `.data`, which had gone unnoticed because
+  nothing had ever needed to know. It matters twice over. The image's
+  bytes cross the boundary, so `bm_size` is not where text ends and the
+  tool's first check said it was, which building it corrected. And
+  stage five is now about a case that exists rather than one to be
+  invented: `proc_load`'s comment says a program with initialised
+  writable data would break its pager path, and one is in the archive.
+- *Broken to check it.* Shifting the recorded boundary eight bytes off
+  a page made the tool refuse the build, naming the image. Deleting a
+  layout file and asking the tool directly made it refuse rather than
+  assume. Removing the tool's check and writing a layout whose end is
+  at its beginning got past the build and was caught by the kernel at
+  boot, which is the arm that exists because a build can half change.
+
+**2. A process is mapped as what it needs.** *Planned.*
+
+- `proc_load` maps text and rodata, then writable memory, and nothing
+  beyond. The slot stays a megabyte of address space and stops being a
+  megabyte of frames.
+- *Check.* A process costs what its image needs and not 264 frames.
+  M13's ledger still balances to zero and its endurance loop still
+  returns the count, which is what says the smaller mapping did not
+  simply lose the accounting.
+
+**3. Text is not writable and the stack is not executable.** *Planned.*
+
+- Two mappings with the permissions each region should have.
+- *Check.* A program that writes its own text faults, with the kind and
+  the address that say so; a program that jumps into its stack faults.
+  Both are new programs, because no existing one can do either. Putting
+  the permission back makes each succeed, which is the break test and
+  also the proof that the check was testing the mapping.
+
+**4. The startup record moves inside what the program has.** *Planned.*
+
+- Section 20.4's record lives in the last page of the slot today,
+  chosen because it is the one place a program's own layout does not
+  reach. Nothing will map that page any more.
+- *Check.* A program still finds its namespace and its arguments, and
+  the page the record is in is inside the region the archive says the
+  program needs. A record placed outside it faults on first use rather
+  than being read from memory that happens to still be there.
+
+**5. A program with initialised writable data.** *Planned.*
+
+- Stage one found that `peer_b` has four bytes of it, so this is a case
+  that exists rather than one to be invented. Every other program has
+  an empty `.data`, and the eager-copy half of section 15.1 has never
+  run on any of them.
+- *Check.* A program with initialised data reads its own values and
+  writes them, and the paged program's text arrives from its pager
+  while its data does not. That is the case `proc_load` says it cannot
+  handle, so the check is whether the comment can be deleted.
+
+**6. What it cost, and section 15 written around it.** *Planned.*
+
+- *Check.* The figures, asserted as counts, in all four configurations,
+  and sections 15.1, 15.2 and 24.4 matched to what the archive now
+  carries. What a slot is for, once it is not what a process costs, is
+  named rather than left as a number nobody revisits.
+
+*Done when* a program is mapped as text that cannot be written and data
+that cannot be executed, costs what it needs, and the frame ledger
+still balances.
+
+*Would falsify.* That the boundary in the link is the boundary the
+loader needs. It separates read-only from writable, which is what
+permissions want; if what the loader turns out to need is a third
+region, or a boundary the linker cannot express for a flat binary, then
+the archive is carrying the wrong thing and this becomes ELF loading,
+which is a different milestone with a different cost.
+
+*Watch for.* A check that passes because a fault happened for the wrong
+reason. Three of the six stages assert that something faults, and an
+unmapped address and a permission violation are both faults: the kind
+and the address have to be asserted, not the fact.
+
+*Size.* Medium. The mapping is small, the build plumbing that carries
+two numbers from the linker to the kernel is most of it, and the
+programs that prove the permissions do not exist yet.
+
 ---
 
 ## 4. Milestone 1, in Retrospect

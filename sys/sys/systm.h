@@ -66,6 +66,16 @@ void boot_user_window(uintptr_t *base, size_t *len);
 uintptr_t boot_first_load(void);
 void boot_report(void);
 
+struct boot_member;
+
+/*
+ * Check the layout an archive carries for one member: page-aligned
+ * boundaries, in order, and bytes that fit in the memory asked for.
+ * Panics rather than returning, because a bad layout is a bad build and
+ * every way it goes wrong produces plausible numbers.
+ */
+void boot_check_layout(const struct boot_member *m);
+
 /* sys/kern/kern_syscall.c */
 long batch_run(sys_op_t *op, unsigned long count);
 

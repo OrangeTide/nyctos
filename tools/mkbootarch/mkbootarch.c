@@ -8,6 +8,10 @@
  *
  *   mkbootarch out.img name=load@file [name=load@file ...]
  *
+ * Each file is a flat binary, and beside it must sit "<file>.layout"
+ * holding two hexadecimal offsets: where writable memory begins and
+ * where the program's memory ends. See read_layout().
+ *
  * This runs on the machine doing the build, not on the target, so it uses
  * the host's own compiler and the host's stdio. It shares only
  * sys/bootarch.h with the kernel, which is the point: one description of
@@ -79,6 +83,45 @@ pad_to(FILE *out, uint32_t from, uint32_t to)
     }
 }
 
+
+/*
+ * The layout of an image, written beside its binary by the link that
+ * produced it: two offsets from the load address, where writable memory
+ * begins and where the program's memory ends.
+ *
+ * Beside the binary rather than on the command line because the numbers
+ * come from the linker's symbol table, and a tool that took them as
+ * arguments would let the archive rule and the link disagree without
+ * anything noticing. Required rather than defaulted: an image whose
+ * layout is missing is a build that has half changed, and guessing a
+ * whole slot is what M14 exists to stop.
+ */
+static void
+read_layout(const char *bin, uint32_t *rw, uint32_t *mem)
+{
+    char path[4096];
+    unsigned long long a, b;
+    FILE *f;
+
+    if (snprintf(path, sizeof(path), "%s.layout", bin) >= (int)sizeof(path))
+        die(bin, "path too long for its layout");
+
+    f = fopen(path, "r");
+    if (f == NULL)
+        die(path, strerror(errno));
+    if (fscanf(f, "%llx %llx", &a, &b) != 2)
+        die(path, "expected two hexadecimal offsets");
+    fclose(f);
+
+    if (a == 0 || b <= a)
+        die(path, "layout is not ordered: 0 < rw < mem");
+    if ((a % BOOT_ALIGN) != 0 || (b % BOOT_ALIGN) != 0)
+        die(path, "layout is not aligned to the payload granularity");
+
+    *rw = (uint32_t)a;
+    *mem = (uint32_t)b;
+}
+
 /*
  * Split "name=load@file". The load address is where the image is linked to
  * run; the tool does not read it out of the file, because a flat binary
@@ -148,6 +191,17 @@ main(int argc, char **argv)
         members[i].bm_load = load;
         members[i].bm_offset = offset;
         members[i].bm_size = (uint32_t)size;
+        read_layout(path, &members[i].bm_rw, &members[i].bm_mem);
+
+        /*
+         * The bytes have to fit in the memory. They may cross the
+         * boundary: everything above it is the program's initialised
+         * data, which is carried in the archive and copied into
+         * writable memory, and peer_b is the one image here that has
+         * any. What would be wrong is bytes with nowhere to go.
+         */
+        if ((uint32_t)size > members[i].bm_mem)
+            die(name, "its bytes do not fit in the memory it asks for");
 
         offset = align_up(offset + (uint32_t)size);
     }

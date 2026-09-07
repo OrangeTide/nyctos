@@ -36,8 +36,14 @@ SECTIONS
      *
      * It costs padding at the end of the image, up to a page per
      * program, in exchange for a boundary the loader can see.
+     *
+     * M14 is where the loader sees it. _rw_start is this boundary
+     * named, so that the build can put it in the boot archive and the
+     * loader can map what is below it read-only and executable and
+     * what is above it writable and not.
      */
     . = ALIGN(4096);
+    _rw_start = .;
 
     .data : {
         *(.data*)
@@ -54,6 +60,15 @@ SECTIONS
     . = ALIGN(16);
     . = . + 0x4000; /* 16 KiB user stack */
     _stack_top = .;
+
+    /*
+     * The end of what this program needs, named for the boot archive
+     * and rounded to a page because that is the unit the loader maps
+     * in. Everything between _rw_start and here is writable: bss,
+     * which crt1 zeroes, and the stack below this address.
+     */
+    . = ALIGN(4096);
+    _mem_end = .;
 
     /DISCARD/ : { *(.comment) *(.note*) }
 }

@@ -30,7 +30,7 @@
 #include <stdint.h>
 
 #define BOOT_MAGIC          0x4243594eu     /* "NYCB", little-endian */
-#define BOOT_VERSION        1u
+#define BOOT_VERSION        2u
 #define BOOT_NAME_MAX       16
 
 /*
@@ -51,15 +51,39 @@ struct boot_header {
  * flat binary whose linker script places .text.start first is also its
  * entry point. Recording it here rather than at spawn keeps the archive
  * the single description of what an image is.
+ *
+ * bm_rw and bm_mem are the layout, added at version 2 for M14. A flat
+ * binary is a run of bytes and says nothing about which of them may be
+ * written or how much memory the program needs beyond the bytes it
+ * carries, so a loader given only bm_size has to map the whole slot,
+ * writable and executable, and hope. Both are offsets from bm_load
+ * rather than addresses, so they survive an image being placed
+ * somewhere other than where it was linked.
+ *
+ *   [0, bm_rw)      what may be executed and not written
+ *   [bm_rw, bm_mem) what may be written and not executed
+ *   [0, bm_size)    the bytes the archive carries
+ *
+ * The bytes cross the boundary when a program has initialised data:
+ * below it they are text and rodata, above it they are .data, which is
+ * copied into writable memory and is the reason bm_size is not simply
+ * where text ends. Everything from bm_size to bm_mem is zeroed, being
+ * bss and stack.
+ *
+ * bm_rw and bm_mem are page-aligned and bm_size is no larger than
+ * bm_mem, which the linker script arranges and the kernel checks rather
+ * than assumes.
  */
 struct boot_member {
     char        bm_name[BOOT_NAME_MAX];
     uint64_t    bm_load;
     uint32_t    bm_offset;      /* payload, from the archive base */
     uint32_t    bm_size;
+    uint32_t    bm_rw;          /* where writable memory begins */
+    uint32_t    bm_mem;         /* where the program's memory ends */
 };
 
 _Static_assert(sizeof(struct boot_header) == 16, "boot header is 16 bytes");
-_Static_assert(sizeof(struct boot_member) == 32, "boot member is 32 bytes");
+_Static_assert(sizeof(struct boot_member) == 40, "boot member is 40 bytes");
 
 #endif /* _SYS_BOOTARCH_H_ */

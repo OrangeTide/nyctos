@@ -41,10 +41,12 @@ ifneq ($(LLVM_PREFIX),)
 CC      := $(LLVM_PREFIX)/bin/clang
 AR      := $(LLVM_PREFIX)/bin/llvm-ar
 OBJCOPY := $(LLVM_PREFIX)/bin/llvm-objcopy
+NM      := $(LLVM_PREFIX)/bin/llvm-nm
 else
 CC      := clang
 AR      := llvm-ar
 OBJCOPY := llvm-objcopy
+NM      := llvm-nm
 endif
 ifneq ($(LLD_PREFIX),)
 LD := $(LLD_PREFIX)/bin/ld.lld

@@ -95,6 +95,44 @@ boot_lookup(const char *name)
     return NULL;
 }
 
+
+/*
+ * The layout the archive carries for a member, checked rather than
+ * trusted, per M14 stage 1.
+ *
+ * The numbers come from a symbol table by way of a build, and a build
+ * that half changed is the way they go wrong: a linker script without
+ * the symbols, a tool with an older record format, an image rebuilt
+ * while its layout file was not. Every one of those produces a plausible
+ * pair of numbers, and a loader that mapped by them would put a
+ * program's text where its stack should be.
+ *
+ * Called by the loader before it maps anything and by the report, so
+ * that a bad archive stops the boot at the description rather than at
+ * the first program that cannot run.
+ */
+void
+boot_check_layout(const struct boot_member *m)
+{
+    if ((m->bm_rw % PAGE_SIZE) != 0 || (m->bm_mem % PAGE_SIZE) != 0) {
+        panic("boot: member '%s' has a layout off a page boundary: "
+          "rw 0x%lx, mem 0x%lx", m->bm_name, (unsigned long)m->bm_rw,
+          (unsigned long)m->bm_mem);
+    }
+    if (m->bm_rw == 0) {
+        panic("boot: member '%s' has no read-only region", m->bm_name);
+    }
+    if (m->bm_mem <= m->bm_rw) {
+        panic("boot: member '%s' ends at 0x%lx, at or below where its "
+          "writable memory begins", m->bm_name, (unsigned long)m->bm_mem);
+    }
+    if (m->bm_size > m->bm_mem) {
+        panic("boot: member '%s' carries %lu bytes and asks for %lu",
+          m->bm_name, (unsigned long)m->bm_size,
+          (unsigned long)m->bm_mem);
+    }
+}
+
 /*
  * Copy a member to the address it was linked for and return its entry
  * point. Nothing checks that the destination is free, because there is no
@@ -132,8 +170,20 @@ boot_report(void)
     cnprintf("boot archive: %lu members, %lu bytes\n",
       (unsigned long)h->bh_count, (unsigned long)h->bh_bytes);
     for (i = 0; i < h->bh_count; i++) {
-        cnprintf("    %-16s %lu bytes, loads at 0x%lx\n", m[i].bm_name,
-          (unsigned long)m[i].bm_size, (unsigned long)m[i].bm_load);
+        boot_check_layout(&m[i]);
+
+        /*
+         * What it needs against what a slot is, which is the whole of
+         * M14 in one line per image. The two page counts are the
+         * regions the loader will map; the third is what a process
+         * costs today, and the milestone is the difference.
+         */
+        cnprintf("    %-12s %4lu bytes, loads at 0x%lx, %lu+%lu of %lu "
+          "pages\n", m[i].bm_name, (unsigned long)m[i].bm_size,
+          (unsigned long)m[i].bm_load,
+          (unsigned long)(m[i].bm_rw / PAGE_SIZE),
+          (unsigned long)((m[i].bm_mem - m[i].bm_rw) / PAGE_SIZE),
+          (unsigned long)(SYS_USER_SLOT_BYTES / PAGE_SIZE));
     }
 }
 

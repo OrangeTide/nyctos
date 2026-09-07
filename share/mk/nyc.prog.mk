@@ -29,3 +29,27 @@ $(PROG_ELF): $(OBJS) $(CRT1) $(LIBC) $(USER_LDSCRIPT)
 
 $(PROG_BIN): $(PROG_ELF)
 	$(OBJCOPY) -O binary $< $@
+
+# What the loader needs and the flat binary cannot say: where writable
+# memory begins and where the program's memory ends. Both are addresses
+# the linker script names; this records them as offsets from the load
+# address, because that is what the archive carries and what a loader
+# placing an image elsewhere would still be able to use.
+#
+# Written beside the binary rather than passed on a command line, so
+# that the archive rule does not have to know how to read symbols and
+# the numbers cannot drift from the link that produced them.
+PROG_LAYOUT := $(PROG_BIN).layout
+
+all: $(PROG_LAYOUT)
+
+$(PROG_LAYOUT): $(PROG_ELF)
+	@mkdir -p $(@D)
+	@rw=$$($(NM) $< | awk '$$3 == "_rw_start" { print $$1 }'); \
+	 me=$$($(NM) $< | awk '$$3 == "_mem_end" { print $$1 }'); \
+	 test -n "$$rw" -a -n "$$me" || \
+	     { echo "$@: the link named no _rw_start or _mem_end" >&2; \
+	       exit 1; }; \
+	 printf '0x%x 0x%x\n' \
+	     $$(( 0x$$rw - $(PROG_LOAD_ADDR) )) \
+	     $$(( 0x$$me - $(PROG_LOAD_ADDR) )) > $@
