@@ -3406,9 +3406,52 @@ deadline_checks(void)
     args.request.handle = SYS_HANDLE_INVALID;
     args.deadline = SYS_DEADLINE_NOW;
 
-    expect("a send that will not wait, with nobody to answer",
-      run_flagged(SYS_OP_IPC_SEND, to, &args, sizeof(args),
-        SYS_OP_DEADLINE), SYS_ERR_TIMEOUT);
+    {
+        sys_op_t send;
+
+        /*
+         * Through the submission path, so that the entry is checked
+         * before it runs the way a program's entry is. Sent through
+         * the kernel's own helper instead, this would still return
+         * TIMEOUT with the static check refusing every flagged send,
+         * because the helper skips those checks.
+         */
+        memset(&send, 0, sizeof(send));
+        send.opcode = SYS_OP_IPC_SEND;
+        send.target = to;
+        send.flags = SYS_OP_DEADLINE;
+        send.arg_ptr = (uintptr_t)&args;
+        send.arg_len = sizeof(args);
+
+        expect("a send that will not wait, with nobody to answer",
+          (sys_err_t)run_batch(&send, 1), SYS_ERR_TIMEOUT);
+    }
+
+    /*
+     * And a deadline on something that cannot wait, which is a caller
+     * saying what the operation does not do. Section 14.3 has every
+     * blocking call take one; a fence wait carries its own and a
+     * receive deliberately has none, so today the list is one operation
+     * long. Refused rather than ignored, for the reason section 17.4's
+     * result register is.
+     */
+    {
+        sys_op_t nop;
+
+        /*
+         * Through the submission path rather than through the kernel's
+         * own helper, because that is where an entry is checked before
+         * it runs: the helper is the kernel calling an operation and
+         * skips the static checks a program's entry gets. Asking the
+         * wrong path made this read OK the first time it ran.
+         */
+        memset(&nop, 0, sizeof(nop));
+        nop.opcode = SYS_OP_NOP;
+        nop.flags = SYS_OP_DEADLINE;
+
+        expect("a deadline on an operation that cannot wait",
+          (sys_err_t)run_batch(&nop, 1), SYS_ERR_NOT_SUPPORTED);
+    }
 
     /*
      * The same send, the same zeroed deadline, and no flag. This one

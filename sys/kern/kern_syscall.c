@@ -85,6 +85,21 @@ entry_static_check(struct proc *p, const sys_op_t *e)
         return SYS_ERR_INVALID_ARG;
     }
 
+    /*
+     * A deadline on an operation that cannot wait is a caller saying
+     * something the operation does not do. Section 14.3 has every
+     * blocking call take one, and of the blocking calls here a fence
+     * wait carries its deadline in its own arguments and a receive is
+     * deliberately without one: section 12.1 has a server waiting for
+     * work rather than for a party that can fail it. So the list is one
+     * operation long, and it is a list rather than an assumption so
+     * that the day a receive gains a deadline this is where it is said.
+     */
+    if ((e->flags & SYS_OP_DEADLINE) != 0 &&
+      e->opcode != SYS_OP_IPC_SEND) {
+        return SYS_ERR_NOT_SUPPORTED;
+    }
+
     if ((e->flags & SYS_OP_RESULT_TO_REG) != 0) {
         if (e->reg_out >= SYS_BATCH_REGS) {
             return SYS_ERR_INVALID_ARG;

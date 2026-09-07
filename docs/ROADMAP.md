@@ -9169,6 +9169,23 @@ is released is section 18.3's and stays there.
   without blocking, and a deadline has nothing to say about it. It is
   also asked before the priority chain is raised, so there is nothing
   to undo.
+- *And the review found the flag meant nothing on anything else.* It
+  could be set on any operation and every one but a send ignored it,
+  which is a caller saying something the operation does not do. Section
+  17.4's result register is refused the same way and for the same
+  reason, so a deadline on anything but a send is now
+  `SYS_ERR_NOT_SUPPORTED`. It is a list of one operation rather than an
+  assumption, so that the day a receive gains a deadline this is where
+  it is said.
+- *The check was asking the wrong path, twice.* The kernel's own helper
+  calls an operation directly and skips the static checks a program's
+  entry gets, so a refusal written into `entry_static_check` was
+  invisible to it: the first version of this check read OK where the
+  kernel had refused nothing. Both halves now go through the submission
+  path. With only the first converted, refusing the flag on a send as
+  well passed unnoticed, because the send that was meant to catch it was
+  still going the other way.
+
 - *Broken to check it.* Reading the deadline whether or not the flag is
   there took the boot down at the first client that clears its
   arguments, which is the trap this stage exists to avoid, reported as
