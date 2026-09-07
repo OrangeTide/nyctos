@@ -9420,6 +9420,26 @@ is released is section 18.3's and stays there.
   exists so a race that did not happen cannot read as one that did. The
   server now spins past the deadline instead, holding the core with
   interrupts on.
+- *And the review moved the dispatch exclusion back where its reason
+  is.* Stage four's review narrowed it to the timed-out send that has a
+  page to take back, which is where the work is and not where the reason
+  is. The reason is why the thread was woken: a deadline expiring is not
+  a device interrupt reaching the thread waiting on it, whether or not
+  that thread has anything left to do. A client giving up with nothing
+  lent was still being counted as section 13.3's second term.
+- *And nothing genuine is lost by that*, which is what the narrowing was
+  trying to protect. `thread_wake_timeout` is reached only from the
+  sleepers list, so it is always a deadline; a thread that gets the
+  interrupt it waited for is woken by the signal path and is still
+  measured. The report says "none in this run" either way, for the
+  reason stage four's review recorded.
+- *The guard rests on something worth naming.* A stale deadline is
+  ignored because the thread is no longer blocked, which is sound only
+  while nothing can block again between being woken and withdrawing the
+  registration. Both waits withdraw it in the statement after
+  `sched_block` returns, so nothing does. A wait that blocked again in
+  between would have this fire on the wrong one.
+
 - *Broken to check it.* Letting a stale deadline fire panicked with
   "thread boot: made runnable while already runnable", on all four
   configurations.

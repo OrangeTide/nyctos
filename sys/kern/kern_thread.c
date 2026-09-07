@@ -21,6 +21,7 @@
 #include <sys/intr.h>
 #include <sys/cohort.h>
 #include <sys/proc.h>
+#include <sys/measure.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
 #include <sys/cpu.h>
@@ -135,6 +136,22 @@ thread_wake_timeout(struct thread *t)
 
     t->t_waitres = SYS_ERR_TIMEOUT;
     sched_ready(t);
+
+    /*
+     * And this dispatch is not section 13.3's second term. That term is
+     * the time from a device interrupt to the thread waiting on it, and
+     * a thread woken here was not waiting on an interrupt: the timer is
+     * what tells the time, not what it was waiting for. A thread that
+     * does get the interrupt it waited for is woken by the signal path
+     * instead and is still measured.
+     *
+     * Excluded by why the thread was woken rather than by what it has
+     * left to do, which is where M15 stage four's review put it and was
+     * wrong: a client giving up on a send has a page to take back and
+     * two page-table charges to go with it, but a client giving up with
+     * nothing lent is the same kind of wake and was still being counted.
+     */
+    irq_dispatch_forget(t);
 }
 
 void
