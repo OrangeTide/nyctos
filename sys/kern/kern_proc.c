@@ -453,36 +453,37 @@ proc_load(struct proc *p, const struct boot_member *m)
 
 
     /*
-     * The startup record goes in the last page of the slot, which is the
-     * one place in a program's memory that its own layout does not reach:
-     * the stack grows down from below it and the image ends a long way
-     * under that. Section 20.4 has the loader place the record in the
-     * child's memory, and this is a loader.
+     * The startup record goes in the last page of what the program
+     * needs, which the linker script reserves above the stack for it.
+     * Section 20.4 has the loader place the record in the child's
+     * memory, and this is a loader.
      *
-     * It needs a frame of its own now that the loop stops at what the
-     * image needs. Until M14 it was the last page the loop had already
-     * mapped, which is what "the last page of the slot" meant when the
-     * whole slot was mapped. Stage four is where the record moves inside
-     * what the program has and this page stops existing; until then it
-     * is one frame per process on top of the image's own.
+     * The loop above has already mapped that page, because it is inside
+     * bm_mem, so `last` is the frame behind it and nothing more has to
+     * be allocated. Until M14 the record went in the last page of the
+     * slot, which was the one place a program's own layout did not
+     * reach while the whole slot was mapped; nothing maps the whole
+     * slot now, so the place it went is a place that does not exist.
+     */
+    proc_place_startup(p, last, va + m->bm_mem - PAGE_SIZE);
+
+    /*
+     * And that the program can reach it. The record is the one thing
+     * the loader hands a program by address rather than by register,
+     * so a record placed where nothing is mapped is a program that
+     * faults on its first instruction with nothing saying why. It was
+     * placed at the end of the slot until M14, and moving the loader's
+     * bound without moving the record is exactly the mistake this
+     * refuses.
      */
     {
-        uintptr_t rec = page_alloc();
+        uintptr_t pa;
 
-        if (rec == 0) {
-            return SYS_ERR_NO_MEMORY;
+        if (md_lookup(proc_as(p), p->p_startup_va, &pa) != SYS_OK) {
+            panic("load %s: its startup record at 0x%lx is not mapped",
+              p->p_name, (unsigned long)p->p_startup_va);
         }
-        err = md_map(proc_as(p), va + SYS_USER_SLOT_BYTES - PAGE_SIZE,
-          rec, PAGE_SIZE,
-          proc_prot(p, va + SYS_USER_SLOT_BYTES - PAGE_SIZE));
-        if (err != SYS_OK) {
-            return err;
-        }
-        last = rec;
-        p->p_own_pages++;
     }
-
-    proc_place_startup(p, last, va + SYS_USER_SLOT_BYTES - PAGE_SIZE);
 
     /*
      * A second member was loaded into a space its peers are running in,
@@ -624,6 +625,18 @@ proc_prot(const struct proc *p, uintptr_t va)
 
     if (off < p->p_rw_bytes) {
         return VM_READ | VM_EXEC | VM_USER;
+    }
+
+    /*
+     * The last page of what the program needs is the startup record,
+     * asked about before the writable range because it is inside it.
+     * Read-only: the loader writes it through the physical address
+     * before any of this is mapped, and nothing in the program needs
+     * to write what it was told.
+     */
+    if (p->p_mem_bytes >= PAGE_SIZE && off >= p->p_mem_bytes - PAGE_SIZE &&
+      off < p->p_mem_bytes) {
+        return VM_READ | VM_USER;
     }
     if (off < p->p_mem_bytes) {
         return VM_READ | VM_WRITE | VM_USER;

@@ -8910,7 +8910,7 @@ slot is ever backed by a frame.
   same answer Tier 0 gives and the reason that kind is spelled out
   there.
 
-**4. The startup record moves inside what the program has.** *Planned.*
+**4. The startup record moves inside what the program has.** *Built.*
 
 - Section 20.4's record lives in the last page of the slot today,
   chosen because it is the one place a program's own layout does not
@@ -8919,6 +8919,33 @@ slot is ever backed by a frame.
   the page the record is in is inside the region the archive says the
   program needs. A record placed outside it faults on first use rather
   than being read from memory that happens to still be there.
+- *Settled.* The linker script reserves a page above the stack and the
+  record goes there, which is **the last page of what the program
+  needs**, so the loader knows where it is without being told: `bm_mem`
+  minus a page. Above the stack rather than below, because the stack
+  grows down and away from it. The boot prints where it lands, seven
+  pages into eight for `poke_addr` on both ports.
+- *It costs nothing.* Stage two had to allocate a frame for the record
+  at the slot's end, because the loop that maps a program stopped before
+  it. The page is inside that loop's range now, so the frame it maps is
+  the record's and a process still costs 15 frames on riscv64 and 14 on
+  aarch64.
+- *And the record is read-only*, which the last stage made possible and
+  this one puts inside a writable region, so `proc_prot` has to name it
+  before the range that contains it. `poke_addr` pointed at a program's
+  own record faults at exactly that address.
+- *The loader checks it can be reached.* The record is the one thing a
+  program is handed by address rather than in a register, so a record
+  placed where nothing is mapped is a program that faults on its first
+  instruction with nothing saying why. The loader now looks it up in the
+  space it just built and refuses rather than starting the program.
+- *Broken to check it.* Leaving the record at the slot's end, where it
+  was before this milestone, panicked with "its startup record at
+  0x805ff000 is not mapped", naming the image. Without that guard the
+  same break took the boot down four checks later with a message about
+  something else, which is why the guard is there. Leaving the record's
+  page writable panicked with "a program wrote the record it was handed
+  and lived".
 
 **5. A program with initialised writable data.** *Planned.*
 

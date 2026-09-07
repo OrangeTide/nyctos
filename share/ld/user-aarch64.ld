@@ -62,12 +62,27 @@ SECTIONS
     _stack_top = .;
 
     /*
+     * And a page above the stack for the startup record of section
+     * 20.4, which the loader writes and the program reads. It is the
+     * last page of what this program needs, so the loader knows where
+     * it is without being told: bm_mem minus a page.
+     *
+     * Above the stack rather than below it, because the stack grows
+     * down and away from it. Before M14 the record went in the last
+     * page of the slot, which was the one place a program's layout did
+     * not reach when the whole slot was mapped. Nothing maps the whole
+     * slot now, so the record moves inside what the program has and is
+     * reserved here rather than assumed.
+     */
+    . = ALIGN(4096);
+    . = . + 4096;
+
+    /*
      * The end of what this program needs, named for the boot archive
      * and rounded to a page because that is the unit the loader maps
      * in. Everything between _rw_start and here is writable: bss,
-     * which crt1 zeroes, and the stack below this address.
+     * which crt1 zeroes, the stack, and the record above it.
      */
-    . = ALIGN(4096);
     _mem_end = .;
 
     /DISCARD/ : { *(.comment) *(.note*) }

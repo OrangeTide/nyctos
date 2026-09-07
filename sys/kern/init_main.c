@@ -3187,6 +3187,108 @@ lent_permission_checks(sys_handle_t root)
      */
 }
 
+
+/*
+ * Where the startup record is, per M14 stage four.
+ *
+ * Section 20.4 has the loader place the record in the child's memory.
+ * Until this milestone that meant the last page of the slot, chosen
+ * because it was the one place a program's own layout did not reach
+ * while the whole slot was mapped. Nothing maps the whole slot now, so
+ * that page is not there, and the record moved to the last page of what
+ * the program needs, which the linker script reserves above the stack.
+ *
+ * Two things are worth asserting about it and one is not. That a
+ * program can read its namespace and its arguments is checked by every
+ * program in this boot that has either, and would fail loudly. What
+ * those checks would not notice is where the record sits: a record
+ * placed somewhere a program can still read is a record that works
+ * today and stops working the moment the loader maps one page less.
+ * So this asserts the address against the archive, and that the page is
+ * read-only, which is what the loader chose for it.
+ */
+static void
+startup_record_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_status_args sargs;
+    const struct boot_member *m;
+    const char *argv[2];
+    uintptr_t rec;
+    char addr[19];
+    sys_handle_t h;
+    struct child c;
+    void *obj;
+
+    cnputs("startup: where the record a program is handed lives\n");
+
+    m = boot_lookup("poke_addr");
+    if (m == NULL) {
+        panic("startup: no poke_addr in the archive");
+    }
+
+    /*
+     * Where it has to be, computed the way the loader computes it and
+     * checked against what the archive says the program has. A record
+     * outside that is a record in memory the loader no longer maps.
+     */
+    rec = (uintptr_t)m->bm_load + m->bm_mem - PAGE_SIZE;
+
+    if (rec < (uintptr_t)m->bm_load + m->bm_rw) {
+        panic("startup: the record would be in read-only memory");
+    }
+
+    cnprintf("    %-38s 0x%lx, %lu pages into %lu\n",
+      "the record sits at", (unsigned long)rec,
+      (unsigned long)((m->bm_mem - PAGE_SIZE) / PAGE_SIZE),
+      (unsigned long)(m->bm_mem / PAGE_SIZE));
+
+    hex_into(addr, rec);
+    argv[0] = "poke_addr";
+    argv[1] = addr;
+
+    sched_defer();
+    if (proc_spawn_op(self, "poke_addr", PRIO_BOOT - 1, NULL, 0,
+      argv, 2, &h) != SYS_OK) {
+        panic("startup: could not start poke_addr");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("startup: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    (void)child_join(&c, JOIN_MS);
+
+    memset(&sargs, 0, sizeof(sargs));
+    if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) != SYS_OK) {
+        panic("startup: no status for poke_addr");
+    }
+
+#if SYS_TIER == 2
+    if (sargs.out_fault != SYS_FAULT_ACCESS) {
+        panic("startup: a program wrote the record it was handed and "
+          "lived, kind %u", (unsigned int)sargs.out_fault);
+    }
+    if (sargs.out_fault_addr != rec) {
+        panic("startup: reported 0x%lx, wrote 0x%lx",
+          (unsigned long)sargs.out_fault_addr, (unsigned long)rec);
+    }
+    cnprintf("    %-38s %s at 0x%lx\n", "a program writing its own record",
+      fault_name(sargs.out_fault), (unsigned long)sargs.out_fault_addr);
+#else
+    if (sargs.out_fault != SYS_FAULT_NONE) {
+        panic("startup: flat memory refused a write, kind %u",
+          (unsigned int)sargs.out_fault);
+    }
+    cnprintf("    %-38s %s\n", "a program writing its own record",
+      "permitted, because nothing here says no");
+#endif
+
+    expect("giving poke_addr's handle back", handle_close(ht, h), SYS_OK);
+}
+
 /*
  * What the two regions of a program permit, per M14 stage three.
  *
@@ -8890,6 +8992,7 @@ kernel_main(void)
     console_service();
     device_checks();
     permission_checks();
+    startup_record_checks();
 
     cnputs("frames: what holds one that no process holds\n");
 
