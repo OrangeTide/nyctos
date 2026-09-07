@@ -220,7 +220,8 @@ msg_buf_take_back(struct thread *client)
               (unsigned long)va, client->t_lend_to->p_name);
         }
         md_unmap(from, va, PAGE_SIZE);
-        if (md_map(to, va, pa, PAGE_SIZE, VM_PROGRAM) != SYS_OK) {
+        if (md_map(to, va, pa, PAGE_SIZE,
+          proc_prot(client->t_lend_to, va)) != SYS_OK) {
             /*
              * The tables the page hung from were left in place when it
              * was unmapped, so putting it back needs no frame and this

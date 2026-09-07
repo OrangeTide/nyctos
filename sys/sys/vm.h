@@ -52,13 +52,15 @@
 
 /*
  * What a loaded program's own memory is mapped as. Its text, its data
- * and its stack are one slot and nothing above the loader knows where
- * one ends, so all of it is everything; teaching the archive to carry
- * the boundaries is what would let a program's text be read-only.
+ * and its stack were one slot and nothing above the loader knew where
+ * one ended, so all of it was everything.
  *
- * It is a name rather than a constant repeated because the loader is no
- * longer the only thing that maps a program's page: a buffer that goes
- * out to a receiver and comes back has to come back as what it was.
+ * M14 is where that stopped being true. proc_prot() answers what a page
+ * of a program may be used for, from where it sits: text read and
+ * executed, everything else read and written, the startup record read
+ * only. What is left for this name is the pages that are not a
+ * program's own, which the loader does not place and nothing knows the
+ * shape of.
  */
 #define VM_PROGRAM      (VM_READ | VM_WRITE | VM_EXEC | VM_USER)
 

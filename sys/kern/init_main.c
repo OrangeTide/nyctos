@@ -3088,6 +3088,170 @@ grant_holder(const char *what, uint32_t before, uint32_t expect,
     }
 }
 
+
+/*
+ * What the two regions of a program permit, per M14 stage three.
+ *
+ * A program's text is read and executed and never written; everything
+ * else it has is read and written and never executed. Until this stage
+ * one region held all of it with all three permissions, because the
+ * loader could not see where text ended, and the comment on VM_PROGRAM
+ * said as much.
+ *
+ * Both checks need a program that does the thing, and neither existed:
+ * every program here reads addresses it is handed and jumps only where
+ * the linker sent it. poke_addr writes to an address, which is
+ * touch_addr's other half, and leap jumps into its own stack.
+ *
+ * The address is asserted as well as the fault, which matters more here
+ * than usual. An unmapped page and a page that refuses a write are both
+ * SYS_FAULT_ACCESS, so a check that asked only whether something
+ * faulted would pass just as well against a loader that had mapped
+ * nothing at all.
+ */
+static void
+permission_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    const struct boot_member *m;
+    struct sys_op_status_args sargs;
+    char addr[19];
+    const char *argv[2];
+    sys_handle_t h;
+    struct child c;
+    void *obj;
+
+    cnputs("permissions: what each half of a program may be used for\n");
+
+    m = boot_lookup("poke_addr");
+    if (m == NULL) {
+        panic("permissions: no poke_addr in the archive");
+    }
+    hex_into(addr, (uintptr_t)m->bm_load);
+
+    argv[0] = "poke_addr";
+    argv[1] = addr;
+
+    sched_defer();
+    if (proc_spawn_op(self, "poke_addr", PRIO_BOOT - 1, NULL, 0,
+      argv, 2, &h) != SYS_OK) {
+        panic("permissions: could not start poke_addr");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("permissions: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    (void)child_join(&c, JOIN_MS);
+
+    memset(&sargs, 0, sizeof(sargs));
+    if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) != SYS_OK) {
+        panic("permissions: no status for poke_addr");
+    }
+
+#if SYS_TIER == 2
+    if (sargs.out_fault != SYS_FAULT_ACCESS) {
+        panic("permissions: a program wrote its own text and lived, "
+          "kind %u", (unsigned int)sargs.out_fault);
+    }
+    if (sargs.out_fault_addr != (uintptr_t)m->bm_load) {
+        panic("permissions: reported 0x%lx, wrote 0x%lx",
+          (unsigned long)sargs.out_fault_addr,
+          (unsigned long)m->bm_load);
+    }
+    cnprintf("    %-38s %s at 0x%lx\n", "a program writing its own text",
+      fault_name(sargs.out_fault),
+      (unsigned long)sargs.out_fault_addr);
+#else
+    /*
+     * Flat memory permits it, and says so rather than being left out.
+     * Section 13.3 buys Tier 0 no MMU, and this is the price named:
+     * the same program, the same store, and nothing to refuse it.
+     */
+    if (sargs.out_fault != SYS_FAULT_NONE) {
+        panic("permissions: flat memory refused a write, kind %u",
+          (unsigned int)sargs.out_fault);
+    }
+    cnprintf("    %-38s %s\n", "a program writing its own text",
+      "permitted, because nothing here says no");
+#endif
+
+    expect("giving poke_addr's handle back", handle_close(ht, h), SYS_OK);
+
+    sched_defer();
+    if (proc_spawn_op(self, "leap", PRIO_BOOT - 1, NULL, 0,
+      NULL, 0, &h) != SYS_OK) {
+        panic("permissions: could not start leap");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("permissions: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    (void)child_join(&c, JOIN_MS);
+
+    memset(&sargs, 0, sizeof(sargs));
+    if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) != SYS_OK) {
+        panic("permissions: no status for leap");
+    }
+
+#if SYS_TIER == 2
+    if (sargs.out_fault != SYS_FAULT_ACCESS) {
+        panic("permissions: a program ran from its stack and lived, "
+          "kind %u", (unsigned int)sargs.out_fault);
+    }
+
+    /*
+     * Inside the writable half of its own slot, which is where a stack
+     * is. The exact address is the compiler's business and not this
+     * check's, so what is asserted is the region: a fault somewhere
+     * else would be a different failure wearing the same kind.
+     */
+    {
+        uintptr_t base;
+        size_t len;
+
+        m = boot_lookup("leap");
+        if (m == NULL) {
+            panic("permissions: no leap in the archive");
+        }
+        base = (uintptr_t)m->bm_load;
+        len = m->bm_mem;
+
+        if (sargs.out_fault_addr < base + m->bm_rw ||
+          sargs.out_fault_addr >= base + len) {
+            panic("permissions: ran from 0x%lx, outside its writable "
+              "memory", (unsigned long)sargs.out_fault_addr);
+        }
+    }
+    cnprintf("    %-38s %s at 0x%lx\n", "a program running from its stack",
+      fault_name(sargs.out_fault),
+      (unsigned long)sargs.out_fault_addr);
+#else
+    /*
+     * The fetch is permitted and the instruction is not, which is a
+     * distinction worth keeping. Flat memory has nothing to refuse a
+     * jump into a stack, so what ends this program is the zeroes it
+     * jumped to failing to decode: SYS_FAULT_INSTRUCTION and not
+     * SYS_FAULT_ACCESS. The two kinds are how a reader tells "the
+     * machine let me run from my stack" from "the machine stopped me",
+     * and only the second is a protection.
+     */
+    if (sargs.out_fault != SYS_FAULT_INSTRUCTION) {
+        panic("permissions: flat memory answered a jump into a stack "
+          "with kind %u, not an illegal instruction",
+          (unsigned int)sargs.out_fault);
+    }
+    cnprintf("    %-38s %s\n", "a program running from its stack",
+      "fetched, then refused as an instruction");
+#endif
+
+    expect("giving leap's handle back", handle_close(ht, h), SYS_OK);
+}
+
 /*
  * A grant over ordinary memory, given and then taken away.
  *
@@ -8617,6 +8781,8 @@ kernel_main(void)
     cnputs("the console: a driver process, and a line typed at it\n");
     console_service();
     device_checks();
+    permission_checks();
+
     cnputs("frames: what holds one that no process holds\n");
 
     {

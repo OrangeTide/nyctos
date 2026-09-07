@@ -8828,7 +8828,7 @@ slot is ever backed by a frame.
   back". Leaving the orphan count at a slot's worth panicked in the
   ledger with "the parts come to more than the whole".
 
-**3. Text is not writable and the stack is not executable.** *Planned.*
+**3. Text is not writable and the stack is not executable.** *Built.*
 
 - Two mappings with the permissions each region should have.
 - *Check.* A program that writes its own text faults, with the kind and
@@ -8836,6 +8836,54 @@ slot is ever backed by a frame.
   Both are new programs, because no existing one can do either. Putting
   the permission back makes each succeed, which is the break test and
   also the proof that the check was testing the mapping.
+- *Settled.* At Tier 2 a program that writes its own text is refused
+  with an access fault at exactly its load address, and one that jumps
+  into its stack is refused with an access fault inside its own writable
+  region. **Text is read and executed, everything else is read and
+  written, and the comment on `VM_PROGRAM` that named this as what the
+  archive would buy can be deleted.**
+- *`proc_prot` is where the decision lives*, rather than two constants
+  at the mapping site, because the loader is not the only thing that
+  maps a program's page. A buffer lent across a rendezvous is unmapped
+  from the client, mapped into the server, and mapped back, and "back"
+  used to mean `VM_PROGRAM` because every page was the same. Asking
+  where the page is gives the same answer every time it is asked.
+- *The startup record is read-only*, which it can be: section 20.4 has
+  the loader place it in the child's memory, and the loader writes it
+  through the physical address before any of this is mapped, so nothing
+  in the program ever needs to write it.
+- *Two programs had to exist.* `poke_addr` writes to an address it is
+  handed, which is `touch_addr`'s other half and was missing because
+  reading is all any program here did to an address; a mapping that
+  permits everything and one that permits reading answer a read the
+  same way. `leap` jumps into its own stack, which nothing could do,
+  because every other program jumps only where the linker sent it.
+- *The address is asserted and not only the fault*, which matters more
+  here than usual: an unmapped page and a page that refuses a write are
+  both `SYS_FAULT_ACCESS`, so a check that asked only whether something
+  faulted would pass against a loader that had mapped nothing at all.
+- *And Tier 0 says the other thing.* Flat memory permits the write, as
+  section 13.3 says it must. It permits the jump too, and what ends that
+  program is the zeroes it jumped to failing to decode, which is
+  `SYS_FAULT_INSTRUCTION` and not `SYS_FAULT_ACCESS`. The check asserts
+  that distinction rather than accepting any fault, because the two
+  kinds are how a reader tells "the machine let me run from my stack"
+  from "the machine stopped me", and only the second is a protection.
+  The first version of this check expected no fault at all at Tier 0 and
+  was wrong about its own tier.
+- *And the stage passed its own check by doing nothing, once.*
+  `proc_prot` asks `proc_slot` where the process's memory is, and
+  `proc_slot` answers from `p_entry`, which the loader set *after* the
+  mapping loop. So every page was mapped while the process had no slot
+  yet, `proc_prot` fell back to permitting everything, and both new
+  programs ran to completion. The loader now sets the entry and the two
+  boundaries before it maps anything.
+- *Broken to check it.* Giving text write permission back panicked with
+  "a program wrote its own text and lived, kind 0". Giving writable
+  memory execute back panicked with "ran from its stack and lived, kind
+  4", the kind being the illegal instruction it then hit, which is the
+  same answer Tier 0 gives and the reason that kind is spelled out
+  there.
 
 **4. The startup record moves inside what the program has.** *Planned.*
 

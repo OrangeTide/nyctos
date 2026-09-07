@@ -386,6 +386,18 @@ proc_load(struct proc *p, const struct boot_member *m)
     size_t done = 0;
     sys_err_t err;
 
+    /*
+     * Before the loop, all three, because proc_prot asks proc_slot
+     * where this process's memory is and proc_slot answers from
+     * p_entry. Set after the loop, as it was, every page is mapped
+     * while the process has no slot yet, proc_prot falls back to
+     * permitting everything, and the stage passes its own check by
+     * doing nothing.
+     */
+    p->p_entry = (uintptr_t)m->bm_load;
+    p->p_rw_bytes = m->bm_rw;
+    p->p_mem_bytes = m->bm_mem;
+
     while (done < m->bm_mem) {
         uintptr_t pa;
         size_t n = m->bm_size > done ? m->bm_size - done : 0;
@@ -422,14 +434,14 @@ proc_load(struct proc *p, const struct boot_member *m)
         }
 
         /*
-         * Still writable and executable, and still one set of
-         * permissions: M14 stage two is about how much is mapped and
-         * stage three is about what each part of it permits. What has
-         * changed is the bound on the loop above, which was a slot and
-         * is now what the archive says the image needs.
+         * With the permissions the region has rather than all of them.
+         * Below the archive's boundary is text and rodata, read and
+         * executed; above it is data, bss and stack, read and written.
+         * proc_prot is where that decision lives, because the loader is
+         * not the only thing that maps these pages.
          */
         err = md_map(proc_as(p), va + done, pa, PAGE_SIZE,
-          VM_PROGRAM);
+          proc_prot(p, va + done));
         if (err != SYS_OK) {
             return err;
         }
@@ -439,7 +451,6 @@ proc_load(struct proc *p, const struct boot_member *m)
         done += PAGE_SIZE;
     }
 
-    p->p_entry = (uintptr_t)m->bm_load;
 
     /*
      * The startup record goes in the last page of the slot, which is the
@@ -462,7 +473,8 @@ proc_load(struct proc *p, const struct boot_member *m)
             return SYS_ERR_NO_MEMORY;
         }
         err = md_map(proc_as(p), va + SYS_USER_SLOT_BYTES - PAGE_SIZE,
-          rec, PAGE_SIZE, VM_PROGRAM);
+          rec, PAGE_SIZE,
+          proc_prot(p, va + SYS_USER_SLOT_BYTES - PAGE_SIZE));
         if (err != SYS_OK) {
             return err;
         }
@@ -575,6 +587,62 @@ proc_spawn_image(const char *image, uint8_t prio,
     return p;
 }
 
+
+
+/*
+ * What a page of this process's memory may be used for, by where it is.
+ *
+ * Section 15.1 wants text read and executed and never written, and
+ * everything else written and never executed. Until M14 the loader
+ * could not tell them apart, so every page was all three and the
+ * comment on VM_PROGRAM said what would fix it. This is that.
+ *
+ * A function rather than two constants at the mapping site, because the
+ * loader is not the only thing that maps a program's page: a buffer
+ * lent across a rendezvous is unmapped from the client and mapped into
+ * the server and back again, and "back again" has to mean the
+ * permissions it had. Asking where the page is gives the same answer
+ * every time it is asked.
+ *
+ * The startup record is read-only. Section 20.4 has the loader place it
+ * in the child's memory, and the loader writes it through the physical
+ * address before any of this is mapped, so nothing in the program ever
+ * needs to write it.
+ */
+uint32_t
+proc_prot(const struct proc *p, uintptr_t va)
+{
+#if SYS_TIER == 2
+    uintptr_t base;
+    size_t len, off;
+
+    if (!proc_slot(p, &base, &len) || va < base || va - base >= len) {
+        return VM_PROGRAM;
+    }
+
+    off = va - base;
+
+    if (off < p->p_rw_bytes) {
+        return VM_READ | VM_EXEC | VM_USER;
+    }
+    if (off < p->p_mem_bytes) {
+        return VM_READ | VM_WRITE | VM_USER;
+    }
+
+    return VM_READ | VM_USER;
+#else
+    /*
+     * Flat memory has no permissions to set, so there is nothing here
+     * to answer with but everything. Tier 0 is the tier where a program
+     * can write its own text, and section 13.3 says so as the price of
+     * having no MMU.
+     */
+    (void)p;
+    (void)va;
+
+    return VM_PROGRAM;
+#endif
+}
 
 /*
  * What this process is holding, per M13 stage 6.

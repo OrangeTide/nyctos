@@ -113,6 +113,16 @@ struct proc {
      * counting it here is the only place it is known.
      */
     uint32_t            p_own_pages;
+
+    /*
+     * The layout the archive carried for this image, kept because a
+     * page's permissions are a property of where it sits and more than
+     * the loader needs to know them: a buffer lent to a server and
+     * given back has to come back as what it was, and what it was is
+     * this.
+     */
+    uint32_t            p_rw_bytes;
+    uint32_t            p_mem_bytes;
 #endif
     uintptr_t           p_startup_va;
 
@@ -319,6 +329,14 @@ bool proc_slot(const struct proc *p, uintptr_t *base, size_t *len);
  * cohort holds is counted against the cohort.
  */
 uint32_t proc_frames(struct proc *p);
+
+/*
+ * What a page at this address in this process may be used for: text
+ * read and executed, everything else written and not executed, the
+ * startup record read only. One answer for the loader and for anything
+ * that has to put a page back as it was.
+ */
+uint32_t proc_prot(const struct proc *p, uintptr_t va);
 
 /*
  * Frames lost because a cohort place was handed on before its previous
