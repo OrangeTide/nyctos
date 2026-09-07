@@ -9478,6 +9478,29 @@ is released is section 18.3's and stays there.
   the only deadlines in this system are made by the kernel. That is what
   keeps deadlines out of the programs that would use them, and it is
   written where the claim is rather than left to be discovered.
+- *And the review found a thread that ends while it is serving.* A
+  server that takes a message and exits without replying stays on its
+  channel's list of threads inside a request: a reply is what takes it
+  off, and there is no reply. `chain_raise` walks that list to donate a
+  queued sender's priority, so what is left is a pointer to a thread
+  whose pool slot the next thread will be given. `thread_exit` now takes
+  it off, and the check waits for the holder of stage four to end before
+  asserting the list is empty. Leaving it on panics with "dl-hold ended
+  and is still serving".
+- *The client it was holding is not released there*, and that is left
+  alone deliberately. A thread dying mid-request leaves its client
+  waiting, which until this milestone meant for ever and now means until
+  its deadline. Section 12.5 releases clients when the *process* dies;
+  one thread of a live server dying is not that, and what it should be
+  is section 24.3's.
+- *And the first version of this finding was a misreading.* The probe
+  that started it reported the holder on the list in state 4, which was
+  read as dead and is `THREAD_BLOCKED`: the thread was alive and
+  legitimately inside its request, and the assertion written from that
+  reading asserted the opposite of what was true. The gap was real, but
+  it had to be demonstrated by waiting for the thread to actually end
+  rather than by mistaking a live one for a corpse.
+
 - *Broken to check it.* Moving an expected count panicked with "2 gave
   up with a server working, not 3". Counting in the unwait hook again,
   which is the mistake this stage started with, panicked with "0 gave up

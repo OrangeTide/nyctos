@@ -164,6 +164,14 @@ thread_exit(int32_t code)
     current->t_exit_code = code;
 
     /*
+     * And it is not inside a request on anything any more. A server
+     * that took a message and exits without replying would otherwise
+     * stay on its channel's serving list as a pointer to a dead
+     * thread, which is what a priority chain walks.
+     */
+    channel_thread_exited(current);
+
+    /*
      * The status is written before the timeline advances, and both
      * before the thread leaves the run set. A joiner released by the
      * advance can outrank this thread and run before it reaches

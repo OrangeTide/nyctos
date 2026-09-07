@@ -3894,6 +3894,25 @@ deadline_checks(void)
 
         expect("giving its handle back",
           handle_close(&self->p_handles, h), SYS_OK);
+
+        /*
+         * And once the holder has ended, it is not still inside a
+         * request on this channel. It exits without ever replying,
+         * which is the one thing that would otherwise take a thread off
+         * that list, and the list is what a priority chain walks into.
+         *
+         * Waited for on its completion rather than assumed: until it
+         * ends it is still serving, and asserting before that asserts
+         * the opposite of what is true.
+         */
+        expect("waiting for the holder to end",
+          timeline_wait(&srv->t_completion, SYS_COMPLETION_EXITED,
+            time_now() + time_from_ms(JOIN_MS)), SYS_OK);
+
+        if (dl_ch->c_serving != NULL) {
+            panic("deadline: %s ended and is still serving",
+              dl_ch->c_serving->t_name);
+        }
     }
 
     /*

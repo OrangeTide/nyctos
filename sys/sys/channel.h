@@ -158,4 +158,10 @@ void channel_unwait_thread(void *obj, struct thread *t);
  */
 void channel_gave_up(const struct thread *t);
 
+/*
+ * A thread is ending: take it off any channel's list of threads inside
+ * a request. A server that exits without replying is not serving.
+ */
+void channel_thread_exited(struct thread *t);
+
 #endif /* _SYS_CHANNEL_H_ */

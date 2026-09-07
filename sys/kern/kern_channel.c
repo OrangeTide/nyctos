@@ -1408,6 +1408,31 @@ channel_thread_release(struct thread *t, bool tell)
     }
 }
 
+/*
+ * A thread is ending, so it is no longer inside a request on anything.
+ *
+ * A server that received a message and exits without replying leaves
+ * itself on its channel's list of threads inside a request, and nothing
+ * else takes it off: a reply does it, and there is no reply. chain_raise
+ * walks that list to donate a queued sender's priority down it, so what
+ * is left behind is a pointer to a dead thread whose pool slot the next
+ * thread will be given, and the walk would read its priority and what
+ * it is blocked on.
+ *
+ * The client it was holding is not released here. A thread that dies
+ * mid-request leaves its client waiting, which until M15 meant waiting
+ * for ever and now means waiting until its deadline. Section 12.5 has
+ * the death of the process release them with SYS_ERR_OWNER_DEAD; the
+ * death of one thread of a live server is not that, and what it should
+ * be is section 24.3's question.
+ */
+void
+channel_thread_exited(struct thread *t)
+{
+    serving_end(t);
+}
+
+
 void
 channel_thread_cancelled(struct thread *t)
 {
