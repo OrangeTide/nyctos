@@ -231,6 +231,42 @@ md_as_destroy(struct addrspace *as)
     as->as_root = 0;
 }
 
+/*
+ * How many frames the tables under this root are, per M13 stage 6.
+ *
+ * The same walk md_as_destroy makes, counting where that one frees, and
+ * level-aware for the same reason: this format gives a table and a page
+ * the same two bits, and only the level tells them apart.
+ */
+static uint32_t
+count_table(uintptr_t pa, unsigned int level)
+{
+    uint64_t *t = table_at(pa);
+    uint32_t n = 1;
+    uint32_t i;
+
+    if (level < 3) {
+        for (i = 0; i < ENTRIES; i++) {
+            if ((t[i] & 0x3u) != DESC_TABLE) {
+                continue;
+            }
+            n += count_table(t[i] & 0x0000fffffffff000ULL, level + 1);
+        }
+    }
+
+    return n;
+}
+
+uint32_t
+md_as_frames(const struct addrspace *as)
+{
+    if (as->as_root == 0) {
+        return 0;
+    }
+
+    return count_table(as->as_root, 1);
+}
+
 sys_err_t
 md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
   uint32_t flags)

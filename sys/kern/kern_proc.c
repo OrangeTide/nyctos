@@ -206,6 +206,23 @@ proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
     return p;
 }
 
+/*
+ * Frames lost because a cohort place moved on before its holder was
+ * reaped, so the load that placed the replacement mapped over the only
+ * entries that named them. See proc_free_slot() and M13 stage 2.
+ *
+ * Outside the tier guard because the ledger of stage 6 asks at both
+ * tiers, and the answer at Tier 0 is a truthful nothing rather than a
+ * function that is not there.
+ */
+static uint32_t frames_orphaned;
+
+uint32_t
+proc_frames_orphaned(void)
+{
+    return frames_orphaned;
+}
+
 #if SYS_TIER == 2
 
 /*
@@ -498,6 +515,57 @@ proc_spawn_image(const char *image, uint8_t prio,
     sched_ready(t);
 
     return p;
+}
+
+
+/*
+ * What this process is holding, per M13 stage 6.
+ *
+ * The slot pages still mapped to it, and the tables of the space it
+ * owns. A cohort member owns none: it runs in its cohort's, which
+ * outlives it and is counted once against the cohort rather than once
+ * against each member.
+ *
+ * Counted by walking rather than remembered, for the same reason the
+ * reap frees by walking: a number kept alongside the mappings is a
+ * number that can disagree with them, and the mappings are what is
+ * true.
+ */
+uint32_t
+proc_frames(struct proc *p)
+{
+    uintptr_t base;
+    size_t len, off;
+    uint32_t n = 0;
+
+#if SYS_TIER == 2
+    struct addrspace *as;
+
+    if (proc_slot(p, &base, &len)) {
+        as = proc_as(p);
+
+        if (as != vm_kernel()) {
+            for (off = 0; off < len; off += PAGE_SIZE) {
+                uintptr_t pa;
+
+                if (md_lookup(as, base + off, &pa) == SYS_OK) {
+                    n++;
+                }
+            }
+        }
+    }
+
+    if (p->p_cohort == NULL) {
+        n += md_as_frames(&p->p_as);
+    }
+#else
+    (void)p;
+    (void)base;
+    (void)len;
+    (void)off;
+#endif
+
+    return n;
 }
 
 /*
@@ -1344,6 +1412,16 @@ proc_free_slot(struct proc *p)
      * Losing them is the safe half of the mistake.
      */
     if (p->p_cohort != NULL && !cohort_holds(p->p_cohort, p)) {
+        /*
+         * Counted, because nothing else can find them. They are not
+         * reachable through the address space any more: the load that
+         * put the replacement here mapped over the entries that named
+         * them. M13 stage 6 reports the total, since a frame nothing
+         * can reach is exactly the kind that would otherwise go
+         * unnamed in the ledger.
+         */
+        frames_orphaned += (uint32_t)(len / PAGE_SIZE);
+
         return 0;
     }
 

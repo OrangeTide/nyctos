@@ -70,6 +70,13 @@ struct grant *grant_create(const char *name, uintptr_t base, size_t len,
   bool device);
 
 /*
+ * The frames grants are holding. A grant describes memory it does not
+ * own, so this is the count of what nothing will give back. Device
+ * grants are not counted: their memory is a chip.
+ */
+uint32_t grant_frames(void);
+
+/*
  * Put the region where the holder can reach it, and say where that is.
  * The rights are the holder's, from the handle it presented, so a grant
  * carrying only SYS_RIGHT_READ becomes a read-only mapping.

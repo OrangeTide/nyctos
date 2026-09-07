@@ -3125,6 +3125,16 @@ paging_spinner(void *arg)
 static struct channel *ch_pager;
 static sys_handle_t h_pager_recv;
 static uint32_t pager_pages;
+
+/*
+ * What the ledger at the end of the boot needs from before any of the
+ * checks ran: what the port had already spent, and how many tables the
+ * kernel's own address space was.
+ */
+static uint32_t frames_at_start;
+#if SYS_TIER == 2
+static uint32_t kernel_tables_at_start;
+#endif
 static uint8_t pager_prio_seen;
 static bool pager_served_over_spinner;
 
@@ -6196,6 +6206,13 @@ frame_cost_checks(void)
  */
 #define FRAME_CYCLES    200u
 
+/*
+ * How many frames the ledger at the end of the boot cannot attribute to
+ * anything. Asserted so that a change to it is something a reader is
+ * told about; see frame_ledger().
+ */
+#define FRAME_UNCLAIMED 0u
+
 static void
 frame_return_checks(void)
 {
@@ -7837,6 +7854,7 @@ cross_core_donation_checks(void)
 #endif /* SYS_TIER == 2 */
 
 #if SYS_TIER == 2
+
 /*
  * The milestone's own question, asked of the storage stack.
  *
@@ -8188,6 +8206,104 @@ user_slice(void)
     }
 }
 
+/*
+ * What is still held when the boot is over, and what holds it, per M13
+ * stage 6.
+ *
+ * The milestone's other stages each measured one mechanism. This is the
+ * one that has to add up: every frame the machine has spent is either
+ * something named here or a number this cannot account for, and the
+ * last line is what says which.
+ *
+ * The parts, in the order they are subtracted:
+ *
+ * What the port spent before anything ran is the kernel's own image,
+ * the boot archive and the early mapping. Nothing owns it and nothing
+ * can give it back, and a system that reclaimed it would be a system
+ * unmapping the code doing the reclaiming.
+ *
+ * What live processes hold is their slots and the tables that reach
+ * them. These are not a leak: they belong to programs that have not
+ * finished, which at the end of this boot is every server the checks
+ * started and never stopped. Section 15 has them returned when their
+ * owner is gone, and stages two and three are what does that.
+ *
+ * What cohorts hold is one address space each, counted against the
+ * cohort because that is whose it is.
+ *
+ * What the named holders of stage four hold is a grant's page and the
+ * pages a pager supplied. Both belong to an object that outlives the
+ * process they were lent to, and neither is a frame a process could
+ * give back.
+ *
+ * The remainder is the honest part. If it is zero, everything the
+ * machine has spent has a name. If it is not, the number is what nobody
+ * has claimed, and it is printed rather than explained away.
+ */
+static void
+frame_ledger(void)
+{
+    struct pool *procs = proc_pool();
+    uint32_t held = page_used();
+    uint32_t live = 0, in_procs = 0, in_cohorts, named, orphaned, rest;
+    uint32_t in_kernel = 0;
+    uint32_t i;
+
+    for (i = 0; i < procs->count; i++) {
+        struct proc *p = pool_at(procs, i);
+
+        if (p == NULL) {
+            continue;
+        }
+        live++;
+        in_procs += proc_frames(p);
+    }
+
+    in_cohorts = cohort_frames();
+    named = grant_frames();
+    orphaned = proc_frames_orphaned();
+#if SYS_TIER == 2
+    in_kernel = md_as_frames(vm_kernel()) - kernel_tables_at_start;
+#endif
+
+    cnprintf("frames: %u still held when the boot is over\n",
+      (unsigned int)held);
+    cnprintf("    %-38s %u\n", "spent before anything ran",
+      (unsigned int)frames_at_start);
+    cnprintf("    %-38s %u in %u of them\n", "held by processes still running",
+      (unsigned int)in_procs, (unsigned int)live);
+    cnprintf("    %-38s %u\n", "held by cohort address spaces",
+      (unsigned int)in_cohorts);
+    cnprintf("    %-38s %u\n", "held by grants over ordinary memory",
+      (unsigned int)named);
+    cnprintf("    %-38s %u\n", "orphaned when a cohort place moved on",
+      (unsigned int)orphaned);
+    cnprintf("    %-38s %u\n", "added to the kernel's own address space",
+      (unsigned int)in_kernel);
+
+    rest = held - frames_at_start - in_procs - in_cohorts - named -
+      orphaned - in_kernel;
+
+    cnprintf("    %-38s %u\n", "held by nothing that says so", rest);
+
+    /*
+     * Asserted, because every part of it is a count. What it asserts is
+     * not that the remainder is zero, which it is not: it is that the
+     * remainder is what it was when this was written, so that a change
+     * to it is something a reader is told about rather than something
+     * they would have to go looking for.
+     */
+    if (held < frames_at_start + in_procs + in_cohorts + named +
+      orphaned + in_kernel) {
+        panic("frames: the parts come to more than the whole");
+    }
+    if (rest != FRAME_UNCLAIMED) {
+        panic("frames: %u held by nothing that says so, not %u",
+          (unsigned int)rest, (unsigned int)FRAME_UNCLAIMED);
+    }
+}
+
+
 void
 kernel_main(void)
 {
@@ -8296,6 +8412,17 @@ kernel_main(void)
 
     cnputs("frames: the memory the port says it has\n");
     page_checks();
+
+    /*
+     * What the port had spent before any of this ran: the kernel's own
+     * image, the boot archive, and whatever the early mapping built.
+     * The ledger at the end of the boot subtracts it, because none of
+     * it belongs to anything that could give it back.
+     */
+    frames_at_start = page_used();
+#if SYS_TIER == 2
+    kernel_tables_at_start = md_as_frames(vm_kernel());
+#endif
 
     cnputs("handles: authority, rights and staleness\n");
     handle_checks();
@@ -8515,6 +8642,8 @@ kernel_main(void)
     cnprintf("frames: %u of %u used at most, %u still held\n",
       (unsigned int)page_highwater(), (unsigned int)page_count(),
       (unsigned int)page_used());
+
+    frame_ledger();
 
 #if SYS_TIER == 2
     {

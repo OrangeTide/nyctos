@@ -122,3 +122,34 @@ grant_unmap(struct grant *g, struct proc *p)
     (void)p;
 #endif
 }
+
+/*
+ * The frames grants are holding, per M13 stage 6.
+ *
+ * A grant over ordinary memory holds it. grant_create is handed a
+ * physical address and does not own it, so nothing in a grant's
+ * teardown gives anything back: the caller found the memory and the
+ * grant only describes it. Whoever allocated it is the owner, and in
+ * this system that is a check or a pager, neither of which frees.
+ *
+ * A device grant is skipped, because its memory is a chip. Counting it
+ * would report frames the allocator never had.
+ */
+uint32_t
+grant_frames(void)
+{
+    struct pool *p = grant_pool();
+    uint32_t total = 0;
+    uint32_t i;
+
+    for (i = 0; i < p->count; i++) {
+        const struct grant *g = pool_at(p, i);
+
+        if (g == NULL || g->g_device) {
+            continue;
+        }
+        total += (uint32_t)(g->g_len / PAGE_SIZE);
+    }
+
+    return total;
+}

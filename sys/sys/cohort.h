@@ -134,6 +134,13 @@ void cohort_release(struct cohort *c, struct proc *p);
 bool cohort_holds(const struct cohort *c, const struct proc *p);
 
 /*
+ * The frames every cohort address space is holding. Counted against the
+ * cohort and not against its members, because one space serves all of
+ * them and outlives each.
+ */
+uint32_t cohort_frames(void);
+
+/*
  * A member faulted, so the domain is gone, per section 18.2. Says which
  * cohort, which thread of which member, and what the teardown that does
  * not exist yet would have to do. Does not return.

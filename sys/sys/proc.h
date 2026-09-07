@@ -304,6 +304,21 @@ sys_err_t proc_kill(struct proc *p, int32_t code);
 bool proc_slot(const struct proc *p, uintptr_t *base, size_t *len);
 
 /*
+ * How many frames it is holding: its mapped slot pages and the tables
+ * of the space it owns. A cohort member owns no space, so what its
+ * cohort holds is counted against the cohort.
+ */
+uint32_t proc_frames(struct proc *p);
+
+/*
+ * Frames lost because a cohort place was handed on before its previous
+ * holder was reaped, so the load that placed the replacement mapped
+ * over the only entries that named them. Nothing can reach them and
+ * nothing can free them; the count is what says how many there are.
+ */
+uint32_t proc_frames_orphaned(void);
+
+/*
  * A handle naming this process was made, or destroyed. The second one
  * reaps the process if that was the last thing that could ask about it
  * and it has already finished.

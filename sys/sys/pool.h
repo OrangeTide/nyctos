@@ -135,6 +135,14 @@ bool pool_free(struct pool *p, sys_id_t id);
 /* Resolve an identifier, or NULL if it is stale, freed, or malformed. */
 void *pool_lookup(const struct pool *p, sys_id_t id);
 
+/*
+ * The live object in a slot by position, or NULL for an empty slot.
+ * For walking a pool. An index is not an identifier and must not be
+ * kept: it carries no generation, so it would come to mean whatever
+ * takes the slot next.
+ */
+void *pool_at(const struct pool *p, uint32_t index);
+
 /* Identifier of a live object, given the pointer pool_alloc returned. */
 sys_id_t pool_id_of(const struct pool *p, const void *obj);
 

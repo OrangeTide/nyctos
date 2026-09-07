@@ -195,6 +195,44 @@ md_as_destroy(struct addrspace *as)
     as->as_root = 0;
 }
 
+/*
+ * How many frames the tables under this root are, per M13 stage 6.
+ *
+ * The same walk md_as_destroy makes, counting where that one frees. It
+ * exists so the ledger at the end of the boot can say what an address
+ * space is worth without taking it apart to find out, and having the
+ * two walks side by side is what keeps them agreeing about which
+ * entries are tables.
+ */
+static uint32_t
+count_table(uintptr_t pa, unsigned int level)
+{
+    uint64_t *t = table_at(pa);
+    uint32_t n = 1;
+    uint32_t i;
+
+    if (level < 2) {
+        for (i = 0; i < ENTRIES; i++) {
+            if ((t[i] & PTE_V) == 0 || PTE_LEAF(t[i])) {
+                continue;
+            }
+            n += count_table((uintptr_t)PTE_ADDR(t[i]), level + 1);
+        }
+    }
+
+    return n;
+}
+
+uint32_t
+md_as_frames(const struct addrspace *as)
+{
+    if (as->as_root == 0) {
+        return 0;
+    }
+
+    return count_table(as->as_root, 0);
+}
+
 sys_err_t
 md_map(struct addrspace *as, uintptr_t va, uintptr_t pa, size_t len,
   uint32_t flags)

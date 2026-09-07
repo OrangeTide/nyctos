@@ -8552,12 +8552,70 @@ process is given back when the process is gone.
   changes what it is checking is worse than no check; nothing runs
   after this now but the reports.
 
-**6. What is still held, and section 15 written around it.** *Planned.*
+**6. What is still held, and section 15 written around it.** *Built.*
 
 - *Check.* The figures, asserted as counts, and the sections that
   describe reclamation matched to what was built. What is deliberately
   not reclaimed is named with the reason, so that the next reader does
   not have to rediscover which absences are decisions.
+- *Settled.* The boot ends with a ledger, and **it balances to zero in
+  all four configurations**: every frame the machine has spent has a
+  name. On riscv64 at Tier 2, of 10732 frames still held:
+
+  | | frames |
+  | --- | --- |
+  | spent before anything ran | 7836 |
+  | held by processes still running, ten of them | 2352 |
+  | held by cohort address spaces | 22 |
+  | held by grants over ordinary memory | 7 |
+  | orphaned when a cohort place moved on | 512 |
+  | added to the kernel's own address space | 3 |
+  | **held by nothing that says so** | **0** |
+
+- *A ledger is a different claim from a total.* It is weaker than
+  "nothing leaks", because most of those rows are frames nothing will
+  ever give back. It is much stronger than a number, because it fails
+  when a new way of holding a frame appears and nobody writes it down.
+  That is what the last row asserts.
+- *Finding the rows was the work.* The remainder started at 516 and was
+  taken apart from there. **512 of it is the orphaning stage two found**
+  and could only describe: a cohort place handed on before its holder
+  was reaped, twice over in this boot, at a slot's 256 frames each. They
+  cannot be counted by walking, because the load that placed the
+  replacement overwrote the only entries that named them, so the reap
+  counts the event instead. **Three more are the kernel's own address
+  space**, which grows after boot when a grant or a buffer refines a
+  mapping the identity map made out of megapages. **The last one was a
+  second grant**, in `namespace_checks`, which had been invisible
+  because stage four measured the grant it knew about rather than
+  grants as a kind.
+- *So the grant row counts grants*, not the two the checks happened to
+  bracket. It walks the grant pool and sums what the non-device ones
+  describe, which also absorbed the pager row: pages a pager supplied
+  *are* its grants' frames, and two rows for one thing was double
+  counting waiting to happen.
+- *Section 15.5 is the writing.* It says when a process gives its memory
+  back and why that is the reap rather than the exit, that the join is
+  not the reap and a count read between them has a whole process in it,
+  and that freeing a root makes a root address ambiguous. Then it names
+  the five things deliberately not reclaimed, each with the reason: what
+  the port spent before anything ran, memory a grant describes, pages a
+  pager supplied, writable pages by eviction, and a cohort member's
+  frames when its place moved on. Section 18.2 gained the paragraph that
+  says what a cohort restart costs, and section 15.2's teardown
+  paragraph now says which part of it is the loader service that does
+  not exist yet and which part is the kernel doing it today.
+- *Broken to check it.* Taking one frame and naming it to nobody
+  panicked with "1 held by nothing that says so". Counting device grants
+  instead of ordinary ones panicked with 6. Not counting the orphaned
+  frames panicked with 512. Each is the ledger doing the only thing it
+  is for.
+- *And one that was not a break.* Tier 0 kept reporting the old figures
+  through several rounds of this, because `proc_frames_orphaned` had
+  been written inside the Tier 2 guard: the link failed, the build
+  carried on with the previous kernel, and the run said what it had said
+  before. A build error read as a stale result for longer than it should
+  have.
 
 *Done when* a program can be run more times than the machine has
 frames, and the count comes back to where it started.

@@ -1552,6 +1552,8 @@ That tier exists now. At Tier 2 the loader maps the image into an address space 
 
 The two paths differ in teardown, which is the part worth specifying. An XIP process owns no text memory, so its teardown reclaims only its data segment, stacks, and kernel objects. A RAM-loaded process holds a region owned by the **loader service**, which must reclaim it. The loader therefore waits on the process's completion timeline from section 10.4 and releases the region when it advances. Reclaim is a userspace responsibility, and the mechanism it uses is the one already specified for supervision.
 
+That is the shape once a loader service exists. Today the kernel is the loader, so it does this itself and at the reap rather than on the completion timeline, for the reason section 15.5 gives: an exit is not the moment nothing can ask about a process any more. When the loader moves out of the kernel the mechanism moves with it, and the moment does not change.
+
 ### 15.3 Faults Are Messages the Faulting Thread Sends
 
 Tier 2 only. On Tier 0 the paging calls return `SYS_ERR_NOT_SUPPORTED`.
@@ -1586,6 +1588,30 @@ Three rules follow.
 3. **A memory-locked process that faults is a fatal error**, not a recoverable one. It indicates a configuration mistake, and failing loudly at integration time is better than deadlocking in the field.
 
 The kernel enforces rule 1 at `sys_thread_set_pager()` by walking the chain and rejecting a cycle or an unterminated chain with `SYS_ERR_DEADLOCK`.
+
+### 15.5 What a Process Gives Back
+
+**A process returns its memory when the last thing that could ask about it lets go.** Not when it exits: section 10.4 keeps its status readable through a handle after the object has ended, so a process that has exited is not yet a process nobody can ask about. It becomes one when the last handle closes and its last thread is collected, which is where section 8's reference counting already put the decision, and the reap that follows is where the frames go back.
+
+What goes back is what the loader took. At Tier 2 that is the slot it mapped the image into, and the tables of the address space it built to reach it. At Tier 0 it is nothing, because there is nothing: a flat image is copied to the address it was linked for and runs in memory the archive already occupies, so no frame was spent on the process and none can be returned. Every frame this reclaims is a Tier 2 frame.
+
+**The join is not the reap**, and anything measuring this has to know it. Waiting on a completion timeline says the process has exited and closing its handles says nothing can ask about it any more, but its last thread is parked at that point rather than collected, and the collection happens at the top of whichever core's next context switch reaches it. A count of free memory read between those two moments has a whole process still in it.
+
+**A root is a frame like any other, and freeing one makes an address root ambiguous.** A context switch that decides whether to load the root register by comparing addresses is right only while roots are never freed; once they are, the same address can name a space that has been torn down and rebuilt, and skipping the load keeps a translation cache describing the space that used to be there. What resolves it is a count of address spaces destroyed, carried beside the cached root, so that any destruction anywhere makes every core reload once at its next switch.
+
+#### What is deliberately not reclaimed
+
+Each of these is a decision rather than an omission, and each has a reason that is about ownership.
+
+* **What the port spent before anything ran.** The kernel's own image, the boot archive, and the mapping built to reach them. Nothing owns it and nothing can give it back; a system that reclaimed it would be unmapping the code doing the reclaiming.
+* **Memory a grant describes.** A grant is created over a physical address it is handed and does not own, so its teardown has nothing to return: whoever found the memory is the owner. A device grant is the case that makes this right, its memory being a chip and not a frame at all. What would change it is an owning grant, which section 6 does not have.
+* **Pages a pager supplied.** They are its grants' frames, mapped into the faulting process at an address the pager did not choose. The reap keeps off them deliberately, because freeing them would return memory another process still holds. The boundary is where the loader stopped allocating, recorded when the image was loaded.
+* **Writable pages, by eviction.** Section 15.1 already: without dirty tracking the kernel cannot know whether an evicted writable page needs writing back. Reclaiming a process's memory when the process is gone is a different question from reclaiming a running process's memory, and only the first is answered here.
+* **A cohort member's frames when its place moved on before its reap.** Section 18.2 hands a place to a replacement as soon as its occupant has *exited*, not when it has been reaped, and a cohort's address space and slot addresses are reused. So a replacement can be loaded at the same address while the previous occupant waits to be reaped, and the load maps over the only entries that named its frames. The reap then finds a slot that is not its own and must free nothing, which is the safe half of the mistake. Those frames are unreachable and unrecoverable, and the fix is in section 18.2: a place should be something a reap gives back rather than something an exit does.
+
+#### The check is a ledger
+
+Every frame the machine has spent is one of the categories above or a number nothing has claimed, and the boot prints the arithmetic: what was spent before anything ran, what live processes hold, what cohort address spaces hold, what grants hold, what was orphaned, what the kernel's own space has grown by, and the remainder. **The remainder is asserted to be zero.** A ledger that balances is a weaker claim than "nothing leaks" and a much stronger one than a total: it says every frame has a name, and it fails when a new way of holding one appears without anybody writing it down.
 
 ---
 
@@ -1816,6 +1842,8 @@ On teardown the kernel revokes every handle held by every member, force-signals 
 **A member that goes with its cohort reports `SYS_EXIT_COHORT`, not `SYS_EXIT_FAULT`.** It did not fault, and its fault kind says so; a supervisor reading the statuses of a torn-down cohort tells which member was the reason from which one reports a fault. One code for both would make the reason unfindable.
 
 **The kernel ends the members and stops there.** Section 18.3 keeps restart policy out of it, so what happens next is a supervisor's decision. What the teardown leaves behind is a cohort with every place free and its address space intact, so a restart maps each member's slot over the one its predecessor left.
+
+**That mapping-over loses the predecessor's frames, and this is the one place in the system where memory goes unrecoverably.** A place is free once its occupant has *exited*, which is earlier than the moment its occupant is *reaped*, and the reap is what returns a process's memory per section 15.5. So a replacement can be loaded at the same address in the same space while its predecessor is still waiting to be reaped, and the load overwrites the only entries that named the predecessor's frames. The reap then finds a slot that is no longer its own, must free nothing, and the frames are unreachable. Making a place something a reap gives back rather than something an exit does is what would fix it; the cost of not fixing it is a slot's worth of frames per restart, which the ledger of section 15.5 reports rather than hides.
 
 ```{=typst}
 #figure(include "fig/cohortfault.typ", caption: [A cohort fault. Member B is torn down although it did not fault, every outside party is released with an error rather than a timeout, and the supervisor decides what happens next.])

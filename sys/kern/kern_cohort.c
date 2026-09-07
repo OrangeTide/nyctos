@@ -213,6 +213,33 @@ cohort_holds(const struct cohort *c, const struct proc *p)
     return false;
 }
 
+/*
+ * What every cohort's address space is holding, per M13 stage 6.
+ *
+ * Counted here rather than against the members, because a cohort's
+ * space is what a cohort is: one space for a set of images, built when
+ * the first of them is placed and returned when the last of them is
+ * reaped. Charging it to a member would count it once per member and
+ * would charge it to nobody in the stretch where a space exists with
+ * every place empty.
+ */
+uint32_t
+cohort_frames(void)
+{
+#if SYS_TIER == 2
+    uint32_t total = 0;
+    uint32_t i;
+
+    for (i = 0; i < NCOHORTS; i++) {
+        total += md_as_frames(&cohorts[i].c_as);
+    }
+
+    return total;
+#else
+    return 0;
+#endif
+}
+
 void
 cohort_report(void)
 {

@@ -148,6 +148,12 @@ sys_err_t md_as_create(struct addrspace *as);
 void md_as_destroy(struct addrspace *as);
 
 /*
+ * How many frames its tables are, without taking it apart. The same
+ * walk md_as_destroy makes, counting instead of freeing.
+ */
+uint32_t md_as_frames(const struct addrspace *as);
+
+/*
  * Map len bytes of virtual addresses onto physical ones. Both addresses
  * and the length must be page-aligned; the port chooses whatever page or
  * block size the range allows, which is invisible above here except in

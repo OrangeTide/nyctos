@@ -221,6 +221,28 @@ pool_lookup(const struct pool *p, sys_id_t id)
     return slot_object(p, index);
 }
 
+
+/*
+ * The live object in a slot, by position rather than by identifier, or
+ * NULL if that slot holds nothing.
+ *
+ * For walking a pool, which nothing needed until M13 stage 6 wanted to
+ * ask every live process what it was holding. Deliberately not a way to
+ * name an object: an index is not an identifier, it carries no
+ * generation, and a caller that kept one would be holding a name that
+ * silently comes to mean the next occupant. Section 8's rule, which is
+ * why pool_lookup takes the pair.
+ */
+void *
+pool_at(const struct pool *p, uint32_t index)
+{
+    if (index >= p->count || !p->slots[index].inuse) {
+        return NULL;
+    }
+
+    return slot_object(p, index);
+}
+
 sys_id_t
 pool_id_of(const struct pool *p, const void *obj)
 {
