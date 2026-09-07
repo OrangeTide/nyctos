@@ -62,40 +62,49 @@ $(KERNEL_ELF): $(OBJS) $(KERN_LDSCRIPT)
 	@mkdir -p $(@D)
 	$(LD) $(LDFLAGS) -T $(KERN_LDSCRIPT) -o $@ $(OBJS)
 
+# Every program the archive carries, and beside each the layout its
+# link recorded. Both are prerequisites: the archive bakes in the
+# numbers, so an archive older than a layout carries numbers that are
+# no longer true. Building M14 stage one hit that twice, and both
+# times it read as a result rather than as a stale build.
+BOOT_BINS := \
+$(OBJTOP)/bin/fs_server/fs_server.bin \
+$(OBJTOP)/bin/fs_client/fs_client.bin \
+$(OBJTOP)/bin/fs_batch/fs_batch.bin \
+$(OBJTOP)/bin/spin/spin.bin \
+$(OBJTOP)/bin/status/status.bin \
+$(OBJTOP)/bin/spawner/spawner.bin \
+$(OBJTOP)/bin/threads/threads.bin \
+$(OBJTOP)/bin/console/console.bin \
+$(OBJTOP)/bin/greet/greet.bin \
+$(OBJTOP)/bin/sh/sh.bin \
+$(OBJTOP)/bin/echo/echo.bin \
+$(OBJTOP)/bin/cat/cat.bin \
+$(OBJTOP)/bin/trespass/trespass.bin \
+$(OBJTOP)/bin/touch_addr/touch_addr.bin \
+$(OBJTOP)/bin/grabber/grabber.bin \
+$(OBJTOP)/bin/granted/granted.bin \
+$(OBJTOP)/bin/paged/paged.bin \
+$(OBJTOP)/bin/namespace/namespace.bin \
+$(OBJTOP)/bin/resolve/resolve.bin \
+$(OBJTOP)/bin/peer_a/peer_a.bin \
+$(OBJTOP)/bin/peer_b/peer_b.bin \
+$(OBJTOP)/bin/blk_server/blk_server.bin \
+$(OBJTOP)/bin/peer_c/peer_c.bin \
+$(OBJTOP)/bin/wedged/wedged.bin \
+$(OBJTOP)/bin/orphan/orphan.bin \
+$(OBJTOP)/bin/echoes/echoes.bin \
+$(OBJTOP)/bin/supervise/supervise.bin \
+$(OBJTOP)/bin/fs_chain/fs_chain.bin \
+$(OBJTOP)/bin/brief/brief.bin
+
+BOOT_LAYOUTS := $(BOOT_BINS:.bin=.bin.layout)
+
 # The archive the kernel embeds, built from the programs under bin/ and
 # from the load addresses their Makefiles chose. Those addresses are
 # repeated here rather than exported, because a program's slot is its own
 # Makefile's decision and nothing else should be able to move it.
-$(BOOT_ARCHIVE): $(MKBOOTARCH) \
-    $(OBJTOP)/bin/fs_server/fs_server.bin \
-    $(OBJTOP)/bin/fs_client/fs_client.bin \
-    $(OBJTOP)/bin/fs_batch/fs_batch.bin \
-    $(OBJTOP)/bin/spin/spin.bin \
-    $(OBJTOP)/bin/status/status.bin \
-    $(OBJTOP)/bin/spawner/spawner.bin \
-    $(OBJTOP)/bin/threads/threads.bin \
-    $(OBJTOP)/bin/console/console.bin \
-    $(OBJTOP)/bin/greet/greet.bin \
-    $(OBJTOP)/bin/sh/sh.bin \
-    $(OBJTOP)/bin/echo/echo.bin \
-    $(OBJTOP)/bin/cat/cat.bin \
-    $(OBJTOP)/bin/trespass/trespass.bin \
-    $(OBJTOP)/bin/touch_addr/touch_addr.bin \
-    $(OBJTOP)/bin/grabber/grabber.bin \
-    $(OBJTOP)/bin/granted/granted.bin \
-    $(OBJTOP)/bin/paged/paged.bin \
-    $(OBJTOP)/bin/namespace/namespace.bin \
-    $(OBJTOP)/bin/resolve/resolve.bin \
-    $(OBJTOP)/bin/peer_a/peer_a.bin \
-    $(OBJTOP)/bin/peer_b/peer_b.bin \
-    $(OBJTOP)/bin/blk_server/blk_server.bin \
-    $(OBJTOP)/bin/peer_c/peer_c.bin \
-    $(OBJTOP)/bin/wedged/wedged.bin \
-    $(OBJTOP)/bin/orphan/orphan.bin \
-    $(OBJTOP)/bin/echoes/echoes.bin \
-    $(OBJTOP)/bin/supervise/supervise.bin \
-    $(OBJTOP)/bin/fs_chain/fs_chain.bin \
-    $(OBJTOP)/bin/brief/brief.bin
+$(BOOT_ARCHIVE): $(MKBOOTARCH) $(BOOT_BINS) $(BOOT_LAYOUTS)
 	@mkdir -p $(@D)
 	$(MKBOOTARCH) $@ \
 	    fs_server=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 0 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fs_server/fs_server.bin \

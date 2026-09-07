@@ -8749,6 +8749,21 @@ slot is ever backed by a frame.
   stage five is now about a case that exists rather than one to be
   invented: `proc_load`'s comment says a program with initialised
   writable data would break its pager path, and one is in the archive.
+- *And the review found the check ran too late to mean what it said.*
+  It was called from the archive report, which `user_slice` runs long
+  after the first program has loaded, so a bad layout would have been
+  caught after a dozen programs had already been mapped by it. The
+  entry's own words, "refused at load", were not what was built. Every
+  member's layout is now checked once, the first time anything asks the
+  archive anything, which is before the first load by construction: with
+  a bad layout the boot now stops with no program having run at all.
+- *And the archive did not depend on the layouts.* `boot.img` listed the
+  binaries and not the files beside them, so an archive older than a
+  layout would carry numbers that were no longer true. Building this
+  stage hit that twice and both times it read as a result rather than as
+  a stale build, which is the same mistake M13 stage six made with a
+  link error. The two lists are now one variable and its derivative, so
+  a third copy cannot drift.
 - *Broken to check it.* Shifting the recorded boundary eight bytes off
   a page made the tool refuse the build, naming the image. Deleting a
   layout file and asking the tool directly made it refuse rather than

@@ -34,6 +34,13 @@
 extern const uint8_t boot_archive[];
 extern const uint8_t boot_archive_end[];
 
+/*
+ * Whether every member's layout has been checked. Once per boot: the
+ * archive does not change, and the check is a loop over every member on
+ * a path taken for every lookup.
+ */
+static bool layouts_checked;
+
 static const struct boot_header *
 archive(void)
 {
@@ -51,6 +58,24 @@ archive(void)
         panic("boot: archive claims %lu bytes, image holds %lu",
           (unsigned long)h->bh_bytes,
           (unsigned long)(boot_archive_end - boot_archive));
+    }
+
+    /*
+     * And every member's layout, once, the first time anything asks the
+     * archive anything. Here rather than in the report, which runs long
+     * after the first program has loaded, and rather than per load,
+     * which would say nothing about the members nothing loads. What a
+     * bad layout deserves is to stop the boot at the description.
+     */
+    if (!layouts_checked) {
+        const struct boot_member *m =
+          (const struct boot_member *)(boot_archive + sizeof(*h));
+        uint32_t i;
+
+        layouts_checked = true;
+        for (i = 0; i < h->bh_count; i++) {
+            boot_check_layout(&m[i]);
+        }
     }
 
     return h;
@@ -107,9 +132,11 @@ boot_lookup(const char *name)
  * pair of numbers, and a loader that mapped by them would put a
  * program's text where its stack should be.
  *
- * Called by the loader before it maps anything and by the report, so
- * that a bad archive stops the boot at the description rather than at
- * the first program that cannot run.
+ * Called once over every member the first time anything asks the
+ * archive anything, which is before the first program loads, so that a
+ * bad archive stops the boot at the description rather than at whichever
+ * program happens to be mapped by it first. The report calls it again,
+ * which costs nothing and keeps the two in step.
  */
 void
 boot_check_layout(const struct boot_member *m)
