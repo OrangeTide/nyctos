@@ -3622,6 +3622,14 @@ static sys_handle_t h_pager_recv;
 static uint32_t pager_pages;
 
 /*
+ * The end of the highest page the pager has been asked for, as an offset
+ * into the image. Section 15.1 has it supply read-only pages only, so
+ * this must stay at or below where the archive says writable memory
+ * begins.
+ */
+static uint32_t pager_high;
+
+/*
  * What the ledger at the end of the boot needs from before any of the
  * checks ran: what the port had already spent, and how many tables the
  * kernel's own address space was.
@@ -3694,6 +3702,19 @@ root_pager(void *arg)
         }
 
         pager_pages++;
+
+        /*
+         * And where it was asked for, per M14 stage five's review. A
+         * count of pages says how many arrived and not which, so a
+         * pager that supplied a data page while some text page went
+         * untouched would give the same number. The offset of the
+         * highest one is what the check compares against the boundary
+         * the archive records.
+         */
+        if (off + PAGE_SIZE > pager_high) {
+            pager_high = off + PAGE_SIZE;
+        }
+
         pager_prio_seen = thread_current()->t_prio;
         if (paging_spinner_t != NULL &&
           paging_spinner_t->t_state == THREAD_READY) {
@@ -3814,6 +3835,18 @@ paging_checks(void)
         panic("paging: the pager supplied %u pages for %u of text",
           (unsigned int)pager_pages,
           (unsigned int)(m->bm_rw / PAGE_SIZE));
+    }
+
+    /*
+     * And that they were the low ones. The count alone would match a
+     * pager that had supplied a data page while a text page went
+     * untouched, which is the failure this stage removed rather than
+     * one it can assume gone.
+     */
+    if (pager_high > m->bm_rw) {
+        panic("paging: the pager was asked as high as 0x%x, above the "
+          "0x%x where writable memory begins",
+          (unsigned int)pager_high, (unsigned int)m->bm_rw);
     }
     if (m->bm_size <= m->bm_rw) {
         panic("paging: the program has no initialised data to check");

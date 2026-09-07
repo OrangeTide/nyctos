@@ -8997,6 +8997,20 @@ slot is ever backed by a frame.
   asserts from the inside: **the pager was asked for exactly the pages
   below the boundary and for none above it**, five on riscv64 and six on
   aarch64.
+- *And the review found the check counted pages without looking at
+  which.* `pager_pages` says how many arrived, so a pager that supplied
+  a data page while some text page went untouched would give the same
+  number and pass. The pager now records the end of the highest page it
+  was asked for, and the check compares that against the boundary: asked
+  as high as 0x5000 against a boundary of 0x5000 is the whole claim in
+  one comparison. Narrowing the expectation by a page panics with the
+  real figure, which is how a check with nothing to catch is shown to be
+  reading anything at all.
+- *That assertion does not catch the loader break*, because restoring
+  the old condition kills the program before the pager is ever asked
+  high: the checksum assertion fires first. The two cover different
+  failures, and the entry says which so that neither is mistaken for the
+  other.
 - *Broken to check it.* Restoring the old condition reproduced the
   failure the comment predicted: a page fault at 0x81205008, eight bytes
   into the data page, after one page had arrived. The program never
