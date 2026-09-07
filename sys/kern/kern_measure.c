@@ -860,6 +860,36 @@ preempt_points(void)
     return c != NULL ? c->cp_points : 0;
 }
 
+
+/*
+ * Do not measure this thread's dispatch as an interrupt reaching a
+ * program.
+ *
+ * Section 13.3's second term is the time from a device interrupt to the
+ * thread waiting on it, and irq_dispatch_stamp already declines to
+ * measure the kernel's own threads because one of them reaching the
+ * closing call through a system call put a batch of sixteen preemption
+ * points into a figure that is a dispatch length.
+ *
+ * This is the same exclusion for the same reason, one case narrower. A
+ * client whose send timed out is woken by the timer, which is what
+ * tells the time rather than what it was waiting for, and it has a page
+ * to unmap and map on its way out: two page-table charges, and two
+ * points on a path the report asserts has none. Called by that path and
+ * by nothing else, so every dispatch that is the second term is still
+ * measured.
+ */
+void
+irq_dispatch_forget(struct thread *t)
+{
+    if (t == NULL) {
+        return;
+    }
+
+    t->t_irq_stamp = 0;
+    t->t_irq_points = 0;
+}
+
 /*
  * Section 13.3's second term: from an interrupt being taken to the user
  * thread waiting on it running.
@@ -867,8 +897,16 @@ preempt_points(void)
  * Measured on the path the system already has rather than on one built
  * for the purpose. An interrupt handler that makes a thread runnable
  * stamps it; when that thread next returns to user mode the distance is
- * closed. The console driver is a loaded program waiting on the UART
- * interrupt's timeline, so the path is walked for real in every run.
+ * closed.
+ *
+ * And nothing walks that path in this boot. The comment here said the
+ * console driver does, being a loaded program waiting on the UART
+ * interrupt's timeline, and the report has always answered "none in
+ * this run": the driver in these checks is started without its device
+ * and stops. M15 stage four gave this its first sample ever, from a
+ * client whose send timed out, and that is not the second term either.
+ * The figure this file prints for section 13.3 is one term measured and
+ * one term never taken.
  */
 void
 irq_dispatch_stamp(struct thread *t)

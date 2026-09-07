@@ -9361,6 +9361,27 @@ is released is section 18.3's and stays there.
   kernel thread, and the kernel can reach any memory whatever its page
   tables say, so nothing it did afterwards would prove anything. What is
   checked is the client's half, which is where the permissions live.
+- *And the review found the exclusion was too wide, and what it
+  uncovered matters more.* Clearing the stamp for every thread a
+  deadline wakes silenced the whole measurement rather than narrowing
+  it. It is now cleared by the timed-out send itself, where the work
+  is, so every dispatch that is section 13.3's second term is still
+  measured.
+- *Except that there are none, and never have been.* The report answers
+  "none in this run" here, and it answered that in stages one and two as
+  well. The comment above the measurement said the console driver walks
+  the path in every run, being a loaded program waiting on the UART
+  interrupt's timeline. It does not: the driver these checks start is
+  given no device and stops, which the boot says two lines earlier.
+  **M15 stage four gave that measurement its first sample in the life of
+  the project**, from a client whose send timed out, and that is not the
+  second term either. What section 13.3 publishes is one term measured
+  and one term never taken, and the comment now says so.
+- *Not fixed here.* Making the second term real needs a driver that
+  keeps its device and blocks on it, which is a different subject from a
+  deadline on a rendezvous. It is written down rather than left as a
+  figure that reads like a measurement.
+
 - *Broken to check it.* Not taking the buffer back panicked with
   "patient ran again with its buffer still lent out", which is the
   sentence M13 left in that path for whenever a deadline arrived.

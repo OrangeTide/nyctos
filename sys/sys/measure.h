@@ -131,6 +131,15 @@ struct thread;
  * this milestone needs first is the number.
  */
 void preempt_point(void);
+
+struct thread;
+
+/*
+ * Leave this thread's dispatch out of section 13.3's second term. For a
+ * thread woken by its own deadline with work to do on the way out; see
+ * kern_measure.c.
+ */
+void irq_dispatch_forget(struct thread *t);
 uint64_t preempt_points(void);
 
 /*

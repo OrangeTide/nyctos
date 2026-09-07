@@ -791,6 +791,16 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         vm_charge_begin();
         msg_buf_take_back(self);
         vm_charge_end();
+
+        /*
+         * And this dispatch is not section 13.3's second term. The
+         * timer is what told the time, not what this thread was
+         * waiting for, and the take-back above is two page-table
+         * charges on a path the report asserts has no preemption
+         * points. Said here, where the work is, rather than for every
+         * thread a deadline ever wakes.
+         */
+        irq_dispatch_forget(self);
     }
 
     /*
