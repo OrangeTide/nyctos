@@ -452,14 +452,25 @@ something that transfers, and the one route that looks open through the
 block store is an issuing send, which section 17.3 rules out on
 structural grounds.
 
-**M13 made a process give back what it was given.** A process costs 264
-frames on riscv64 at Tier 2 and 262 on aarch64, a megabyte of slot for
-an image of four kilobytes, and all of it now comes back when the last
-thing that could ask about the process lets go. A program was spawned
-and reaped 40000 times on a machine with 32768 frames and the count
-returned to where it started; before M13 the same loop stopped at about
-the ninety-fifth iteration. At Tier 0 a process costs nothing, because
-a flat image runs in memory the archive already occupies.
+**M13 made a process give back what it was given**, and **M14 made it
+stop taking a megabyte in the first place.** A process costs 15 frames
+on riscv64 at Tier 2 and 14 on aarch64, where it cost 264 and 262, and
+all of it comes back when the last thing that could ask about the
+process lets go. A program was spawned and reaped 40000 times on a
+machine with 32768 frames and the count returned to where it started;
+before M13 the same loop stopped at about the ninety-fifth iteration.
+At Tier 0 a process costs nothing, because a flat image runs in memory
+the archive already occupies.
+
+The archive carries a layout now and not only a length, so the loader
+maps what an image describes rather than the whole of the slot it sits
+in. That bought three things at once. Memory, which is the figure above.
+Protection: a program's text is read and executed and never written, and
+its stack is read and written and never executed, where one region had
+meant one set of permissions and the only workable set was all of them.
+And section 15.1's eager copy of writable segments, which the loader
+could not obey while it could not see where text ended, and which had
+never run because no paged program had any initialised data.
 
 The boot ends with a ledger of every frame the machine has spent, and
 it balances: what was spent before anything ran, what live processes
@@ -467,8 +478,9 @@ hold, what cohort address spaces hold, what grants hold, what a cohort
 restart orphaned, what the kernel's own space has grown by, and nothing
 left over. One row of it is a real loss: section 18.2 frees a cohort
 place when its occupant exits rather than when it is reaped, so a
-restart maps over the previous member's frames and 256 of them become
-unreachable.
+restart maps over the previous member's frames and they become
+unreachable. That was 512 frames across a boot and is now 14, for the
+same reason the rest of the figures fell.
 
 A rendezvous still carries no deadline. Nothing has run on hardware, so
 every duration this project has published is the right shape and the
@@ -8666,6 +8678,10 @@ not.
 **The archive carries a layout, and the loader maps what a program has
 rather than a slot.**
 
+**Done.** All six stages are built. Section 17 says what it answered,
+what it cost, what the building kept finding, and what it left
+untested.
+
 M13 measured what a process costs and found the answer was a megabyte:
 `proc_load` allocates and maps the whole slot, one region, writable and
 executable, because the archive carries the size of an image and not
@@ -10852,7 +10868,133 @@ what this milestone asserts.
 
 ---
 
-## 17. Bring-Up Order Within M1
+## 17. Milestone 14, in Retrospect
+
+M14 was the milestone M13 asked for. M13 measured what a process costs
+and found it was a megabyte, and the reason was one sentence in
+`proc_load`: the archive carries the size of an image and not the size
+of the memory a program needs. Carrying the layout instead turned out to
+buy three separate things, and the entry named all three before any of
+them was built, which is unusual for this project and worth noting.
+
+### 17.1 The Questions
+
+**Does the boundary in the link turn out to be the boundary the loader
+needs?**
+
+Yes, and it needed no negotiation: the user linker script already
+page-aligned the start of writable memory, and said in a comment that
+it did so to give the loader a boundary it could see. The milestone's
+falsification condition was that a third region would turn out to be
+needed, or that a flat binary could not express one. Neither happened.
+Two offsets, where writable memory begins and where the program's
+memory ends, describe every program in the archive.
+
+**What does a process cost when it is mapped as what it is?**
+
+**15 frames on riscv64 and 14 on aarch64, against 264 and 262.** Seven
+of the fifteen are what the image needs and eight are the address space;
+on aarch64, eight and six. What the machine holds when the boot ends
+fell from 10732 frames to 8519, and the processes still running account
+for 119 of those where they used to account for 2352.
+
+**What did the one region cost besides memory?**
+
+Every program's text was writable and every program's stack was
+executable, on the tier whose whole purpose is that the hardware
+enforces boundaries. One region means one set of permissions, and the
+only set that lets a program run is all of them. Two mappings fixed it,
+and the two programs that prove it had to be written: nothing in the
+archive could write to an address or jump anywhere the linker had not
+sent it.
+
+**And section 15.1's eager copy?**
+
+It had never run. Every program had an empty `.data` except `peer_b`,
+which stage one discovered by the archive tool refusing to build it, and
+no paged program had any. `proc_load` said in as many words that a
+program with initialised writable data would break its pager path.
+Giving `paged` a word of data and restoring the old condition reproduced
+the failure exactly: a page fault eight bytes into the data page, after
+one page had arrived.
+
+### 17.2 What It Cost
+
+The mapping change is three lines. The rest is where the work was.
+
+**The build plumbing**, which the entry predicted would be most of it
+and was. Two symbols in each linker script, a rule that writes them
+beside the binary, a tool that reads them from there rather than from
+its command line, two fields in the record, and a format version. The
+one judgement worth keeping is that the numbers travel from the link
+that produced them rather than from the makefile that assembles the
+archive, so they cannot disagree with the image they describe.
+
+**Three new programs**, because the checks needed a program that writes
+to an address it is handed, one that jumps into memory that is not text,
+and one that does nothing at all. The last was M13's, and this milestone
+found the second use for it: the frame checks were spawning `spin`
+eleven times to measure what a spawn costs, and `spin` computes for
+eighty milliseconds.
+
+**And a rule that keeps appearing.** Three of the six stages assert that
+something faults, and the entry said in advance to watch for a check
+that passes because a fault happened for the wrong reason. It caught
+one: at Tier 0 a jump into a stack is permitted and the zeroes fail to
+decode, so the fault is an illegal instruction and not an access
+violation. A check that accepted any fault would have read that as a
+protection working on a tier that has none.
+
+### 17.3 What the Building Kept Finding
+
+**Words describing what was not built, twice, in the same shape.** A
+comment saying a function is called by the loader when nothing calls it
+from there. A comment on `VM_PROGRAM` naming the archive as what would
+let a program's text be read-only, which had been true and became a
+description of the fix rather than of the code.
+
+**Checks that could not fail.** A row expecting nothing held, clamping
+a negative difference to zero and comparing that. A check asserting a
+page is read-only to prove a record is in it, when the page is read-only
+wherever the record went. Both were found by asking what the check would
+do if the thing it watches were wrong.
+
+**Stage ordering inside a function.** `proc_prot` asks `proc_slot` where
+a process's memory is, and `proc_slot` answers from `p_entry`, which the
+loader set after the mapping loop. Every page was mapped while the
+process had no slot, the fallback permitted everything, and the stage
+passed its own check by doing nothing.
+
+**And where a check runs being part of the check.** A check placed
+before a frame measurement gave its memory back in the middle of one. A
+check that made the boot two seconds longer moved the shell past the
+first line of a paced session, and the transcript lost a line. Neither
+is about what the check computes.
+
+### 17.4 What Is Still Untested
+
+**A third region, if one is ever needed.** Text and rodata share the
+read-only mapping, so a program wanting rodata non-executable cannot
+have it. Nothing has asked.
+
+**Whether a slot has to be a megabyte.** The question M13 raised is
+answered differently rather than answered: a slot is now an address
+range and not an amount of memory, so its size costs nothing. What it
+still constrains is how many programs fit in the window, and nothing
+has run out.
+
+**A reference that outlives a join.** Closing a process handle after
+joining does not always reap the process: something releases the last
+reference later, on work the boot thread does rather than on a yield.
+It was found by a wait that could not succeed and is written down here
+because nothing in this milestone was about references.
+
+**Hardware, still**, and the counts this milestone asserts are counts
+for that reason.
+
+---
+
+## 18. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -10896,7 +11038,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 18. Ordering: What Is Forced and What Is Chosen
+## 19. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -10927,7 +11069,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 19. What Would Change This Plan
+## 20. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -10974,7 +11116,7 @@ else.
 
 ---
 
-## 20. Deliberately Not Scheduled
+## 21. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

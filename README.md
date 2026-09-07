@@ -29,6 +29,47 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 14 is done: a program is mapped as what it is.** The boot
+archive carried the size of an image and not the size of the memory a
+program needs, so the loader mapped a whole megabyte slot as one region
+that was readable, writable and executable, and hoped.
+
+```
+                                    t0 riscv  t0 aarch  t2 riscv  t2 aarch
+what a process costs, in frames            0         0        15        14
+  of which its image needs                 0         0         7         8
+  and its address space                    0         0         8         6
+what it cost before milestone 14           0         0       264       262
+```
+
+Carrying two offsets instead, where writable memory begins and where the
+program's memory ends, bought three separate things.
+
+**Memory.** A process costs what its image needs plus the space it runs
+in. What the machine holds when the boot ends fell from 10732 frames to
+8519, and the ten processes still running account for 119 of those where
+they used to account for 2352.
+
+**Protection.** One region means one set of permissions, and the only
+set that lets a program run is all of them, so every program's text was
+writable and every program's stack was executable. Now text is read and
+executed and never written, and everything else is read and written and
+never executed. Two programs had to be written to prove it: nothing in
+the archive could write to an address it was handed or jump anywhere the
+linker had not sent it.
+
+**And the eager copy of writable data**, which section 15.1 has always
+specified and which had never run. The loader left every page with bytes
+in it to the pager, and a page supplied to a fault is mapped read-only,
+so a paged program with initialised data would have faulted writing it.
+No program had any, so nothing found out.
+
+The boundaries come from the link, which was already creating them: the
+linker script page-aligns the start of writable memory so that no page
+is both text and data. The build records them beside each binary and the
+archive tool reads them from there, so the numbers cannot disagree with
+the image they describe.
+
 **Milestone 13 is done: a process gives back what it was given.** Until
 now nothing ever freed a frame, so how long this system could run was
 bounded by how many processes it had ever started.
@@ -40,11 +81,12 @@ how many come back                         0         0       264       262
 what 8 of them leave behind                0         0         0         0
 ```
 
-A process at Tier 2 costs a whole megabyte slot for an image of four
-kilobytes, because the archive carries the size of the image and not
-the size of the memory a program needs. At Tier 0 it costs nothing: a
-flat image runs in memory the archive already occupies, so there is
-nothing to give back and every frame this reclaims is a Tier 2 frame.
+Those were the figures milestone 13 measured, and the reason for them
+is what milestone 14 went on to remove: a process cost a whole megabyte
+slot for an image of four kilobytes. At Tier 0 it costs nothing, then
+and now: a flat image runs in memory the archive already occupies, so
+there is nothing to give back and every frame this reclaims is a Tier 2
+frame.
 
 **A program was spawned and reaped 40000 times on a machine with 32768
 frames, and the count came back to where it started.** That asked the
@@ -63,9 +105,11 @@ a frame appears and nobody writes it down.
 
 One row of it is a real loss. A cohort place becomes free when its
 occupant exits rather than when it is reaped, so a restarted member is
-loaded over the previous one's mappings and 256 frames become
+loaded over the previous one's mappings and its frames become
 unreachable. That is a consequence of how cohort restart is specified,
-and the ledger reports it rather than hiding it.
+and the ledger reports it rather than hiding it. It was 512 frames
+across a boot when a member was mapped a slot, and is 14 now that one is
+mapped an image.
 
 **Milestone 12 is done: the latency floor is the rendezvous, not the
 switch.** It attempted the first remedy milestone 9 named, not
@@ -754,8 +798,9 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - A cohort restart loses the previous member's memory. A place becomes
   free when its occupant exits rather than when it is reaped, so the
   replacement is loaded over the mappings that named the old member's
-  frames and 256 of them become unreachable. The boot's frame ledger
-  counts them.
+  frames and they become unreachable. The boot's frame ledger counts
+  them: 14 across a boot, where it was 512 before a member was mapped
+  what its image needs.
 - No cross-core TLB maintenance. Reclaiming a cohort member's memory
   while a peer runs on another core is not safe, and the checks reap
   processes that are in no cohort.
@@ -794,9 +839,9 @@ milestone 12, which left something narrower and harder: the floor is
 the work a rendezvous has to do atomically, and lowering it means
 making that work shorter or making less of it atomic. Memory never
 being reclaimed went to milestone 13, which left the slot itself as the
-next obvious question: a process costs a megabyte because the archive
-carries the size of an image and not the size of the memory a program
-needs.
+next obvious question, and milestone 14 answered it: the archive carries
+a layout now, a process costs what its image needs, and a slot is an
+address range rather than an amount of memory.
 
 The ordering that got here is in the same file, along with what each
 milestone answered and what it left untested. The one choice most likely
