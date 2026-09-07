@@ -845,6 +845,14 @@ static uint64_t clock_marks;
 static uint64_t clock_last;
 static uint64_t clock_worst;
 
+/*
+ * And what was running when the longest gap ended, because the answer
+ * is the point: a gap is a stretch with no kernel in it, which is a
+ * program computing, and a program computing is exactly what wants to
+ * read a clock.
+ */
+static const char *clock_worst_who;
+
 void
 clock_mark(void)
 {
@@ -856,7 +864,10 @@ clock_mark(void)
         uint64_t gap = now - clock_last;
 
         if (gap > clock_worst) {
+            struct thread *t = thread_current();
+
             clock_worst = gap;
+            clock_worst_who = t != NULL ? t->t_name : "nothing";
         }
     }
 
@@ -864,9 +875,10 @@ clock_mark(void)
 }
 
 uint64_t
-clock_mark_count(uint64_t *worst)
+clock_mark_count(uint64_t *worst, const char **who)
 {
     *worst = clock_worst;
+    *who = clock_worst_who != NULL ? clock_worst_who : "nothing";
 
     return clock_marks;
 }

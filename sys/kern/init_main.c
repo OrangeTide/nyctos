@@ -9932,8 +9932,9 @@ kernel_main(void)
      * nothing else.
      */
     {
+        const char *who = "nothing";
         uint64_t worst = 0;
-        uint64_t marks = clock_mark_count(&worst);
+        uint64_t marks = clock_mark_count(&worst, &who);
 
         cnputs("the clock: how often a stored uptime could be written\n");
         cnprintf("    %-38s %lu\n", "moments the kernel was running",
@@ -9941,6 +9942,7 @@ kernel_main(void)
         cnprintf("    %-38s %lu ticks, about %lu us\n",
           "longest gap between two of them", (unsigned long)worst,
           (unsigned long)(worst * 1000000ULL / time_hz()));
+        cnprintf("    %-38s %s\n", "what was running across it", who);
 
         /*
          * The count is asserted and the gap is not. How many times the

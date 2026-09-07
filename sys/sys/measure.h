@@ -138,7 +138,7 @@ void preempt_point(void);
  * kern_measure.c and M16 stage one.
  */
 void clock_mark(void);
-uint64_t clock_mark_count(uint64_t *worst);
+uint64_t clock_mark_count(uint64_t *worst, const char **who);
 
 struct thread;
 

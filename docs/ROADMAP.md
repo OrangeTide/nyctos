@@ -9618,6 +9618,28 @@ something needs it, not because the section lists it.
   is bounded by when the kernel next has something to do, which is a
   property of the workload rather than of the host. A faster machine
   makes the number smaller and does not make the field current.
+- *And the review asked whether the gap was the instrument's fault.* The
+  kernel also runs at a context switch, which stage one did not mark, so
+  a stored field could in principle have been refreshed more often than
+  measured. Marking switches as well moves the figure from 104 to 100
+  milliseconds at Tier 0 and from 116 to 104 at Tier 2: the gaps are
+  stretches with no kernel in them at all, not stretches where the
+  kernel ran unmarked. The extra mark is not kept, because it measures
+  the same thing and the two call sites that are kept are the two the
+  design would refresh from.
+- *And what runs across the longest gap is a program.* `status` at Tier
+  0 and `paged` at Tier 2, both computing for about a tenth of a second
+  without entering the kernel. That is the case where a stored clock is
+  most stale and it is the same case that most wants to read one: a
+  program about to make its next call, deciding how long it is willing
+  to wait. The report names it, because "a gap" is an argument and "a
+  program computing" is the finding.
+- *Both marks are taken under the kernel lock*, which the two call sites
+  already hold, so the count and the worst gap are not a race between
+  cores. That was worth checking before believing a figure of this
+  shape: an unsynchronised maximum across two cores can invent a gap
+  that neither core had.
+
 - *The gap is reported and never asserted*, per M9's rule, and the count
   of moments is asserted because it is a property of what the checks ask
   the kernel to do. Removing both marks panics with "the kernel never
