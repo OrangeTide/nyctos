@@ -221,7 +221,7 @@ msg_buf_take_back(struct thread *client)
         }
         md_unmap(from, va, PAGE_SIZE);
         if (md_map(to, va, pa, PAGE_SIZE,
-          proc_prot(client->t_lend_to, va)) != SYS_OK) {
+          proc_prot(client->t_proc, va)) != SYS_OK) {
             /*
              * The tables the page hung from were left in place when it
              * was unmapped, so putting it back needs no frame and this
@@ -232,6 +232,15 @@ msg_buf_take_back(struct thread *client)
             panic("ipc: %s cannot have its own page at 0x%lx back",
               client->t_name, (unsigned long)va);
         }
+
+        /*
+         * With the owner's permissions, which is the client and not
+         * the server it was lent to. Asking the borrower gives the
+         * fallback for an address outside its own memory, and the
+         * fallback is everything: the page came back executable, on
+         * exactly the pages a program lends. Measured, the two answers
+         * are 0xb and 0xf.
+         */
 
         /*
          * The same address in both spaces, so one call again: it left

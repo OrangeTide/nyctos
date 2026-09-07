@@ -8878,6 +8878,31 @@ slot is ever backed by a frame.
   yet, `proc_prot` fell back to permitting everything, and both new
   programs ran to completion. The loader now sets the entry and the two
   boundaries before it maps anything.
+- *And the review found the tightening did not survive a lent buffer.*
+  A buffer sent to a server is unmapped from the client, mapped into the
+  server, and mapped back when the reply comes, which is the one path
+  where a program's own page is re-mapped by something that is not the
+  loader. The take-back asked `proc_prot` what the page should be and
+  asked it of the **borrower**, which does not own that address, and the
+  answer for an address a process does not own is everything. Measured
+  at the moment of the take-back: the borrower answers 0xf and the owner
+  answers 0xb. Every buffer a program lent came back executable, on
+  exactly the pages a program writes to.
+- *`leap` learned to lend first*, because nothing else would have found
+  it. With an argument it reads a file into its buffer and then jumps
+  into that buffer, so the page it executes is one that has been out to
+  a server and back. Asking the borrower again panics with "ran from a
+  buffer it had lent and lived", and so does restoring `VM_PROGRAM`
+  outright, which is what the code said before this milestone.
+- *It runs last in the slice, which is part of the check.* Placed before
+  the frame measurements, its sixteen frames came back in the middle of
+  one and the row after it read minus sixteen. Closing the process
+  handle does not reap it either: something still holds a reference at
+  that point and releases it later, on work the boot thread does rather
+  than on a yield, so a loop waiting there waits for ever. What holds it
+  is a question for a stage about references and is written down here
+  rather than chased.
+
 - *Broken to check it.* Giving text write permission back panicked with
   "a program wrote its own text and lived, kind 0". Giving writable
   memory execute back panicked with "ran from its stack and lived, kind

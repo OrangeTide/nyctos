@@ -3089,6 +3089,104 @@ grant_holder(const char *what, uint32_t before, uint32_t expect,
 }
 
 
+
+/*
+ * And the same question asked of a page that has been lent away and
+ * given back, per M14 stage three's review.
+ *
+ * A buffer sent to a server is unmapped from the client, mapped into
+ * the server and mapped back when the reply comes. That is the one path
+ * on which a program's own page is re-mapped by something other than
+ * the loader, so it is the one place the permissions the loader chose
+ * can be quietly replaced by different ones. They were: the take-back
+ * asked the borrower what the page should be, the borrower does not own
+ * that address, and the answer for an address a process does not own is
+ * everything.
+ *
+ * Here rather than beside the other two because it needs a server to
+ * lend to, and the file server does not exist when those run.
+ */
+static void
+lent_permission_checks(sys_handle_t root)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_status_args sargs;
+    const struct boot_member *m;
+    const char *argv[2];
+    sys_ns_spec_t ns[1];
+    sys_handle_t h;
+    struct child c;
+    void *obj;
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_ROOT;
+    ns[0].handle = root;
+
+    argv[0] = "leap";
+    argv[1] = "lent";
+
+    sched_defer();
+    if (proc_spawn_op(self, "leap", PRIO_BOOT - 1, ns, 1, argv, 2, &h) !=
+      SYS_OK) {
+        panic("permissions: could not start leap with a connection");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("permissions: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    (void)child_join(&c, JOIN_MS);
+
+    memset(&sargs, 0, sizeof(sargs));
+    if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) != SYS_OK) {
+        panic("permissions: no status for leap");
+    }
+
+#if SYS_TIER == 2
+    if (sargs.out_fault != SYS_FAULT_ACCESS) {
+        panic("permissions: a program ran from a buffer it had lent and "
+          "lived, kind %u", (unsigned int)sargs.out_fault);
+    }
+
+    m = boot_lookup("leap");
+    if (m == NULL) {
+        panic("permissions: no leap in the archive");
+    }
+    if (sargs.out_fault_addr < (uintptr_t)m->bm_load + m->bm_rw ||
+      sargs.out_fault_addr >= (uintptr_t)m->bm_load + m->bm_mem) {
+        panic("permissions: ran from 0x%lx, outside its writable memory",
+          (unsigned long)sargs.out_fault_addr);
+    }
+    cnprintf("    %-38s %s at 0x%lx\n",
+      "a program running from a lent buffer", fault_name(sargs.out_fault),
+      (unsigned long)sargs.out_fault_addr);
+#else
+    (void)m;
+    if (sargs.out_fault != SYS_FAULT_INSTRUCTION) {
+        panic("permissions: flat memory answered a jump into a lent "
+          "buffer with kind %u", (unsigned int)sargs.out_fault);
+    }
+    cnprintf("    %-38s %s\n", "a program running from a lent buffer",
+      "fetched, then refused as an instruction");
+#endif
+
+    expect("giving leap's handle back", handle_close(ht, h), SYS_OK);
+
+    /*
+     * And this runs last of everything in the slice, because closing
+     * that handle does not reap it. Something else still holds a
+     * reference at this point, released later by work the boot thread
+     * does rather than by yielding, so a loop waiting here would wait
+     * for ever. The first placement had this check before the frame
+     * measurements and its sixteen frames came back in the middle of
+     * one: the row after it read minus sixteen. Where a check's
+     * leavings land is part of the check, and what holds that
+     * reference is a question for a stage that is about references.
+     */
+}
+
 /*
  * What the two regions of a program permit, per M14 stage three.
  *
@@ -8238,6 +8336,7 @@ user_slice(void)
     struct channel *ch;
     struct channel *blk;
     sys_handle_t h_recv, h_blk, store, root, root2, root3, root5, root6;
+    sys_handle_t root7;
     sys_err_t err;
 
     boot_report();
@@ -8294,6 +8393,13 @@ user_slice(void)
     expect("a fourth one, for the read after everything is reclaimed",
       run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
     root6 = cargs.out_handle;
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = FS_NODE_ROOT;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a fifth one, for the program that runs from what it lent",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    root7 = cargs.out_handle;
 
 #if SYS_TIER == 2
     /*
@@ -8489,6 +8595,8 @@ user_slice(void)
          */
         frame_holder("a client that ran and was reaped", a, 0, "nothing");
     }
+
+    lent_permission_checks(root7);
 }
 
 /*
