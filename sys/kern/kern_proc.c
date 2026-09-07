@@ -410,13 +410,16 @@ proc_load(struct proc *p, const struct boot_member *m)
          * end of the image, which is its zeroed data and its stack, and
          * that is mapped here as it always was.
          *
-         * A program with initialised writable data would break this,
-         * because the loader cannot see where its text ends: the archive
-         * carries a size and not a layout. Section 15.1 says writable
-         * segments are copied eagerly, and teaching the archive to carry
-         * the boundary is what would let this obey it.
+         * Only below the boundary, which is what M14 taught the archive
+         * to carry. Section 15.1 has writable segments copied eagerly
+         * and read-only ones supplied on demand, and until the loader
+         * could see where text ended it could not obey that: the
+         * condition was "has bytes", so a program with initialised data
+         * would have had its data left to the pager, to arrive
+         * read-only at the first write. Now it is "has bytes and is
+         * below where writable memory begins".
          */
-        if (n > 0 && p->p_pager != NULL) {
+        if (n > 0 && done < m->bm_rw && p->p_pager != NULL) {
             p->p_pager_bytes = done + PAGE_SIZE;
             done += PAGE_SIZE;
             continue;

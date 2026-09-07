@@ -8968,7 +8968,7 @@ slot is ever backed by a frame.
   page writable panicked with "a program wrote the record it was handed
   and lived".
 
-**5. A program with initialised writable data.** *Planned.*
+**5. A program with initialised writable data.** *Built.*
 
 - Stage one found that `peer_b` has four bytes of it, so this is a case
   that exists rather than one to be invented. Every other program has
@@ -8978,6 +8978,38 @@ slot is ever backed by a frame.
   writes them, and the paged program's text arrives from its pager
   while its data does not. That is the case `proc_load` says it cannot
   handle, so the check is whether the comment can be deleted.
+- *Settled.* The comment is gone, and what replaced it is the
+  condition. `proc_load` left every page with bytes in it to the pager,
+  so a paged program with initialised data would have had that data
+  arrive read-only, because section 15.1 maps a page supplied to a
+  fault read-only. The condition is now "has bytes **and is below where
+  writable memory begins**", which is the boundary stage one taught the
+  archive to carry.
+- *The plain half was already true and already checked.* `peer_b` holds
+  a word in `.data`, tells its peer where it is, and both verify what is
+  there before and after. The loader copies the image's bytes wherever
+  they land, so that has worked all along; what had never happened is
+  the same program under a pager.
+- *So `paged` now carries a word of `.data`*, reads it before it
+  checksums itself and writes it afterwards, returning a distinct status
+  for each failure. Its text still arrives a page at a time from its
+  pager, and the check asserts from the outside what the program
+  asserts from the inside: **the pager was asked for exactly the pages
+  below the boundary and for none above it**, five on riscv64 and six on
+  aarch64.
+- *Broken to check it.* Restoring the old condition reproduced the
+  failure the comment predicted: a page fault at 0x81205008, eight bytes
+  into the data page, after one page had arrived. The program never
+  returned a status at all, which is why the check asserts the pager's
+  count as well as the program's answer.
+- *And the frame checks stopped using `spin`.* They spawn a program
+  eleven times to measure what a spawn costs, and `spin` computes for
+  eighty milliseconds, which put most of a second between the last check
+  and the shell. The paced session feeds a line every two seconds from
+  the moment the machine starts, so the shell was reading its first
+  command out of a buffer instead of echoing it, and the transcript lost
+  a line on aarch64. `brief` does nothing, which is what these checks
+  want measured. The shell is back to two seconds from three.
 
 **6. What it cost, and section 15 written around it.** *Planned.*
 

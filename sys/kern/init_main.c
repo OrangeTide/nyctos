@@ -3797,6 +3797,28 @@ paging_checks(void)
           (unsigned long)c.c_proc->p_fault_addr,
           (unsigned long)c.c_proc->p_fault_pc);
     }
+
+#if SYS_TIER == 2
+    /*
+     * And that what arrived was text and only text, per M14 stage five.
+     * The program carries a word of initialised data above the boundary
+     * the archive records, and section 15.1 has a page supplied to a
+     * fault mapped read-only, so a data page left to the pager would
+     * arrive read-only and the program would fault writing it. It
+     * returns -3 or -4 if its word is wrong or will not take a write,
+     * which the comparison above would catch, and this says the same
+     * thing from the outside: the pager was asked for the pages below
+     * the boundary and for none above it.
+     */
+    if (pager_pages != m->bm_rw / PAGE_SIZE) {
+        panic("paging: the pager supplied %u pages for %u of text",
+          (unsigned int)pager_pages,
+          (unsigned int)(m->bm_rw / PAGE_SIZE));
+    }
+    if (m->bm_size <= m->bm_rw) {
+        panic("paging: the program has no initialised data to check");
+    }
+#endif
 #if SYS_TIER == 2
     if (pager_pages == 0) {
         panic("paging: it ran without a page arriving");
@@ -6519,9 +6541,13 @@ substitution_checks(void)
  * megabyte whatever the program's size, and the tables to reach it.
  * Every frame this milestone can give back is a Tier 2 frame.
  *
- * The program is spin because it needs no namespace: what is being
- * measured is what a process costs, and a process that had to be handed
- * connections first would be measuring the handing as well.
+ * The program is brief, which needs no namespace and does nothing at
+ * all: what is being measured is what a process costs, so a process
+ * that had to be handed connections first would be measuring the
+ * handing as well, and one that computed for eighty milliseconds would
+ * be measuring the computing. It was spin until M14 stage five found
+ * nine of those spins between the last check and the shell, which is
+ * most of a second in front of a session that feeds a line every two.
  */
 static uint32_t
 frame_cost_once(const char *image, uint32_t *returned)
@@ -6617,8 +6643,8 @@ frame_cost_checks(void)
      * count is asserted because it is the same in every run; measuring
      * it twice in one run is the cheapest test of that claim there is.
      */
-    first = frame_cost_once("spin", &back);
-    second = frame_cost_once("spin", &back2);
+    first = frame_cost_once("brief", &back);
+    second = frame_cost_once("brief", &back2);
 
     cnprintf("    a process costs %u frames, %u came back\n",
       (unsigned int)first, (unsigned int)back);
@@ -6652,11 +6678,11 @@ frame_cost_checks(void)
     }
 #else
     {
-        const struct boot_member *m = boot_lookup("spin");
+        const struct boot_member *m = boot_lookup("brief");
         uint32_t needs = m != NULL ? m->bm_mem / PAGE_SIZE : 0;
 
         if (needs == 0) {
-            panic("frames: the archive says nothing about spin");
+            panic("frames: the archive says nothing about brief");
         }
         if (first < needs) {
             panic("frames: a process cost %u frames, fewer than the %u "
@@ -6729,12 +6755,12 @@ frame_return_checks(void)
 
     cnputs("frames: what a run of processes leaves behind\n");
 
-    cost = frame_cost_once("spin", &back);
+    cost = frame_cost_once("brief", &back);
     residue = cost - back;
 
     before = page_used();
     for (i = 0; i < FRAME_ROUNDS; i++) {
-        (void)frame_cost_once("spin", &back);
+        (void)frame_cost_once("brief", &back);
     }
     after = page_used();
 
