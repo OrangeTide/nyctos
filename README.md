@@ -29,6 +29,39 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 15 is done: a client that sends to a server which stops
+answering gets its thread back.** Until now a rendezvous carried no
+deadline, so a wedged server hung its client for ever. Cancellation
+existed; something outside had to notice and use it, and nothing
+noticed.
+
+```
+                                    sends that gave up at a deadline
+  queued, no server had seen it                                    1
+  a server was holding the message                                 2
+```
+
+The same in all four configurations, and counted apart because the two
+cases differ in what the server learns. A client removed from the queue
+leaves nothing behind: no message was delivered and nothing was
+allocated on its behalf. A client whose message a server holds gets its
+lent buffer back with the permissions it had and its donated priority
+back from the server, and the server discovers the outcome when its
+reply is refused with `SYS_ERR_STALE`.
+
+The design had specified all of this and the kernel had never done it.
+What the building added beyond the specification was mostly about when
+things happen rather than what: the expiry does only the pointer work in
+the timer, because undonating and taking a buffer back charge their work
+to a running thread and an interrupt may not have one, and a deadline
+that arrives after the wait has already ended does nothing at all.
+
+**A program still cannot make a deadline.** An absolute deadline needs a
+clock, and the shared page that would let a program read one without a
+syscall does not exist, so every deadline here is one the kernel
+computed and handed over. That is what keeps deadlines out of the
+programs that would use them.
+
 **Milestone 14 is done: a program is mapped as what it is.** The boot
 archive carried the size of an image and not the size of the memory a
 program needs, so the loader mapped a whole megabyte slot as one region
@@ -421,10 +454,8 @@ it back where it started, where the old code left it at 230 instead of
 1.
 
 What does not exist: a device that does direct memory access, and with
-it the half of section 17 about transfers in flight. A rendezvous
-carries no deadline, so a wedged server hangs its client until a
-supervisor ends it, and nothing yet notices on its own that one should.
-The reference counts that decide when an object is freed are still
+it the half of section 17 about transfers in flight. The reference
+counts that decide when an object is freed are still
 plain increments, which two cores make unsafe and milestone 8 listed
 without fixing.
 
@@ -804,9 +835,17 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - No cross-core TLB maintenance. Reclaiming a cohort member's memory
   while a peer runs on another core is not safe, and the checks reap
   processes that are in no cohort.
-- A rendezvous carries no deadline, so a server that stops answering
-  hangs its client until something cancels it. Cancellation exists;
-  nothing yet notices on its own that it is needed.
+- A program cannot make a deadline. A send takes an absolute one and
+  milestone 15 acts on it, but an absolute deadline needs a clock and
+  the shared page that would let a program read one without a syscall
+  does not exist. Every deadline in this system is computed by the
+  kernel and handed over.
+- A receive carries no deadline, deliberately: a server waiting for work
+  is not waiting for a party that can fail it. What a server does about
+  a client that never comes is not answered.
+- A thread that dies while holding a client's message leaves that client
+  waiting until its own deadline. The death of a whole process releases
+  its clients with an error; one thread of a live server dying does not.
 - Killing a process unblocks every thread of it and each leaves at its
   next return from the kernel. A thread computing in user mode and
   calling nothing is not stopped, and there is no hook in the trap path
@@ -834,14 +873,22 @@ treats as a signal: nothing has ever run on hardware, so every duration
 published here is the right shape and the wrong magnitude. That is why
 the milestones that could assert counts rather than durations did.
 
-The other two signals have been taken. The latency floor went to
-milestone 12, which left something narrower and harder: the floor is
-the work a rendezvous has to do atomically, and lowering it means
-making that work shorter or making less of it atomic. Memory never
-being reclaimed went to milestone 13, which left the slot itself as the
-next obvious question, and milestone 14 answered it: the archive carries
-a layout now, a process costs what its image needs, and a slot is an
-address range rather than an amount of memory.
+Milestone 15 found a sharper version of the same thing. Of the two
+figures section 13.3 of the design names, one has never been measured at
+all: the time from a device interrupt to the program waiting on it has
+no sample in any run, and the comment claiming the console driver walks
+that path every time was wrong. What is published for that term is a
+term not taken.
+
+The other signals have been taken. The latency floor went to milestone
+12, which left something narrower and harder: the floor is the work a
+rendezvous has to do atomically, and lowering it means making that work
+shorter or making less of it atomic. Memory never being reclaimed went
+to milestone 13, which left the slot itself as the next question, and
+milestone 14 answered it: the archive carries a layout, a process costs
+what its image needs, and a slot is an address range rather than an
+amount of memory. A rendezvous without a deadline went to milestone 15,
+which left a program that cannot make one.
 
 The ordering that got here is in the same file, along with what each
 milestone answered and what it left untested. The one choice most likely

@@ -482,10 +482,26 @@ restart maps over the previous member's frames and they become
 unreachable. That was 512 frames across a boot and is now 14, for the
 same reason the rest of the figures fell.
 
-A rendezvous still carries no deadline. Nothing has run on hardware, so
-every duration this project has published is the right shape and the
-wrong magnitude. The counts are not durations, which is why this
-milestone asserts counts.
+**M15 gave a rendezvous a deadline**, which section 1 had listed as
+missing since M9 and section 12.1 had specified in full. A client that
+gives up while queued is taken off it and the server never learns it
+existed; a client that gives up while a server is working gets its lent
+buffer and its donated priority back, and the server discovers it when
+its reply is refused. The boot reports one of the first and two of the
+second.
+
+What that leaves is a program that cannot make a deadline of its own.
+Section 14.3 wants an absolute instant and section 6.2 names the shared
+page that would let a program read the clock without a syscall; the page
+does not exist, so every deadline in this system is one the kernel
+computed.
+
+Nothing has run on hardware, so every duration this project has
+published is the right shape and the wrong magnitude. The counts are not
+durations, which is why these milestones assert counts. And one of the
+two figures section 13.3 names has never been measured at all: the time
+from a device interrupt to the program waiting on it has no sample in
+any run, which M15 found while adding the first one that was not that.
 
 ---
 
@@ -9113,6 +9129,10 @@ programs that prove the permissions do not exist yet.
 **A client that sends to a server which stops answering gets its thread
 back.**
 
+**Done.** All six stages are built. Section 18 says what it answered,
+what it cost, what the building kept finding, and what it left
+untested.
+
 Section 1 has said since M9 that a rendezvous carries no deadline, and
 it is the last of the absences this project named more than once and did
 not take. What it means is that a wedged server hangs its client for
@@ -11414,7 +11434,133 @@ for that reason.
 
 ---
 
-## 18. Bring-Up Order Within M1
+## 18. Milestone 15, in Retrospect
+
+M15 took the last of the absences this project had named more than once
+and not acted on. Section 12.1 had specified the whole of it years of
+milestones ago: a client that gives up while queued is removed and the
+server never learns, and a client that gives up while a server is
+working abandons work in progress and the server finds out when its
+reply is refused. `sys_msg_send()` was documented as taking a deadline
+and did not have one.
+
+### 18.1 The Questions
+
+**Do the two blocked states have to be released differently?**
+
+Yes, and the milestone's falsification condition was that they would
+not. A queued sender comes off a list and nothing else has seen it. A
+client whose message a server holds has a buffer lent into another
+address space, a priority donated to a thread that is running on it, and
+a reply slot that has to stop existing before the reply arrives.
+`channel_unwait_thread` is where the two part company, and the code
+either side of it is not shared.
+
+**What did it cost to build?**
+
+Three lines for the queued case, because M8's cancellation had already
+built the release path: `thread_wake_timeout` calls the thread's unwait
+hook, and the hook already knew how to take a sender off a queue. The
+rest of the milestone was the other state and the two races around it.
+
+**What does the system report?**
+
+One send that gave up on the queue and two that gave up with a server
+working, the same in all four configurations. Counts rather than
+durations, per M9's rule, and counted apart because the section says the
+difference is what the server sees.
+
+**And what could not be built?**
+
+A program cannot make a deadline. Section 14.3 wants an absolute instant
+and section 6.2 names what makes that affordable, a shared page read
+without a syscall, and that page does not exist. The one program here
+that uses a deadline is handed it as a command-line argument by the
+kernel that starts it. That is the gap keeping deadlines out of the
+programs that would want them, and it is now written where the claim is.
+
+### 18.2 What It Cost
+
+**A flag, because a sentinel could not do it.** `SYS_DEADLINE_NOW` is
+zero and zero is what `memset` leaves, so a deadline field read
+unconditionally would have turned every client written before this
+milestone into one that polls. Section 14.3 fixes both sentinels'
+values, so no choice of constant removes the ambiguity: what removes it
+is the caller saying whether it filled the field in.
+
+**Work moved out of the timer.** The first version of the REPLY-blocked
+release ran in the expiry, where `thread_current()` is whatever the core
+was doing and may be nothing: it wrote to offset 0x150 of a null
+pointer, which is where `t_charging` lives. The interrupt now does the
+pointer work that makes a late reply stale, and the client does the
+memory and the priority when it runs.
+
+**Two cleanups nothing else was doing.** A server whose reply is refused
+comes off the channel's serving list, and so does a thread that exits
+while holding a message. Both were reachable only because a client can
+now give up on its own; both would have left a priority chain walking
+into a thread that was no longer serving, or no longer alive.
+
+**And a program**, because what a lent buffer means only exists between
+two address spaces and every check before this one had the client and
+the server in the same one.
+
+### 18.3 What the Building Kept Finding
+
+**Checks that tested the stage before.** Stage three's server was
+created below the boot thread, so the send queued and the timer was
+armed on the way through the state stage two had already built. Arming
+for queued senders alone passed it.
+
+**Checks that arranged the wrong thing.** Stage five's first race had
+the server reply and then block, which hands the core to the client at
+once: the client collected its answer before the timer ever fired. The
+assertion that the send must not return before its own deadline is what
+caught it, and it exists because a race that did not happen reads
+exactly like one that did.
+
+**A counter that counted something else.** The give-up figure was taken
+in the unwait hook, which cancellation reaches too, and came out at
+exactly double what the checks ask for.
+
+**A measurement silenced rather than narrowed**, and behind it a figure
+that had never been taken at all. Section 13.3's second term is the time
+from a device interrupt to the program waiting on it, and the comment
+above it said the console driver walks that path in every run. It does
+not: the report has always answered "none in this run", and this
+milestone's own timeout gave that measurement its first sample in the
+life of the project.
+
+**And a misreading of a state number**, which produced an assertion that
+asserted the opposite of what was true and fired on all four
+configurations. State 4 is `THREAD_BLOCKED`; it was read as dead.
+
+### 18.4 What Is Still Untested
+
+**A deadline made by a program**, which is the same absence as the
+missing clock. Everything here is a deadline the kernel computed.
+
+**A deadline on a fence, expiring against a signal.** The race stage
+five fixed is in `thread_wake_timeout` and covers every deadline the
+system has, but only the send side is constructed. A fence signalled a
+moment before its deadline has had that shape since M1 and still has no
+check.
+
+**What a chain gives back.** A sender that queues raises the priority of
+every blocked server down the chain, and when it gives up there is
+nothing recording what it raised. The boost is withdrawn later by each
+server's own reply, so it is bounded rather than leaked, and no check
+reaches it.
+
+**A client whose server dies mid-request**, which now waits until its
+deadline rather than for ever. That is an improvement and not an answer;
+what should happen is section 24.3's.
+
+**Hardware, still.**
+
+---
+
+## 19. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -11458,7 +11604,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 19. Ordering: What Is Forced and What Is Chosen
+## 20. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -11489,7 +11635,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 20. What Would Change This Plan
+## 21. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -11536,7 +11682,7 @@ else.
 
 ---
 
-## 21. Deliberately Not Scheduled
+## 22. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 
