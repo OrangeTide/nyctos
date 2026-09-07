@@ -87,10 +87,36 @@ list_remove(struct thread **head, struct thread *t)
     return true;
 }
 
+static void channel_thread_release(struct thread *t, bool tell);
+
 void
 channel_unwait_thread(void *obj, struct thread *t)
 {
     struct channel *ch = obj;
+
+    /*
+     * A client whose message a server is holding is on neither list:
+     * the rendezvous already happened and what it is waiting for is the
+     * reply. Section 12.1 has it abandon work in progress.
+     *
+     * Only the pointers here, and the rest when the thread runs again.
+     * This is called from the timer interrupt, where thread_current()
+     * is whatever the core was doing and may be nothing at all, and the
+     * undonation and the buffer take-back both need a thread to charge
+     * the work to. Doing them here wrote to offset 0x150 of a null
+     * pointer, which is where t_charging lives.
+     *
+     * What has to happen now is what makes a late reply stale: with no
+     * reply slot, channel_reply refuses. What can wait is the memory
+     * and the priority, because nothing else looks at either until
+     * this thread is running.
+     */
+    if (t->t_wait == THREAD_WAIT_REPLY) {
+        t->t_msg = NULL;
+        t->t_reply = NULL;
+        t->t_blocked_on = NULL;
+        return;
+    }
 
     if (!list_remove(&ch->c_senders, t)) {
         (void)list_remove(&ch->c_receivers, t);
@@ -703,25 +729,23 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         sender_insert(ch, self);
         self->t_wait = THREAD_WAIT_SEND;
 
-        /*
-         * And the deadline it said it would wait until. Section 12.1:
-         * a SEND-blocked client that gives up is taken off this queue
-         * and the server never learns it existed, which is what
-         * channel_unwait_thread does when the timer fires.
-         *
-         * Only for a sender that queued. A client whose message a
-         * server has already taken is REPLY-blocked, and giving up
-         * there is abandoning work in progress rather than withdrawing
-         * a request nobody has seen.
-         */
-        if (deadline != SYS_DEADLINE_NEVER) {
-            time_sleep_until(self, deadline);
-        }
     }
     trace_wait(self, self->t_wait);
 
     self->t_blocked_on = ch;
     self->t_unwait = channel_unwait_thread;
+
+    /*
+     * And the deadline it said it would wait until, whichever of the
+     * two states it is in. Section 12.1 has them give up differently
+     * and channel_unwait_thread is where that difference lives: a
+     * queued sender is taken off the queue and nobody ever knew, and a
+     * client whose message a server holds abandons work in progress and
+     * the server finds out when it replies.
+     */
+    if (deadline != SYS_DEADLINE_NEVER) {
+        time_sleep_until(self, deadline);
+    }
 
     {
         /*
@@ -747,6 +771,27 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
     time_sleep_cancel(self);
 
     err = self->t_waitres;
+
+    /*
+     * And what the timer could not do from an interrupt. A client that
+     * gave up while a server held its message has a buffer lent out and
+     * a priority donated, and both come back here, where there is a
+     * thread to charge the work to and the client is the thread doing
+     * it. Section 12.1: it abandons work in progress, and the server
+     * finds out when its reply is refused.
+     */
+    if (err == SYS_ERR_TIMEOUT && self->t_wait == THREAD_WAIT_REPLY) {
+        if (self->t_donee != NULL) {
+            if (self->t_donee->t_donor == self) {
+                undonate(self->t_donee);
+            }
+            self->t_donee = NULL;
+        }
+
+        vm_charge_begin();
+        msg_buf_take_back(self);
+        vm_charge_end();
+    }
 
     /*
      * Nothing may still be lent out. A reply gives the buffer back

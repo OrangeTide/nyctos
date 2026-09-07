@@ -9256,8 +9256,7 @@ is released is section 18.3's and stays there.
   check, for the reason stage one's breaks hang: a send with no deadline
   is a thread that does not come back.
 
-**3. A REPLY-blocked client gives up, and the reply says so.**
-*Planned.*
+**3. A REPLY-blocked client gives up, and the reply says so.** *Built.*
 
 - Expiry for a client whose message a server is holding, and a reply
   path that discovers it.
@@ -9265,6 +9264,43 @@ is released is section 18.3's and stays there.
   the client's deadline. The client returns `SYS_ERR_TIMEOUT`; the
   server's reply returns `SYS_ERR_STALE`; the server's per-connection
   record is released on that path and the count says so.
+- *Settled.* The timer is armed for both states now rather than only for
+  a queued sender, and `channel_unwait_thread` is where the two part
+  company: a queued sender comes off the queue, and a client whose
+  message a server holds keeps nothing that would let a reply land.
+  `channel_reply` already answers `SYS_ERR_STALE` to a client with no
+  reply slot, so the server's discovery needed no new path.
+- *The heavy work cannot happen in the timer.* The first version called
+  `channel_thread_release` from the expiry, which undonates and takes
+  the buffer back, and both charge their work to `thread_current()`.
+  In a timer interrupt that is whatever the core was doing and may be
+  nothing at all: it wrote to offset 0x150 of a null pointer, which is
+  where `t_charging` lives, on three of the four configurations and
+  showed up as an unbalanced charge on the fourth. The interrupt now
+  does only the pointer work that makes a late reply stale, and the
+  client does the rest when it runs again, where there is a thread to
+  charge it to and the client is the thread doing it.
+- *The check was testing stage two twice.* Its server was created below
+  the boot thread, so it had not run when the send arrived: the send
+  queued, the timer was armed on the way through `THREAD_WAIT_SEND`, and
+  the client only became REPLY-blocked afterwards. Arming the timer for
+  queued senders alone, which is stage two's code, passed it. With the
+  server above the boot thread it is already in receive when the send
+  arrives, and that break now fails with "expected TIMEOUT, got OK".
+- *And it could not spin.* The boot thread outranks a server at
+  `PRIO_BOOT - 1`, so waiting for the reply with `sched_yield` never let
+  the server run at all. It waits on a timeline the server signals.
+- *Broken to check it.* Arming the timer only for a queued sender
+  panicked with "expected TIMEOUT, got OK". Skipping the release the
+  woken client does panicked with "it gave up still donating to its
+  server", which is the assertion that had to be added when the first
+  version of that break passed: this send lends no buffer, so what the
+  release still has to undo here is the donation.
+- *Not tested here: clearing the reply slot in the interrupt.* Removing
+  it changes nothing, because the client clears the same fields itself
+  when it runs, long before this server replies. What it is for is a
+  reply that arrives in the window between the timer firing and the
+  client running, which is stage five.
 
 **4. The buffer a client lent.** *Planned.*
 

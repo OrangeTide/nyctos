@@ -3339,6 +3339,19 @@ startup_record_checks(void)
  * receives on it.
  */
 static struct channel *dl_ch;
+
+/*
+ * A timeline nothing ever signals, so a wait on it is a sleep until the
+ * deadline. Used by the server that answers too late.
+ */
+static struct timeline dl_tl;
+
+/*
+ * Signalled by the slow server once it has replied, so the check can
+ * wait for it rather than spin: the boot thread outranks the server, so
+ * a yield here would never let it run.
+ */
+static struct timeline dl_done;
 static sys_err_t dl_served = SYS_ERR_INTERRUPTED;
 
 static void
@@ -3359,6 +3372,49 @@ dl_server(void *arg)
     memset(&rep, 0, sizeof(rep));
     rep.handle = SYS_HANDLE_INVALID;
     (void)channel_reply(peer, &rep);
+
+    thread_exit(0);
+}
+
+static volatile uint32_t dl_slow_took;
+static sys_err_t dl_slow_reply = SYS_ERR_INTERRUPTED;
+
+/*
+ * A server that takes a message and answers too late.
+ *
+ * It waits past the client's deadline before replying, which is the
+ * whole of section 12.1's second case: the client abandons work in
+ * progress, and the server discovers it when the reply is refused.
+ */
+static void
+dl_slow_server(void *arg)
+{
+    struct sys_msg msg, rep;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+    uint64_t until;
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(dl_ch, &msg, &peer, &cookie) != SYS_OK) {
+        thread_exit(1);
+    }
+    dl_slow_took = 1;
+
+    /*
+     * Past the deadline, by waiting on a timeline nothing will ever
+     * signal. The client is blocked on its reply and this thread is the
+     * only one that could answer, so a sleep here is the client's
+     * deadline arriving.
+     */
+    until = time_now() + time_from_ms(DEADLINE_MS * 3);
+    (void)timeline_wait(&dl_tl, 1, until);
+
+    memset(&rep, 0, sizeof(rep));
+    rep.handle = SYS_HANDLE_INVALID;
+    dl_slow_reply = channel_reply(peer, &rep);
+    (void)timeline_signal(&dl_done, 1);
 
     thread_exit(0);
 }
@@ -3575,6 +3631,87 @@ deadline_checks(void)
         expect("a send with a deadline it did not need",
           (sys_err_t)run_batch(&send, 1), SYS_OK);
         expect("and the server that answered it", dl_served, SYS_OK);
+    }
+
+    /*
+     * And the other case, per M15 stage three: a client whose message a
+     * server is already holding. Section 12.1 has it abandon work in
+     * progress rather than withdraw a request nobody saw, so the server
+     * is not told and finds out when it replies.
+     */
+    {
+        sys_op_t send;
+        struct pool *conns = connection_pool();
+        uint32_t before = conns->used;
+
+        timeline_init(&dl_tl, "dl-late");
+        timeline_init(&dl_done, "dl-done");
+
+        dl_slow_took = 0;
+        dl_slow_reply = SYS_ERR_INTERRUPTED;
+        /*
+         * Above this thread, so that it runs the moment it is readied
+         * and is already blocked in receive when the send below
+         * arrives. That is what makes this the REPLY-blocked case: at a
+         * lower priority it would not have run yet, the send would
+         * queue, and the timer would be armed on the way through
+         * THREAD_WAIT_SEND instead. The first version of this check did
+         * exactly that and tested stage two twice.
+         */
+        srv = thread_create("dl-slow", PRIO_BOOT + 1, dl_slow_server, NULL);
+        sched_ready(srv);
+
+        memset(&args, 0, sizeof(args));
+        args.request.handle = SYS_HANDLE_INVALID;
+        args.deadline = time_now() + time_from_ms(DEADLINE_MS);
+
+        memset(&send, 0, sizeof(send));
+        send.opcode = SYS_OP_IPC_SEND;
+        send.target = to;
+        send.flags = SYS_OP_DEADLINE;
+        send.arg_ptr = (uintptr_t)&args;
+        send.arg_len = sizeof(args);
+
+        expect("a send whose server answers too late",
+          (sys_err_t)run_batch(&send, 1), SYS_ERR_TIMEOUT);
+
+        /*
+         * That the server had it is the difference between this case
+         * and the last one. Without it this would be stage two again
+         * with a slower server.
+         */
+        if (dl_slow_took == 0) {
+            panic("deadline: the server never took the message");
+        }
+
+        /*
+         * And this thread is no longer pointing at the server it was
+         * donating to. The priority itself is not moved here, because
+         * the server outranks this thread and donation only ever
+         * raises, but the relationship is set on every rendezvous and
+         * has to be undone by whatever ends one.
+         */
+        if (thread_current()->t_donee != NULL) {
+            panic("deadline: it gave up still donating to its server");
+        }
+
+        /*
+         * And the reply, which arrives after this thread gave up.
+         * Waited for on a timeline rather than spun on: this thread
+         * outranks the server, so a yield would never let it run.
+         */
+        expect("waiting for the server to answer",
+          timeline_wait(&dl_done, 1,
+            time_now() + time_from_ms(JOIN_MS)), SYS_OK);
+        expect("and the reply it made afterwards", dl_slow_reply,
+          SYS_ERR_STALE);
+
+        if (conns->used != before) {
+            panic("deadline: %u connection records left over",
+              (unsigned int)(conns->used - before));
+        }
+        cnprintf("    %-38s %s\n", "what the server was left holding",
+          "nothing it cannot give back");
     }
 
     cnprintf("    %-38s %s\n", "what decides whether it waits",
