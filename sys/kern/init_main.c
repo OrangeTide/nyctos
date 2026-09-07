@@ -924,6 +924,13 @@ child_watch(struct child *c, struct proc *p)
  */
 #define JOIN_MS     30000u
 
+/*
+ * How long M15's checks are willing to wait before calling a send
+ * failed. Long enough that the wait is unmistakably a wait, short
+ * enough to spend more than once in a boot.
+ */
+#define DEADLINE_MS 50u
+
 static int32_t
 child_join(struct child *c, uint32_t within_ms)
 {
@@ -3428,6 +3435,71 @@ deadline_checks(void)
     }
 
     /*
+     * And a deadline that has to actually arrive, per M15 stage two.
+     * The poll above never blocked, so nothing so far has armed a timer
+     * or taken a thread off a queue: this is the first send in this
+     * system that waits and then stops waiting.
+     *
+     * How long it waited is read as well as what it returned. A
+     * deadline already past, or a timer that fired at once, gives the
+     * same error without the waiting having happened, and section
+     * 12.1's claim is about a client that waited and gave up.
+     */
+    {
+        sys_op_t send;
+        uint64_t began, waited;
+        uint64_t want = time_from_ms(DEADLINE_MS);
+
+        memset(&args, 0, sizeof(args));
+        args.request.handle = SYS_HANDLE_INVALID;
+        args.deadline = time_now() + want;
+
+        memset(&send, 0, sizeof(send));
+        send.opcode = SYS_OP_IPC_SEND;
+        send.target = to;
+        send.flags = SYS_OP_DEADLINE;
+        send.arg_ptr = (uintptr_t)&args;
+        send.arg_len = sizeof(args);
+
+        began = time_now();
+        expect("a send that waits and gives up",
+          (sys_err_t)run_batch(&send, 1), SYS_ERR_TIMEOUT);
+        waited = time_now() - began;
+
+        if (waited < want) {
+            panic("deadline: it gave up after %lu ticks, before its %lu",
+              (unsigned long)waited, (unsigned long)want);
+        }
+
+        /*
+         * The floor is asserted and the figure is printed. That it
+         * waited at least as long as it said is the kernel's; how long
+         * after its deadline it ran again is the host's, which is M9's
+         * rule.
+         */
+        cnprintf("    %-38s %lu ms asked for, %lu ticks waited\n",
+          "it waited before giving up", (unsigned long)DEADLINE_MS,
+          (unsigned long)waited);
+
+        /*
+         * And nothing was left behind. Section 12.1 calls this the
+         * clean case: the client was taken off the queue, nothing was
+         * delivered, and nothing was allocated on its behalf, so a
+         * server arriving afterwards would find an empty channel rather
+         * than a message from a thread that has gone.
+         *
+         * Read off the channel rather than by having a server try to
+         * receive, because a receive carries no deadline: a server that
+         * found nothing would be a thread that never came back.
+         */
+        if (dl_ch->c_senders != NULL) {
+            panic("deadline: a client that gave up is still queued");
+        }
+    }
+
+    cnprintf("    %-38s %s\n", "what it left on the channel", "nothing");
+
+    /*
      * And a deadline on something that cannot wait, which is a caller
      * saying what the operation does not do. Section 14.3 has every
      * blocking call take one; a fence wait carries its own and a
@@ -3469,6 +3541,41 @@ deadline_checks(void)
     expect("the same send with the field left alone",
       run(SYS_OP_IPC_SEND, to, &args, sizeof(args)), SYS_OK);
     expect("and the server it waited for", dl_served, SYS_OK);
+
+    /*
+     * And a send with a deadline that is answered before it arrives,
+     * which is the case the other three do not reach: every send above
+     * either polls or gives up, so none of them leaves a timer armed
+     * for a thread that goes on to be served.
+     *
+     * It is what makes the cancel after the block matter. A served
+     * sender that kept its registered deadline would have it fire later
+     * against a thread that is running, or blocked on something else,
+     * and section 14.3's own rule is that whichever of the two happens
+     * first leaves the other stale.
+     */
+    {
+        sys_op_t send;
+
+        dl_served = SYS_ERR_INTERRUPTED;
+        srv = thread_create("dl-answer", PRIO_BOOT - 1, dl_server, NULL);
+        sched_ready(srv);
+
+        memset(&args, 0, sizeof(args));
+        args.request.handle = SYS_HANDLE_INVALID;
+        args.deadline = time_now() + time_from_ms(DEADLINE_MS);
+
+        memset(&send, 0, sizeof(send));
+        send.opcode = SYS_OP_IPC_SEND;
+        send.target = to;
+        send.flags = SYS_OP_DEADLINE;
+        send.arg_ptr = (uintptr_t)&args;
+        send.arg_len = sizeof(args);
+
+        expect("a send with a deadline it did not need",
+          (sys_err_t)run_batch(&send, 1), SYS_OK);
+        expect("and the server that answered it", dl_served, SYS_OK);
+    }
 
     cnprintf("    %-38s %s\n", "what decides whether it waits",
       "the flag, not the field");

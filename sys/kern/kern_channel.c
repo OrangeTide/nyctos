@@ -702,6 +702,21 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
         sender_insert(ch, self);
         self->t_wait = THREAD_WAIT_SEND;
+
+        /*
+         * And the deadline it said it would wait until. Section 12.1:
+         * a SEND-blocked client that gives up is taken off this queue
+         * and the server never learns it existed, which is what
+         * channel_unwait_thread does when the timer fires.
+         *
+         * Only for a sender that queued. A client whose message a
+         * server has already taken is REPLY-blocked, and giving up
+         * there is abandoning work in progress rather than withdrawing
+         * a request nobody has seen.
+         */
+        if (deadline != SYS_DEADLINE_NEVER) {
+            time_sleep_until(self, deadline);
+        }
     }
     trace_wait(self, self->t_wait);
 
@@ -722,15 +737,28 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         ipc_round_end(started, points, core);
     }
 
+    /*
+     * Whichever happened first, the other is stale: a server that took
+     * the message leaves a deadline registered, and a deadline that
+     * fired leaves nothing on the queue because the wake took it off.
+     * Withdrawn here rather than by whoever did the waking, so neither
+     * has to know about the other, which is how timeline_wait does it.
+     */
+    time_sleep_cancel(self);
+
     err = self->t_waitres;
 
     /*
      * Nothing may still be lent out. A reply gives the buffer back
-     * before it releases this thread, and a reply is the only thing that
-     * releases it: a sender carries no deadline and cancellation does
-     * not exist yet. When it does, this is where it will be found, and
-     * the alternative to finding it is a program running again with a
-     * hole where its memory was.
+     * before it releases this thread, and until M15 a reply was the
+     * only thing that released it.
+     *
+     * A deadline is the other thing now, and a SEND-blocked client that
+     * gives up has lent nothing: the hand-over happens when a server
+     * takes the message, and nobody took it. A REPLY-blocked client has
+     * lent something and this is where that would be found, which is
+     * stage four. The alternative to finding it is a program running
+     * again with a hole where its memory was.
      */
     if (self->t_lend_len != 0) {
         panic("ipc: %s ran again with its buffer still lent out",

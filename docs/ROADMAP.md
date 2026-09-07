@@ -9196,7 +9196,7 @@ is released is section 18.3's and stays there.
   it.
 
 **2. A SEND-blocked client gives up, and the server never learns.**
-*Planned.*
+*Built.*
 
 - A timer for a queued sender, and expiry that takes it off the queue.
 - *Check.* A client sends with a deadline to a channel no server ever
@@ -9204,6 +9204,35 @@ is released is section 18.3's and stays there.
   afterwards finds nothing, the channel's queue is empty, and no
   per-connection state was ever allocated: section 12.1 calls this case
   clean and the check is what says it is.
+- *Settled, and it needed three lines.* `time_sleep_until` after the
+  sender queues, `time_sleep_cancel` after it wakes, and the comment
+  that said a sender carries no deadline. Everything else was already
+  there: `thread_wake_timeout` calls the thread's unwait hook, which for
+  a channel takes it off the sender list and clears what it was blocked
+  on, and then sets `SYS_ERR_TIMEOUT` and readies it. M8 built that for
+  cancellation and it fits a deadline exactly.
+- *The wait is asserted and not only the answer.* A deadline already
+  past returns the same error without any waiting having happened, so
+  the check reads the clock either side and requires that at least the
+  asked-for interval elapsed. How much longer than that is the host's,
+  and is printed rather than asserted.
+- *The queue is read directly rather than by having a server look.* A
+  receive carries no deadline, so a server sent to find nothing would be
+  a thread that never came back. What section 12.1 claims is that
+  nothing was left behind, and an empty sender list is that claim.
+- *A send with a deadline it did not need* is the fourth case, and it is
+  the one that makes the cancel matter. Every other send here either
+  polls or gives up, so none of them leaves a timer armed for a thread
+  that goes on to be served. Without that case, removing the cancel
+  changed nothing any check could see; with it, the boot no longer
+  finishes.
+- *Broken to check it.* Leaving the client on the queue when the timer
+  fires panicked with "a client that gave up is still queued". Never
+  cancelling a served sender's deadline stopped the boot part way
+  through the shell session, which is the stale timer firing against a
+  thread doing something else. Never arming the timer hangs at this
+  check, for the reason stage one's breaks hang: a send with no deadline
+  is a thread that does not come back.
 
 **3. A REPLY-blocked client gives up, and the reply says so.**
 *Planned.*
