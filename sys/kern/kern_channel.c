@@ -1410,6 +1410,35 @@ channel_thread_release(struct thread *t, bool tell)
 }
 
 /*
+ * Whether section 12.5 is going to release this client anyway.
+ *
+ * A process that is going releases everything blocked on the channels
+ * it owns, with SYS_ERR_OWNER_DEAD, when its last thread has gone. A
+ * client of a thread of that process must be left for that: told STALE
+ * here it would be told the server is still there to be asked again,
+ * which is exactly what OWNER_DEAD exists to deny.
+ *
+ * Owned by this process, and not merely served by it. A thread serving
+ * on somebody else's channel is not on the list section 12.5 walks, so
+ * its client is this function's business after all.
+ *
+ * Going, by either route: killed, which sets the mark before any thread
+ * of it exits, or ending because this is the last thread it has. The
+ * count still includes this thread, which has not yet been taken off.
+ */
+static bool
+owner_going(const struct thread *t, const struct channel *ch)
+{
+    const struct proc *p = t->t_proc;
+
+    if (p == NULL || ch == NULL || ch->c_owner != p) {
+        return false;
+    }
+
+    return p->p_dying || p->p_nthreads <= 1;
+}
+
+/*
  * A thread is ending, so it is no longer inside a request on anything.
  *
  * A server that received a message and exits without replying leaves
@@ -1428,10 +1457,17 @@ channel_thread_release(struct thread *t, bool tell)
  * nothing it was, and a client that reads it knows the server is still
  * there to be asked again, where OWNER_DEAD says it is not.
  *
- * Only the client this thread was actually holding, and only if it is
- * still waiting for this reply. The identifier carries a generation, so
- * a slot given to something else since is not found; a client that gave
- * up at its deadline is no longer reply-blocked here and is left alone.
+ * Only the client this thread is actually serving. The identifier
+ * carries a generation, so a slot given to something else since is not
+ * found, and t_donee is the client's own record of who is serving it:
+ * it is cleared by the reply, by a client giving up, and by a
+ * cancellation, which are the three ways of stopping being served.
+ *
+ * And only while that client is still blocked. A deadline that has
+ * already fired leaves a thread runnable with its answer written and
+ * its fields not yet put back, and releasing it again would enqueue a
+ * thread that is on a run queue. thread_wake_timeout reads the state
+ * for the same reason from the other side.
  */
 void
 channel_thread_exited(struct thread *t)
@@ -1441,8 +1477,10 @@ channel_thread_exited(struct thread *t)
     if (t->t_client != 0) {
         struct thread *client = thread_by_id(t->t_client);
 
-        if (client != NULL && client->t_wait == THREAD_WAIT_REPLY &&
-          client->t_blocked_on == t->t_serve_ch) {
+        if (client != NULL && client->t_donee == t &&
+          client->t_state == THREAD_BLOCKED &&
+          client->t_wait == THREAD_WAIT_REPLY &&
+          !owner_going(t, client->t_blocked_on)) {
             /*
              * Deferred, for the reason section 12.5's walk defers:
              * releasing a client makes it runnable, and one that

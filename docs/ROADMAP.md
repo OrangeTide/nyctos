@@ -10208,7 +10208,7 @@ what a death means; this is only about the death arriving.
   replying, and the client comes back with `SYS_ERR_STALE` before its
   deadline rather than at it. The deadline is what tells the two apart,
   which is M15's arrangement and the reason it exists.
-- *Settled.* The client is released in **820 microseconds to 1.5
+- *Settled.* The client is released in **775 microseconds to 1.8
   milliseconds** across the four configurations, against a deadline of
   500 milliseconds. The deadline is long here on purpose: it costs
   nothing when the release works, and it makes the difference between
@@ -10228,6 +10228,34 @@ what a death means; this is only about the death arriving.
 - *And nothing is left behind.* The channel has nobody inside a request
   on it afterwards, and the client is not still donating priority to a
   thread that has ended.
+
+- *The review found the release firing for one shape of death and not
+  the other.* The client was recognised by comparing its `t_blocked_on`
+  against the exiting thread's `t_serve_ch`, and `thread_cancel` clears
+  `t_serve_ch` on the way past. A server thread cancelled and then
+  ending therefore matched nothing and released nobody, so its client
+  waited out its deadline exactly as before. That is not a corner: a
+  kill reaches a blocked thread by cancelling it, so it is the shape
+  M17 itself produces. The client is recognised by `t_donee` now, which
+  is the client's own record of who is serving it, and the second half
+  of the check cancels a server thread out of a wait it is holding a
+  message through.
+- *And the distinction between the two errors was an accident.* That
+  same stale pointer was what kept a killed server process's clients
+  getting `SYS_ERR_OWNER_DEAD`: their server threads had all been
+  cancelled, so none of them matched. With the identity test fixed they
+  were told `SYS_ERR_STALE` instead, by the exiting thread, before
+  section 12.5 ever ran, and `orphan` failed. A client of a process
+  that is going must hear that the server is gone, not that it is still
+  there to be asked again. The release now stands aside when the
+  process is dying or this is its last thread and the channel is one it
+  owns, and removing that guard fails `orphan` by name.
+- *And a client whose deadline has just fired is left alone.* It is
+  runnable with its answer already written and its fields not yet put
+  back, and releasing it again would enqueue a thread that is on a run
+  queue, which `enqueue` panics on. `thread_wake_timeout` reads the
+  thread state for the same reason from the other side, and this reads
+  it too.
 
 **6. What it cost, and section 10.5 written around it.** *Planned.*
 

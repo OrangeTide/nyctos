@@ -5026,6 +5026,60 @@ stale_server(void *arg)
     thread_exit(0);
 }
 
+static volatile sys_err_t stale_client_err;
+static struct timeline stale_done;
+
+/*
+ * A server thread that takes a message and then waits for something
+ * that never comes, so that it can be cancelled while holding it.
+ *
+ * It ends when the wait ends, whatever ended it. That is what a thread
+ * of a server does when it is cancelled: section 10.5 releases it with
+ * an error and the mark, if there is one, stops it at the next return
+ * to user mode. This one is a kernel thread and stops here.
+ */
+static void
+stale_waiting_server(void *arg)
+{
+    struct sys_msg msg;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(stale_ch, &msg, &peer, &cookie) != SYS_OK) {
+        thread_exit(1);
+    }
+    stale_took = 1;
+
+    (void)timeline_wait(&kill_tl, 1, SYS_DEADLINE_NEVER);
+
+    thread_exit(0);
+}
+
+/*
+ * A client for the case above, because the thread doing the cancelling
+ * has to still be running and a client is not.
+ */
+static void
+stale_client(void *arg)
+{
+    struct sys_msg req, rep;
+
+    (void)arg;
+
+    memset(&req, 0, sizeof(req));
+    memset(&rep, 0, sizeof(rep));
+    req.handle = SYS_HANDLE_INVALID;
+
+    stale_client_err = channel_send(stale_ch, 0, &req, &rep,
+      time_now() + time_from_ms(STALE_DEADLINE_MS));
+
+    (void)timeline_signal(&stale_done, 1);
+    thread_exit(0);
+}
+
 /*
  * A server thread that dies holding a message, per M17 stage five.
  *
@@ -5049,7 +5103,7 @@ kill_server_stale_checks(void)
     struct sys_op_send_args args;
     struct sys_op_connect_args cargs;
     sys_op_t send;
-    struct thread *srv;
+    struct thread *srv, *cli;
     sys_handle_t h_recv, to;
     uint64_t sent, took, deadline;
 
@@ -5136,6 +5190,52 @@ kill_server_stale_checks(void)
       (unsigned long)(took * 1000000ULL / time_hz()),
       (unsigned int)STALE_DEADLINE_MS);
 
+
+    /*
+     * And the same thing reached the other way, per this stage's
+     * review: a server thread that is cancelled and then ends. The
+     * cancel takes it off the channel's serving list on the way past,
+     * so the first version of this recognised its client by a channel
+     * pointer that was already NULL and released nobody. Cancellation
+     * is how a kill reaches a blocked thread, which makes this the
+     * shape M17 actually produces.
+     *
+     * The client is a thread of its own here, because this one has to
+     * still be running in order to do the cancelling.
+     */
+    stale_took = 0;
+    stale_client_err = SYS_ERR_INTERRUPTED;
+    timeline_init(&stale_done, "stale-done");
+
+    srv = thread_create("stale-wait", PRIO_BOOT + 2, stale_waiting_server,
+      NULL);
+    sched_ready(srv);
+
+    cli = thread_create("stale-cli", PRIO_BOOT + 1, stale_client, NULL);
+    sched_ready(cli);
+
+    if (stale_took == 0) {
+        panic("a stale reply: the second server never took the message");
+    }
+    if (srv->t_state != THREAD_BLOCKED) {
+        panic("a stale reply: the server is not waiting, state %u",
+          (unsigned int)srv->t_state);
+    }
+
+    expect("cancelling the server thread out of its wait",
+      thread_cancel(srv), SYS_OK);
+
+    expect("waiting for the client it left behind",
+      timeline_wait(&stale_done, 1, time_now() + time_from_ms(JOIN_MS)),
+      SYS_OK);
+    expect("what the client was told", stale_client_err, SYS_ERR_STALE);
+
+    if (stale_ch->c_serving != NULL) {
+        panic("a stale reply: the channel still has a server in a request");
+    }
+
+    cnprintf("    %-38s %s\n", "a server thread cancelled, then ended",
+      "its client was told as well");
     expect("giving the connection back", handle_close(ht, to), SYS_OK);
     expect("giving the channel back", handle_close(ht, h_recv), SYS_OK);
 }
