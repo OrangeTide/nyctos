@@ -9,7 +9,9 @@
 #include <sys/cohort.h>
 #include <sys/connection.h>
 #include <sys/page.h>
+#include <sys/cpu.h>
 #include <sys/handle.h>
+#include <sys/intr.h>
 #include <sys/object.h>
 #include <sys/objref.h>
 #include <sys/sched.h>
@@ -1842,6 +1844,30 @@ proc_kill(struct proc *p, int32_t code)
          * the mark on its own.
          */
         (void)thread_cancel(t);
+
+        /*
+         * And a thread that is running is made to enter the kernel,
+         * per M17 stage three. It is running on another core, because
+         * this one is running the killer, and it may take no trap of
+         * its own for as long as it likes: section 14.2 arms the
+         * hardware for the next event and a computing program is not
+         * one. The poke is that event.
+         *
+         * Only for a running thread. One that is ready is one that
+         * has already stopped somewhere in this kernel, and it finds
+         * the mark on the way back out; one that is blocked was
+         * released above. Reading the state of a thread on another
+         * core races with that core, and both ways round are safe: a
+         * poke sent to a thread that has just stopped running is a
+         * poke its core ignores, and a thread that has just started
+         * running was dispatched, which is a return to user mode and
+         * reads the mark.
+         */
+        if (t->t_state == THREAD_RUNNING &&
+          t->t_core != cpu_self()->cp_index) {
+            p->p_kill_pokes++;
+            md_cpu_ipi(t->t_core);
+        }
     }
 
     sched_undefer();

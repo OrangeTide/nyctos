@@ -10096,15 +10096,40 @@ what a death means; this is only about the death arriving.
   timer takes the same path as any other interrupt, so a program
   interrupted by the timer is reached as well.
 
-**3. Making the entry happen.** *Planned.*
+**3. Making the entry happen.** *Built.*
 
-- A kill pokes the core the thread is running on. On one core there is
-  nothing to poke, because the killer is the thread that is running and
-  the target reaches the hook when it is next dispatched.
-- *Check.* The killer runs on one core and `spin` on the other, with
-  nothing else armed, and the kill stops it. The number of pokes a kill
-  sends is asserted, because it is a count: one per core running a
-  thread of the target, and none at all when the target is not running.
+- `proc_kill` pokes the core of every thread of the target that is
+  running, with `md_cpu_ipi`, which already exists and already arrives
+  as an ordinary interrupt: `sched_ipi` is attached to it, so it lands
+  in `irq_dispatch` and stage two's hook is what acts on it.
+- Only a running thread. One that is ready has already stopped
+  somewhere in this kernel and finds the mark on the way back out; one
+  that is blocked was released by the cancel. Reading the state of a
+  thread on another core races with that core and both ways round are
+  safe: a poke sent to a thread that has just stopped running is a poke
+  its core ignores, and a thread that has just started running was
+  dispatched, which is a return to user mode and reads the mark.
+- *Check.* `spin` is moved to the second core before it has run, which
+  the defer around the spawn makes legal, and is killed from the first
+  once it is running there. Its state is asserted to be `THREAD_RUNNING`
+  first, because a check that killed a thread which had not started
+  would be the check on the other core again.
+- *Settled.* Without the poke the program runs its eighty milliseconds
+  out and exits with its own zero: the gap is real and this is where it
+  was measured. With it, the program is reached in **485 microseconds on
+  riscv64 and 561 on aarch64**, and the kill sends **one** poke, which
+  is asserted because it is a count: one per running thread of the
+  target.
+- *And a kill on one core pokes nothing*, which the other check asserts
+  at zero. The killer has the core, so nothing of the target is running,
+  which is the reason one core needs no poke and is now a number rather
+  than an argument.
+- *Broken both ways.* Sending no poke brings back the program that
+  finishes anyway. Poking the killer's own core instead of the target's
+  does the same, which says the number in the poke is read and not just
+  the fact of one.
+- *Tier 0 says so rather than testing nothing.* One core, nothing to
+  poke, and the line in the report says which.
 
 **4. A dying thread that faults.** *Planned.*
 

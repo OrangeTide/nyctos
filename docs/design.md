@@ -894,7 +894,12 @@ A thread cancelled mid-batch stops at the next entry boundary, which is already 
 
 **On one core that is enough, and the reason is not the hook.** A killer has to be running for a kill to happen, so the thread being killed is not running: it is inside the kernel where it was interrupted or where it blocked, and the kill is what it finds on the way out. `spin`, killed mid-loop, now stops 144 to 385 microseconds later instead of running its remaining sixty milliseconds. It enters the kernel zero times between being marked and leaving.
 
-**On more than one core it is not enough**, because a thread running on another core need not trap at all, and a tickless kernel arms nothing that would make it. A kill has to be able to cause an entry, which is a poke to that core.
+**On more than one core it is not enough**, because a thread running on another core need not trap at all, and a tickless kernel arms nothing that would make it. A kill has to be able to cause an entry.
+
+**So a kill pokes the cores its target is running on.** `sys_proc_kill()` sends an inter-processor interrupt to the core of every thread of the target that is running, which is a mechanism this kernel already had for the scheduler and the timer. The interrupt arrives as any other does, and the check on the way back to user mode is what ends the thread; the poke does nothing itself except make that return happen. A thread that is ready rather than running is not poked, because it has already stopped somewhere in the kernel and will read the mark when it is dispatched. A kill of a process none of whose threads are running sends no poke at all, which is every kill on a single core.
+
+**What that costs is one interrupt per running thread**, and what it buys is that promptness means the same thing for a program that computes as for one that waits. A program running on another core is reached in about half a millisecond; without the poke it is not reached at all, and runs until it decides to enter the kernel on its own.
+
 
 
 ### 10.6 States

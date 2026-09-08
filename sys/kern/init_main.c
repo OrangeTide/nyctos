@@ -4644,9 +4644,125 @@ kill_reach_checks(void)
     cnprintf("    %-38s %lu ticks, about %lu us\n",
       "how long it ran on afterwards", (unsigned long)ran_on,
       (unsigned long)(ran_on * 1000000ULL / time_hz()));
+
+    /*
+     * And it poked nothing, because nothing of it was running: the
+     * killer had the core. That is the whole of why one core needs no
+     * poke, and it is asserted here rather than argued.
+     */
+    if (c.c_proc->p_kill_pokes != 0) {
+        panic("a kill: it poked %lu cores for a thread that was not "
+          "running", (unsigned long)c.c_proc->p_kill_pokes);
+    }
     cnprintf("    %-38s %lu ticks\n", "and the kill itself took",
       (unsigned long)(killed - before));
 }
+/*
+ * A kill that has to cause the entry, per M17 stage three.
+ *
+ * Stage two put the mark where a trap returns to user mode, and found
+ * that on one core it is enough for a reason that is not the hook: a
+ * killer has to be running for a kill to happen, so the thread being
+ * killed is not running, and it is sitting in the kernel where it was
+ * interrupted or where it blocked.
+ *
+ * On two cores that reasoning stops. The thread is running in user mode
+ * on the other core, taking no traps, and this kernel arms nothing that
+ * would make it take one: M16 stage one measured stretches of over a
+ * hundred milliseconds with no kernel in them at all. Something has to
+ * make it enter, and that is the poke.
+ */
+static void
+kill_other_core_checks(void)
+{
+    struct handle_table *ht = &proc_current()->p_handles;
+    struct child c;
+    struct thread *t;
+    uint64_t killed, took;
+    sys_handle_t keep;
+    int32_t code;
+
+    if (cpu_count() < 2) {
+        /*
+         * One core, and nothing to poke. Said rather than left out: the
+         * tier where this cannot happen is the tier where the kill
+         * always lands on a thread that is already in the kernel, and
+         * that is section 13.3's single core rather than an accident.
+         */
+        cnputs("a kill: the other core, where there is one\n");
+        cnprintf("    %-38s %s\n", "a kill on one core pokes",
+          "nothing, because nothing is running");
+        return;
+    }
+
+    cnputs("a kill: reaching a program on the other core\n");
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("spin", PRIO_BOOT - 1, NULL, 0,
+      NULL, 0));
+    if (handle_insert(ht, c.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &keep) != SYS_OK) {
+        panic("a kill: no handle slot to hold the program with");
+    }
+
+    /*
+     * The other core, before it has run. The defer is what makes the
+     * move legal, which is M16 stage three's arrangement for the same
+     * reason: a thread that is running cannot be moved.
+     */
+    t = proc_threads(c.c_proc);
+    expect("the program moved to the second core",
+      sched_migrate(t, 1), SYS_OK);
+    sched_undefer();
+
+    /*
+     * Long enough that it is running there rather than about to be.
+     * This core is not the one dispatching it, so waiting is the only
+     * way to know, and the state below is what says it worked.
+     */
+    (void)timeline_wait(&kill_tl, 1, time_now() + time_from_ms(10));
+
+    if (t->t_state != THREAD_RUNNING) {
+        panic("a kill: the program is not running on the other core, "
+          "state %u", (unsigned int)t->t_state);
+    }
+
+    killed = time_now();
+    if (proc_kill(c.c_proc, KILL_CODE) != SYS_OK) {
+        panic("a kill: the process refused to be killed");
+    }
+
+    code = child_join(&c, JOIN_MS);
+    took = time_now() - killed;
+
+    if (code != KILL_CODE) {
+        panic("a kill: it came back with %d and not the %d it was "
+          "killed with", (int)code, KILL_CODE);
+    }
+
+    /*
+     * One poke, and it is a count: one per thread of the target that
+     * was running when the kill was written, which here is the one
+     * thread this program has. A kill of something that is not running
+     * pokes nothing, which the check on this core asserts.
+     */
+    if (c.c_proc->p_kill_pokes != 1) {
+        panic("a kill: it sent %lu pokes for one running thread",
+          (unsigned long)c.c_proc->p_kill_pokes);
+    }
+
+    cnprintf("    %-38s %s\n", "a program running on the other core",
+      "was reached");
+    cnprintf("    %-38s %lu\n", "pokes the kill sent",
+      (unsigned long)c.c_proc->p_kill_pokes);
+    cnprintf("    %-38s %lu ticks, about %lu us\n",
+      "how long it ran on afterwards", (unsigned long)took,
+      (unsigned long)(took * 1000000ULL / time_hz()));
+
+    expect("giving the program's handle back", handle_close(ht, keep),
+      SYS_OK);
+}
+
 
 
 
@@ -10463,6 +10579,7 @@ kernel_main(void)
     clock_read_checks();
     clock_cost_checks();
     kill_reach_checks();
+    kill_other_core_checks();
     startup_record_checks();
     deadline_checks();
 

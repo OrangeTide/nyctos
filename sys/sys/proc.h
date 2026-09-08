@@ -182,6 +182,14 @@ struct proc {
     int32_t             p_kill_code;
 
     /*
+     * Cores poked by the kill, per M17 stage three: one per thread of
+     * this process that was running when it was killed. Zero for a
+     * kill of something that is not running, which is every kill on a
+     * single core.
+     */
+    uint64_t            p_kill_pokes;
+
+    /*
      * Entries into the kernel this process made while marked for
      * death, per M17 stage one. The chances a kill had to take
      * effect, counted from every way in and not only the one that
