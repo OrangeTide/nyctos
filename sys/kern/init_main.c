@@ -4234,19 +4234,35 @@ clock_read_checks(void)
 
     cnputs("the clock: a program reading it without a system call\n");
 
-    hex_into(arg, (uintptr_t)time_now());
+    /*
+     * One reading, handed to the program and kept for the comparison.
+     * It was two at first, taken a few instructions apart, which made
+     * the program measure from one instant and the kernel bound it
+     * with another: not a bracket, and tighter than either end meant,
+     * so an interrupt landing between the two reads would have failed
+     * a clock that was right.
+     */
+    before = time_now();
+    hex_into(arg, (uintptr_t)before);
     argv[0] = "clock";
     argv[1] = arg;
 
-    /*
-     * Read after the argument is written and not before, so the number
-     * the program is given is the number this compares against. They
-     * were the same read at first, which made the lower end of the
-     * bracket a value the check had already spent time getting past.
-     */
     sched_defer();
-    before = time_now();
     child_watch(&c, proc_spawn_image("clock", 20, NULL, 0, argv, 2));
+
+    /*
+     * On the other core where there is one, because the permission to
+     * read the counter is per core and the boot sets it in two places.
+     * Running only on the core that starts the machine leaves the
+     * second write untested, and a port that had it in one place would
+     * pass everything here. The thread has not run yet: the defer is
+     * what makes the move legal.
+     */
+    if (cpu_count() > 1) {
+        expect("the reader moved to the second core",
+          sched_migrate(proc_threads(c.c_proc), 1), SYS_OK);
+    }
+
     sched_undefer();
 
     code = child_join(&c, JOIN_MS);
@@ -4274,6 +4290,19 @@ clock_read_checks(void)
     }
 
     span = after - before;
+
+    /*
+     * Strictly after the kernel's reading, which is the lower end of
+     * the bracket and is the kernel's to assert. A spawn, a load and a
+     * program's startup happen between the two, so a clock that has
+     * not moved at all in that time has stopped. Without this a clock
+     * frozen at exactly the value the program was handed would answer
+     * zero and pass.
+     */
+    if (code == 0) {
+        panic("the clock: it had not moved by the time the program "
+          "read it");
+    }
     if ((uint64_t)code > span) {
         panic("the clock: the program read %lu ticks past the kernel's "
           "start, which was %lu ticks before its end",
@@ -4288,7 +4317,8 @@ clock_read_checks(void)
     cnprintf("    %-38s %lu of the kernel's %lu ticks\n",
       "where the program's reading fell", (unsigned long)code,
       (unsigned long)span);
-    cnprintf("    %-38s about %lu us\n", "how long the program took",
+    cnprintf("    %-38s about %lu us\n",
+      "kernel to kernel, around the whole run",
       (unsigned long)(span * 1000000ULL / time_hz()));
 }
 

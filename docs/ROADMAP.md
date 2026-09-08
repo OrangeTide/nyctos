@@ -9743,8 +9743,28 @@ something needs it, not because the section lists it.
   overruns what a status can carry. A clock going backwards is refused
   by the program. A clock a million ticks ahead passes all of the
   program's own tests and is caught by the kernel's bracket, which is
-  the one that matters, because it is the only end of the check the
-  program has no part in.
+  the one that matters, because it is the end of the check the program
+  has no part in.
+- *The review found the bracket was not one.* The number handed to the
+  program and the number the kernel compared against were two readings
+  taken a few instructions apart, so the program measured from one
+  instant and the kernel bounded it with another. It is one reading now.
+  The old arrangement was tighter than either end meant and an interrupt
+  landing between the two reads would have failed a clock that was
+  right.
+- *And the lower end was the program's word.* The kernel asserted only
+  that the reading was not past its own second one; a clock frozen at
+  exactly the value the program was handed would have answered zero and
+  passed. The kernel now requires the reading to be strictly after what
+  it handed over, which a spawn, a load and a program's startup make
+  certain of. Making `clock` return zero panics with "it had not moved
+  by the time the program read it".
+- *And the second core's permission was never exercised.* Both ports set
+  the bit in two places, one per core, and a user program had only ever
+  run on the core that starts the machine: a port that set it in one
+  place would have passed. The reader is moved to the other core before
+  it runs, where there is one. Zeroing only the secondary's write now
+  fails the check on both ports, and did not before.
 
 **4. A deadline a program made for itself.** *Planned.*
 
