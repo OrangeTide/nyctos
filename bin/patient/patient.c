@@ -90,6 +90,18 @@ main(void)
     }
 
     /*
+     * And it is not before the instant this asked for. The check
+     * outside measures around the spawn as well as the send, so its
+     * floor would still be met by a program that never waited at all
+     * if a load ever took as long as a deadline. This is the same
+     * question asked where the answer is exact: one absolute instant,
+     * compared with the clock, with no interval to get wrong.
+     */
+    if (sys_uptime() < deadline) {
+        return 5;
+    }
+
+    /*
      * And the memory is this program's again. Writing it is the half
      * that matters: a page handed to a server comes back read-only if
      * whatever put it back asked the wrong process what it should be,

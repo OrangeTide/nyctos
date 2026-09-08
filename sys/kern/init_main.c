@@ -3887,8 +3887,18 @@ deadline_checks(void)
             panic("deadline: the holder never took the message");
         }
         if (code != 0) {
-            panic("deadline: the program that lent its buffer exited %d",
-              code);
+            const char *why;
+
+            switch (code) {
+            case 1: why = "it has no page, so no frequency"; break;
+            case 2: why = "it was given no service to send to"; break;
+            case 3: why = "its send did not time out"; break;
+            case 4: why = "its buffer came back changed"; break;
+            case 5: why = "it gave up before its own deadline"; break;
+            default: why = "it did not finish"; break;
+            }
+            panic("deadline: the program that lent its buffer: %s, "
+              "status %d", why, code);
         }
 
         /*

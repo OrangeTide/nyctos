@@ -9798,6 +9798,18 @@ something needs it, not because the section lists it.
   holder never answers, so a program asking for more time waits out
   whatever it asked for and the boot takes longer. Five hundred
   milliseconds instead of fifty passes everything here.
+- *The review found the floor was around the wrong thing.* The kernel
+  measures from before the spawn, so it counts a load and a startup as
+  well as a wait, and a host slow enough to spend fifty milliseconds
+  loading would let a program that never waited pass. The program now
+  asks the exact question where it can be asked exactly: after its send
+  returns, the clock must not read before the instant it asked for.
+  There is no interval to get wrong, only the one absolute instant it
+  already had. Handing the send a deadline a fortieth of a second
+  earlier than the one it checks against is caught, and the kernel names
+  the status rather than printing a number.
+- *The outer floor stays.* It is the half of the check the program has
+  no part in, and the inner one is the half that is exact.
 
 **5. What the read costs.** *Planned.*
 
