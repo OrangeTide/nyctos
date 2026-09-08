@@ -10359,6 +10359,142 @@ stages that are about what a death means to somebody else.
 ---
 
 
+### M18. A Server That Outlives Its Clients
+
+**The death notice nobody has ever read.**
+
+Section 13.1 says the reservation in a channel's pulse queue is
+"required for correctness, not politeness", because "a dropped death
+notification leaks the resources of a dead client permanently". Section
+12.5 says a server holding an unanswered request learns through
+`SYS_PULSE_DEAD_OWNER` rather than at reply time, and gives the reason:
+a server that ignores a failed reply leaks whatever it allocated for the
+request for good.
+
+*Both sentences are about a leak no server here can have.* `echoes` takes
+a pulse off its channel and continues past it. `fs_server` holds nothing
+per client: a walk hands back a connection and a connection carries no
+position, so every request states everything it needs. The one place a
+death notice has ever been counted is a check written last milestone,
+which counts it and throws it away. The mechanism has been built,
+specified twice, and never used.
+
+**And what it says may not be what a server needs to hear.** The notice
+names a thread, with `SYS_ID_TAG32` of the thread that died. A server's
+records are not per thread: they are per connection, or per client
+process, and a client with two threads on one connection loses neither
+when one of them goes. Section 12.5 is explicit that only a
+REPLY-blocked client's death is announced, so a client that holds a
+record and dies with nothing outstanding produces no notice at all. That
+is not a gap in the implementation; it is the specification, and whether
+it is enough is the question this milestone is for.
+
+*Needs.* A server that has something to lose, which does not exist and
+has to be written. Nothing in the kernel is missing for stages one to
+three: the notice is delivered and the identity is in it. Stage four is
+where something may have to be added, and what it would be is not
+decided in advance, because the measurement comes first.
+
+**What this is not.** Not supervision, which is section 24.3 and decides
+what a death means. Not channel teardown, which is section 18.2. This is
+about one server keeping its own books straight when the programs it
+serves stop existing.
+
+**1. A server that has something to lose.** *Planned.*
+
+- A server that holds a record per client: allocated on the client's
+  first request and released when the client is finished. The record is
+  a slot out of a fixed table, because a leak that costs nothing is a
+  leak nothing notices, and the table's occupancy is the number this
+  milestone is about.
+- Clients that connect, take a record, and then die in each of the ways
+  a client can die: killed mid-request, killed between requests, and
+  ended normally without saying goodbye.
+- *Check.* The server's occupancy after every client has gone, asserted
+  as a count. It is expected to be non-zero, and the number is the leak
+  this milestone starts from. A check that cannot report a leak here
+  would have nothing to measure against later.
+
+**2. Which deaths the server hears about.** *Planned.*
+
+- The notice is counted per kind of death rather than in total. A client
+  killed while a server holds its request, a client killed while queued
+  and never received, a client killed holding a record with nothing
+  outstanding, a client that returns from `main`, and a client whose
+  whole process is killed with several threads on one connection.
+- *Check.* One count per case, all asserted. Section 12.5 predicts
+  notices for some of these and silence for others; the check is written
+  to the section, so a case that disagrees with it is either a defect or
+  a sentence that has to change.
+
+**3. Releasing the right record.** *Planned.*
+
+- The server keys its records so that a notice can find one, and
+  releases exactly the record belonging to the client that died.
+- *Check.* Three clients hold records and one is killed. The server ends
+  holding two, and holding the two that are still alive rather than
+  merely two of them: a check that counted would pass for a server that
+  released whichever record it looked at first.
+
+**4. The client that goes quietly.** *Planned.*
+
+- The case stage two will have measured as silent: a client holding a
+  record that dies with no request outstanding. A server told nothing
+  keeps that record for ever, and a system that restarts its clients
+  fills the table.
+- What answers it is not decided here. The candidates are a notice when
+  the last handle to a connection closes, which is a thing the kernel
+  already knows and section 12.5 already describes the lifetime of, and
+  a server that asks. Which one is built depends on what stage two
+  measured and what it costs.
+- *Check.* A client connects, takes a record, and exits with nothing
+  outstanding. The server ends holding no record for it, and the boot's
+  connection pool is back where it started.
+
+**5. The reservation, finally tested.** *Planned.*
+
+- Section 13.1 reserves two of a channel's eight pulse slots so that a
+  program cannot flood a death notice out of the queue. Nothing has ever
+  tested it, because nothing has ever cared whether a notice arrived.
+- *Check.* A program fills the channel with user pulses, past the point
+  where the oldest is being dropped, and then a client of that channel
+  dies. The notice arrives and the record is released. Removing the
+  reservation loses it, which is what says the reservation is what saved
+  it.
+
+**6. What it cost, and sections 12.5 and 13.1 written around it.**
+*Planned.*
+
+- *Check.* The figures as counts: records leaked before and after,
+  notices by kind of death, and the pool occupancy at the end of the
+  boot. The two sections say what a server actually learns, when it does
+  not learn anything, and what it has to do for itself.
+
+*Done when* a server holding a record per client ends the boot holding
+records for exactly the clients still alive, having been told about
+every death that took one, on both ports and at both tiers.
+
+*Would falsify.* That the notice as specified is enough for a server to
+keep its own books. If a server can only stay correct by asking about
+its clients rather than being told, or by keying its records on
+something the kernel does not give it, then sections 12.5 and 13.1
+overstate what the notice does and the reservation protects less than
+they claim.
+
+*Watch for.* A check that passes because the server was empty anyway.
+The occupancy has to be able to be wrong: a table that is never filled,
+or a client that never takes a record, would make every later stage pass
+for nothing. And a notice counted rather than acted on, which is what
+the one existing check does and is exactly not the point.
+
+*Size.* Medium. The server is new and is most of the work. The kernel
+side is small for the first three stages and unknown for the fourth,
+which is why the fourth says what it will decide rather than what it
+will build.
+
+---
+
+
 ## 4. Milestone 1, in Retrospect
 
 The slice was chosen as the smallest thing that could falsify the design
