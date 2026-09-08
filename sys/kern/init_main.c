@@ -4762,6 +4762,209 @@ kill_other_core_checks(void)
     expect("giving the program's handle back", handle_close(ht, keep),
       SYS_OK);
 }
+#if SYS_TIER == 2
+
+static sys_handle_t h_hold_recv;
+static volatile uint32_t hold_faults;
+static volatile uint32_t hold_notices;
+static volatile bool hold_stop;
+
+/*
+ * A pager that takes a fault and does not answer it, per M17 stage four.
+ *
+ * The faulting thread is inside a rendezvous it did not choose: section
+ * 15.3 sends the fault as a message from the thread, and this one keeps
+ * it. That is the state the stage is about, and the only way to get a
+ * program to sit in it long enough to be killed.
+ */
+static void
+hold_pager(void *arg)
+{
+    struct sys_op_recv_args rx;
+
+    (void)arg;
+
+    while (!hold_stop) {
+        memset(&rx, 0, sizeof(rx));
+        if (run(SYS_OP_IPC_RECV, h_hold_recv, &rx, sizeof(rx)) != SYS_OK) {
+            break;
+        }
+        /*
+         * A pulse is not a request. Section 10.5 tells a server that
+         * its client has gone, and the kernel is the client here, so
+         * the notice arrives on this channel like any other: counting
+         * it as a second fault was the first thing this check did,
+         * and it is the death notice arriving rather than the program
+         * asking twice.
+         */
+        if ((rx.message.flags & SYS_MSG_IS_PULSE) != 0) {
+            const sys_pulse_t *p =
+              (const sys_pulse_t *)rx.message.inline_data;
+
+            if (p->code == SYS_PULSE_DEAD_OWNER) {
+                hold_notices++;
+            }
+            continue;
+        }
+
+        hold_faults++;
+
+        /*
+         * And nothing goes back. The client is not left for ever: it is
+         * killed, and the reply that never comes is what makes this
+         * check about the kill rather than about the pager.
+         */
+    }
+
+    thread_exit(0);
+}
+
+/*
+ * A program killed while it waits for a page, per M17 stage four.
+ *
+ * Its thread is blocked in a send it did not write, and the kill
+ * releases it the way it releases any other client: the send returns an
+ * error. What the fault path did with that error was report a fault, so
+ * a program that was killed came back saying it had faulted, and a
+ * supervisor reading the status would have been told the wrong cause.
+ */
+static void
+kill_faulting_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_connect_args cargs;
+    struct sys_op_status_args sargs;
+    const struct boot_member *m;
+    sys_ns_spec_t ns[1];
+    struct child c;
+    struct channel *ch;
+    struct thread *t;
+    const char *argv[3];
+    char abase[19], alen[19];
+    uint64_t waited;
+    sys_handle_t keep, h;
+    int32_t code;
+
+    cnputs("a kill: a program waiting for a page it will not get\n");
+
+    m = boot_lookup("paged");
+    if (m == NULL) {
+        panic("a kill: no paged image");
+    }
+
+    ch = channel_create("kill-pager", self);
+    if (ch == NULL) {
+        panic("a kill: no channel for the pager");
+    }
+    expect("a channel for the pager that does not answer",
+      handle_insert(ht, ch, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
+      &h_hold_recv), SYS_OK);
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to it, for the program",
+      run(SYS_OP_CHAN_CONNECT, h_hold_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+
+    hold_faults = 0;
+    hold_notices = 0;
+    hold_stop = false;
+    t = thread_create("hold-pager", PRIO_BOOT + 1, hold_pager, NULL);
+    sched_ready(t);
+
+    hex_into(abase, (uintptr_t)m->bm_load);
+    hex_into(alen, m->bm_size);
+    argv[0] = "paged";
+    argv[1] = abase;
+    argv[2] = alen;
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_PAGER;
+    ns[0].handle = cargs.out_handle;
+
+    /*
+     * Above the boot thread, because this check waits for it to fault
+     * and a program below the waiter never runs: the wait is a spin at
+     * a higher priority, which is a lesson stage one paid for once
+     * already.
+     */
+    sched_defer();
+    child_watch(&c, proc_spawn_image("paged", 20, ns, 1, argv, 3));
+    if (handle_insert(ht, c.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &keep) != SYS_OK) {
+        panic("a kill: no handle slot to hold the program with");
+    }
+    sched_undefer();
+
+    /*
+     * Until it has faulted and the pager has the message. Waiting on a
+     * count rather than on a length of time: what the check needs is
+     * the state, and how long the machine takes to reach it is the
+     * machine's business.
+     */
+    waited = time_now() + time_from_ms(JOIN_MS);
+    while (hold_faults == 0) {
+        if (time_now() > waited) {
+            panic("a kill: it never asked for a page");
+        }
+        sched_yield();
+    }
+
+    if (proc_kill(c.c_proc, KILL_CODE) != SYS_OK) {
+        panic("a kill: the process refused to be killed");
+    }
+
+    code = child_join(&c, JOIN_MS);
+
+    memset(&sargs, 0, sizeof(sargs));
+    h = c.c_handle;
+    (void)h;
+
+    /*
+     * The code it was killed with, and not SYS_EXIT_FAULT. Both are
+     * negative and a check that only asked whether it ended badly would
+     * pass either way; which one it is says whether the system knows
+     * why the program stopped.
+     */
+    if (code != KILL_CODE) {
+        panic("a kill: a program killed while faulting came back with "
+          "%d", (int)code);
+    }
+
+    /*
+     * And it asked once. A second request would mean the fault was
+     * retried after the kill, which is a dying thread going back to a
+     * pager that is not going to answer it.
+     */
+    if (hold_faults != 1) {
+        panic("a kill: the pager saw %u requests",
+          (unsigned int)hold_faults);
+    }
+
+    /*
+     * And it was told. Section 10.5 has a server hear that its client
+     * has gone rather than discover it at reply time, and a pager is a
+     * server whose client is the kernel: the notice arrives here for a
+     * fault nobody will ever answer.
+     */
+    if (hold_notices != 1) {
+        panic("a kill: the pager was told %u times that its client had "
+          "gone", (unsigned int)hold_notices);
+    }
+
+    cnprintf("    %-38s %s\n", "a program killed while it waited",
+      "left as killed, not as faulted");
+    cnprintf("    %-38s %u asked for, %u death notice\n",
+      "pages", (unsigned int)hold_faults, (unsigned int)hold_notices);
+
+    hold_stop = true;
+    expect("giving the program's handle back", handle_close(ht, keep),
+      SYS_OK);
+}
+
+#endif /* SYS_TIER == 2 */
+
 
 
 
@@ -10580,6 +10783,9 @@ kernel_main(void)
     clock_cost_checks();
     kill_reach_checks();
     kill_other_core_checks();
+#if SYS_TIER == 2
+    kill_faulting_checks();
+#endif
     startup_record_checks();
     deadline_checks();
 

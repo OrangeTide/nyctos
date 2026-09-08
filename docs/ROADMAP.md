@@ -10142,15 +10142,39 @@ what a death means; this is only about the death arriving.
   whether the thread is running, not where it is, and that direction was
   already safe both ways.
 
-**4. A dying thread that faults.** *Planned.*
+**4. A dying thread that faults.** *Built.*
 
-- A thread marked for death that takes a fault must leave as killed
-  rather than be reported as a fault, and must not go to a pager and
-  block: a dying thread waiting on a reply is the wait the kill was
-  meant to end.
-- *Check.* A program is killed while it is faulting on a paged region.
-  Its status is the kill code and not `SYS_EXIT_FAULT`, and the pager
-  sees no request for the page it never got.
+- The fault path reads the mark in two more places. At its start, so a
+  thread already marked does not go on to ask a pager: asking is a
+  rendezvous, and a dying thread waiting for a reply is the wait the
+  kill was meant to end. And before the fault is reported, so a kill
+  that arrived while the pager was being asked ends the thread as
+  killed rather than as faulted.
+- *Check.* A pager that takes a fault and never answers it, and a
+  program killed while it waits. The status is the code it was killed
+  with and not `SYS_EXIT_FAULT`: both are negative, and a check that
+  only asked whether the program ended badly would pass either way,
+  which is why the check asks which.
+- *Settled.* Without the second read the program comes back with -16,
+  `SYS_EXIT_FAULT`, for a program that did not fault: it was killed
+  while waiting, its send returned an error, and the fault path did what
+  it does with a fault it cannot service. A supervisor reading that
+  status would have been told the wrong cause of death.
+- *And the pager is told.* The check counts what arrives on its channel
+  and found the answer immediately: two receives for one fault. The
+  second is section 10.5's `SYS_PULSE_DEAD_OWNER`, the notice that a
+  server's client has gone, arriving for a pager whose client is the
+  kernel. One fault and one notice, both asserted, and the first version
+  of the check counted the notice as a second request.
+- *The guard at the top of the fault path is not exercised.* Removing it
+  fails nothing here, because a marked thread is stopped at the next
+  return to user mode and reaching a fault with the mark already set
+  means the fault beat the poke. It is kept for that race and the entry
+  says it is a guard rather than a checked behaviour.
+- *It costs a thread.* The pager that does not answer takes the boot's
+  high-water mark from 24 threads to 25, and `usage-tier2.txt` records
+  it: that file exists to say what the boot costs, and a check that
+  costs something says so there.
 
 **5. A server thread that dies holding a message.** *Planned.*
 

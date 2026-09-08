@@ -516,6 +516,18 @@ trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
 static void
 trap_user_body(unsigned long cause, unsigned long pc, unsigned long addr)
 {
+    /*
+     * A thread whose process has been killed does not fault: it
+     * leaves. Before anything else here, because what comes next may
+     * ask a pager, and asking is a wait. A dying thread waiting for a
+     * reply is the wait the kill was meant to end.
+     *
+     * Reachable as a race rather than as a state: a marked thread is
+     * stopped at the next return to user mode, so getting here with
+     * the mark set means the fault beat the poke to it.
+     */
+    proc_exit_if_dying();
+
     uint32_t kind = md_fault_kind(cause);
     uintptr_t where = md_fault_has_addr(cause) ? (uintptr_t)addr : 0;
 
@@ -560,6 +572,16 @@ trap_user_body(unsigned long cause, unsigned long pc, unsigned long addr)
         return;
     }
 #endif
+
+    /*
+     * And a kill that arrived while the pager was being asked ends
+     * this thread as killed rather than as faulted. Asking is a
+     * rendezvous, so a kill releases it the way it releases any other
+     * client, and what comes back is an error: without this the
+     * program that was killed is reported as one that faulted, and
+     * the status a supervisor reads names the wrong cause.
+     */
+    proc_exit_if_dying();
 
     thread_fault(kind, where, (uintptr_t)pc);
 }

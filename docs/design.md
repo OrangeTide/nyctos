@@ -900,7 +900,9 @@ A thread cancelled mid-batch stops at the next entry boundary, which is already 
 
 **What that costs is one interrupt per running thread**, and what it buys is that promptness means the same thing for a program that computes as for one that waits. A program running on another core is reached in about half a millisecond; without the poke it is not reached at all, and runs until it decides to enter the kernel on its own.
 
+**A thread that has been killed does not fault.** The fault path reads the mark at its start, so a marked thread does not go on to ask a pager, and again before a fault is reported, so a kill that arrives while the pager is being asked ends the thread as killed rather than as faulted. Asking a pager is a rendezvous the faulting thread did not choose, per section 15.3, and a kill releases it the way it releases any other client: the send returns an error and there is no page. Reported as a fault, that would tell a supervisor the wrong cause of death; the status says the process was killed, which is what happened.
 
+**The pager is told, as any server is.** Section 10.5's `SYS_PULSE_DEAD_OWNER` arrives on the pager's channel for the fault it will never answer, because a pager is a server whose client is the kernel.
 
 ### 10.6 States
 
