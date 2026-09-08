@@ -10400,20 +10400,44 @@ what a death means. Not channel teardown, which is section 18.2. This is
 about one server keeping its own books straight when the programs it
 serves stop existing.
 
-**1. A server that has something to lose.** *Planned.*
+**1. A server that has something to lose.** *Built.*
 
-- A server that holds a record per client: allocated on the client's
-  first request and released when the client is finished. The record is
-  a slot out of a fixed table, because a leak that costs nothing is a
-  leak nothing notices, and the table's occupancy is the number this
-  milestone is about.
-- Clients that connect, take a record, and then die in each of the ways
-  a client can die: killed mid-request, killed between requests, and
-  ended normally without saying goodbye.
-- *Check.* The server's occupancy after every client has gone, asserted
-  as a count. It is expected to be non-zero, and the number is the leak
-  this milestone starts from. A check that cannot report a leak here
-  would have nothing to measure against later.
+- `ledger` is a server that holds a record per client: a slot out of a
+  table of eight, taken on the client's first request and given back
+  only when the client asks. `patron` is a client that takes one and
+  then stops existing in whichever of four ways its argument names:
+  killed inside a request the server never answers, killed between
+  requests with nothing outstanding, ended normally without saying
+  anything, and ended after giving the record back.
+- The record is a slot and not a notion, because a leak that costs
+  nothing is a leak nothing notices. What the table holds is the number
+  the rest of this milestone is measured against.
+- *Check.* The occupancy after every client has gone, asserted as a
+  count.
+- *Settled.* Four clients took a record, one gave it back, and the
+  server ends holding **three records for three programs that no longer
+  exist**, identically in all four configurations. That is the leak
+  sections 12.5 and 13.1 argue from, and it is now a number.
+- *And the notice count is the next stage arriving early.* The server
+  saw **one** death notice for three deaths. The one it heard about is
+  the client killed inside a request; the client killed with nothing
+  outstanding and the client that simply returned produced nothing at
+  all. Section 12.5 predicts exactly that, so what stage two has to
+  establish is whether a server can be correct knowing only what the
+  section promises.
+- *The count has to be able to go down.* The fourth client gives its
+  record back, and without that the check would pass for a table that
+  only ever fills. Making `LEDGER_OP_DROP` a no-op panics with "4
+  records held after four clients, not 3".
+- *And each client has to actually take one.* The check waits on records
+  ever taken rather than on records held, because held goes down again
+  and the client that gives its record back can do both before the
+  boot thread looks. A client that asks for a count instead of a record
+  panics with "idle never reached the server".
+- *It costs the boot two programs and three kills.* The archive goes
+  from 34 members to 36 and from 233472 bytes to 241664; the compared
+  kill count goes from 7 to 10 at Tier 2 and 5 to 8 at Tier 0. No
+  threads and no stacks: the high-water marks are what M17 left.
 
 **2. Which deaths the server hears about.** *Planned.*
 

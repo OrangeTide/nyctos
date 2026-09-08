@@ -14,6 +14,7 @@ SUBDIR := blk_server peer_a peer_b peer_c wedged orphan echoes supervise \
           touch_addr \
           trespass \
           brief poke_addr leap patient tick clock \
+          ledger patron \
           sh echo cat
 
 include $(TOPDIR)/share/mk/nyc.subdir.mk

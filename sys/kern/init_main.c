@@ -16,6 +16,7 @@
 #include <sys/fs.h>
 #include <sys/grant.h>
 #include <sys/handle.h>
+#include <sys/ledger.h>
 #include <sys/intr.h>
 #include <sys/pool.h>
 #include <sys/object.h>
@@ -5241,6 +5242,288 @@ chain_stale_checks(void)
 
     cnprintf("    %-38s %s\n", "the middle of a chain, released",
       "still owes its own client");
+}
+
+/*
+ * A server with a record per client, and what it is left holding, per
+ * M18 stage one.
+ *
+ * Sections 12.5 and 13.1 both argue from a server that allocates
+ * something for a client and would leak it if it never heard the client
+ * had gone. Nothing here has ever had anything to leak, so the argument
+ * has never been tested. `ledger` has: a slot out of a fixed table per
+ * client, taken on request and given back only when asked.
+ *
+ * The number this stage produces is the leak. Every client that takes a
+ * record and dies leaves it taken, and the check asserts that count so
+ * that the stages which fix it have something to be measured against.
+ */
+static sys_handle_t h_ledger_recv;
+static sys_handle_t h_ledger_ask;
+
+/* One timeline nobody signals, for every client that has to wait. */
+static struct timeline *ledger_never;
+
+/*
+ * Ask the ledger something as an ordinary client. The boot thread is a
+ * client here like any other, and COUNT is the one request that takes
+ * no record, so asking does not change what is being asked about.
+ */
+static void
+ledger_ask(uint32_t op, ledger_reply_t *out)
+{
+    struct sys_op_send_args tx;
+    ledger_request_t *req;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    req = (ledger_request_t *)tx.request.inline_data;
+    req->lr_op = op;
+    tx.request.inline_len = sizeof(*req);
+
+    if (run(SYS_OP_IPC_SEND, h_ledger_ask, &tx, sizeof(tx)) != SYS_OK) {
+        panic("ledger: the server did not answer op %u",
+          (unsigned int)op);
+    }
+
+    memcpy(out, tx.reply.inline_data, sizeof(*out));
+    if (out->lp_status != SYS_OK) {
+        panic("ledger: op %u came back %d", (unsigned int)op,
+          (int)out->lp_status);
+    }
+}
+
+/*
+ * Start one client, let it get where it is going, and end it the way
+ * its argument says it ends.
+ *
+ * `hold` and `idle` never return on their own, so they are killed;
+ * `leave` and `polite` return and are joined. Which of the two this is
+ * follows from the argument, and the check says which it expected.
+ */
+static void
+ledger_client(const char *how, bool ends_itself, uint32_t want_taken)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_connect_args cargs;
+    sys_ns_spec_t ns[2];
+    ledger_reply_t rep;
+    struct child c;
+    const char *argv[2];
+    sys_handle_t keep, hn;
+    uint64_t waited;
+    int32_t code;
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    if (run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs,
+      sizeof(cargs)) != SYS_OK) {
+        panic("ledger: no connection for %s", how);
+    }
+
+    if (handle_insert(ht, ledger_never, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &hn) != SYS_OK) {
+        panic("ledger: no handle for the timeline");
+    }
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_PRIVATE + 0;
+    ns[0].handle = hn;
+    ns[1].id = SYS_NS_PRIVATE + 1;
+    ns[1].handle = cargs.out_handle;
+
+    argv[0] = "patron";
+    argv[1] = how;
+
+    /*
+     * Above the boot thread, because this check waits for the client to
+     * reach the server and a program below the waiter never gets there.
+     */
+    sched_defer();
+    child_watch(&c, proc_spawn_image("patron", 20, ns, 2, argv, 2));
+    if (handle_insert(ht, c.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &keep) != SYS_OK) {
+        panic("ledger: no handle slot for %s", how);
+    }
+    sched_undefer();
+
+    /*
+     * Until the server has actually taken a record for it. Waiting on
+     * the count rather than on a length of time: what the check needs
+     * is the state, and a client killed before it asked would be a
+     * client this stage is not about.
+     *
+     * On records ever taken and not on records held, because held goes
+     * down again. The client that gives its record back can do both
+     * before this thread looks, and a wait for the higher number would
+     * never see it.
+     */
+    waited = time_now() + time_from_ms(JOIN_MS);
+    for (;;) {
+        ledger_ask(LEDGER_OP_COUNT, &rep);
+        if (rep.lp_taken >= want_taken) {
+            break;
+        }
+        if (time_now() > waited) {
+            panic("ledger: %s never reached the server, %u records ever "
+              "taken", how, (unsigned int)rep.lp_taken);
+        }
+        sched_yield();
+    }
+
+    if (ends_itself) {
+        code = child_join(&c, JOIN_MS);
+        if (code != 0) {
+            panic("ledger: %s came back %d", how, (int)code);
+        }
+    } else {
+        if (proc_kill(c.c_proc, KILL_CODE) != SYS_OK) {
+            panic("ledger: %s refused to be killed", how);
+        }
+        code = child_join(&c, JOIN_MS);
+        if (code != KILL_CODE) {
+            panic("ledger: %s came back %d and not the code it was "
+              "killed with", how, (int)code);
+        }
+    }
+
+    /*
+     * Only the process handle. The other two travelled: section 7.4 has
+     * a handle in a namespace move, so this table no longer has them
+     * and closing one is closing something that is not there.
+     */
+    expect("giving the client back", handle_close(ht, keep), SYS_OK);
+}
+
+static void
+ledger_leak_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_connect_args cargs;
+    const struct boot_member *m;
+    ledger_reply_t rep;
+    sys_ns_spec_t ns[1];
+    struct channel *ch;
+    struct child sc;
+    sys_handle_t give, keep;
+
+    cnputs("a server: what it is left holding when its clients go\n");
+
+    m = boot_lookup("ledger");
+    if (m == NULL) {
+        panic("ledger: no image");
+    }
+
+    ledger_never = timeline_create("ledger-never");
+    if (ledger_never == NULL) {
+        panic("ledger: no timeline");
+    }
+
+    ch = channel_create("ledger", self);
+    if (ch == NULL) {
+        panic("ledger: no channel");
+    }
+    expect("a channel for the server",
+      handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_ledger_recv), SYS_OK);
+
+    /*
+     * A second handle for the same channel, to hand to the server. It
+     * is a fresh insert rather than a duplicate because this table's
+     * own handle was not made duplicable, and the last insert is what
+     * says whose channel it is: section 12.5 has a channel belong to
+     * whoever may receive on it, and that is about to be the server.
+     */
+    if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
+        panic("ledger: cannot hand the channel on");
+    }
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = give;
+
+    /*
+     * Above the clients, so that it is at its receive point before any
+     * of them sends. Below would still work, because a queued sender is
+     * taken when the server gets there, but a check that has to reason
+     * about which happened first is a check with a second thing in it.
+     */
+    sched_defer();
+    child_watch(&sc, proc_spawn_image("ledger", 21, ns, 1, NULL, 0));
+    if (handle_insert(ht, sc.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &keep) != SYS_OK) {
+        panic("ledger: no handle slot for the server");
+    }
+    sched_undefer();
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to it, for the check",
+      run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+    h_ledger_ask = cargs.out_handle;
+
+    ledger_ask(LEDGER_OP_COUNT, &rep);
+    if (rep.lp_held != 0 || rep.lp_taken != 0) {
+        panic("ledger: the server started holding %u of %u ever taken",
+          (unsigned int)rep.lp_held, (unsigned int)rep.lp_taken);
+    }
+
+    /*
+     * Three ways of dying, in the order that makes each one's state
+     * unambiguous. Every one of them takes a record first, and the
+     * count rises by one each time, which is what says the record was
+     * taken rather than assumed.
+     */
+    ledger_client("hold", false, 1);
+    ledger_client("idle", false, 2);
+    ledger_client("leave", true, 3);
+
+    /*
+     * And one that gives its record back, which is the guard on
+     * everything above. Without it the count could be right for a
+     * server whose table only ever fills, and the whole measurement
+     * would be of a number that cannot go down.
+     */
+    ledger_client("polite", true, 4);
+
+    ledger_ask(LEDGER_OP_COUNT, &rep);
+
+    /*
+     * Four clients took a record and one gave it back, so three are
+     * still held and every one of them belongs to a program that no
+     * longer exists. That is the leak, and it is asserted rather than
+     * printed, because the stages after this one are measured against
+     * it.
+     */
+    if (rep.lp_taken != 4) {
+        panic("ledger: %u records were ever taken, not 4",
+          (unsigned int)rep.lp_taken);
+    }
+    if (rep.lp_held != 3) {
+        panic("ledger: %u records held after four clients, not 3",
+          (unsigned int)rep.lp_held);
+    }
+
+    cnprintf("    %-38s %u of %u ever taken\n",
+      "records held after every client left",
+      (unsigned int)rep.lp_held, (unsigned int)rep.lp_taken);
+    cnprintf("    %-38s %u\n", "death notices the server saw",
+      (unsigned int)rep.lp_notices);
+
+    expect("ending the server", proc_kill(sc.c_proc, KILL_CODE), SYS_OK);
+    if (child_join(&sc, JOIN_MS) != KILL_CODE) {
+        panic("ledger: the server did not end when it was killed");
+    }
+
+    expect("giving the server's handle back", handle_close(ht, keep),
+      SYS_OK);
+    expect("giving the check's connection back",
+      handle_close(ht, h_ledger_ask), SYS_OK);
+    expect("giving the server's channel back",
+      handle_close(ht, h_ledger_recv), SYS_OK);
 }
 
 /*
@@ -11228,6 +11511,7 @@ kernel_main(void)
     kill_faulting_checks();
 #endif
     kill_server_stale_checks();
+    ledger_leak_checks();
     startup_record_checks();
     deadline_checks();
 
