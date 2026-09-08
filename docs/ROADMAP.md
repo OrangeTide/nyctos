@@ -10486,17 +10486,56 @@ serves stop existing.
   before the first client there is no thread that would answer: it
   asserts one record held after one client instead.
 
-**2. Which deaths the server hears about.** *Planned.*
+**2. Which deaths the server hears about.** *Built.*
 
-- The notice is counted per kind of death rather than in total. A client
-  killed while a server holds its request, a client killed while queued
-  and never received, a client killed holding a record with nothing
-  outstanding, a client that returns from `main`, and a client whose
-  whole process is killed with several threads on one connection.
-- *Check.* One count per case, all asserted. Section 12.5 predicts
-  notices for some of these and silence for others; the check is written
-  to the section, so a case that disagrees with it is either a defect or
-  a sentence that has to change.
+- The notice is counted per death rather than in total. Each of the
+  ledger's clients is asked about individually: the server's count is
+  read after every one of them has gone and asserted against what
+  section 12.5 predicts for that kind of death.
+- *One round trip is the whole wait, and the reason is section 13.1.* A
+  pulse is collected before a message, so a notice enqueued by a kill
+  has already been taken by the time the server answers the next
+  question. A settling period would be a check that waits where this one
+  knows.
+- Two of the five cases cannot be arranged through the ledger, because
+  it has one thread that holds and one that answers and neither can be
+  made to leave a client queued or to sit on a request past a deadline.
+  Those are arranged on a channel the check serves itself, and what is
+  read is the channel's pulse queue, which is where a notice would be
+  whether anything collected it or not.
+- *Check.* One count per case, all asserted.
+- *Settled, and the section is right in every case.* The same in all four
+  configurations:
+
+  | how the client went | what the server was told |
+  | --- | --- |
+  | killed inside a request the server held | one notice |
+  | killed with a record and nothing outstanding | nothing |
+  | returned from `main` | nothing |
+  | killed while queued, never received | nothing |
+  | gave up at its deadline, server holding it | nothing, a refused reply |
+
+- *Which is the finding, and it is not a defect.* One of five deaths is
+  announced. Section 12.5 says exactly that and gives the reason: a
+  server is told about the client whose request it is holding, because
+  that is the one it has state for and the one whose reply it would
+  otherwise wait to fail. Every other way a client can go leaves the
+  server no worse off than it was, **unless the server keeps something
+  across requests**, which is what `ledger` does and what this milestone
+  is about.
+- *And the queue is not merely quiet.* A client killed while queued is
+  off the sender list as well as unannounced, so the silence is not a
+  message the server will find later. Asserting one pulse instead of
+  none panics with "0 pulses for a client that died on the queue".
+- *And a client that gives up is not a death at all.* The server holding
+  its request is told nothing and discovers it when its reply is refused
+  with `SYS_ERR_STALE`, which is section 12.1 and is the only thing that
+  distinguishes the case from a client that never existed. The boot's
+  count of sends that gave up with a server working goes from two to
+  three.
+- *Broken to check it.* Expecting a second notice from the client killed
+  with nothing outstanding panics with "the server was told 1 times
+  after idle, not 2", so the counts are read rather than assumed.
 
 **3. Releasing the right record.** *Planned.*
 

@@ -966,7 +966,7 @@ child_watch(struct child *c, struct proc *p)
  * what the checks ask for and not of how fast the host is.
  */
 #define DEADLINE_QUEUED_EXPECTED    1u
-#define DEADLINE_WORKING_EXPECTED   2u
+#define DEADLINE_WORKING_EXPECTED   3u
 
 static int32_t
 child_join(struct child *c, uint32_t within_ms)
@@ -5303,7 +5303,7 @@ ledger_ask(uint32_t op, ledger_reply_t *out)
  */
 static void
 ledger_client(const char *how, bool ends_itself, bool first,
-  uint32_t want_taken)
+  uint32_t want_taken, uint32_t want_notices)
 {
     struct proc *self = proc_current();
     struct handle_table *ht = &self->p_handles;
@@ -5407,6 +5407,21 @@ ledger_client(const char *how, bool ends_itself, bool first,
      * and closing one is closing something that is not there.
      */
     expect("giving the client back", handle_close(ht, keep), SYS_OK);
+
+    /*
+     * And what the server was told about this death, per M18 stage two.
+     *
+     * One round trip is enough, and the reason is section 13.1: a pulse
+     * is collected before a message, so a notice enqueued by the kill
+     * above has already been taken by the time the server answers the
+     * question below. A settling period would be a check that waits
+     * instead of one that knows.
+     */
+    ledger_ask(LEDGER_OP_COUNT, &rep);
+    if (rep.lp_notices != want_notices) {
+        panic("ledger: the server was told %u times after %s, not %u",
+          (unsigned int)rep.lp_notices, how, (unsigned int)want_notices);
+    }
 }
 
 static void
@@ -5491,7 +5506,7 @@ ledger_leak_checks(void)
      * it has to be first for that to be a fact rather than a race: this
      * server has one receiver until that request arrives.
      */
-    ledger_client("hold", false, true, 1);
+    ledger_client("hold", false, true, 1, 1);
 
     /*
      * And the server had nothing before it. Asked here rather than
@@ -5504,8 +5519,8 @@ ledger_leak_checks(void)
           (unsigned int)rep.lp_held, (unsigned int)rep.lp_taken);
     }
 
-    ledger_client("idle", false, false, 2);
-    ledger_client("leave", true, false, 3);
+    ledger_client("idle", false, false, 2, 1);
+    ledger_client("leave", true, false, 3, 1);
 
     /*
      * And one that gives its record back, which is the guard on
@@ -5513,7 +5528,7 @@ ledger_leak_checks(void)
      * server whose table only ever fills, and the whole measurement
      * would be of a number that cannot go down.
      */
-    ledger_client("polite", true, false, 4);
+    ledger_client("polite", true, false, 4, 1);
 
     ledger_ask(LEDGER_OP_COUNT, &rep);
 
@@ -5536,8 +5551,10 @@ ledger_leak_checks(void)
     cnprintf("    %-38s %u of %u ever taken\n",
       "records held after every client left",
       (unsigned int)rep.lp_held, (unsigned int)rep.lp_taken);
-    cnprintf("    %-38s %u\n", "death notices the server saw",
-      (unsigned int)rep.lp_notices);
+    cnprintf("    %-38s %u of 3 deaths\n",
+      "death notices the server saw", (unsigned int)rep.lp_notices);
+    cnprintf("    %-38s %s\n", "the one it was told about",
+      "the client killed inside a request");
 
     sid = sc.c_proc->p_id;
     expect("ending the server", proc_kill(sc.c_proc, KILL_CODE), SYS_OK);
@@ -5567,6 +5584,181 @@ ledger_leak_checks(void)
         }
         sched_yield();
     }
+}
+
+/*
+ * The deaths a server is not told about, per M18 stage two.
+ *
+ * Section 12.5 announces one death and is explicit about which: a
+ * client whose request a server is holding. A client that dies on the
+ * queue is taken off a queue nobody looked at, and section 12.1 has a
+ * client that gives up at its deadline abandon work in progress with
+ * the server finding out when its reply is refused. Neither is a
+ * notice, and both are cases a server keeping records has to survive.
+ *
+ * Arranged on channels this thread serves itself rather than through
+ * `ledger`, because the ledger has one thread that holds and one that
+ * answers, and neither can be made to leave a client queued or to sit
+ * on a request past a deadline. What is read is the channel's pulse
+ * queue, which is where a notice would be whether anyone collected it
+ * or not.
+ */
+static void
+notice_absence_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_connect_args cargs;
+    struct sys_msg msg, rep;
+    sys_thread_id_t peer;
+    sys_ns_spec_t ns[2];
+    struct channel *ch;
+    struct child c;
+    const char *argv[2];
+    sys_handle_t hrecv, keep;
+    uint64_t cookie, waited;
+    int32_t code;
+
+    cnputs("a server: the deaths it is not told about\n");
+
+    ch = channel_create("notice", self);
+    if (ch == NULL) {
+        panic("notice: no channel");
+    }
+    expect("a channel with nobody receiving on it",
+      handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &hrecv), SYS_OK);
+
+    /*
+     * A client killed while queued. Nothing is at the receive point, so
+     * its message is on the channel's sender list and no server has
+     * ever seen it.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection for a client that will queue",
+      run(SYS_OP_CHAN_CONNECT, hrecv, &cargs, sizeof(cargs)), SYS_OK);
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_PRIVATE + 1;
+    ns[0].handle = cargs.out_handle;
+    ns[1].id = SYS_NS_PRIVATE + 0;
+    if (handle_insert(ht, ledger_never, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &ns[1].handle) != SYS_OK) {
+        panic("notice: no handle for the timeline");
+    }
+    argv[0] = "patron";
+    argv[1] = "hold";
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("patron", 20, ns, 2, argv, 2));
+    if (handle_insert(ht, c.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &keep) != SYS_OK) {
+        panic("notice: no handle slot for the client");
+    }
+    sched_undefer();
+
+    /*
+     * Queued, and not being served. The state is what says which of
+     * section 12.1's two cases this is, and a check that killed a
+     * client which had not reached the queue would be testing nothing.
+     */
+    waited = time_now() + time_from_ms(JOIN_MS);
+    {
+        struct thread *ct = proc_threads(c.c_proc);
+
+        while (ct->t_wait != THREAD_WAIT_SEND) {
+            if (time_now() > waited) {
+                panic("notice: the client never queued, wait %u",
+                  (unsigned int)ct->t_wait);
+            }
+            sched_yield();
+        }
+    }
+
+    if (proc_kill(c.c_proc, KILL_CODE) != SYS_OK) {
+        panic("notice: the queued client refused to be killed");
+    }
+    code = child_join(&c, JOIN_MS);
+    if (code != KILL_CODE) {
+        panic("notice: the queued client came back %d", (int)code);
+    }
+
+    if (ch->c_pulse_count != 0) {
+        panic("notice: %u pulses for a client that died on the queue",
+          (unsigned int)ch->c_pulse_count);
+    }
+    if (ch->c_senders != NULL) {
+        panic("notice: the queue still names a client that has gone");
+    }
+    expect("giving the queued client back", handle_close(ht, keep),
+      SYS_OK);
+
+    cnprintf("    %-38s %s\n", "a client that died on the queue",
+      "no notice, and off the queue");
+
+    /*
+     * And a client that gives up at its deadline while this thread
+     * holds its request. Section 12.1: it abandons work in progress,
+     * the server is not told, and the reply is what discovers it.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection for a client that will give up",
+      run(SYS_OP_CHAN_CONNECT, hrecv, &cargs, sizeof(cargs)), SYS_OK);
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_PRIVATE + 1;
+    ns[0].handle = cargs.out_handle;
+    ns[1].id = SYS_NS_PRIVATE + 0;
+    if (handle_insert(ht, ledger_never, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &ns[1].handle) != SYS_OK) {
+        panic("notice: no handle for the timeline");
+    }
+    argv[1] = "giveup";
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("patron", 20, ns, 2, argv, 2));
+    if (handle_insert(ht, c.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &keep) != SYS_OK) {
+        panic("notice: no handle slot for the client");
+    }
+    sched_undefer();
+
+    /*
+     * This thread becomes the server, and owes a reply from here until
+     * the end of this block. It may not receive again while it does,
+     * which is stage one's review, and it does not.
+     */
+    memset(&msg, 0, sizeof(msg));
+    expect("taking the request it will not answer",
+      channel_recv(ch, &msg, &peer, &cookie), SYS_OK);
+
+    code = child_join(&c, JOIN_MS);
+    if (code != 0) {
+        panic("notice: the client that gave up came back %d", (int)code);
+    }
+
+    if (ch->c_pulse_count != 0) {
+        panic("notice: %u pulses for a client that gave up",
+          (unsigned int)ch->c_pulse_count);
+    }
+
+    /*
+     * And this is how the server finds out, which is the whole of what
+     * section 12.1 offers it: a refused reply, after the fact.
+     */
+    memset(&rep, 0, sizeof(rep));
+    rep.handle = SYS_HANDLE_INVALID;
+    expect("and the reply it makes anyway", channel_reply(peer, &rep),
+      SYS_ERR_STALE);
+
+    expect("giving that client back", handle_close(ht, keep), SYS_OK);
+
+    cnprintf("    %-38s %s\n", "a client that gave up at its deadline",
+      "no notice, a refused reply");
+
+    expect("giving the channel back", handle_close(ht, hrecv), SYS_OK);
 }
 
 /*
@@ -11555,6 +11747,7 @@ kernel_main(void)
 #endif
     kill_server_stale_checks();
     ledger_leak_checks();
+    notice_absence_checks();
     startup_record_checks();
     deadline_checks();
 

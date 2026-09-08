@@ -21,6 +21,8 @@
  *   leave   takes a record and returns, which is a client that ends
  *           without saying anything to the server
  *   polite  takes a record, gives it back, and returns
+ *   giveup  sends with a deadline to a server that will not answer,
+ *           and abandons the request rather than dying in it
  */
 
 #include <os/sys.h>
@@ -28,6 +30,9 @@
 #include <stddef.h>
 #include <string.h>
 #include <sys/ledger.h>
+
+/* Long enough to be unmistakably a wait, short enough to spend once. */
+#define GIVEUP_MS   50u
 
 static int
 same(const char *a, const char *b)
@@ -77,6 +82,39 @@ main(int argc, char **argv)
     to = ns_lookup(SYS_NS_PRIVATE + 1);
     if (to == SYS_HANDLE_INVALID) {
         return 2;
+    }
+
+    if (same(how, "giveup")) {
+        /*
+         * A send with a deadline, to a server that has the request and
+         * will not answer. Section 12.1 has the client abandon work in
+         * progress and the server find out when its reply is refused,
+         * so this death is not a death at all and the server hears
+         * nothing about it: that is the case this mode is for.
+         */
+        sys_op_t send;
+        struct sys_op_send_args args;
+        ledger_request_t *req;
+
+        memset(&args, 0, sizeof(args));
+        args.request.handle = SYS_HANDLE_INVALID;
+        args.request.inline_len = sizeof(*req);
+        req = (ledger_request_t *)args.request.inline_data;
+        req->lr_op = LEDGER_OP_TAKE;
+        args.deadline = sys_deadline_in_ms(GIVEUP_MS);
+
+        memset(&send, 0, sizeof(send));
+        send.opcode = SYS_OP_IPC_SEND;
+        send.target = to;
+        send.flags = SYS_OP_DEADLINE;
+        send.arg_ptr = (uintptr_t)&args;
+        send.arg_len = sizeof(args);
+
+        if (sys_op_submit(&send, 1) != SYS_ERR_TIMEOUT) {
+            return 9;
+        }
+
+        return 0;
     }
 
     if (same(how, "hold")) {
