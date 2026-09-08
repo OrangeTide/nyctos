@@ -9766,11 +9766,38 @@ something needs it, not because the section lists it.
   it runs, where there is one. Zeroing only the secondary's write now
   fails the check on both ports, and did not before.
 
-**4. A deadline a program made for itself.** *Planned.*
+**4. A deadline a program made for itself.** *Built.*
 
-- *Check.* `patient` stops being handed its deadline and computes one,
-  and still gives up at it. The kernel no longer passes an argument it
-  had no business knowing, and M15's check reads the same as before.
+- `patient` computes its own instant from the counter and the frequency
+  in its page, through `sys_deadline_in_ms()` in libc. The kernel that
+  starts it passes nothing: the argument it had no business knowing is
+  gone, and so is the program's hex parser for it.
+- The helpers are in libc and not in the kernel, per section 14.3. A
+  relative deadline converted inside a system call would start counting
+  from whenever the call arrived, which is the one thing an absolute
+  deadline exists to avoid.
+- *Check.* M15's check reads as it did, with one line added: the kernel
+  measures how long the program was gone and asserts it was not back
+  before the fifty milliseconds the program asked for. The floor is
+  asserted and the figure is printed, which is M9's rule and M15's own
+  arrangement for the same question.
+- *Settled, and the floor is the whole of it.* A program that read no
+  clock and passed `SYS_DEADLINE_NOW` gets the same `SYS_ERR_TIMEOUT`
+  and writes its buffer just the same. Only the waiting tells them
+  apart. Making `patient` pass `SYS_DEADLINE_NOW` brings it back in
+  27445 ticks against a floor of 500000, and dividing by a million
+  rather than a thousand in the conversion brings it back in 28032:
+  both are caught, and neither is visible in what the program returns.
+- *And a program with no page does not guess.* `sys_deadline_in_ms()`
+  answers `SYS_DEADLINE_NOW` when the frequency is zero, which fails
+  where it can be seen rather than waiting for a length of time nobody
+  chose, and `patient` refuses to start at all in that case. Taking the
+  frequency away is caught one check earlier, by `clock`, which is where
+  that path is first reachable.
+- *What the check does not catch is a deadline that is too long.* The
+  holder never answers, so a program asking for more time waits out
+  whatever it asked for and the boot takes longer. Five hundred
+  milliseconds instead of fifty passes everything here.
 
 **5. What the read costs.** *Planned.*
 

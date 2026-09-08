@@ -835,13 +835,12 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - No cross-core TLB maintenance. Reclaiming a cohort member's memory
   while a peer runs on another core is not safe, and the checks reap
   processes that are in no cohort.
-- A program cannot make a deadline. A send takes an absolute one and
-  milestone 15 acts on it, but an absolute deadline needs a clock. The
-  shared page of section 6.2 exists as of milestone 16 stage two, mapped
-  read-only into every process and found through the startup record, and
-  what it carries is the tick frequency. A frequency is not a time:
-  until a program can read the counter itself, every deadline in this
-  system is computed by the kernel and handed over.
+- No calendar time. A program makes its own deadlines now: it reads the
+  counter with one instruction and takes the frequency from the system
+  page, neither of them a system call, and libc turns a relative wait
+  into the absolute instant a call takes. The page carries no UTC
+  offset, so a program knows how long it has waited and not what day it
+  is.
 - A receive carries no deadline, deliberately: a server waiting for work
   is not waiting for a party that can fail it. What a server does about
   a client that never comes is not answered.

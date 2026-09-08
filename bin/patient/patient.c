@@ -13,13 +13,18 @@
  * them back the same way, with the permissions they had, or it runs on
  * afterwards with a hole where its memory was.
  *
- * The deadline arrives as an argument because a program has no way to
- * read the clock. Section 14.3 has every blocking call take an absolute
- * deadline and section 6.2 says what makes that affordable, a shared
- * page a program reads without a syscall, and that page does not exist.
- * So the kernel that starts this computes the instant and passes it,
- * which is what `paged` does with the bounds of its own image and is
- * the same admission: an interface for a test would be worse.
+ * The deadline is this program's own, as of M16 stage four. Section
+ * 14.3 has every blocking call take an absolute instant, and section
+ * 6.2 is what makes one affordable: the counter, read with no system
+ * call, and the frequency from the page mapped into every process. It
+ * arrived as an argument until then, because the kernel that started
+ * this was the only thing here that could read a clock.
+ *
+ * How long it waits is written here and nowhere else, and the check
+ * outside knows the same number as the floor it asserts. A shorter
+ * wait here and the check sees a program back before its floor. A
+ * longer one it does not see: the holder never answers, so this waits
+ * out whatever it asked for and the boot merely takes longer.
  */
 
 #include <os/sys.h>
@@ -31,40 +36,13 @@
 
 #define PATTERN 0x5eed1234u
 
+/* The same fifty milliseconds the check outside calls DEADLINE_MS. */
+#define WAIT_MS 50u
+
 static volatile uint32_t buf[64];
 
-static int
-hex(const char *s, uint64_t *out)
-{
-    uint64_t v = 0;
-
-    if (*s == '\0') {
-        return -1;
-    }
-    for (; *s != '\0'; s++) {
-        uint64_t d;
-
-        if (*s >= '0' && *s <= '9') {
-            d = (uint64_t)(*s - '0');
-        } else if (*s >= 'a' && *s <= 'f') {
-            d = (uint64_t)(*s - 'a') + 10u;
-        } else if (*s >= 'A' && *s <= 'F') {
-            d = (uint64_t)(*s - 'A') + 10u;
-        } else if (*s == 'x' || *s == 'X') {
-            continue;
-        } else {
-            return -1;
-        }
-        v = (v << 4) | d;
-    }
-
-    *out = v;
-
-    return 0;
-}
-
 int
-main(int argc, char **argv)
+main(void)
 {
     sys_op_send_args_t args;
     sys_handle_t to;
@@ -72,9 +50,16 @@ main(int argc, char **argv)
     uint64_t deadline;
     uint32_t i;
 
-    if (argc != 2 || hex(argv[1], &deadline) != 0) {
+    /*
+     * Asked for before anything else, because a program with no page
+     * has no frequency and would get SYS_DEADLINE_NOW: a send that
+     * returns the right error for the wrong reason, having waited for
+     * nothing at all.
+     */
+    if (sys_uptime_hz() == 0) {
         return 1;
     }
+    deadline = sys_deadline_in_ms(WAIT_MS);
 
     to = ns_lookup(SYS_NS_SERVICE);
     if (to == SYS_HANDLE_INVALID) {

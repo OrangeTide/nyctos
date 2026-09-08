@@ -3840,8 +3840,7 @@ deadline_checks(void)
     {
         struct sys_op_connect_args pargs;
         sys_ns_spec_t ns[1];
-        const char *argv[2];
-        char dl[19];
+        uint64_t began, took;
         sys_handle_t h;
         struct child c;
         void *obj;
@@ -3857,21 +3856,21 @@ deadline_checks(void)
         sched_ready(srv);
 
         /*
-         * The deadline is computed here and handed over, because a
-         * program has no way to read the clock: section 6.2's shared
-         * page is what would let it, and that page does not exist.
+         * Nothing is handed over any more, per M16 stage four. The
+         * program computes its own instant from the counter and the
+         * frequency in its system page, and the check's part is to
+         * know how long that instant is meant to be and to say that
+         * the program did not come back before it.
          */
-        hex_into(dl, (uintptr_t)(time_now() + time_from_ms(DEADLINE_MS)));
-        argv[0] = "patient";
-        argv[1] = dl;
-
         memset(ns, 0, sizeof(ns));
         ns[0].id = SYS_NS_SERVICE;
         ns[0].handle = pargs.out_handle;
 
+        began = time_now();
+
         sched_defer();
         if (proc_spawn_op(proc_current(), "patient", PRIO_BOOT - 1, ns, 1,
-          argv, 2, &h) != SYS_OK) {
+          NULL, 0, &h) != SYS_OK) {
             panic("deadline: could not start the program that lends");
         }
         if (handle_lookup(&self->p_handles, h, SYS_OBJ_PROCESS, 0,
@@ -3882,6 +3881,7 @@ deadline_checks(void)
         sched_undefer();
 
         code = child_join(&c, JOIN_MS);
+        took = time_now() - began;
 
         if (dl_slow_took == 0) {
             panic("deadline: the holder never took the message");
@@ -3890,8 +3890,29 @@ deadline_checks(void)
             panic("deadline: the program that lent its buffer exited %d",
               code);
         }
+
+        /*
+         * And it did not come back early, which is the whole of what
+         * says the deadline it made was the one it meant. A program
+         * that read no clock and passed SYS_DEADLINE_NOW gets the same
+         * SYS_ERR_TIMEOUT and writes its buffer just the same, and the
+         * only thing that tells the two apart is that one of them
+         * waited. Measured around the spawn as well as the run, so the
+         * floor is the deadline and not a tight bound on it: what is
+         * asserted is that it did not return sooner, per M9 and per
+         * M15's own send.
+         */
+        if (took < time_from_ms(DEADLINE_MS)) {
+            panic("deadline: the program was back in %lu ticks, inside "
+              "the %lu it asked to wait", (unsigned long)took,
+              (unsigned long)time_from_ms(DEADLINE_MS));
+        }
+
         cnprintf("    %-38s %s\n", "a client that lent and gave up",
           "wrote its buffer afterwards");
+        cnprintf("    %-38s %lu ms of its own, %lu ticks gone\n",
+          "a deadline the program made itself",
+          (unsigned long)DEADLINE_MS, (unsigned long)took);
 
         expect("giving its handle back",
           handle_close(&self->p_handles, h), SYS_OK);

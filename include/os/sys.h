@@ -49,6 +49,17 @@ uint64_t sys_uptime(void);
 uint64_t sys_uptime_hz(void);
 
 /*
+ * And a deadline from now, per section 14.3: absolute is what a call
+ * takes, and turning a relative one into it is the caller's to do. A
+ * plain uint64_t because that is what a deadline is everywhere else
+ * here; section 14.3 spells the type sys_deadline_t.
+ * SYS_DEADLINE_NOW for a program with no page, which has no scale to
+ * turn milliseconds into ticks with.
+ */
+uint64_t sys_deadline_in(uint64_t ticks);
+uint64_t sys_deadline_in_ms(uint32_t ms);
+
+/*
  * Blocks until a server receives the request and replies to it. target
  * names a connection, or a channel handle carrying SYS_RIGHT_SEND.
  */
