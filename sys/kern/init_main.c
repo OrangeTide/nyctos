@@ -4834,7 +4834,6 @@ kill_faulting_checks(void)
     struct proc *self = proc_current();
     struct handle_table *ht = &self->p_handles;
     struct sys_op_connect_args cargs;
-    struct sys_op_status_args sargs;
     const struct boot_member *m;
     sys_ns_spec_t ns[1];
     struct child c;
@@ -4843,7 +4842,7 @@ kill_faulting_checks(void)
     const char *argv[3];
     char abase[19], alen[19];
     uint64_t waited;
-    sys_handle_t keep, h;
+    sys_handle_t keep;
     int32_t code;
 
     cnputs("a kill: a program waiting for a page it will not get\n");
@@ -4917,10 +4916,6 @@ kill_faulting_checks(void)
 
     code = child_join(&c, JOIN_MS);
 
-    memset(&sargs, 0, sizeof(sargs));
-    h = c.c_handle;
-    (void)h;
-
     /*
      * The code it was killed with, and not SYS_EXIT_FAULT. Both are
      * negative and a check that only asked whether it ended badly would
@@ -4947,7 +4942,20 @@ kill_faulting_checks(void)
      * has gone rather than discover it at reply time, and a pager is a
      * server whose client is the kernel: the notice arrives here for a
      * fault nobody will ever answer.
+     *
+     * Waited for rather than read once. The join returns when the
+     * program has gone, and the notice is delivered to a thread that
+     * has to run to take it: reading the count straight after the join
+     * is reading it before the pager has necessarily looked.
      */
+    waited = time_now() + time_from_ms(JOIN_MS);
+    while (hold_notices == 0) {
+        if (time_now() > waited) {
+            panic("a kill: the pager was never told its client had gone");
+        }
+        sched_yield();
+    }
+
     if (hold_notices != 1) {
         panic("a kill: the pager was told %u times that its client had "
           "gone", (unsigned int)hold_notices);
@@ -4958,9 +4966,20 @@ kill_faulting_checks(void)
     cnprintf("    %-38s %u asked for, %u death notice\n",
       "pages", (unsigned int)hold_faults, (unsigned int)hold_notices);
 
+    /*
+     * And the pager stops being one. Cancelled rather than left: its
+     * receive is a wait nothing will end, so without this the thread
+     * sits blocked for the rest of the boot and the flag telling it to
+     * stop is a flag it never looks at again.
+     */
     hold_stop = true;
+    expect("ending the pager that does not answer", thread_cancel(t),
+      SYS_OK);
+
     expect("giving the program's handle back", handle_close(ht, keep),
       SYS_OK);
+    expect("giving the pager's channel back",
+      handle_close(ht, h_hold_recv), SYS_OK);
 }
 
 #endif /* SYS_TIER == 2 */

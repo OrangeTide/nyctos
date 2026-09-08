@@ -10171,10 +10171,21 @@ what a death means; this is only about the death arriving.
   return to user mode and reaching a fault with the mark already set
   means the fault beat the poke. It is kept for that race and the entry
   says it is a guard rather than a checked behaviour.
-- *It costs a thread.* The pager that does not answer takes the boot's
-  high-water mark from 24 threads to 25, and `usage-tier2.txt` records
-  it: that file exists to say what the boot costs, and a check that
-  costs something says so there.
+- *The review found the check leaving its own mess behind.* The pager
+  thread was never ended, so it sat blocked in `SYS_OP_IPC_RECV` for the
+  rest of the boot and `hold_stop` was a flag nothing read. Its channel
+  handle was never closed, and two locals were declared and used for
+  nothing. The pager is cancelled now, the handle is given back, and the
+  dead locals are gone.
+- *Which is where the extra thread went.* The high-water mark of 25
+  threads was the thread the check left running, not the cost of testing
+  this. With the pager ended it is 24 again and `usage-tier2.txt` is
+  unchanged by this stage.
+- *And the death notice was read without waiting for it.* The join
+  returns when the program is reaped, which can be before the pager
+  thread has taken the pulse off its channel, so the count was asserted
+  against a race that happened to fall the right way. It waits for the
+  notice with a deadline now and panics if it does not come.
 
 **5. A server thread that dies holding a message.** *Planned.*
 
