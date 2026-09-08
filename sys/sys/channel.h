@@ -87,6 +87,14 @@ extern uint64_t channel_gave_up_queued;
 extern uint64_t channel_gave_up_working;
 
 /*
+ * Clients released because the one thread that could have answered them
+ * ended, per section 10.5. Not the same as a client released by the
+ * death of a whole server, which is section 12.5 and says so with a
+ * different error.
+ */
+extern uint64_t channel_stale_clients;
+
+/*
  * Whether any channel still names this process as its owner. A channel
  * keeps that pointer and takes no reference for it, so reaping an owner
  * would leave it naming a freed slot. See the implementation.

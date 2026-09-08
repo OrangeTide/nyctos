@@ -552,6 +552,9 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
  */
 uint64_t channel_rendezvous;
 
+/* Clients released because the thread serving them ended. */
+uint64_t channel_stale_clients;
+
 /*
  * How many sends gave up at their deadline, told apart by which of
  * section 12.1's two states they were in. The section says the two
@@ -1489,6 +1492,7 @@ channel_thread_exited(struct thread *t)
              * over.
              */
             sched_defer();
+            channel_stale_clients++;
             release_blocked(client, SYS_ERR_STALE);
             sched_undefer();
         }

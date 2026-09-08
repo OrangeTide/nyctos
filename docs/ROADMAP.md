@@ -10257,10 +10257,33 @@ what a death means; this is only about the death arriving.
   thread state for the same reason from the other side, and this reads
   it too.
 
-**6. What it cost, and section 10.5 written around it.** *Planned.*
+**6. What it cost, and section 10.5 written around it.** *Built.*
 
 - *Check.* The figures as counts, and the section saying what a kill
   reaches and how, including the poke and the core it goes to.
+- Three counters, all of them properties of the kernel: kills written,
+  pokes sent, and clients told that the thread serving them had gone.
+  They are printed inside the compared part of the boot report, which is
+  what makes them assertions rather than decoration, and the durations
+  this milestone measured stay above that line where a number that moves
+  with the host belongs.
+- *Settled.* A boot writes **7 kills at Tier 2 and 5 at Tier 0**, sends
+  **one poke** at Tier 2 and none at Tier 0, and tells **two clients**
+  at either tier that their server thread had gone. The two ports agree
+  exactly, which is what a compared line is for. The two kills Tier 0
+  does not write are the one on the other core, which it has not got,
+  and the one on a program waiting for a page, which needs an MMU; the
+  poke belongs to the first of those, and a single core sends none.
+- *Broken to check it.* Stopping the kill counter incrementing changes
+  the line to `0 written` and fails the comparison, so the number comes
+  from the kills and not from the file.
+- Section 10.5 gained the half that says what was built: who a kill
+  reaches, where the mark is read, why one core needs no poke and two
+  do, what a killed thread's fault does, and, from stage five, what a
+  client is told when the thread serving it ends. The section also now
+  says why the two errors differ, which is the part a client can act on:
+  `SYS_ERR_STALE` says the server is still there to be asked again and
+  `SYS_ERR_OWNER_DEAD` says it is not.
 
 *Done when* a program that computes and calls nothing is killed and
 stops, on both ports, at both tiers, and a client whose server thread

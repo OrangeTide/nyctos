@@ -342,6 +342,12 @@ sys_err_t proc_kill(struct proc *p, int32_t code);
 void proc_exit_if_dying(void);
 
 /*
+ * What section 10.5 cost, as counts. See the definitions.
+ */
+extern uint64_t proc_kills;
+extern uint64_t proc_kill_pokes;
+
+/*
  * Whether a range of addresses is memory this process owns, per section
  * 23.2. A buffer descriptor a program passes is checked against this
  * before anything reads it: a number is not a right, and the kernel

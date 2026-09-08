@@ -11320,6 +11320,18 @@ kernel_main(void)
       (unsigned long)meas_count(&meas_twice),
       (unsigned long)meas_count(&meas_shared));
 
+    /*
+     * And what stopping a thread that will not stop cost, per M17.
+     * Inside the compared part of the report because all three are
+     * counts: a kill written, an interrupt a kill had to send to reach
+     * a core, and a client told that the one thread which could have
+     * answered it had gone. None of them moves with the host. How long
+     * any of it took is above this line, where a duration belongs.
+     */
+    cnprintf("  kills: %lu written, pokes %lu, clients told %lu\n",
+      (unsigned long)proc_kills, (unsigned long)proc_kill_pokes,
+      (unsigned long)channel_stale_clients);
+
     cnputs("stage 9 complete\n");
     machine_halt(0);
 }

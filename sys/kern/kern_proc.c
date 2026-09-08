@@ -1809,6 +1809,16 @@ proc_threads(struct proc *p)
     return p->p_threads;
 }
 
+/*
+ * What section 10.5 cost, as counts rather than as durations. A kill
+ * that is written, a poke it had to send to reach a core, and a client
+ * that had to be told its server thread had gone are each a property of
+ * this kernel and the same on any machine that runs it. How long any of
+ * them took is the host's and is reported above the compared line.
+ */
+uint64_t proc_kills;
+uint64_t proc_kill_pokes;
+
 sys_err_t
 proc_kill(struct proc *p, int32_t code)
 {
@@ -1817,6 +1827,9 @@ proc_kill(struct proc *p, int32_t code)
     if (p->p_exited || p->p_nthreads == 0) {
         return SYS_ERR_WOULDBLOCK;
     }
+
+    /* Past the refusals, so the number is kills and not asks. */
+    proc_kills++;
 
     /*
      * The mark first, so that a thread released below and running
@@ -1878,6 +1891,7 @@ proc_kill(struct proc *p, int32_t code)
              * that number quietly wrong.
              */
             p->p_kill_pokes++;
+            proc_kill_pokes++;
             cpu_self()->cp_ipi++;
             md_cpu_ipi(t->t_core);
         }

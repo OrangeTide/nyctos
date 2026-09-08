@@ -904,6 +904,12 @@ A thread cancelled mid-batch stops at the next entry boundary, which is already 
 
 **The pager is told, as any server is.** Section 10.5's `SYS_PULSE_DEAD_OWNER` arrives on the pager's channel for the fault it will never answer, because a pager is a server whose client is the kernel.
 
+**And a client whose server thread has gone is told, rather than left to a deadline.** Step 3 above has a server that replies to a client which is no longer there told `SYS_ERR_STALE`. The other direction was missing: one thread of a live server that took a message and then ended left its client blocked, and until M15 that meant blocked for ever, and after M15 it meant blocked until the client's own deadline. Section 12.5 releases clients when the whole server process dies, and one thread of it ending is not that. The reply can no longer come from anywhere either way, so the client is now released as soon as the thread ends, with the same `SYS_ERR_STALE`: it is the same fact seen from the other end of the call, and it is released in under two milliseconds where before it waited out whatever deadline it had set.
+
+**The two errors say different things and a client can act on the difference.** `SYS_ERR_STALE` means the thread that had this request is gone and the server is still there to be asked again. `SYS_ERR_OWNER_DEAD` means the server is not. So a thread of a process that is on its way out leaves its clients to section 12.5, which releases them with the error that says the server has gone, rather than telling them the opposite a moment earlier.
+
+**What the whole of this cost is three counts.** The boot report carries them beside the ones for memory: kills written, pokes sent, and clients told that the thread serving them had gone. Each is a property of this kernel rather than of the machine it ran on, so each sits in the part of the report that is compared exactly. The durations this milestone produced sit above that line and are printed rather than compared, because how many microseconds a kill takes to arrive is the host's answer and not the kernel's.
+
 ### 10.6 States
 
 ```{=typst}
