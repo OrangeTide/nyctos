@@ -3976,6 +3976,56 @@ deadline_checks(void)
     expect("giving the channel back",
       handle_close(&self->p_handles, h_recv), SYS_OK);
 }
+/*
+ * Run tick, wait for it to be reaped, and answer with what it read.
+ *
+ * A function because the check runs it twice: once to say the page is
+ * there and says the right thing, and again after a process that had
+ * the page mapped has been reaped, to say the reap left it alone.
+ */
+static int32_t
+syspage_tick(void)
+{
+    struct child c;
+    sys_time_t deadline;
+    sys_id_t id;
+    int32_t code;
+
+    /*
+     * Spawned the way the frame checks spawn, and not through
+     * SYS_OP_PROC_SPAWN, because this waits for the reap and that
+     * spawn cannot give it one. The operation refuses a priority above
+     * the caller's, so its child runs below the boot thread; a child
+     * advances its completion before it sets itself dead, and a boot
+     * thread that spins waiting for the reap outranks it and never
+     * lets it get there. It was watched not being reaped for thirty
+     * seconds. Spawning above the waiter is what makes the wait
+     * terminate.
+     */
+    sched_defer();
+    child_watch(&c, proc_spawn_image("tick", 20, NULL, 0, NULL, 0));
+    id = c.c_proc->p_id;
+    sched_undefer();
+
+    code = child_join(&c, JOIN_MS);
+
+    /*
+     * And wait for the reap, per M13: the join says the process has
+     * exited and closing the handles says nothing can ask about it,
+     * but its last thread is parked rather than collected until the
+     * top of the next switch. The slot going back is the reap exactly,
+     * so the identifier going stale is the event to wait for.
+     */
+    deadline = time_now() + time_from_ms(JOIN_MS);
+    while (pool_lookup(proc_pool(), id) != NULL) {
+        if (time_now() > deadline) {
+            panic("syspage: tick exited and was never reaped");
+        }
+        sched_yield();
+    }
+
+    return code;
+}
 
 /*
  * The system page of section 6.2, per M16 stage two.
@@ -4000,7 +4050,7 @@ syspage_checks(void)
     struct handle_table *ht = &self->p_handles;
     const struct boot_member *m;
     struct sys_op_status_args sargs;
-    int32_t want;
+    int32_t want, got;
     char addr[19];
     const char *argv[2];
     uintptr_t where;
@@ -4010,28 +4060,6 @@ syspage_checks(void)
 
     cnputs("the system page: what a program can read of the clock\n");
 
-    sched_defer();
-    if (proc_spawn_op(self, "tick", PRIO_BOOT - 1, NULL, 0,
-      NULL, 0, &h) != SYS_OK) {
-        panic("syspage: could not start tick");
-    }
-    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
-        panic("syspage: the spawn returned no process");
-    }
-    child_watch(&c, obj);
-    sched_undefer();
-
-    (void)child_join(&c, JOIN_MS);
-
-    memset(&sargs, 0, sizeof(sargs));
-    if (run(SYS_OP_PROC_STATUS, h, &sargs, sizeof(sargs)) != SYS_OK) {
-        panic("syspage: no status for tick");
-    }
-    if (sargs.out_fault != SYS_FAULT_NONE) {
-        panic("syspage: tick faulted, kind %u",
-          (unsigned int)sargs.out_fault);
-    }
-
     /*
      * The frequency and not a token, because a token would pass against
      * a page of zeroes with a version written into it. This is the one
@@ -4040,14 +4068,13 @@ syspage_checks(void)
      * filled rather than some other page that happened to be mapped.
      */
     want = (int32_t)(time_hz() & 0x7fffffffu);
-    if (sargs.out_code != want) {
+    got = syspage_tick();
+    if (got != want) {
         panic("syspage: tick said %ld, the kernel has %ld",
-          (long)sargs.out_code, (long)want);
+          (long)got, (long)want);
     }
     cnprintf("    %-38s %lu ticks a second\n", "what the program read",
       (unsigned long)time_hz());
-
-    expect("giving tick's handle back", handle_close(ht, h), SYS_OK);
 
     /*
      * And the write. poke_addr is pointed at where its own page is,
@@ -4150,6 +4177,37 @@ syspage_checks(void)
 #endif
 
     expect("giving poke_addr's handle back", handle_close(ht, h), SYS_OK);
+
+    /*
+     * And once more, now that a process that had the page mapped has
+     * been reaped. tick waits for its own reap before it returns, so
+     * this runs after one has happened.
+     * One frame serves every process, so a reap that gave it back would
+     * hand the machine's clock to whatever asked for a frame next, and
+     * nothing above would notice: the read happened before the reap,
+     * and the write only says that something is mapped where the page
+     * should be.
+     */
+    got = syspage_tick();
+    if (got != want) {
+        panic("syspage: after a reap tick said %ld, not %ld",
+          (long)got, (long)want);
+    }
+
+    /*
+     * And the allocator is asked outright, because reading the page
+     * again is not enough and the break test is what showed it: a frame
+     * that has been freed still holds what it held until something else
+     * takes it, so the read passed with the page on the free list and
+     * the failure surfaced stages later as a double free. page_take
+     * answers false for a frame that is held, which is the answer
+     * wanted here.
+     */
+    if (page_take(syspage_frame())) {
+        panic("syspage: a reap gave the machine's page back");
+    }
+    cnprintf("    %-38s %s\n", "and after a reap of one of them",
+      "the same page, and still held");
 }
 
 /*

@@ -131,6 +131,18 @@ syspage_build(void)
 uintptr_t
 syspage_frame(void)
 {
+    /*
+     * A loader asking before the page exists would map physical frame
+     * zero into a program and hand it whatever is there. Nothing can
+     * reach that today, because the boot builds the page before it
+     * loads anything; it is refused rather than assumed because the
+     * result would be a program reading plausible rubbish and no sign
+     * of where it came from.
+     */
+    if (syspage_pa == 0) {
+        panic("syspage: asked for before it was built");
+    }
+
     return syspage_pa;
 }
 

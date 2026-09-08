@@ -661,15 +661,6 @@ proc_prot(const struct proc *p, uintptr_t va)
     }
 
     /*
-     * The system page sits just above what the program needs and is
-     * read-only: it is the machine's, mapped into every process, and
-     * nothing in a program may write it.
-     */
-    if (p->p_syspage_off != 0 && off == p->p_syspage_off) {
-        return VM_READ | VM_USER;
-    }
-
-    /*
      * The last page of what the program needs is the startup record,
      * asked about before the writable range because it is inside it.
      * Read-only: the loader writes it through the physical address
@@ -684,6 +675,14 @@ proc_prot(const struct proc *p, uintptr_t va)
         return VM_READ | VM_WRITE | VM_USER;
     }
 
+    /*
+     * Above everything the image asked for, which is where the system
+     * page of section 6.2 is: read-only, because it is the machine's
+     * and is mapped into every process, and a program able to write it
+     * could move every other program's clock. An explicit arm for the
+     * page was written here first and did nothing, because the page
+     * sits at p_mem_bytes exactly and this is already the answer.
+     */
     return VM_READ | VM_USER;
 #else
     /*

@@ -9682,6 +9682,32 @@ something needs it, not because the section lists it.
   page, so the program read a null pointer and said so at all four
   configurations. Making the page writable, and putting the wrong
   frequency in it, were each caught by the check they were for.
+- *The review found the check stopped one step short.* Both reads
+  happened while the processes that had the page mapped were still
+  alive, so nothing said the reap leaves the frame alone. The check now
+  runs `tick` again afterwards and asks the allocator outright, with
+  `page_take`, whether the frame is still held. Freeing the page for
+  `tick` alone makes the second run find a version that is not the one
+  the kernel wrote, because the freed frame went to the next thing that
+  asked for one, and it exits saying so; removing the skip for every process kills the boot long
+  before this check, in an earlier reap, which is why the narrow break
+  is the one that demonstrates it.
+- *And waiting for a reap needed the right spawn.* A program spawned
+  through `SYS_OP_PROC_SPAWN` runs below the boot thread, because the
+  operation refuses a priority above the caller's. A thread advances
+  its completion before it marks itself dead, so a boot thread that
+  spins waiting for the reap outranks the child and never lets it get
+  there: the process sat exited, with every handle closed and one
+  reference left, for thirty seconds. The check spawns above itself
+  instead, which is what the frame checks already did.
+- *And `syspage_frame` now refuses to answer before the page is built.*
+  A loader asking early would have mapped physical frame zero into a
+  program, which reads as plausible rubbish with nothing saying where
+  it came from.
+- *One arm was removed for doing nothing.* `proc_prot` gained an
+  explicit answer for the page, and the page sits at `p_mem_bytes`
+  exactly, so the read-only answer for everything above the image was
+  already the one it got.
 
 **3. A clock a program can read.** *Planned.*
 
