@@ -4628,17 +4628,14 @@ kill_reach_checks(void)
     cnprintf("    %-38s %s\n", "a program that computes and calls",
       "left on its way back to user mode");
     /*
-     * Zero, and asserted at zero. The program never entered the kernel
-     * after it was marked: it was already inside an interrupt, taken
-     * before the kill, and it left through the return from that. A
-     * check that waited for a marked thread to enter would be waiting
-     * for something that does not have to happen, which is what stage
-     * three is about.
+     * Zero, and reported rather than asserted. The program never
+     * enters the kernel after it is marked: it is already inside an
+     * interrupt, taken before the kill, and it leaves through the
+     * return from that. What could make it one is an unrelated
+     * interrupt landing in the microseconds between, which would be a
+     * correct system failing a check, so the number is printed and the
+     * status is what is held to.
      */
-    if (c.c_proc->p_dying_entries - entries != 0) {
-        panic("a kill: it entered the kernel %lu times while marked",
-          (unsigned long)(c.c_proc->p_dying_entries - entries));
-    }
 
     cnprintf("    %-38s %lu\n", "entries it made while marked",
       (unsigned long)(c.c_proc->p_dying_entries - entries));

@@ -10073,6 +10073,28 @@ what a death means; this is only about the death arriving.
   its operation half done.
 - *The fault return is not checked yet.* It is one call in the same
   place and stage four is what exercises it.
+- *The review found the riscv64 argument correct by accident.* The bit
+  was computed into `t1`, and the branch below it loads the address of
+  `md_user_irqs` into that same register before the argument is taken
+  from it. What the handler was told, for an interrupt from user mode,
+  was an address rather than a bit: non-zero, so the right answer, for a
+  reason that would stop being true if that address were ever one or the
+  two halves were ever reordered. The argument is taken before the
+  counter now, and passing SPP itself rather than its complement fails
+  the check on both ports, which is how the bit is known to be read.
+- *And a count was asserted that is not the kernel's to promise.* The
+  program enters the kernel zero times between being marked and leaving,
+  and that was held to zero. An unrelated interrupt landing in the
+  microseconds between would make it one, and the check would then be a
+  correct system failing. The number is reported; the status is what is
+  asserted, and a hook that fired only on the system call path would
+  still be caught by it, because the program would run its loop out.
+- *The vectors were checked rather than assumed.* aarch64 has four
+  lower-EL entries: sync, IRQ, FIQ and SError. The first two are the two
+  that return to a program here, FIQ goes to the fatal path, and SError
+  has its own. riscv64 has one interrupt path and tests SPP in it. The
+  timer takes the same path as any other interrupt, so a program
+  interrupted by the timer is reached as well.
 
 **3. Making the entry happen.** *Planned.*
 

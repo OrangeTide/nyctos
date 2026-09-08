@@ -215,20 +215,26 @@ trap_interrupt:
     ld      t1, 136(sp)
     srli    t1, t1, 8               /* sstatus.SPP */
     andi    t1, t1, 1
+
+    /*
+     * And the handler is told the same thing, because a thread whose
+     * process has been killed leaves on the way back to user mode and
+     * not on the way back into the kernel. One is the argument, which
+     * is the opposite sense of SPP.
+     *
+     * Taken here and not after the branch: the counter below wants a
+     * register and takes this one, so a0 computed on the far side of
+     * it was the address of md_user_irqs rather than a bit. It was
+     * non-zero, so it answered correctly for the wrong reason.
+     */
+    xori    a0, t1, 1
+
     bnez    t1, 2f
     la      t1, md_user_irqs
     ld      t2, 0(t1)
     addi    t2, t2, 1
     sd      t2, 0(t1)
 2:
-
-    /*
-     * And the same bit is what the handler is told, because a thread
-     * whose process has been killed leaves on the way back to user
-     * mode and not on the way back into the kernel. One is the
-     * argument, which is the opposite sense of SPP.
-     */
-    xori    a0, t1, 1
 
     call    irq_dispatch
     j       trap_restore
