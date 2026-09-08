@@ -9951,6 +9951,120 @@ the field the section specifies can carry the value it is for.
 
 ---
 
+### M17. Stopping a Thread That Will Not Stop
+
+**A kill that reaches a thread which is not asking to be reached.**
+
+Section 10.5 says process termination is prompt: `sys_proc_kill()`
+unblocks every thread of the target exactly as if each had been
+cancelled. The implementation does that and then relies on a mark,
+`p_dying`, which a thread that was never blocked is expected to "find on
+its own". There is exactly one place in this kernel where it is found:
+the entry boundary inside a submission, which section 17.6 makes a
+batch preemptible at.
+
+*So a program that computes and calls nothing is not stopped.* It runs
+until it decides to enter the kernel, whatever a supervisor asked for.
+Every other path back into user mode, an interrupt returning, a fault
+resumed, a thread dispatched after a switch, goes back without looking.
+The README has said so for two milestones and section 10.5 does not
+admit it.
+
+**And the mark is only half of it.** A thread that never traps is a
+thread the kernel never runs, and a tickless kernel has nothing armed
+that would make it trap: M16 stage one measured stretches of 103 to 141
+milliseconds in a boot with no kernel in them at all, and those were
+stretches where the machine had work to do. A kill has to be able to
+cause an entry rather than wait for one, which on one core is the next
+dispatch and on two is a poke to the core the thread is on.
+
+*Needs.* A hook on the return-to-user path of both ports, which is one
+branch that already exists in each: riscv64 tests `sstatus.SPP` before
+`sret`, aarch64 knows which vector it took. The cross-core poke already
+exists, `md_cpu_ipi`, and is used by the timer.
+
+**What this is not.** Not signals, not cancellation points, not a
+supervisor deciding anything. Section 24.3 is where a parent decides
+what a death means; this is only about the death arriving.
+
+**1. What a kill reaches today.** *Planned.*
+
+- *Check.* `spin` computes for eighty milliseconds without entering the
+  kernel. The boot kills it as soon as it is running and joins it. The
+  status is the program's own zero, which says the kill did not reach
+  it, and the boot reports how long it went on afterwards and how many
+  traps it took while marked for death: the chances the kernel had and
+  did not take. The status is asserted, the durations are reported.
+- The stage ends with the defect written where the claim is, in section
+  10.5, rather than only in the README.
+
+**2. The mark, on every way back to user mode.** *Planned.*
+
+- The check moves to where a thread returns to user mode rather than
+  where it happens to be in a submission. One place per port, and the
+  same rule for a syscall return, an interrupt return and a resumed
+  fault.
+- *Check.* The same kill, and now `spin` exits with the kill code rather
+  than its own. Taking the hook out of one port fails on that port and
+  not the other, which is how a check on two ports says it is on both.
+
+**3. Making the entry happen.** *Planned.*
+
+- A kill pokes the core the thread is running on. On one core there is
+  nothing to poke, because the killer is the thread that is running and
+  the target reaches the hook when it is next dispatched.
+- *Check.* The killer runs on one core and `spin` on the other, with
+  nothing else armed, and the kill stops it. The number of pokes a kill
+  sends is asserted, because it is a count: one per core running a
+  thread of the target, and none at all when the target is not running.
+
+**4. A dying thread that faults.** *Planned.*
+
+- A thread marked for death that takes a fault must leave as killed
+  rather than be reported as a fault, and must not go to a pager and
+  block: a dying thread waiting on a reply is the wait the kill was
+  meant to end.
+- *Check.* A program is killed while it is faulting on a paged region.
+  Its status is the kill code and not `SYS_EXIT_FAULT`, and the pager
+  sees no request for the page it never got.
+
+**5. A server thread that dies holding a message.** *Planned.*
+
+- M15 left this: one thread of a live server dying leaves its client
+  waiting until its own deadline, where the death of the whole process
+  releases the client at once. The serving list is already cleaned up;
+  what is missing is telling the client.
+- *Check.* A client sends to a server whose thread exits without
+  replying, and the client comes back with `SYS_ERR_STALE` before its
+  deadline rather than at it. The deadline is what tells the two apart,
+  which is M15's arrangement and the reason it exists.
+
+**6. What it cost, and section 10.5 written around it.** *Planned.*
+
+- *Check.* The figures as counts, and the section saying what a kill
+  reaches and how, including the poke and the core it goes to.
+
+*Done when* a program that computes and calls nothing is killed and
+stops, on both ports, at both tiers, and a client whose server thread
+died is told rather than left to a timeout.
+
+*Would falsify.* That a kill can be made prompt without a new mechanism.
+If the return-to-user hook cannot be placed without unwinding kernel
+state, or if a poke cannot reach a core running user code, then
+promptness costs something the design has not budgeted and section 10.5
+overstates what termination does.
+
+*Watch for.* A check that passes because the thread stopped for some
+other reason. A spinning program ends on its own, and the whole question
+is whether it ended sooner than that: the status has to say which, and
+the check has to be able to fail when the kill does nothing.
+
+*Size.* Medium. The hook is small on each port and the poke exists. The
+work is in the paths that are not the syscall return, and in the two
+stages that are about what a death means to somebody else.
+
+---
+
 
 ## 4. Milestone 1, in Retrospect
 
