@@ -10256,6 +10256,19 @@ what a death means; this is only about the death arriving.
   queue, which `enqueue` panics on. `thread_wake_timeout` reads the
   thread state for the same reason from the other side, and this reads
   it too.
+- *And a later review found the release reaching into a call it was not
+  part of.* Releasing a client took it off whatever channel it was
+  serving on, which it inherited from the code section 12.5 already
+  used. The thread being released is a client; the only serving link it
+  can have belongs to a different call, to its own client, which it
+  still owes an answer to. Taking it off that list makes the middle of a
+  chain invisible to the walk of section 12.3, so a sender queued behind
+  it cannot raise it. A client released by its own deadline keeps the
+  link, and there was no reason for the two to differ. The check now
+  builds a chain of three: the end of it dies holding the middle's
+  message, and the middle asserts it is still on the head's channel
+  before it answers the head. Putting the call back panics with "the
+  middle of the chain stopped serving the call it still owed".
 
 **6. What it cost, and section 10.5 written around it.** *Built.*
 
@@ -10268,7 +10281,7 @@ what a death means; this is only about the death arriving.
   this milestone measured stay above that line where a number that moves
   with the host belongs.
 - *Settled.* A boot writes **7 kills at Tier 2 and 5 at Tier 0**, sends
-  **one poke** at Tier 2 and none at Tier 0, and tells **two clients**
+  **one poke** at Tier 2 and none at Tier 0, and tells **three clients**
   at either tier that their server thread had gone. The two ports agree
   exactly, which is what a compared line is for. The two kills Tier 0
   does not write are the one on the other core, which it has not got,
@@ -10284,6 +10297,18 @@ what a death means; this is only about the death arriving.
   says why the two errors differ, which is the part a client can act on:
   `SYS_ERR_STALE` says the server is still there to be asked again and
   `SYS_ERR_OWNER_DEAD` says it is not.
+- *And the review that followed found the boot at the end of its
+  channels.* Section 18.2's teardown is not built, so a channel is
+  allocated and never released and every check that makes one spends a
+  slot for the rest of the boot. At 32 the boot reached the cohort check
+  with one slot left: the chain check above wanted two and the cohort
+  check panicked with "no channel", which is a check further down the
+  boot failing for something a check further up did. `SYS_MAX_CHANNELS`
+  is 48 now, and the reason is written where the number is. It stays
+  worth watching, because the limit is not what is really short: what is
+  short is that nothing gives a channel back.
+- The three clients told were two when this stage was first written; the
+  chain check the review added releases the third.
 
 *Done when* a program that computes and calls nothing is killed and
 stops, on both ports, at both tiers, and a client whose server thread

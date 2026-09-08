@@ -99,7 +99,16 @@
 
 #define SYS_MAX_PROCESSES         24
 #define SYS_MAX_THREADS           32
-#define SYS_MAX_CHANNELS          32
+/*
+ * Channels are allocated and never released: section 18.2's teardown is
+ * not built, so a channel a check creates is a slot the rest of the
+ * boot does not have. At 32 the boot reached the cohort check with one
+ * slot left, which made the next check that needed a channel impossible
+ * to write rather than merely expensive. Raised so that there is room
+ * to check things, and it stays a number worth watching until a channel
+ * can be given back.
+ */
+#define SYS_MAX_CHANNELS          48
 
 /*
  * A channel's pulse queue, per section 13.1, and the part of it user

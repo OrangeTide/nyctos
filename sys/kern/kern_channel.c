@@ -1627,12 +1627,17 @@ static void
 release_blocked(struct thread *t, sys_err_t err)
 {
     /*
-     * And the link that says it is serving something, because it is
-     * not any more. A dead server left on a channel's serving list is
-     * a thread the chain walk of section 12.3 would follow into a slot
-     * that has been given to something else.
+     * What this thread is serving is left where it is, and that is a
+     * correction. This used to call serving_end on it, with a comment
+     * about a dead server left on a list: the thread being released
+     * here is a client, not a server, and the only serving link it can
+     * have belongs to a different call that it still owes an answer
+     * to. Taking it off that list is reaching into somebody else's
+     * request, and what it costs is the chain walk of section 12.3,
+     * which can no longer see the middle of a chain in order to raise
+     * it. A client released by its own deadline keeps that link, and
+     * these two have no reason to differ.
      */
-    serving_end(t);
 
     /*
      * Its buffer first, for the reason cancellation has: the pages are
@@ -1640,11 +1645,11 @@ release_blocked(struct thread *t, sys_err_t err)
      * them back is not coming, and a thread released into its own
      * memory with a hole in it is worse than the wait it was in.
      *
-     * And no notice. The server is the thing that has gone, so there
-     * is nobody to tell: leaving a death notice on a channel whose
-     * owner has terminated is a pulse nothing will ever collect, and
-     * enough of them would fill the slots reserved for the notices
-     * that do have a reader.
+     * And no notice. The thread that would be told is the one that has
+     * gone, so there is nobody to tell: leaving a death notice on a
+     * channel whose owner has terminated is a pulse nothing will ever
+     * collect, and enough of them would fill the slots reserved for the
+     * notices that do have a reader.
      */
     channel_thread_release(t, false);
 

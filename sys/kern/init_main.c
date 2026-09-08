@@ -5081,6 +5081,169 @@ stale_client(void *arg)
 }
 
 /*
+ * A chain of three, for the case a released client is itself a server.
+ *
+ * A sends to B, B sends to C, and C ends without answering. B is
+ * released, and B still owes A an answer: what it is doing on C's
+ * behalf ended, and what it is doing on A's behalf did not. Section
+ * 12.3 walks the list of threads inside a request in order to raise the
+ * middle of a chain, so B has to still be on it.
+ */
+static struct channel *chain_x;
+static struct channel *chain_y;
+static volatile uint32_t chain_took;
+static volatile bool chain_still_serving;
+static volatile sys_err_t chain_mid_err;
+static volatile sys_err_t chain_head_err;
+static struct timeline chain_over;
+
+static void
+chain_end_server(void *arg)
+{
+    struct sys_msg msg;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(chain_y, &msg, &peer, &cookie) != SYS_OK) {
+        thread_exit(1);
+    }
+    chain_took = 1;
+
+    thread_exit(0);
+}
+
+static void
+chain_middle(void *arg)
+{
+    struct sys_msg msg, req, rep;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(chain_x, &msg, &peer, &cookie) != SYS_OK) {
+        thread_exit(1);
+    }
+
+    memset(&req, 0, sizeof(req));
+    memset(&rep, 0, sizeof(rep));
+    req.handle = SYS_HANDLE_INVALID;
+    chain_mid_err = channel_send(chain_y, 0, &req, &rep,
+      time_now() + time_from_ms(STALE_DEADLINE_MS));
+
+    /*
+     * Read here, by the thread it is about, because this is the only
+     * moment it can be read: the boot thread is below all three and
+     * does not run again until this one has replied and gone.
+     */
+    chain_still_serving = chain_x->c_serving == thread_current();
+
+    memset(&rep, 0, sizeof(rep));
+    rep.handle = SYS_HANDLE_INVALID;
+    (void)channel_reply(peer, &rep);
+
+    thread_exit(0);
+}
+
+static void
+chain_head(void *arg)
+{
+    struct sys_msg req, rep;
+
+    (void)arg;
+
+    memset(&req, 0, sizeof(req));
+    memset(&rep, 0, sizeof(rep));
+    req.handle = SYS_HANDLE_INVALID;
+    chain_head_err = channel_send(chain_x, 0, &req, &rep,
+      time_now() + time_from_ms(STALE_DEADLINE_MS));
+
+    (void)timeline_signal(&chain_over, 1);
+    thread_exit(0);
+}
+
+/*
+ * The middle of a chain outlives the end of it, per this stage's
+ * review. Releasing a client used to take it off whatever list it was
+ * serving on, which for the middle of a chain is a call it still owes
+ * an answer to and nothing to do with the one that ended.
+ */
+static void
+chain_stale_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    sys_handle_t hx, hy;
+
+    chain_x = channel_create("chain-x", self);
+    chain_y = channel_create("chain-y", self);
+    if (chain_x == NULL || chain_y == NULL) {
+        panic("a stale reply: no channel for the chain");
+    }
+
+    /*
+     * Held by a handle each, so that giving the handles back is what
+     * releases them. A channel created and never handed to anything is
+     * a channel nothing can free, and thirty-two of those is the whole
+     * pool: the first version of this leaked both and the cohort check
+     * further down the boot was the one that ran out.
+     */
+    expect("a handle for the head of the chain",
+      handle_insert(ht, chain_x, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV, &hx),
+      SYS_OK);
+    expect("a handle for the end of it",
+      handle_insert(ht, chain_y, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV, &hy),
+      SYS_OK);
+
+    chain_took = 0;
+    chain_still_serving = false;
+    chain_mid_err = SYS_ERR_INTERRUPTED;
+    chain_head_err = SYS_ERR_INTERRUPTED;
+    timeline_init(&chain_over, "chain-done");
+
+    /*
+     * Highest first, so each is already at its receive point when the
+     * one below it sends, and all three are above the boot thread so
+     * that it does not run again until the chain has finished.
+     */
+    sched_ready(thread_create("chain-end", PRIO_BOOT + 3, chain_end_server,
+      NULL));
+    sched_ready(thread_create("chain-mid", PRIO_BOOT + 2, chain_middle,
+      NULL));
+    sched_ready(thread_create("chain-head", PRIO_BOOT + 1, chain_head,
+      NULL));
+
+    expect("waiting for the chain to finish",
+      timeline_wait(&chain_over, 1, time_now() + time_from_ms(JOIN_MS)),
+      SYS_OK);
+
+    if (chain_took == 0) {
+        panic("a stale reply: the end of the chain never took the message");
+    }
+    expect("what the middle of the chain was told", chain_mid_err,
+      SYS_ERR_STALE);
+    if (!chain_still_serving) {
+        panic("a stale reply: the middle of the chain stopped serving the "
+          "call it still owed");
+    }
+    expect("and the answer the head of the chain got", chain_head_err,
+      SYS_OK);
+
+    expect("giving the chain's handles back", handle_close(ht, hx),
+      SYS_OK);
+    expect("and the other one", handle_close(ht, hy), SYS_OK);
+    chain_x = NULL;
+    chain_y = NULL;
+
+    cnprintf("    %-38s %s\n", "the middle of a chain, released",
+      "still owes its own client");
+}
+
+/*
  * A server thread that dies holding a message, per M17 stage five.
  *
  * M15 left this: the client waited until its own deadline, because the
@@ -5238,6 +5401,9 @@ kill_server_stale_checks(void)
       "its client was told as well");
     expect("giving the connection back", handle_close(ht, to), SYS_OK);
     expect("giving the channel back", handle_close(ht, h_recv), SYS_OK);
+    stale_ch = NULL;
+
+    chain_stale_checks();
 }
 
 

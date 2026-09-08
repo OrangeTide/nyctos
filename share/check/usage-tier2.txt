@@ -2,5 +2,5 @@ used at most: 24 of 32 threads, 13 of 24 processes
   kernel stacks under those threads: 98304 bytes
   buffer remapping: 46 pages in 46 halves, 92 entries, 7 tables, 46 invalidations, 0 flushes
   measured regions: 1024 entries and 2048, 8192 shared
-  kills: 7 written, pokes 1, clients told 2
+  kills: 7 written, pokes 1, clients told 3
 stage 9 complete

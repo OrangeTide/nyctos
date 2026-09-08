@@ -2,5 +2,5 @@ used at most: 22 of 32 threads, 13 of 24 processes
   kernel stacks under those threads: 90112 bytes
   buffer remapping: 0 pages in 0 halves, 0 entries, 0 tables, 0 invalidations, 0 flushes
   measured regions: 1024 entries and 2048, 4096 shared
-  kills: 5 written, pokes 0, clients told 2
+  kills: 5 written, pokes 0, clients told 3
 stage 9 complete
