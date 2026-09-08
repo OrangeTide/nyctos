@@ -490,11 +490,25 @@ buffer and its donated priority back, and the server discovers it when
 its reply is refused. The boot reports one of the first and two of the
 second.
 
-What that leaves is a program that cannot make a deadline of its own.
-Section 14.3 wants an absolute instant and section 6.2 names the shared
-page that would let a program read the clock without a syscall; the page
-does not exist, so every deadline in this system is one the kernel
-computed.
+**M16 gave a program a clock, and section 6.2 the page it was named
+for.** One frame, filled at boot and mapped read-only into every
+process, found through the startup record rather than at an address a
+program assumes. What it carries is a version and the tick frequency.
+What it deliberately does not carry is the stored uptime the section
+specified: the kernel runs about 3200 times in a boot and the longest
+gap between two of those moments is 103 to 141 milliseconds, so a field
+refreshed when the kernel happens to be running cannot carry the time in
+a kernel that arms the hardware for the next event and for nothing else.
+The time comes from the counter instead, which each port now permits
+user mode to read with one instruction: `scounteren` bit TM on riscv64,
+`CNTKCTL_EL1` bit EL0PCTEN on aarch64.
+
+So a program makes its own deadlines. `patient` computes fifty
+milliseconds from the counter and the frequency in its page, gives up at
+it, and gets its lent buffer back, which is the first deadline here the
+kernel did not compute and hand over. A program that reads the clock and
+exits enters the kernel once, to exit, and reading it sixteen thousand
+more times leaves that count at one.
 
 Nothing has run on hardware, so every duration this project has
 published is the right shape and the wrong magnitude. The counts are not
@@ -9555,6 +9569,12 @@ part with no precedent.
 **Section 6.2's system page, and the deadlines it was written to make
 affordable.**
 
+**Done.** All six stages are built. Section 19 says what it answered,
+what it cost, what the building kept finding, and what it left untested.
+The section it was named for was rewritten around what the measuring
+found, which is the part of this milestone worth remembering: the page
+carries a description of the clock and not the clock.
+
 M15 gave a rendezvous a deadline and then could not give one to a
 program. Section 14.3 wants an absolute instant on the monotonic
 timebase; a program has no way to obtain one, so the only program in
@@ -11949,7 +11969,154 @@ what should happen is section 24.3's.
 
 ---
 
-## 19. Bring-Up Order Within M1
+## 19. Milestone 16, in Retrospect
+
+M16 set out to build section 6.2's system page so that section 14.3's
+absolute deadlines could be made by the programs that need them. It
+built the page and then found the section had specified the wrong thing
+in it, which stage one measured rather than argued.
+
+### 19.1 The Questions
+
+**Can a stored uptime carry the time?**
+
+No, and the number is the argument. The kernel runs about 3200 times in
+a boot, and the longest gap between two of those moments is 103 to 141
+milliseconds across the four configurations. M15's own checks use a
+deadline of fifty. A program that read a stored uptime and added fifty
+milliseconds to it would, at the worst moment, be naming an instant
+already ninety milliseconds in the past: the send would poll rather than
+wait, which is the failure absolute deadlines exist to prevent. The
+argument is structural and the number is the illustration. A tickless
+kernel arms the hardware for the next event and for nothing else, so an
+idle system does not refresh such a field at all, and a faster host makes
+the number smaller without making the field current.
+
+**Was the falsification condition met?**
+
+Half of it, which is the half that changed the document rather than the
+code. The milestone said it would be falsified if a stored field were too
+stale to build a deadline from *and* the counter could not be exposed on
+some port. The field is too stale. The counter is exposable on both
+ports, for one bit each, so absolute deadlines remain affordable and it
+is section 6.2 that was wrong rather than section 14.3's cost argument.
+
+**What does a program pay to tell the time?**
+
+Nothing that can be counted. A program that reads the clock and exits
+enters the kernel once, to exit, and reading the clock sixteen thousand
+three hundred and eighty-four more times leaves that count at one and
+adds no recoverable fault. The count is M11's `p_submits`, which counts
+system calls, so it says the read is not one; a kernel that trapped the
+instruction and emulated it would not appear in it, and this kernel has
+no such path.
+
+**And does a program's deadline hold?**
+
+`patient` computes fifty milliseconds from the counter and the frequency
+in its page, gives up at it with `SYS_ERR_TIMEOUT`, gets its lent buffer
+back, and writes it. It is the first deadline in this system that the
+kernel did not compute and hand over.
+
+### 19.2 What It Cost
+
+**One frame for the whole machine.** Filled at boot before the ledger
+takes its baseline, so it is part of what the kernel costs rather than
+something a process is charged for. Every process maps the same frame,
+which is why `p_syspage_off` keeps the reap off that offset: a page given
+back with the first process to end would hand the machine's clock to
+whatever asked for a frame next.
+
+**One word in the startup record**, taking it from four to five and its
+version from 1 to 2. That word is the whole of how a program finds the
+page, and a program that never looks at its record cannot reach it.
+
+**Two instructions per port, per core.** `scounteren` bit TM on riscv64
+and `CNTKCTL_EL1` bit EL0PCTEN on aarch64, written where each core comes
+up. Nothing else was permitted: not the cycle or instruction counters,
+which say what a program did rather than what time it is, and not the
+timer registers, which would let a program arm something.
+
+**Four functions in libc and no new system call.** `sys_syspage`,
+`sys_uptime`, `sys_uptime_hz`, and the two relative-to-absolute helpers.
+Section 14.3 puts the conversion in libc, and the reason held up: a
+relative deadline converted inside a system call would start counting
+from whenever the call arrived.
+
+**Two programs**, `tick` and `clock`, and one program that lost its
+argument parser: `patient` no longer reads a deadline off its command
+line, because there is no longer one to read.
+
+**Thirty milliseconds of boot**, 6.95 seconds to the shell on the slowest
+configuration against 6.92 before.
+
+### 19.3 What the Building Kept Finding
+
+**A field written after the record was.** The loader set the page's
+address in `p_startup` after `proc_place_startup` had already copied that
+structure into the child's memory. Every configuration read a null
+pointer, and the check said so at once.
+
+**Checks that stopped one step short of what they were for.** The page
+was read and written while the processes holding it were still alive,
+which says nothing about the reap it was written to survive. Reading it
+again afterwards was not enough either: the reap had not happened, and a
+freed frame reads the same until something takes it. The reap is the slot
+going back, the join is not the reap, and M13 had already learned that.
+
+**A wait that starved what it was waiting for.** `SYS_OP_PROC_SPAWN`
+refuses a priority above the caller's, and a thread advances its
+completion before it marks itself dead. A boot thread spinning for the
+reap outranks the child and never lets it get there: the process sat
+exited, every handle closed and one reference left, for thirty seconds.
+
+**The same two-readings mistake, twice.** A bracket whose ends come from
+two different reads of the counter is not a bracket, and both checks that
+run the reader were written that way before being fixed. The milestone's
+own "watch for" line said a clock can look right because both readings
+came from the same place; the failure was the mirror image of it.
+
+**Checks that could not fail, three of them in one stage.** Timing two
+runs and asking whether the longer one took longer passed with the loop
+removed, because two spawns differ by more than the work does. A count
+worked out from the argument passed because the program reported what it
+was told to do rather than what it did. And the floor on a deadline,
+measured around a spawn, would be met by a program that never waited if a
+load ever took as long as a deadline.
+
+**A permission written twice and exercised once.** Both ports set the
+counter bit per core, and a user program had only ever run on the core
+that starts the machine. Zeroing the secondary's write changed nothing
+until the reader was moved to the other core.
+
+### 19.4 What Is Still Untested
+
+**Everything else section 6.2 lists.** Kernel status, hardware topology,
+pool limits and the feature flags are specified and absent. They are
+added when something needs one.
+
+**The seqlock, and the field it is for.** Nothing writes the page after
+boot, so nothing needs it. Section 14.5's UTC offset would be the first
+value the kernel writes while a program reads, and calendar time is a
+plan and not a mechanism.
+
+**A program moving the machine's clock at Tier 0.** It is demonstrated
+rather than prevented: the check writes to the page, shows the write
+reached the frame every process reads, and puts it back. Nothing else
+would.
+
+**A deadline on a fence, expiring against a signal.** M15 left it and
+M16 did not reach it.
+
+**A port where the counter cannot be reached from user mode.** Both of
+these can. The argument for what to do on one that cannot is untested
+because there is no such port here.
+
+**Hardware, still.**
+
+---
+
+## 20. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -11993,7 +12160,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 20. Ordering: What Is Forced and What Is Chosen
+## 21. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -12024,7 +12191,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 21. What Would Change This Plan
+## 22. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -12071,7 +12238,7 @@ else.
 
 ---
 
-## 22. Deliberately Not Scheduled
+## 23. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

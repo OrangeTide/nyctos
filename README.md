@@ -29,6 +29,51 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 16 is done: a program can tell the time.** Section 6.2 had
+specified a page mapped read-only into every process, carrying a stored
+uptime the kernel refreshes and a program reads. The page exists now and
+that field does not, because the first thing this milestone did was
+measure what such a field would be worth:
+
+```
+                     moments the kernel was running in a boot     ~3200
+                         longest gap between two of them     103-141 ms
+```
+
+This kernel is tickless. It arms the hardware for the next event and for
+nothing else, so between two events nothing is running that would
+refresh such a field, and the gap is bounded by when the kernel next has
+something to do rather than by how fast the machine is. A program that
+read a stored uptime and added the fifty milliseconds these checks use
+would, at the worst moment, name an instant already ninety milliseconds
+in the past: its send would poll instead of waiting, which is the
+failure absolute deadlines exist to prevent.
+
+So the page carries a description of the clock and not the clock. It
+holds a version and the tick frequency, one frame for the whole machine,
+found through the startup record rather than at an address a program
+assumes. The time itself comes from the counter, which each port now
+permits user mode to read with one instruction and nothing more:
+`scounteren` bit TM on riscv64, `CNTKCTL_EL1` bit EL0PCTEN on aarch64.
+Not the cycle or instruction counters, which say what a program did
+rather than what time it is, and not the timer registers, which would
+let a program arm something.
+
+What that buys is a deadline a program made for itself. `patient`
+computes fifty milliseconds from the counter and the frequency in its
+page, gives up at it, gets its lent buffer back and writes it. It is the
+first deadline in this system the kernel did not compute and hand over.
+
+And it costs nothing to read:
+
+```
+  a program that reads the clock twice, then exits    1 crossing
+  the same program reading it 16386 times             1 crossing
+```
+
+Section 6.2 has been rewritten around what was built, with the parts it
+still specifies and does not have named as absent.
+
 **Milestone 15 is done: a client that sends to a server which stops
 answering gets its thread back.** Until now a rendezvous carried no
 deadline, so a wedged server hung its client for ever. Cancellation
@@ -55,14 +100,6 @@ things happen rather than what: the expiry does only the pointer work in
 the timer, because undonating and taking a buffer back charge their work
 to a running thread and an interrupt may not have one, and a deadline
 that arrives after the wait has already ended does nothing at all.
-
-**Since then, in milestone 16, a program makes its own.** An absolute
-deadline needs a clock. The system page of section 6.2 exists now, one
-frame mapped read-only into every process and found through the startup
-record, and it carries the frequency; the time itself comes from the
-counter, which each port permits user mode to read with one instruction.
-A program that reads the clock and exits enters the kernel once, to
-exit.
 
 **Milestone 14 is done: a program is mapped as what it is.** The boot
 archive carried the size of an image and not the size of the memory a
@@ -843,6 +880,11 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   into the absolute instant a call takes. The page carries no UTC
   offset, so a program knows how long it has waited and not what day it
   is.
+- At Tier 0 a program can write the system page, which every process
+  reads. There is one frame and flat memory has nothing to refuse the
+  store, so a program there can move the clock everything else builds
+  deadlines from. The boot demonstrates it and puts the page back; only
+  the MMU prevents it.
 - A receive carries no deadline, deliberately: a server waiting for work
   is not waiting for a party that can fail it. What a server does about
   a client that never comes is not answered.
