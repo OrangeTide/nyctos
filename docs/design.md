@@ -621,85 +621,29 @@ Nothing here is a copy. That is worth restating beside the numbers, because "zer
 
 ### 6.2 The System Page
 
-A page mapped read-only into every process, carrying what a program needs
-to know about the machine it is running on. It is found through the
-process's own description of itself rather than at a fixed address, so
-Tier 2 isolation is preserved and no program has an address it did not
-learn.
+A page mapped read-only into every process, carrying what a program needs to know about the machine it is running on. It is found through the process's own description of itself rather than at a fixed address, so Tier 2 isolation is preserved and no program has an address it did not learn.
 
-**The page carries a description of the clock, not the clock.** The
-timebase a program needs is the frequency, and the time itself comes from
-the counter, read directly. A stored `uptime_ticks` field was the
-original design and it does not survive contact with a tickless kernel:
-section 14.2 arms the hardware for the next event and for nothing else,
-so between two events there is nothing running that would refresh such a
-field. Its staleness is bounded by when the kernel next has something to
-do, which is a property of the workload rather than of the machine, and a
-faster host makes the number smaller without making the field current. A
-deadline built from a stale value expires earlier than the caller meant,
-which is the failure absolute deadlines exist to avoid.
+**The page carries a description of the clock, not the clock.** The timebase a program needs is the frequency, and the time itself comes from the counter, read directly. A stored `uptime_ticks` field was the original design and it does not survive contact with a tickless kernel: section 14.2 arms the hardware for the next event and for nothing else, so between two events there is nothing running that would refresh such a field. Its staleness is bounded by when the kernel next has something to do, which is a property of the workload rather than of the machine, and a faster host makes the number smaller without making the field current. A deadline built from a stale value expires earlier than the caller meant, which is the failure absolute deadlines exist to avoid.
 
-**Kernel status, hardware topology and pool limits belong here too**, and
-none of them are in it yet. The page is added to when something needs a
-field, not because this section lists one.
+**Kernel status, hardware topology and pool limits belong here too**, and none of them are in it yet. The page is added to when something needs a field, not because this section lists one.
 
 #### What was built
 
-**One frame for the machine.** It is allocated and filled once at boot,
-before the frame ledger takes its baseline, so it counts as part of what
-the kernel costs rather than as something a process is charged for. Every
-process maps the same frame, which is why a reap must not give it back:
-`p_syspage_off` keeps the loader's teardown off that offset.
+**One frame for the machine.** It is allocated and filled at boot, before the frame ledger takes its baseline, so it counts as part of what the kernel costs rather than as something a process is charged for. Every process maps the same frame, which is why a reap must not give it back: `p_syspage_off` keeps the loader's teardown off that offset.
 
-**Read-only, one page past everything the image asked for.** Both tiers
-follow the same rule by different means. Tier 2 maps the frame into the
-slot with read but not write; Tier 0 hands out the frame's own address,
-because flat memory has no other, and cannot refuse a write. A program at
-Tier 0 really can move the clock every other program reads, which is one
-more entry on section 13.3's list of what the tier does not protect.
+**Read-only, one page past everything the image asked for.** Both tiers follow the same rule by different means. Tier 2 maps the frame into the slot with read but not write; Tier 0 hands out the frame's own address, because flat memory has no other, and cannot refuse a write. A program at Tier 0 really can move the clock every other program reads, which is one more entry on section 13.3's list of what the tier does not protect.
 
-**The address travels in the startup record.** `SYS_STARTUP_VERSION` is
-2 and the record is one word longer for it. libc keeps that word while it
-consumes the record and hands it back through `sys_syspage()`, which
-answers NULL for a process the kernel built rather than loaded. A program
-that never looks at its record cannot reach the page at all. There is no
-`SYS_SYSPAGE_ENTRY()` and no process descriptor: the record is where a
-program is told things, and this is one of them.
+**The address travels in the startup record.** `SYS_STARTUP_VERSION` is 2 and the record is one word longer for it. libc keeps that word while it consumes the record and hands it back through `sys_syspage()`, which answers NULL for a process the kernel built rather than loaded. A program that never looks at its record cannot reach the page at all. There is no `SYS_SYSPAGE_ENTRY()` and no process descriptor: the record is where a program is told things, and this is one of them.
 
-**What the page holds:** a version and the tick frequency. That is all,
-and the version is checked before the frequency is believed.
+**What the page holds:** a version and the tick frequency. That is all, and the version is checked before the frequency is believed.
 
-**The clock is the counter.** `sys_uptime()` reads it with one
-instruction, the same instruction the kernel tells the time with:
-`rdtime` on riscv64 and `cntpct_el0` on aarch64. A program reading some
-other counter would agree with the kernel only by accident, and a
-deadline is a number both of them have to mean the same thing by. Each
-port permits it once per core at boot, and permits nothing else:
-`scounteren` bit TM, `CNTKCTL_EL1` bit EL0PCTEN. Not the cycle or
-instruction counters, which say what a program did rather than what time
-it is, and not the timer registers, which would let a program arm
-something.
+**The clock is the counter.** `sys_uptime()` reads it with one instruction, the same instruction the kernel tells the time with: `rdtime` on riscv64 and `cntpct_el0` on aarch64. A program reading some other counter would agree with the kernel only by accident, and a deadline is a number both of them have to mean the same thing by. Each port permits it once per core at boot, and permits nothing else: `scounteren` bit TM, `CNTKCTL_EL1` bit EL0PCTEN. Not the cycle or instruction counters, which say what a program did rather than what time it is, and not the timer registers, which would let a program arm something.
 
-**The relative helpers are in libc**, per section 14.3.
-`sys_deadline_in()` adds ticks to the counter and `sys_deadline_in_ms()`
-converts through the frequency in the page, which is the one place a
-program needs both halves of this section. A relative deadline converted
-inside a system call would start counting from whenever the call arrived,
-which is what an absolute deadline exists to avoid. A program with no
-page gets `SYS_DEADLINE_NOW` rather than a guessed frequency: a call
-given it returns at once, which fails where it can be seen instead of
-waiting for a length of time nobody chose.
+**The relative helpers are in libc**, per section 14.3. `sys_deadline_in()` adds ticks to the counter and `sys_deadline_in_ms()` converts through the frequency in the page, which is the one place a program needs both halves of this section. A relative deadline converted inside a system call would start counting from whenever the call arrived, which is what an absolute deadline exists to avoid. A program with no page gets `SYS_DEADLINE_NOW` rather than a guessed frequency: a call given it returns at once, which fails where it can be seen instead of waiting for a length of time nobody chose.
 
-**What it costs, measured.** A program that reads the clock and exits
-enters the kernel once, to exit. Reading the clock sixteen thousand times
-instead of twice leaves that count at one and adds no recoverable fault.
-That number is the whole of this section's claim: a program tells the
-time without asking the kernel.
+**What it costs, measured.** A program that reads the clock and exits enters the kernel once, to exit. Reading the clock sixteen thousand times instead of twice leaves that count at one and adds no recoverable fault. That number is the whole of this section's claim: a program tells the time without asking the kernel.
 
-**No seqlock.** It was specified for a value the kernel writes and a
-program reads, and there is no such value. If one is ever added the
-seqlock comes with it, and the argument for it stands: a 32-bit target
-cannot read a 64-bit field atomically and will occasionally tear.
+**No seqlock.** It was specified for a value the kernel writes and a program reads, and there is no such value. If one is ever added the seqlock comes with it, and the argument for it stands: a 32-bit target cannot read a 64-bit field atomically and will occasionally tear.
 
 ---
 
@@ -2913,17 +2857,20 @@ const sys_syspage_t *sys_syspage(void);
 
 /* The clock. One instruction, no system call, and the same counter the
  * kernel tells the time with. The frequency comes from the page, and is
- * zero for a process that has none. Sections 6.2 and 14.3. */
-uint64_t sys_uptime(void);
-uint64_t sys_uptime_hz(void);
+ * zero for a process that has none. Sections 6.2 and 14.3.
+ *
+ * These four are spelled with this appendix's typedefs; the tree writes
+ * them all as uint64_t, which is what the typedefs are. */
+sys_ticks_t sys_uptime(void);
+sys_ticks_t sys_uptime_hz(void);
 
 /* Relative-to-absolute helpers. In libc rather than the kernel: a
  * relative deadline converted inside a system call would start counting
  * from whenever the call arrived. The millisecond form answers
  * SYS_DEADLINE_NOW for a process with no page, which fails where it can
  * be seen rather than waiting for a length of time nobody chose. */
-uint64_t sys_deadline_in(uint64_t ticks);
-uint64_t sys_deadline_in_ms(uint32_t ms);
+sys_deadline_t sys_deadline_in(sys_ticks_t ticks);
+sys_deadline_t sys_deadline_in_ms(uint32_t ms);
 
 /* Not built: calendar time. It needs the UTC offset of section 14.5,
  * which is the first field the kernel would write while a program reads,

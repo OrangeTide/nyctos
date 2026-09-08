@@ -56,7 +56,7 @@ the timer, because undonating and taking a buffer back charge their work
 to a running thread and an interrupt may not have one, and a deadline
 that arrives after the wait has already ended does nothing at all.
 
-**A program makes its own deadlines, as of milestone 16.** An absolute
+**Since then, in milestone 16, a program makes its own.** An absolute
 deadline needs a clock. The system page of section 6.2 exists now, one
 frame mapped read-only into every process and found through the startup
 record, and it carries the frequency; the time itself comes from the

@@ -9894,6 +9894,22 @@ something needs it, not because the section lists it.
   section specified was wrong, and the counter turned out to be
   exposable on both ports, so absolute deadlines are affordable and it
   was the section that changed rather than the argument for them.
+- *The review found the new section written in the wrong shape.* This
+  document keeps one line per paragraph and the rewrite wrapped at
+  seventy-two columns, which makes every future edit to it a reflow. It
+  is unwrapped now, and the code block keeps the wrapping code blocks
+  have.
+- *And the appendix spelled the new calls in a type the appendix does not
+  use.* It declares `sys_ticks_t` and `sys_deadline_t` at the top and
+  uses them everywhere else; the four new prototypes were plain
+  `uint64_t`, which is what the tree writes and not what this document
+  writes. They match now, with a line saying the tree spells them the
+  other way.
+- *Two sentences were more certain than the code.* The page is "allocated
+  and filled once at boot", except that the Tier 0 check that writes to
+  it deliberately calls the fill again to put it back. And the README's
+  correction was written into milestone 15's part of the status, where it
+  read as though 15 had done it.
 
 *Done when* a program constructs an absolute deadline from a clock it
 read itself, a send gives up on it, and reading that clock costs no
