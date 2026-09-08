@@ -134,6 +134,17 @@ zero_done:
     csrw    mcounteren, t0
 
     /*
+     * And the one counter user mode may read: bit 1 of scounteren is
+     * TM, which is rdtime. Section 6.2 wants the clock read without a
+     * system call and this is the whole of what the port has to
+     * permit. Not the cycle or instruction counters, which say what a
+     * program did rather than what time it is, and which section 22
+     * would rather hand out deliberately than leave open.
+     */
+    li      t0, 2
+    csrw    scounteren, t0
+
+    /*
      * Sstc: the supervisor timer compare register. With it, supervisor
      * mode programs its own timer and machine mode is not involved in a
      * timer interrupt at all. Without it, machine mode would have to take
@@ -239,6 +250,10 @@ secondary_park:
 
     li      t0, -1
     csrw    mcounteren, t0
+
+    /* The same permission on this hart: scounteren is per hart. */
+    li      t0, 2
+    csrw    scounteren, t0
 
     li      t0, 1
     slli    t0, t0, 63

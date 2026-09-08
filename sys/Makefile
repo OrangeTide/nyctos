@@ -100,7 +100,8 @@ $(OBJTOP)/bin/brief/brief.bin \
 $(OBJTOP)/bin/poke_addr/poke_addr.bin \
 $(OBJTOP)/bin/leap/leap.bin \
     $(OBJTOP)/bin/patient/patient.bin \
-    $(OBJTOP)/bin/tick/tick.bin
+    $(OBJTOP)/bin/tick/tick.bin \
+    $(OBJTOP)/bin/clock/clock.bin
 
 BOOT_LAYOUTS := $(BOOT_BINS:.bin=.bin.layout)
 
@@ -143,6 +144,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) $(BOOT_BINS) $(BOOT_LAYOUTS)
 	    poke_addr=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 29 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/poke_addr/poke_addr.bin \
 	    leap=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 30 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/leap/leap.bin \
 	    patient=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 31 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/patient/patient.bin \
-	    tick=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 32 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/tick/tick.bin
+	    tick=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 32 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/tick/tick.bin \
+	    clock=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 33 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/clock/clock.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)

@@ -41,6 +41,14 @@ sys_err_t sys_op_submit(sys_op_t *ops, unsigned long count);
 const sys_syspage_t *sys_syspage(void);
 
 /*
+ * The clock of section 6.2, read with no system call: ticks from the
+ * counter, and how many of them a second is from the system page. The
+ * frequency is zero for a process that has no page.
+ */
+uint64_t sys_uptime(void);
+uint64_t sys_uptime_hz(void);
+
+/*
  * Blocks until a server receives the request and replies to it. target
  * names a connection, or a channel handle carrying SYS_RIGHT_SEND.
  */

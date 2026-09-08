@@ -9709,13 +9709,42 @@ something needs it, not because the section lists it.
   exactly, so the read-only answer for everything above the image was
   already the one it got.
 
-**3. A clock a program can read.** *Planned.*
+**3. A clock a program can read.** *Built.*
 
-- *Check.* A program reads the time twice and the second reading is not
-  before the first, and both lie between two readings the kernel takes
-  either side of the program's run. That brackets it: a clock that
-  reads a constant, or one in different units, fails the bracket rather
-  than the eye.
+- One instruction on each port, and the same instruction the kernel
+  tells the time with: `rdtime` on riscv64, `cntpct_el0` on aarch64. A
+  program reading some other counter would agree with the kernel only
+  by accident, and a deadline is a number both of them have to mean the
+  same thing by.
+- The port permits it once, per core, at boot: `scounteren` bit TM and
+  `CNTKCTL_EL1` bit EL0PCTEN. Only that bit. The cycle and instruction
+  counters say what a program did rather than what time it is, and the
+  timer registers would let a program arm something.
+- `sys_uptime()` in libc is the whole of the read, and `sys_uptime_hz()`
+  answers from the system page. Section 6.2 calls the first of these
+  `sys_syspage_uptime()`, which is a name for reading a stored value out
+  of the page; stage one settled that there will not be one, so the name
+  says what it reads.
+- *Check.* The kernel reads the counter, runs `clock`, and reads it
+  again. `clock` reads twice, refuses to answer if its second reading is
+  before its first, and returns its second reading measured from the
+  kernel's first. The kernel brackets that number with its own two
+  readings, so nothing in the check trusts the program's arithmetic.
+- *Settled.* The program's reading falls inside the kernel's span on all
+  four configurations: 53468 of 58309 ticks at riscv64 Tier 2, 402647 of
+  429875 at aarch64 Tier 2, and the same shape at Tier 0. Both numbers
+  are durations and neither is asserted against a figure, per M9. What
+  is asserted is that one fell inside the other, which is an ordering
+  and is the same on every host.
+- *And every way it could pass wrongly was tried.* Taking the port's
+  permission away makes the read an illegal instruction and the program
+  does not survive it, on both ports. A clock stuck at a constant reads
+  behind the kernel's start. A clock counting in the wrong units
+  overruns what a status can carry. A clock going backwards is refused
+  by the program. A clock a million ticks ahead passes all of the
+  program's own tests and is caught by the kernel's bracket, which is
+  the one that matters, because it is the only end of the check the
+  program has no part in.
 
 **4. A deadline a program made for itself.** *Planned.*
 

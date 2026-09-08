@@ -14,6 +14,7 @@ SRCS := arch/$(ARCH)/sys/syscall.S \
         sys/op.c \
         sys/console.c \
         sys/_exit.c \
+        sys/uptime.c \
         stdio/printf.c \
         stdio/gets.c \
         stdio/puts.c \

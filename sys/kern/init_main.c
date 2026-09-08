@@ -4209,6 +4209,89 @@ syspage_checks(void)
     cnprintf("    %-38s %s\n", "and after a reap of one of them",
       "the same page, and still held");
 }
+/*
+ * The clock a program can read, per M16 stage three.
+ *
+ * The kernel reads the counter, runs a program that reads it twice, and
+ * reads it again. What the program returns is its second reading
+ * measured from the kernel's first, so the two kernel readings bracket
+ * it: nothing here trusts the program's arithmetic, because both ends
+ * of the bracket are numbers this took itself.
+ *
+ * The bracket is what a weaker check would miss. A clock stuck at a
+ * constant, a clock counting in nanoseconds rather than ticks, and a
+ * clock reading some other counter all return a number; only a number
+ * inside the span the kernel measured is the clock the kernel has.
+ */
+static void
+clock_read_checks(void)
+{
+    struct child c;
+    uint64_t before, after, span;
+    char arg[19];
+    const char *argv[2];
+    int32_t code;
+
+    cnputs("the clock: a program reading it without a system call\n");
+
+    hex_into(arg, (uintptr_t)time_now());
+    argv[0] = "clock";
+    argv[1] = arg;
+
+    /*
+     * Read after the argument is written and not before, so the number
+     * the program is given is the number this compares against. They
+     * were the same read at first, which made the lower end of the
+     * bracket a value the check had already spent time getting past.
+     */
+    sched_defer();
+    before = time_now();
+    child_watch(&c, proc_spawn_image("clock", 20, NULL, 0, argv, 2));
+    sched_undefer();
+
+    code = child_join(&c, JOIN_MS);
+    after = time_now();
+
+    if (code < 0) {
+        /*
+         * Named, because the interesting failures are the program's
+         * own and a bare number would not say which. Anything else is
+         * the kernel's status for a process that did not finish: with
+         * the port's permission taken away the read is an illegal
+         * instruction, and the program never reaches a return.
+         */
+        const char *why;
+
+        switch (code) {
+        case -1: why = "it read the clock going backwards"; break;
+        case -2: why = "it read a clock behind the kernel's"; break;
+        case -3: why = "it was handed no time to compare against"; break;
+        case -4: why = "the gap was too wide for a status"; break;
+        case -5: why = "it has no page, so no frequency"; break;
+        default: why = "it did not survive reading the clock"; break;
+        }
+        panic("the clock: %s, status %d", why, (int)code);
+    }
+
+    span = after - before;
+    if ((uint64_t)code > span) {
+        panic("the clock: the program read %lu ticks past the kernel's "
+          "start, which was %lu ticks before its end",
+          (unsigned long)code, (unsigned long)span);
+    }
+
+    /*
+     * Both numbers are durations and neither is asserted against a
+     * figure, per M9. What is asserted is that one fell inside the
+     * other, which is an ordering and is the same on every host.
+     */
+    cnprintf("    %-38s %lu of the kernel's %lu ticks\n",
+      "where the program's reading fell", (unsigned long)code,
+      (unsigned long)span);
+    cnprintf("    %-38s about %lu us\n", "how long the program took",
+      (unsigned long)(span * 1000000ULL / time_hz()));
+}
+
 
 /*
  * What the two regions of a program permit, per M14 stage three.
@@ -10019,6 +10102,7 @@ kernel_main(void)
     device_checks();
     permission_checks();
     syspage_checks();
+    clock_read_checks();
     startup_record_checks();
     deadline_checks();
 
