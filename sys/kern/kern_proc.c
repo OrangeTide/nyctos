@@ -1862,10 +1862,23 @@ proc_kill(struct proc *p, int32_t code)
          * poke its core ignores, and a thread that has just started
          * running was dispatched, which is a return to user mode and
          * reads the mark.
+         *
+         * The core number cannot go stale under the read, because a
+         * running thread is the one thing sched_migrate refuses to
+         * move. What is read racily is whether it is running, and not
+         * where.
          */
         if (t->t_state == THREAD_RUNNING &&
           t->t_core != cpu_self()->cp_index) {
+            /*
+             * Counted twice, on the process and on this core. The
+             * first is what the check asserts; the second is the
+             * machine's tally of pokes, which every other sender
+             * keeps, and a class of poke missing from it would make
+             * that number quietly wrong.
+             */
             p->p_kill_pokes++;
+            cpu_self()->cp_ipi++;
             md_cpu_ipi(t->t_core);
         }
     }

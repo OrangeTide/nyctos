@@ -10130,6 +10130,17 @@ what a death means; this is only about the death arriving.
   the fact of one.
 - *Tier 0 says so rather than testing nothing.* One core, nothing to
   poke, and the line in the report says which.
+- *The review found a poke the machine did not count.* Every other
+  sender increments `cp_ipi` beside `md_cpu_ipi`, and the kernel's tally
+  of pokes is the sum of those; this one did not, so a whole class of
+  poke was missing from a number the boot reports. It is counted twice
+  now, once on the process for the check to assert and once on the core
+  for the machine's tally.
+- *And the race is narrower than the comment claimed.* The core number
+  cannot go stale under the read: `sched_migrate` refuses to move a
+  running thread, which is exactly the state being read. What races is
+  whether the thread is running, not where it is, and that direction was
+  already safe both ways.
 
 **4. A dying thread that faults.** *Planned.*
 
