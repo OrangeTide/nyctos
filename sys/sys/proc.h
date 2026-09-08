@@ -327,6 +327,13 @@ void proc_watch(struct proc *p);
 sys_err_t proc_kill(struct proc *p, int32_t code);
 
 /*
+ * Leave, if this thread's process has been killed. Called on the way
+ * back to user mode from a system call, an interrupt and a fault, with
+ * the kernel lock held; does not return in that case.
+ */
+void proc_exit_if_dying(void);
+
+/*
  * Whether a range of addresses is memory this process owns, per section
  * 23.2. A buffer descriptor a program passes is checked against this
  * before anything reads it: a number is not a right, and the kernel

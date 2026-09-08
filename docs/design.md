@@ -886,9 +886,16 @@ A thread cancelled mid-batch stops at the next entry boundary, which is already 
 
 **Promptness covers threads that ask to be reached.** A kill marks the process, and unblocks every thread of it exactly as this section says: each blocked thread comes off what it was waiting on with `SYS_ERR_INTERRUPTED`, its server is told, and its donation goes back. A thread that is not blocked has nothing to release, and the mark is left for it to find.
 
-**There is one place it is found:** the entry boundary inside a submission, which section 17.6 already makes a batch preemptible at. Every other way back into user mode goes without looking. So a program that computes and calls nothing is not stopped by a kill. Killed at the start of an eighty-millisecond loop, `spin` runs for another sixty and exits with its own status, on both ports and at both tiers; the one entry it makes while marked for death is the submission that ends it, and by then it has finished. One system call anywhere in that loop and the kill lands at it.
+**For one milestone there was one place it was found:** the entry boundary inside a submission, which section 17.6 already makes a batch preemptible at. Every other way back into user mode went without looking, so a program that computed and called nothing was not stopped by a kill at all. Killed at the start of an eighty-millisecond loop, `spin` ran for another sixty and exited with its own status, on both ports and at both tiers; the one entry it made while marked for death was the submission that ended it. One system call anywhere in that loop and the kill landed at it.
 
-**Which is a gap in the mechanism and not in the specification.** A supervisor that asks for a process to stop is told `SYS_OK` and the process may run for as long as it likes, provided it asks the kernel for nothing. Milestone 17 is where that is closed: the mark read wherever a thread returns to user mode, and a kill able to cause an entry rather than wait for one, because a tickless kernel arms nothing that would make a computing thread trap.
+**Which was a gap in the mechanism and not in the specification.** A supervisor that asks for a process to stop was told `SYS_OK` and the process could run for as long as it liked, provided it asked the kernel for nothing.
+
+**The mark is read where a trap returns to user mode.** `proc_exit_if_dying` runs at the end of the interrupt and fault paths, with the kernel lock held, and ends the thread with the code it was killed with. The system call path has read the mark at every entry boundary since the submission engine was built, which is the same check in the place a batch is already preemptible at. A thread interrupted in the kernel is not ended there: it is in the middle of something and holds state nothing here could unwind, so the port tells the handler which mode the trap came from.
+
+**On one core that is enough, and the reason is not the hook.** A killer has to be running for a kill to happen, so the thread being killed is not running: it is inside the kernel where it was interrupted or where it blocked, and the kill is what it finds on the way out. `spin`, killed mid-loop, now stops 144 to 385 microseconds later instead of running its remaining sixty milliseconds. It enters the kernel zero times between being marked and leaving.
+
+**On more than one core it is not enough**, because a thread running on another core need not trap at all, and a tickless kernel arms nothing that would make it. A kill has to be able to cause an entry, which is a poke to that core.
+
 
 ### 10.6 States
 

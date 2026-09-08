@@ -186,6 +186,8 @@ el1_irq:
     mrs     x10, spsr_el1
     stp     x9, x10, [sp, #168]
 
+    /* Taken in the kernel: this one is not on its way to a program. */
+    mov     x0, #0
     bl      irq_dispatch
 
     /*
@@ -265,6 +267,12 @@ el0_irq:
     add     x10, x10, #1
     str     x10, [x9]
 
+    /*
+     * Taken in user mode, which is the vector this is: a thread whose
+     * process has been killed leaves inside the handler rather than
+     * being returned to.
+     */
+    mov     x0, #1
     bl      irq_dispatch
 
     ldr     x9, [sp, #184]

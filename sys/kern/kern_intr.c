@@ -28,6 +28,7 @@
 #include <sys/lock.h>
 #include <sys/intr.h>
 #include <sys/sched.h>
+#include <sys/proc.h>
 #include <sys/systm.h>
 #include <sys/timeline.h>
 
@@ -162,7 +163,7 @@ irq_unmask(struct irq *ir)
 static void irq_dispatch_body(void);
 
 void
-irq_dispatch(void)
+irq_dispatch(unsigned long from_user)
 {
     intr_state_t s = klock_enter();
 
@@ -184,6 +185,18 @@ irq_dispatch(void)
     cpu_self()->cp_in_irq = true;
     irq_dispatch_body();
     cpu_self()->cp_in_irq = false;
+
+    /*
+     * And out, if this interrupt landed on a thread whose process has
+     * been killed and is about to be returned to. Only for an
+     * interrupt taken in user mode: one taken in the kernel goes back
+     * to a thread that is in the middle of something and holds state
+     * this could not unwind. The port says which, because nothing
+     * above the trap path can tell them apart.
+     */
+    if (from_user != 0) {
+        proc_exit_if_dying();
+    }
 
     klock_exit(s);
 }

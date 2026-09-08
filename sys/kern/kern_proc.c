@@ -1848,3 +1848,30 @@ proc_kill(struct proc *p, int32_t code)
 
     return SYS_OK;
 }
+
+void
+proc_exit_if_dying(void)
+{
+    struct thread *t = thread_current();
+    struct proc *p = (t != NULL) ? t->t_proc : NULL;
+
+    if (p == NULL || !p->p_dying) {
+        return;
+    }
+
+    /*
+     * Section 10.5's promptness, for a thread that was never blocked.
+     * Called where a trap is about to go back to user mode, which is
+     * the one place a thread is certainly in this kernel with nothing
+     * of its own left on the stack: the frame below is the program's
+     * registers and nothing here owns anything. Unwinding from
+     * wherever a thread happened to be would mean knowing what every
+     * path holds, and this knows that it holds nothing.
+     *
+     * Called with the kernel lock held, like the entry boundary in a
+     * submission that has done this since M10. thread_exit does not
+     * return, and the thread that runs next releases the lock on its
+     * own way out, which is what the lock is built to allow.
+     */
+    thread_exit(p->p_kill_code);
+}

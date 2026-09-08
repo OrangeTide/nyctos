@@ -505,6 +505,10 @@ trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
     dying_entry_mark();
 
     trap_user_body(cause, pc, addr);
+
+    /* And a fault resumed into a program that has been killed is not. */
+    proc_exit_if_dying();
+
     klock_exit(s);
     intr_region_end((uintptr_t)__builtin_return_address(0));
 }

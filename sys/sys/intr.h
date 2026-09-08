@@ -146,8 +146,16 @@ struct irq;
 struct irq *irq_object(unsigned int irq);
 sys_err_t irq_unmask(struct irq *ir);
 
-/* Called from the trap path with interrupts already disabled by hardware. */
-void irq_dispatch(void);
+/*
+ * Called from the trap path with interrupts already disabled by
+ * hardware. The argument is non-zero when the interrupt was taken in
+ * user mode, which the port knows from its saved state and nothing
+ * above the trap path can tell: it decides whether a thread whose
+ * process has been killed leaves here, because a thread interrupted in
+ * the kernel is in the middle of something and holds state this could
+ * not unwind.
+ */
+void irq_dispatch(unsigned long from_user);
 
 void irq_init(void);
 

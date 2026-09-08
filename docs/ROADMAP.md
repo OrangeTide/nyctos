@@ -10033,15 +10033,46 @@ what a death means; this is only about the death arriving.
   slowest configuration against 6.95 before, which is the program's loop
   and the wait before the kill.
 
-**2. The mark, on every way back to user mode.** *Planned.*
+**2. The mark, on every way back to user mode.** *Built.*
 
-- The check moves to where a thread returns to user mode rather than
-  where it happens to be in a submission. One place per port, and the
-  same rule for a syscall return, an interrupt return and a resumed
-  fault.
-- *Check.* The same kill, and now `spin` exits with the kill code rather
-  than its own. Taking the hook out of one port fails on that port and
-  not the other, which is how a check on two ports says it is on both.
+- `proc_exit_if_dying` is the whole of it: called where a trap is about
+  to return to user mode, with the kernel lock already held, it ends the
+  thread with the code it was killed with. That is the same arrangement
+  the entry boundary in a submission has had since M10, in the places
+  the other traps come back through.
+- **Two places, not three.** The system call path has read the mark
+  since M10 and reads it after every entry, so a tail check there fires
+  only where the boundary already has: it was written, found to change
+  nothing when removed, and removed. What stage two adds is the
+  interrupt return and the fault return.
+- The port says which returns are to user mode, because nothing above
+  the trap path can tell: riscv64 passes the complement of `sstatus.SPP`,
+  which it already computes for `md_user_irqs`, and aarch64 passes a
+  constant per vector, because EL0 and EL1 interrupts arrive at
+  different ones.
+- *Check.* Stage one's arrangement, with the assertion the other way up.
+  The program is killed and comes back with the code it was killed with
+  rather than its own.
+- *Settled, and not the way the stage was planned.* What catches the
+  program is not a new trap. It was interrupted before the kill, which
+  is how the check got the core back in order to do the killing, so it
+  is sitting in the kernel inside that interrupt and the kill is what it
+  finds on the way out. It stops **144 to 385 microseconds** after the
+  kill, against 59 to 68 milliseconds before this stage, and the count
+  of entries it makes while marked is **zero**, asserted at zero.
+- *Which is the finding.* On one core a killed thread is always inside
+  the kernel already, because the killer had to be running for the kill
+  to happen at all. The hook is sufficient there. It is not sufficient
+  for a thread running on another core, which is stage three.
+- *Both directions were broken.* Taking the hook out of the interrupt
+  return brings back stage one's result exactly: status zero, sixty
+  milliseconds. Firing it for kernel-mode interrupts as well passes
+  every check, which is the honest state of that guard: nothing here
+  constructs a thread interrupted inside a kernel operation and then
+  killed, and what the guard prevents is that thread being ended with
+  its operation half done.
+- *The fault return is not checked yet.* It is one call in the same
+  place and stage four is what exercises it.
 
 **3. Making the entry happen.** *Planned.*
 

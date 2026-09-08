@@ -222,6 +222,14 @@ trap_interrupt:
     sd      t2, 0(t1)
 2:
 
+    /*
+     * And the same bit is what the handler is told, because a thread
+     * whose process has been killed leaves on the way back to user
+     * mode and not on the way back into the kernel. One is the
+     * argument, which is the opposite sense of SPP.
+     */
+    xori    a0, t1, 1
+
     call    irq_dispatch
     j       trap_restore
 

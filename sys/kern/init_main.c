@@ -4523,23 +4523,29 @@ clock_cost_checks(void)
       (unsigned long)t_once);
 }
 /*
- * What a kill reaches today, per M17 stage one.
+ * What a kill reaches, per M17 stages one and two.
  *
- * `spin` computes for eighty milliseconds and enters the kernel twice in
- * its life: once when libc starts it and once to exit. Between those it
- * is a program doing arithmetic, which is the case section 10.5's
- * promptness is written for and the case it does not cover.
+ * `spin` computes for eighty milliseconds and makes one submission in
+ * its life, to exit. Between those it is a program doing arithmetic,
+ * which is the case section 10.5's promptness is written for.
  *
- * The kill is real: the process is marked, and every thread of it that
- * was blocked would have been released. This one is not blocked, so
- * there is nothing to release and the mark is left for the thread to
- * find. It finds it at the entry boundary inside a submission, and it
- * makes no submissions, so it finds it when it has finished.
+ * Stage one asserted the defect here: the program was killed and
+ * finished its loop anyway, because the mark a kill leaves was read in
+ * one place, the entry boundary inside a submission, and this program
+ * reaches one only on its way out. It ran on for 59 to 68 milliseconds
+ * after being killed.
  *
- * What is asserted is that: the program exits with its own status
- * rather than the code it was killed with. The assertion is the defect
- * written down, and it fails when the defect is fixed, which is what
- * stage two is for.
+ * The mark is read on every way back to user mode now, and the same
+ * arrangement asserts the opposite. What catches this program is not a
+ * new trap: it was interrupted before the kill, which is how the check
+ * got the core back to do the killing, so it is sitting in the kernel
+ * inside that interrupt. The kill is what it finds on the way out of
+ * it.
+ *
+ * Which is why the count below is zero and is asserted at zero. The
+ * entry it left through was made before it was marked, so a check that
+ * waited for a marked thread to enter the kernel would be waiting for
+ * something that does not have to happen.
  */
 static void
 kill_reach_checks(void)
@@ -4609,24 +4615,27 @@ kill_reach_checks(void)
     ran_on = time_now() - killed;
 
     /*
-     * Its own status, which is the whole finding. A program that was
-     * stopped would carry the code it was killed with.
+     * The code it was killed with, which says the kill decided how this
+     * program ended. Its own zero would say it ran its loop out, which
+     * is what it did until the mark was read on the way back to user
+     * mode.
      */
-    if (code != 0) {
-        panic("a kill: it stopped, with status %d, which stage one says "
-          "it cannot yet", (int)code);
+    if (code != KILL_CODE) {
+        panic("a kill: it came back with %d and not the %d it was "
+          "killed with", (int)code, KILL_CODE);
     }
 
     cnprintf("    %-38s %s\n", "a program that computes and calls",
-      "was killed and finished anyway");
+      "left on its way back to user mode");
     /*
-     * One, and it is the exit. The count is a count and is the same on
-     * every configuration: the kernel was entered once by this program
-     * while it was marked for death, and that entry is the submission
-     * that ends it. Every other way in did not happen, because nothing
-     * was armed that would have made it happen.
+     * Zero, and asserted at zero. The program never entered the kernel
+     * after it was marked: it was already inside an interrupt, taken
+     * before the kill, and it left through the return from that. A
+     * check that waited for a marked thread to enter would be waiting
+     * for something that does not have to happen, which is what stage
+     * three is about.
      */
-    if (c.c_proc->p_dying_entries - entries != 1) {
+    if (c.c_proc->p_dying_entries - entries != 0) {
         panic("a kill: it entered the kernel %lu times while marked",
           (unsigned long)(c.c_proc->p_dying_entries - entries));
     }
@@ -4635,9 +4644,9 @@ kill_reach_checks(void)
       (unsigned long)(c.c_proc->p_dying_entries - entries));
     expect("giving the program's handle back", handle_close(ht, keep),
       SYS_OK);
-    cnprintf("    %-38s %lu ticks, about %lu ms\n",
+    cnprintf("    %-38s %lu ticks, about %lu us\n",
       "how long it ran on afterwards", (unsigned long)ran_on,
-      (unsigned long)(ran_on * 1000ULL / time_hz()));
+      (unsigned long)(ran_on * 1000000ULL / time_hz()));
     cnprintf("    %-38s %lu ticks\n", "and the kill itself took",
       (unsigned long)(killed - before));
 }
