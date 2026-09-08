@@ -3373,6 +3373,9 @@ static struct channel *dl_ch;
  */
 static struct timeline dl_tl;
 
+/* And one for M17's checks to wait on, signalled by nothing. */
+static struct timeline kill_tl;
+
 /*
  * Signalled by the slow server once it has replied, so the check can
  * wait for it rather than spin: the boot thread outranks the server, so
@@ -4541,12 +4544,16 @@ clock_cost_checks(void)
 static void
 kill_reach_checks(void)
 {
+    struct handle_table *ht = &proc_current()->p_handles;
     struct child c;
-    struct timeline settle;
+    const struct thread *t;
     uint64_t before, killed, ran_on, entries;
+    sys_handle_t keep;
     int32_t code;
 
     cnputs("a kill: what it reaches when nothing is blocked\n");
+
+    timeline_init(&kill_tl, "kill-settle");
 
     /*
      * Below the boot thread, so that this check keeps the core until it
@@ -4556,6 +4563,15 @@ kill_reach_checks(void)
     sched_defer();
     child_watch(&c, proc_spawn_image("spin", PRIO_BOOT - 1, NULL, 0,
       NULL, 0));
+
+    /*
+     * A handle of this check's own, so the count on the process can be
+     * read after the join, which closes the two the join made.
+     */
+    if (handle_insert(ht, c.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &keep) != SYS_OK) {
+        panic("a kill: no handle slot to hold the program with");
+    }
     sched_undefer();
 
     /*
@@ -4563,10 +4579,25 @@ kill_reach_checks(void)
      * and not still in its loader. A wait on a timeline nothing signals
      * is how the rest of this boot sleeps.
      */
-    timeline_init(&settle, "kill-settle");
-    (void)timeline_wait(&settle, 1, time_now() + time_from_ms(10));
+    (void)timeline_wait(&kill_tl, 1, time_now() + time_from_ms(10));
 
-    entries = dying_entry_count();
+    /*
+     * Not blocked and not gone, which is what this stage is about: a
+     * thread waiting on something would be released by the kill and
+     * prove nothing. It does not say the program has run, because a
+     * thread that has never been dispatched is READY too, and that
+     * was tried: removing the wait above leaves the state exactly as
+     * it is. What says the program ran is that it went on running
+     * afterwards.
+     */
+    t = proc_threads(c.c_proc);
+    if (t == NULL || (t->t_state != THREAD_READY &&
+      t->t_state != THREAD_RUNNING)) {
+        panic("a kill: the program was not computing, state %u",
+          t == NULL ? 0u : (unsigned int)t->t_state);
+    }
+
+    entries = c.c_proc->p_dying_entries;
     before = time_now();
 
     if (proc_kill(c.c_proc, KILL_CODE) != SYS_OK) {
@@ -4588,8 +4619,22 @@ kill_reach_checks(void)
 
     cnprintf("    %-38s %s\n", "a program that computes and calls",
       "was killed and finished anyway");
+    /*
+     * One, and it is the exit. The count is a count and is the same on
+     * every configuration: the kernel was entered once by this program
+     * while it was marked for death, and that entry is the submission
+     * that ends it. Every other way in did not happen, because nothing
+     * was armed that would have made it happen.
+     */
+    if (c.c_proc->p_dying_entries - entries != 1) {
+        panic("a kill: it entered the kernel %lu times while marked",
+          (unsigned long)(c.c_proc->p_dying_entries - entries));
+    }
+
     cnprintf("    %-38s %lu\n", "entries it made while marked",
-      (unsigned long)(dying_entry_count() - entries));
+      (unsigned long)(c.c_proc->p_dying_entries - entries));
+    expect("giving the program's handle back", handle_close(ht, keep),
+      SYS_OK);
     cnprintf("    %-38s %lu ticks, about %lu ms\n",
       "how long it ran on afterwards", (unsigned long)ran_on,
       (unsigned long)(ran_on * 1000ULL / time_hz()));

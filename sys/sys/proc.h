@@ -182,6 +182,14 @@ struct proc {
     int32_t             p_kill_code;
 
     /*
+     * Entries into the kernel this process made while marked for
+     * death, per M17 stage one. The chances a kill had to take
+     * effect, counted from every way in and not only the one that
+     * looks for the mark.
+     */
+    uint64_t            p_dying_entries;
+
+    /*
      * Memory-locked, per section 15.4 rule 2. Everything on a paging
      * path is locked, and rule 3 makes a fault in one fatal rather than
      * recoverable: it is a configuration mistake, and a system that

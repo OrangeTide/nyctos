@@ -10011,6 +10011,27 @@ what a death means; this is only about the death arriving.
   the milestone is about.
 - *And the defect is written where the claim is*, in section 10.5, which
   said termination is prompt and did not say for whom.
+- *The review turned the finding into a count.* The stage asserted only
+  the program's status, and the number beside it, how often the kernel
+  was entered while the program was marked, was printed and not held to
+  anything. It is one on every configuration and it is the exit itself,
+  so it is asserted now. Arming a one-shot twenty milliseconds before
+  the kill makes it two and the check fails: an interrupt lands, the
+  kernel runs on that thread's behalf, and it goes back to the program
+  it was told to stop. That is stage two's whole argument, produced by
+  breaking stage one's check.
+- *And a check that looked like it proved something it did not.* The
+  thread's state at the moment of the kill was read to show the program
+  was computing. A thread that has never been dispatched is `THREAD_READY`
+  as well, so removing the settle wait leaves the state exactly as it
+  was: the assertion excludes a blocked thread and nothing more, and it
+  says so. What says the program was running is that it went on running.
+- *The count is on the process now.* It was one number for the machine
+  with a baseline subtracted around the kill, which would have reported
+  whatever else was dying at the same time as this program's own.
+- *The stage costs the boot 70 ms*, 7.09 seconds to the shell on the
+  slowest configuration against 6.95 before, which is the program's loop
+  and the wait before the kill.
 
 **2. The mark, on every way back to user mode.** *Planned.*
 

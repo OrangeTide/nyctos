@@ -140,11 +140,11 @@ void preempt_point(void);
 void clock_mark(void);
 
 /*
- * Entries into the kernel by a thread whose process is marked for
- * death, per M17 stage one: the chances a kill had to take effect.
+ * Count an entry into the kernel by a thread whose process is marked
+ * for death, per M17 stage one: the chances a kill had to take effect.
+ * The count is on the process, in p_dying_entries.
  */
 void dying_entry_mark(void);
-uint64_t dying_entry_count(void);
 uint64_t clock_mark_count(uint64_t *worst, const char **who);
 
 struct thread;

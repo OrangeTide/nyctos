@@ -1306,9 +1306,12 @@ submit_crossings(uint64_t *checks)
  *
  * Every way in is counted and not only the one that looks: what the
  * stage is about is the difference between the two.
+ *
+ * Counted on the process, not in one number for the machine. A boot
+ * kills more than one thing, and a check that subtracted a baseline
+ * from a running total would be reporting whatever else was dying at
+ * the time as its own.
  */
-static uint64_t dying_entries;
-
 void
 dying_entry_mark(void)
 {
@@ -1321,12 +1324,6 @@ dying_entry_mark(void)
      * thread.
      */
     if (t != NULL && t->t_proc != NULL && t->t_proc->p_dying) {
-        dying_entries++;
+        t->t_proc->p_dying_entries++;
     }
-}
-
-uint64_t
-dying_entry_count(void)
-{
-    return dying_entries;
 }
