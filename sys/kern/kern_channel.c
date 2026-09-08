@@ -209,6 +209,7 @@ static bool buf_may_deliver(struct proc *from, struct proc *to, uintptr_t va,
 static void serving_begin(struct channel *ch, struct thread *t);
 static void serving_end(struct thread *t);
 static sys_err_t chain_raise(struct channel *ch, uint8_t prio);
+static void release_blocked(struct thread *t, sys_err_t err);
 
 static void
 msg_copy(struct sys_msg *dst, const struct sys_msg *src)
@@ -1419,17 +1420,46 @@ channel_thread_release(struct thread *t, bool tell)
  * thread will be given, and the walk would read its priority and what
  * it is blocked on.
  *
- * The client it was holding is not released here. A thread that dies
- * mid-request leaves its client waiting, which until M15 meant waiting
- * for ever and now means waiting until its deadline. Section 12.5 has
- * the death of the process release them with SYS_ERR_OWNER_DEAD; the
- * death of one thread of a live server is not that, and what it should
- * be is section 24.3's question.
+ * And the client it was holding is released, with SYS_ERR_STALE. Until
+ * M17 it waited until its own deadline, because section 12.5 releases
+ * clients when the process dies and one thread of a live server dying
+ * is not that. The wait was for nothing either way: the only thread
+ * that could have answered is this one. The error says which kind of
+ * nothing it was, and a client that reads it knows the server is still
+ * there to be asked again, where OWNER_DEAD says it is not.
+ *
+ * Only the client this thread was actually holding, and only if it is
+ * still waiting for this reply. The identifier carries a generation, so
+ * a slot given to something else since is not found; a client that gave
+ * up at its deadline is no longer reply-blocked here and is left alone.
  */
 void
 channel_thread_exited(struct thread *t)
 {
+    intr_state_t s = md_intr_disable();
+
+    if (t->t_client != 0) {
+        struct thread *client = thread_by_id(t->t_client);
+
+        if (client != NULL && client->t_wait == THREAD_WAIT_REPLY &&
+          client->t_blocked_on == t->t_serve_ch) {
+            /*
+             * Deferred, for the reason section 12.5's walk defers:
+             * releasing a client makes it runnable, and one that
+             * outranks this thread would take the core here, in the
+             * middle of an exit that has not yet said this thread is
+             * over.
+             */
+            sched_defer();
+            release_blocked(client, SYS_ERR_STALE);
+            sched_undefer();
+        }
+        t->t_client = 0;
+    }
+
     serving_end(t);
+
+    md_intr_restore(s);
 }
 
 
@@ -1546,13 +1576,13 @@ channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
 
 
 /*
- * Release one client blocked on a channel whose server is gone.
- * Interrupts are already off.
+ * Release one client blocked on a server that is gone, with the error
+ * that says which way it went. Interrupts are already off.
  */
 static void channel_thread_release(struct thread *t, bool tell);
 
 static void
-release_dead(struct thread *t)
+release_blocked(struct thread *t, sys_err_t err)
 {
     /*
      * And the link that says it is serving something, because it is
@@ -1576,7 +1606,7 @@ release_dead(struct thread *t)
      */
     channel_thread_release(t, false);
 
-    t->t_waitres = SYS_ERR_OWNER_DEAD;
+    t->t_waitres = err;
     t->t_blocked_on = NULL;
     t->t_wait = THREAD_WAIT_NONE;
     sched_ready(t);
@@ -1631,7 +1661,7 @@ channel_owner_died(struct proc *p)
         }
 
         while ((t = list_pop(&ch->c_senders)) != NULL) {
-            release_dead(t);
+            release_blocked(t, SYS_ERR_OWNER_DEAD);
         }
 
         for (j = 0; j < threads->count; j++) {
@@ -1643,7 +1673,7 @@ channel_owner_died(struct proc *p)
               t->t_wait != THREAD_WAIT_REPLY) {
                 continue;
             }
-            release_dead(t);
+            release_blocked(t, SYS_ERR_OWNER_DEAD);
         }
 
         /*

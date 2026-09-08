@@ -10187,16 +10187,47 @@ what a death means; this is only about the death arriving.
   against a race that happened to fall the right way. It waits for the
   notice with a deadline now and panics if it does not come.
 
-**5. A server thread that dies holding a message.** *Planned.*
+**5. A server thread that dies holding a message.** *Built.*
 
 - M15 left this: one thread of a live server dying leaves its client
   waiting until its own deadline, where the death of the whole process
   releases the client at once. The serving list is already cleaned up;
   what is missing is telling the client.
+- `channel_thread_exited` now releases the client the exiting thread was
+  holding, with `SYS_ERR_STALE`. Section 12.5's walk already does this
+  for the death of an owner, so the release itself is the same code with
+  the error passed in rather than fixed at `SYS_ERR_OWNER_DEAD`. The two
+  errors are the difference worth keeping: one says the server is still
+  there to be asked again and the other says it is not.
+- Only the client it was actually holding, and only if that client is
+  still waiting for this reply. The identifier carries a generation, so
+  a slot handed to something else since is not found, and a client that
+  already gave up at its deadline is no longer reply-blocked and is left
+  alone.
 - *Check.* A client sends to a server whose thread exits without
   replying, and the client comes back with `SYS_ERR_STALE` before its
   deadline rather than at it. The deadline is what tells the two apart,
   which is M15's arrangement and the reason it exists.
+- *Settled.* The client is released in **820 microseconds to 1.5
+  milliseconds** across the four configurations, against a deadline of
+  500 milliseconds. The deadline is long here on purpose: it costs
+  nothing when the release works, and it makes the difference between
+  being told and timing out unarguable rather than a matter of reading
+  two close numbers.
+- *Broken both ways.* Taking the release out gives `SYS_ERR_TIMEOUT`
+  after the full 500 milliseconds, which is the state M15 left. Passing
+  `SYS_ERR_OWNER_DEAD` instead of `SYS_ERR_STALE` fails as well, so the
+  check reads which answer came back and not merely that one did.
+- *And the state the check is in was arranged rather than hoped for.*
+  The server runs above the boot thread, so it is already at a receive
+  point when the send arrives and the send goes straight to the
+  rendezvous. Below it the message would queue and the client would be
+  send-blocked, which is a different state: that is the mistake M15
+  stage three made once, and the check asserts the server took the
+  message before it asserts anything about the answer.
+- *And nothing is left behind.* The channel has nobody inside a request
+  on it afterwards, and the client is not still donating priority to a
+  thread that has ended.
 
 **6. What it cost, and section 10.5 written around it.** *Planned.*
 

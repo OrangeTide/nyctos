@@ -933,6 +933,15 @@ child_watch(struct child *c, struct proc *p)
 #define DEADLINE_MS 50u
 
 /*
+ * And how long M17 stage five is willing to wait. Longer than the rest,
+ * because here the deadline is what the check is measuring against
+ * rather than what it is waiting for: it costs nothing when the client
+ * is released, and a system that left the client to time out would be
+ * unmistakable rather than arguable.
+ */
+#define STALE_DEADLINE_MS 500u
+
+/*
  * How many times the reader reads the clock in the run that is meant
  * to cost more. Large enough that the time it takes is plainly beside
  * a single reading, and small enough not to lengthen the boot: a
@@ -4983,6 +4992,153 @@ kill_faulting_checks(void)
 }
 
 #endif /* SYS_TIER == 2 */
+
+/*
+ * The channel M17 stage five sends on, and the server thread that takes
+ * a message from it and ends without answering.
+ */
+static struct channel *stale_ch;
+static volatile uint32_t stale_took;
+
+/*
+ * A server thread that takes a message and dies holding it.
+ *
+ * Not a cancellation and not a fault: it takes the request and returns,
+ * which is the ordinary way a thread of a live server ends. The process
+ * it belongs to is this one, the kernel, and it goes on running, so
+ * nothing section 12.5 does for the death of an owner applies here.
+ */
+static void
+stale_server(void *arg)
+{
+    struct sys_msg msg;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(stale_ch, &msg, &peer, &cookie) != SYS_OK) {
+        thread_exit(1);
+    }
+    stale_took = 1;
+
+    thread_exit(0);
+}
+
+/*
+ * A server thread that dies holding a message, per M17 stage five.
+ *
+ * M15 left this: the client waited until its own deadline, because the
+ * only thing that released a client early was the death of the whole
+ * server process. The reply that would release it can no longer come
+ * from anywhere, and the deadline is the wrong length of time to find
+ * that out in.
+ *
+ * The deadline is what tells the two answers apart, which is why it is
+ * long. A client released by the death gets its answer in microseconds
+ * and one waiting for its deadline gets it in half a second, so the
+ * check reads the clock as well as the error: the error alone would
+ * pass for a system that simply waited.
+ */
+static void
+kill_server_stale_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_send_args args;
+    struct sys_op_connect_args cargs;
+    sys_op_t send;
+    struct thread *srv;
+    sys_handle_t h_recv, to;
+    uint64_t sent, took, deadline;
+
+    cnputs("a kill: a server thread that dies holding a message\n");
+
+    stale_ch = channel_create("stale", self);
+    if (stale_ch == NULL) {
+        panic("a stale reply: no channel");
+    }
+    expect("a channel for the server that will die",
+      handle_insert(ht, stale_ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_recv), SYS_OK);
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to it, for the client",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    to = cargs.out_handle;
+
+    /*
+     * Above this thread, so it is already blocked in receive when the
+     * send arrives and the send goes straight to the rendezvous. Below
+     * it the message would queue instead and the client would be
+     * SEND-blocked, which is a different state and not this one: M15
+     * stage three paid for that mistake once.
+     */
+    stale_took = 0;
+    srv = thread_create("stale-srv", PRIO_BOOT + 1, stale_server, NULL);
+    sched_ready(srv);
+
+    memset(&args, 0, sizeof(args));
+    args.request.handle = SYS_HANDLE_INVALID;
+    deadline = time_now() + time_from_ms(STALE_DEADLINE_MS);
+    args.deadline = deadline;
+
+    memset(&send, 0, sizeof(send));
+    send.opcode = SYS_OP_IPC_SEND;
+    send.target = to;
+    send.flags = SYS_OP_DEADLINE;
+    send.arg_ptr = (uintptr_t)&args;
+    send.arg_len = sizeof(args);
+
+    sent = time_now();
+    expect("a send whose server thread dies holding it",
+      (sys_err_t)run_batch(&send, 1), SYS_ERR_STALE);
+    took = time_now() - sent;
+
+    /*
+     * That the server had it. Without this the check would pass for a
+     * send that was refused before any rendezvous happened, which is
+     * not a message anybody died holding.
+     */
+    if (stale_took == 0) {
+        panic("a stale reply: the server never took the message");
+    }
+
+    /*
+     * And it came back before its deadline rather than at it. This is
+     * the assertion the stage exists for: the error says what happened
+     * and the clock says the client did not sit through the wait to
+     * find out.
+     */
+    if (time_now() >= deadline) {
+        panic("a stale reply: the client waited out its deadline");
+    }
+
+    /*
+     * And nothing is left inside a request on the channel. A server
+     * that died holding a message is as finished with it as one whose
+     * reply was refused, and the list chain_raise walks has to say so.
+     */
+    if (stale_ch->c_serving != NULL) {
+        panic("a stale reply: the channel still has a server in a request");
+    }
+
+    if (thread_current()->t_donee != NULL) {
+        panic("a stale reply: the client is still donating to a dead server");
+    }
+
+    cnprintf("    %-38s %s\n", "a server thread that never replied",
+      "the client was told, not timed out");
+    cnprintf("    %-38s %lu ticks, about %lu us, of a %u ms deadline\n",
+      "how long the client waited", (unsigned long)took,
+      (unsigned long)(took * 1000000ULL / time_hz()),
+      (unsigned int)STALE_DEADLINE_MS);
+
+    expect("giving the connection back", handle_close(ht, to), SYS_OK);
+    expect("giving the channel back", handle_close(ht, h_recv), SYS_OK);
+}
 
 
 
@@ -10805,6 +10961,7 @@ kernel_main(void)
 #if SYS_TIER == 2
     kill_faulting_checks();
 #endif
+    kill_server_stale_checks();
     startup_record_checks();
     deadline_checks();
 
