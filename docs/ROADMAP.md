@@ -510,6 +510,27 @@ kernel did not compute and hand over. A program that reads the clock and
 exits enters the kernel once, to exit, and reading it sixteen thousand
 more times leaves that count at one.
 
+**M17 made a kill reach a thread that is not asking to be reached.**
+Section 10.5 said termination was prompt and the kernel unblocked every
+thread of the target, but a thread that was never blocked was left to
+find a mark on its own, and there was one place in this kernel where it
+was found. A program that computed and called nothing ran on: killed at
+the start of an eighty-millisecond loop, `spin` ran 59 to 68
+milliseconds more and exited with its own status. The mark is read where
+a trap returns to user mode now, and it stops in 144 to 385
+microseconds. A thread running on the other core need never trap at all,
+so a kill sends an inter-processor interrupt to the cores its target is
+running on, one per running thread and none on a single core, and the
+program there stops in about half a millisecond.
+
+A death also means something to whoever was waiting. A program killed
+while waiting for a page comes back as killed rather than as faulted,
+and its pager is told. A client whose server thread ended holding its
+message is told `SYS_ERR_STALE` in under two milliseconds, where it used
+to wait out its own deadline; the error says the server is still there
+to be asked again, which is what distinguishes it from the death of the
+whole server.
+
 Nothing has run on hardware, so every duration this project has
 published is the right shape and the wrong magnitude. The counts are not
 durations, which is why these milestones assert counts.
@@ -9955,6 +9976,12 @@ the field the section specifies can carry the value it is for.
 
 **A kill that reaches a thread which is not asking to be reached.**
 
+**Done.** All six stages are built. Section 20 says what it answered,
+what it cost, what the building kept finding, and what it left untested.
+The gap it closed was in the mechanism and not in the specification:
+section 10.5 said termination was prompt, and for a program that
+computed and called nothing it was not.
+
 Section 10.5 says process termination is prompt: `sys_proc_kill()`
 unblocks every thread of the target exactly as if each had been
 cancelled. The implementation does that and then relies on a mark,
@@ -12496,7 +12523,176 @@ because there is no such port here.
 
 ---
 
-## 20. Bring-Up Order Within M1
+## 20. Milestone 17, in Retrospect
+
+M17 set out to make section 10.5's promptness true for a thread that is
+not asking to be reached. The section said termination unblocks every
+thread of the target; the kernel did that and then left the rest to a
+mark that only one place ever read. A program that computed and called
+nothing was not stopped at all.
+
+### 20.1 The Questions
+
+**Does a kill reach a program that computes and calls nothing?**
+
+It does now, and the two numbers either side of the change are the
+milestone. Killed at the start of an eighty-millisecond loop, `spin` ran
+for another 59 to 68 milliseconds and exited with its own status, on
+both ports and at both tiers. With the mark read where a trap returns to
+user mode, it stops 144 to 385 microseconds after the kill. On the other
+core it was not reached at all, because a thread running there need
+never trap and a tickless kernel arms nothing that would make it; with
+the poke it stops in 485 microseconds on riscv64 and 561 on aarch64.
+
+**Was the falsification condition met?**
+
+No, and it was the condition worth asking. The milestone said it would
+be falsified if the return-to-user hook could not be placed without
+unwinding kernel state, or if a poke could not reach a core running user
+code. The hook is one call at the end of the interrupt and fault paths,
+in the place a trap is already about to return to user mode, so there is
+nothing to unwind: the frame below it is the program's own. The port had
+only to say which mode the trap came from, which each already computes
+for its own counters. And the poke is `md_cpu_ipi`, which the scheduler
+and the timer already used. Promptness cost no new mechanism.
+
+**What made the check able to fail?**
+
+The status, and not the stopping. A spinning program ends on its own, so
+a check that asked whether the program had ended would pass whether the
+kill did anything or not. What it asks is which status came back: the
+code it was killed with, or its own. That is the milestone's own
+watch-for line, and it is the reason the first stage could measure a gap
+rather than describe one.
+
+**And what does a death mean to somebody else?**
+
+Three answers, all of them checked. A pager holding a fault it will
+never answer is told, with the death notice section 10.5 already
+specified, because a pager is a server whose client is the kernel. A
+program killed while waiting for a page comes back as killed and not as
+`SYS_EXIT_FAULT`, which is what a supervisor reads to learn why it
+stopped. And a client whose server thread ended holding its message is
+released with `SYS_ERR_STALE` in 775 microseconds to 1.8 milliseconds,
+where before it waited out its own deadline: half a second in the
+check, and for ever before M15 gave it a deadline at all.
+
+### 20.2 What It Cost
+
+**One call, in three places.** `proc_exit_if_dying` at the end of the
+interrupt path, and at the start of the fault path and again before a
+fault is reported. The system call path had read the mark at every
+submission entry boundary since M11, which is the same check in the
+place a batch is already preemptible at.
+
+**One argument per port.** riscv64 computes the complement of `SPP`,
+which it already had in hand; aarch64 passes a constant per vector,
+because its EL0 and EL1 interrupts arrive at different ones. Fourteen
+lines of assembly on one port and eight on the other.
+
+**One interrupt per running thread of the target**, and none at all for
+a kill on a single core, because the killer has the core and nothing of
+the target is running. That is a count and the boot asserts it.
+
+**Sixteen more channel slots, and 2304 bytes with them.** Not the cost
+of stopping a thread but of checking it: channels are allocated and
+never released, so the boot had one slot left and the check that needed
+two ran the cohort check out. Kernel object memory went from 240736
+bytes to 243040.
+
+**No threads and no stacks.** The high-water marks are 24 threads and
+98304 bytes at Tier 2 and 22 and 90112 at Tier 0, exactly as M16 left
+them. Every thread these checks start is ended by them, which is a
+lesson from stage four's review rather than a habit.
+
+**No new system call, no new operation, and no new program.** The
+milestone used `spin`, `paged`, `echoes` and `orphan`, which were built
+for other things.
+
+**Three counters and one line in the compared report**, so that what a
+kill costs is asserted rather than described.
+
+**Seventy milliseconds of boot**, all of it stage one's check waiting
+for a program that has to run in order to be interrupted. Nothing after
+that stage waits: they are measured in microseconds.
+
+### 20.3 What the Building Kept Finding
+
+**A check that could not fail on the thing it was for.** The first
+version asserted the process ended, which it does anyway. This shape has
+now appeared in five consecutive milestones, and each time it is found
+by asking what the check would do if the mechanism were removed.
+
+**An argument that was right by accident.** riscv64 computed the mode
+bit into `t1` and then loaded an address into that same register before
+taking the argument from it. What the handler received for a trap from
+user mode was an address: non-zero, so the right answer, for a reason
+that would stop holding if the address were ever one or the halves were
+ever reordered.
+
+**A count that is not the kernel's to promise.** The entries a marked
+thread makes before it leaves is zero, and it was asserted at zero. An
+unrelated interrupt landing in those microseconds would make it one and
+the check would then be a correct system failing. It is reported now,
+and the status is what is asserted.
+
+**A poke the machine did not count.** Every other sender increments the
+core's tally beside `md_cpu_ipi`; this one did not, so a whole class of
+interrupt was missing from a number the boot publishes.
+
+**Checks that leave their own mess behind.** The pager that answers
+nothing was never stopped, and sat blocked for the rest of the boot with
+its channel handle open. The extra thread it held was being recorded in
+`usage-tier2.txt` as the price of testing a faulting kill; the price was
+the leak.
+
+**A count read without waiting for it.** The join returns when the
+killed program is reaped, which can precede the pager taking the death
+notice off its channel. The number happened to be right.
+
+**An identity test resting on a pointer another path clears.** The
+release found its client by a channel pointer that cancellation clears,
+so a server thread cancelled and then ending released nobody, which is
+the shape a kill actually produces. That same stale pointer was the only
+thing keeping `SYS_ERR_STALE` and `SYS_ERR_OWNER_DEAD` apart: fixing the
+test told a killed server's clients the opposite of what they needed to
+hear, and `orphan` said so by name.
+
+**A release reaching into a call it was not part of.** Releasing a
+client took it off whatever channel it was serving on, which for the
+middle of a chain is a call it still owes an answer to. That was
+inherited from section 12.5's code and was wrong there too; the reach of
+it grew from the death of a process to the death of any serving thread,
+which is what made it worth finding.
+
+### 20.4 What Is Still Untested
+
+**A thread interrupted inside a kernel operation and then killed.** The
+guard that refuses to end it there, and the guard at the top of the
+fault path, both pass every check whether they are present or not.
+Nothing here constructs the race they exist for.
+
+**More than one running thread, and more than two cores.** One poke to
+one core is what is measured. The rule is one poke per running thread of
+the target, and only the singular case is asserted.
+
+**A client on another core released by a server thread's exit.** Every
+release in these checks happens on the core the exit happens on.
+
+**A supervisor that acts on the difference between the two errors.**
+`SYS_ERR_STALE` says the server can be asked again and
+`SYS_ERR_OWNER_DEAD` says it cannot; nothing in this system yet retries
+on the first.
+
+**Giving a channel back.** Section 18.2's teardown is not built, which
+is why the channel limit had to move rather than the boot getting
+tidier. The limit is not what is short.
+
+**Hardware, still.**
+
+---
+
+## 21. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -12540,7 +12736,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 21. Ordering: What Is Forced and What Is Chosen
+## 22. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -12571,7 +12767,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 22. What Would Change This Plan
+## 23. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -12618,7 +12814,7 @@ else.
 
 ---
 
-## 23. Deliberately Not Scheduled
+## 24. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

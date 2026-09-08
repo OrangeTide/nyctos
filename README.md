@@ -29,6 +29,51 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 17 is done: a kill reaches a thread that is not asking to be
+reached.** Section 10.5 says process termination is prompt, and the
+kernel did unblock every thread of the target. A thread that was never
+blocked was left to find a mark on its own, and there was exactly one
+place in this kernel where it was found: the entry boundary inside a
+batch. So a program that computed and called nothing was not stopped at
+all.
+
+```
+                                 how long a killed program ran on
+  before, on the core doing the killing              59-68 ms
+  after                                             144-385 us
+  before, on the other core            it finished its own work
+  after                                             485-561 us
+```
+
+The mark is read where a trap returns to user mode now, at the end of
+the interrupt path and twice in the fault path, in the one place a
+thread is certainly in the kernel with nothing of its own left below it.
+That is enough on a single core, and the reason is not the hook: a
+killer has to be running for a kill to happen, so the thread being
+killed is already in the kernel where it was interrupted or where it
+blocked. A thread running on another core need never trap, and a
+tickless kernel arms nothing that would make it, so a kill sends an
+inter-processor interrupt to the cores its target is running on. One per
+running thread, none on a single core, and the interrupt does nothing
+itself except make the return happen.
+
+A death also means something to whoever was waiting on it. A program
+killed while waiting for a page comes back as killed rather than as
+faulted, so a supervisor reads the right cause, and its pager is told
+with the death notice section 10.5 already specified. And a client whose
+server thread ended holding its message is released at once rather than
+at its own deadline:
+
+```
+  a client whose server thread died          775 us - 1.8 ms
+  the deadline it would otherwise wait out            500 ms
+```
+
+The error says which kind of loss it was. `SYS_ERR_STALE` means the
+thread that had the request is gone and the server can be asked again;
+`SYS_ERR_OWNER_DEAD` means the server itself has gone. Section 10.5 has
+been rewritten around what was built.
+
 **Milestone 16 is done: a program can tell the time.** Section 6.2 had
 specified a page mapped read-only into every process, carrying a stored
 uptime the kernel refreshes and a program reads. The page exists now and
@@ -888,13 +933,19 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - A receive carries no deadline, deliberately: a server waiting for work
   is not waiting for a party that can fail it. What a server does about
   a client that never comes is not answered.
-- A thread that dies while holding a client's message leaves that client
-  waiting until its own deadline. The death of a whole process releases
-  its clients with an error; one thread of a live server dying does not.
-- Killing a process unblocks every thread of it and each leaves at its
-  next return from the kernel. A thread computing in user mode and
-  calling nothing is not stopped, and there is no hook in the trap path
-  that would stop it.
+- A thread interrupted inside a kernel operation and then killed is not
+  ended there, because it holds state nothing could unwind. The guard
+  that refuses is unexercised: nothing here constructs that thread, and
+  removing the guard fails no check.
+- One poke to one core is what has been measured. The rule is one
+  inter-processor interrupt per running thread of the target, and only a
+  target with a single running thread is asserted.
+- Nothing acts on the difference between the two errors a lost server
+  produces. `SYS_ERR_STALE` says the server can be asked again and
+  `SYS_ERR_OWNER_DEAD` says it cannot; no client here retries.
+- A channel is allocated and never released. Section 18.2's teardown is
+  not built, so the boot's channel use only grows, and the limit had to
+  be raised for a check to have one rather than the boot getting tidier.
 - Nothing consumes a death notice. The kernel delivers one to a server
   whose client has gone, and no server here holds state per client, so
   whether a restarted server leaks its own per-connection records is
@@ -906,12 +957,13 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). Twelve milestones are finished.
-The last two were not in the plan: each came out of the previous one's
-retrospective, which named the experiment that would settle a question
-it could only half answer. What the plan does not schedule, and what
-the last milestones each said would be worth doing next, is written
-down there rather than guessed at here.
+See [docs/ROADMAP.md](docs/ROADMAP.md). Seventeen milestones are
+finished. The plan as written ran to ten; each milestone since was
+chosen after the last one ended, out of what it left open: a question
+only half answered, or a limitation this file had been carrying. What
+the plan does not schedule, and what the last milestones each said
+would be worth doing next, is written down there rather than guessed
+at here.
 
 One thing is named in every retrospective, which is what this project
 treats as a signal: nothing has ever run on hardware, so every duration
