@@ -30,6 +30,8 @@
 #define CLOCK_TOO_FAR       (-4)
 #define CLOCK_NO_PAGE       (-5)
 
+static volatile uint64_t sink;
+
 /* Bare hex, which is what the kernel's hex_into writes. */
 static int
 hex(const char *s, uint64_t *out)
@@ -60,9 +62,29 @@ hex(const char *s, uint64_t *out)
 int
 main(int argc, char **argv)
 {
-    uint64_t before, first, second;
+    uint64_t before, first, second, extra = 0, i;
 
-    if (argc != 2 || hex(argv[1], &before) != 0) {
+    /*
+     * Counted where the reading happens and not worked out from the
+     * argument. The check outside asserts this number, and a count
+     * derived from what was asked for would say the reads happened
+     * whether or not they did: that arrangement was tried, and taking
+     * the loop out did not fail it.
+     */
+    uint64_t taken = 2;
+
+    if (argc < 2 || argc > 3 || hex(argv[1], &before) != 0) {
+        return CLOCK_NO_ARG;
+    }
+
+    /*
+     * How many more times to read the clock, for the check that counts
+     * what the reading costs. The number is the argument rather than a
+     * constant here so that one program answers both questions: the
+     * count of crossings has to come from the same image doing the
+     * same work, or the comparison is between two programs.
+     */
+    if (argc == 3 && hex(argv[2], &extra) != 0) {
         return CLOCK_NO_ARG;
     }
 
@@ -76,6 +98,17 @@ main(int argc, char **argv)
     }
 
     first = sys_uptime();
+
+    /*
+     * Into something volatile, so that a compiler that can see this
+     * loop discards nothing: the point of the loop is the reading, and
+     * a read whose value is thrown away is a read that never happened.
+     */
+    for (i = 0; i < extra; i++) {
+        sink = sys_uptime();
+        taken++;
+    }
+
     second = sys_uptime();
 
     if (second < first) {
@@ -92,6 +125,18 @@ main(int argc, char **argv)
      */
     if (second - before > 0x7fffffffu) {
         return CLOCK_TOO_FAR;
+    }
+
+    /*
+     * Asked how many times to read, this answers with how many times it
+     * read. A count, which is the kind of thing a check can assert on
+     * any host: the run that is meant to do more work says how much
+     * more it did, and a program that ignored the argument says so.
+     * Where the readings fell is the other run's question, and that one
+     * is asked without a count.
+     */
+    if (argc == 3) {
+        return (int)taken;
     }
 
     return (int)(second - before);

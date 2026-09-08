@@ -9811,12 +9811,35 @@ something needs it, not because the section lists it.
 - *The outer floor stays.* It is the half of the check the program has
   no part in, and the inner one is the half that is exact.
 
-**5. What the read costs.** *Planned.*
+**5. What the read costs.** *Built.*
 
-- *Check.* A program reads the clock and its count of submissions does
-  not change. Section 6.2's whole claim is that this costs no syscall,
-  and a count of crossings is what says so: M11 already counts them per
-  process.
+- The same program runs twice, reading the clock twice and reading it
+  sixteen thousand three hundred and eighty-six times, and the kernel
+  compares what M11 already counts: `p_submits`, every time a process
+  entered the kernel with work.
+- *Check.* The two counts are equal, and the count is **one**. Equality
+  alone would hold for two runs that both crossed a thousand times, and
+  one is the number a program that reads the clock and exits should
+  have: it enters the kernel to exit and for nothing else. The same on
+  both ports, at both tiers and in every run, which is M11's kind of
+  number.
+- *And the reads happened*, which the crossings cannot say. The program
+  answers with how many readings it took, counted where the reading
+  happens rather than worked out from the argument, and the kernel
+  asserts that number. Durations are printed and not asserted, per M9.
+- *Settled.* One crossing for two readings and one for sixteen thousand,
+  on all four configurations. Section 6.2's claim for the page and the
+  counter is that a program tells the time without asking the kernel,
+  and this is the number that says so.
+- *Three ways of being wrong were tried, and the third was a check that
+  could not fail.* Making `sys_uptime` submit a NOP takes the counts to
+  3 and 16387. One extra crossing in the program takes both to 2 and
+  fails the assertion that it should be one. Taking the loop out was
+  meant to be caught by the longer run taking longer, and was not: with
+  the loop gone the two runs differed by whatever their spawns happened
+  to cost, and it passed. It was caught only once the program counted
+  its own readings, and a count derived from the argument would not have
+  caught it either, which was also tried.
 
 **6. What it cost, and section 6.2 written around it.** *Planned.*
 

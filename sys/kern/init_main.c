@@ -933,6 +933,15 @@ child_watch(struct child *c, struct proc *p)
 #define DEADLINE_MS 50u
 
 /*
+ * How many times the reader reads the clock in the run that is meant
+ * to cost more. Large enough that the time it takes is plainly beside
+ * a single reading, and small enough not to lengthen the boot: a
+ * quarter of a million reads took 380 ms, which is most of a paced
+ * line, and sixteen thousand take about twenty.
+ */
+#define CLOCK_READS 0x4000u
+
+/*
  * How many sends give up in a boot, and from which of section 12.1's
  * two states. One queued send times out with nobody receiving; one
  * client gives up while a server holds its message, and one program
@@ -4352,6 +4361,131 @@ clock_read_checks(void)
       "kernel to kernel, around the whole run",
       (unsigned long)(span * 1000000ULL / time_hz()));
 }
+/*
+ * What reading the clock costs, per M16 stage five.
+ *
+ * Section 6.2's whole claim for the page and the counter is that a
+ * program tells the time without asking the kernel. A count of
+ * crossings is what says so, and M11 already keeps one per process:
+ * p_submits is every time this process entered the kernel with work.
+ *
+ * So the same program is run twice, reading the clock once and reading
+ * it CLOCK_READS times, and the two counts are compared. A
+ * count that grew with the reads would mean the reading was a system
+ * call wearing an inline face. The count is also asserted outright,
+ * because equality alone would hold for two runs that both crossed a
+ * thousand times.
+ */
+static uint64_t
+clock_submits(uint64_t reads, uint64_t *took, int32_t *said)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct child c;
+    const char *argv[3];
+    char now[19], many[19];
+    uint64_t began, submits;
+    sys_handle_t keep;
+    int32_t code;
+
+    hex_into(now, (uintptr_t)time_now());
+    hex_into(many, (uintptr_t)reads);
+    argv[0] = "clock";
+    argv[1] = now;
+    argv[2] = many;
+
+    began = time_now();
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("clock", 20, NULL, 0, argv, 3));
+
+    /*
+     * A handle of this check's own, held across the join. child_join
+     * closes the two it made, and the count has to be read from a
+     * process that is still there: without this the reap is free to
+     * happen between the join and the read.
+     */
+    if (handle_insert(ht, c.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &keep) != SYS_OK) {
+        panic("the clock: no handle slot to hold the reader with");
+    }
+    sched_undefer();
+
+    code = child_join(&c, JOIN_MS);
+    *took = time_now() - began;
+
+    if (code <= 0) {
+        panic("the clock: the reader that was to read %lu times said %d",
+          (unsigned long)reads, (int)code);
+    }
+
+    *said = code;
+    submits = c.c_proc->p_submits;
+    expect("giving the reader's handle back", handle_close(ht, keep),
+      SYS_OK);
+
+    return submits;
+}
+
+static void
+clock_cost_checks(void)
+{
+    uint64_t once, many, t_once, t_many;
+    int32_t n_once, n_many;
+
+    cnputs("the clock: what reading it costs\n");
+
+    once = clock_submits(0, &t_once, &n_once);
+    many = clock_submits(CLOCK_READS, &t_many, &n_many);
+
+    if (once != many) {
+        panic("the clock: %lu crossings for one reading and %lu for "
+          "%lu of them", (unsigned long)once, (unsigned long)many,
+          (unsigned long)CLOCK_READS);
+    }
+
+    /*
+     * One, and named rather than left as whatever came back. A program
+     * that reads the clock and exits enters the kernel to exit and for
+     * nothing else, which is M11's kind of number: the same on both
+     * ports, at both tiers and in every run.
+     */
+    if (once != 1) {
+        panic("the clock: a program that reads the clock and exits "
+          "crossed %lu times", (unsigned long)once);
+    }
+
+    cnprintf("    %-38s %lu, and %lu for %lu of them\n",
+      "crossings for one reading", (unsigned long)once,
+      (unsigned long)many, (unsigned long)CLOCK_READS);
+
+    /*
+     * And the reads happened, which the crossings cannot say: a
+     * program that ignored the argument would report the same one
+     * crossing. The program answers with how many times it read, which
+     * is a count and is the same on every host. Timing it and asking
+     * whether the longer run took longer was tried first and is not a
+     * check: with the loop taken out, the two runs differed by
+     * whatever the spawns happened to cost and it passed.
+     */
+    if (n_once != 2 || n_many != (int32_t)(CLOCK_READS + 2)) {
+        panic("the clock: %ld readings where 2 were asked for, and %ld "
+          "where %lu were", (long)n_once, (long)n_many,
+          (unsigned long)(CLOCK_READS + 2));
+    }
+
+    cnprintf("    %-38s %ld and %ld\n", "readings the two runs took",
+      (long)n_once, (long)n_many);
+
+    /*
+     * The durations are printed and not asserted, per M9: how much
+     * longer that many reads take is the host's business.
+     */
+    cnprintf("    %-38s %lu ticks against %lu\n",
+      "and the run that read them took", (unsigned long)t_many,
+      (unsigned long)t_once);
+}
+
 
 
 /*
@@ -10164,6 +10298,7 @@ kernel_main(void)
     permission_checks();
     syspage_checks();
     clock_read_checks();
+    clock_cost_checks();
     startup_record_checks();
     deadline_checks();
 
