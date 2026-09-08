@@ -9860,12 +9860,40 @@ something needs it, not because the section lists it.
   slowest configuration against 6.92 before, which leaves the paced
   session where it was.
 
-**6. What it cost, and section 6.2 written around it.** *Planned.*
+**6. What it cost, and section 6.2 written around it.** *Built.*
 
-- *Check.* The figures, and the section matched to what was built:
-  what the page carries, what it does not, where a program finds it,
-  and whether the seqlock the section describes turned out to be the
-  mechanism or a description of a different design.
+- *The section is rewritten around what exists*, with a "what was built"
+  half under the specification, the way section 12.1 carries M15's. What
+  went: the stored `uptime_ticks` field, `SYS_SYSPAGE_ENTRY()`, the
+  process descriptor it dereferenced through, and the seqlock that
+  protected a value nothing writes. What arrived: the page as a
+  description of the clock rather than the clock, the counter as the
+  time, the startup record as the way a program finds the page, and the
+  per-port permission that is the whole of what a port has to do.
+- *The seqlock was a description of a different design*, and the section
+  now says so. It is kept as the mechanism for the first field the kernel
+  ever writes while a program reads, which is section 14.5's UTC offset,
+  and that field is marked as what it is: not built.
+- *Three other places in the design said things that were no longer
+  true.* Pool limits described as published in the page, the timer
+  section describing uptime as read from the page, and section 14.5's
+  calendar time resting on fields nothing carries. Each now says what
+  exists and what is still a plan. The README said a program cannot make
+  a deadline, which it had said correctly for fifteen milestones.
+- *The figures.* One frame for the whole machine rather than one per
+  process, taken before the ledger's baseline. The startup record went
+  from four words to five and its version from 1 to 2. A program tells
+  the time in one instruction; each port permits it once per core and
+  permits nothing else. A program that reads the clock and exits crosses
+  the trap edge once, to exit, and reading the clock sixteen thousand
+  times leaves that at one. `patient` waits fifty milliseconds it
+  computed itself. The whole of it costs the boot 30 ms, 6.95 seconds to
+  the shell against 6.92 before.
+- *What would have falsified it did not.* The question was whether the
+  page is the right shape for what section 14.3 needs. The shape the
+  section specified was wrong, and the counter turned out to be
+  exposable on both ports, so absolute deadlines are affordable and it
+  was the section that changed rather than the argument for them.
 
 *Done when* a program constructs an absolute deadline from a clock it
 read itself, a send gives up on it, and reading that clock costs no

@@ -56,11 +56,13 @@ the timer, because undonating and taking a buffer back charge their work
 to a running thread and an interrupt may not have one, and a deadline
 that arrives after the wait has already ended does nothing at all.
 
-**A program still cannot make a deadline.** An absolute deadline needs a
-clock, and the shared page that would let a program read one without a
-syscall does not exist, so every deadline here is one the kernel
-computed and handed over. That is what keeps deadlines out of the
-programs that would use them.
+**A program makes its own deadlines, as of milestone 16.** An absolute
+deadline needs a clock. The system page of section 6.2 exists now, one
+frame mapped read-only into every process and found through the startup
+record, and it carries the frequency; the time itself comes from the
+counter, which each port permits user mode to read with one instruction.
+A program that reads the clock and exits enters the kernel once, to
+exit.
 
 **Milestone 14 is done: a program is mapped as what it is.** The boot
 archive carried the size of an image and not the size of the memory a

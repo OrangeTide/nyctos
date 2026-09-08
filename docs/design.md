@@ -621,11 +621,85 @@ Nothing here is a copy. That is worth restating beside the numbers, because "zer
 
 ### 6.2 The System Page
 
-Kernel status, hardware topology, pool limits, and the timebase are exported through a page mapped read-only into every process. `SYS_SYSPAGE_ENTRY()` dereferences through the current process descriptor rather than a fixed virtual address, so Tier 2 isolation is preserved.
+A page mapped read-only into every process, carrying what a program needs
+to know about the machine it is running on. It is found through the
+process's own description of itself rather than at a fixed address, so
+Tier 2 isolation is preserved and no program has an address it did not
+learn.
 
-The 64-bit `uptime_ticks` field is protected by a seqlock and must be read through `sys_syspage_uptime()`, never by direct field access, because a 32-bit target cannot read it atomically and will occasionally tear.
+**The page carries a description of the clock, not the clock.** The
+timebase a program needs is the frequency, and the time itself comes from
+the counter, read directly. A stored `uptime_ticks` field was the
+original design and it does not survive contact with a tickless kernel:
+section 14.2 arms the hardware for the next event and for nothing else,
+so between two events there is nothing running that would refresh such a
+field. Its staleness is bounded by when the kernel next has something to
+do, which is a property of the workload rather than of the machine, and a
+faster host makes the number smaller without making the field current. A
+deadline built from a stale value expires earlier than the caller meant,
+which is the failure absolute deadlines exist to avoid.
 
-That accessor is more load-bearing than it appears. Absolute deadlines (section 14.3) require a cheap clock read on every timeout construction, and reading the shared page costs no syscall. Without it, absolute deadlines would not be affordable.
+**Kernel status, hardware topology and pool limits belong here too**, and
+none of them are in it yet. The page is added to when something needs a
+field, not because this section lists one.
+
+#### What was built
+
+**One frame for the machine.** It is allocated and filled once at boot,
+before the frame ledger takes its baseline, so it counts as part of what
+the kernel costs rather than as something a process is charged for. Every
+process maps the same frame, which is why a reap must not give it back:
+`p_syspage_off` keeps the loader's teardown off that offset.
+
+**Read-only, one page past everything the image asked for.** Both tiers
+follow the same rule by different means. Tier 2 maps the frame into the
+slot with read but not write; Tier 0 hands out the frame's own address,
+because flat memory has no other, and cannot refuse a write. A program at
+Tier 0 really can move the clock every other program reads, which is one
+more entry on section 13.3's list of what the tier does not protect.
+
+**The address travels in the startup record.** `SYS_STARTUP_VERSION` is
+2 and the record is one word longer for it. libc keeps that word while it
+consumes the record and hands it back through `sys_syspage()`, which
+answers NULL for a process the kernel built rather than loaded. A program
+that never looks at its record cannot reach the page at all. There is no
+`SYS_SYSPAGE_ENTRY()` and no process descriptor: the record is where a
+program is told things, and this is one of them.
+
+**What the page holds:** a version and the tick frequency. That is all,
+and the version is checked before the frequency is believed.
+
+**The clock is the counter.** `sys_uptime()` reads it with one
+instruction, the same instruction the kernel tells the time with:
+`rdtime` on riscv64 and `cntpct_el0` on aarch64. A program reading some
+other counter would agree with the kernel only by accident, and a
+deadline is a number both of them have to mean the same thing by. Each
+port permits it once per core at boot, and permits nothing else:
+`scounteren` bit TM, `CNTKCTL_EL1` bit EL0PCTEN. Not the cycle or
+instruction counters, which say what a program did rather than what time
+it is, and not the timer registers, which would let a program arm
+something.
+
+**The relative helpers are in libc**, per section 14.3.
+`sys_deadline_in()` adds ticks to the counter and `sys_deadline_in_ms()`
+converts through the frequency in the page, which is the one place a
+program needs both halves of this section. A relative deadline converted
+inside a system call would start counting from whenever the call arrived,
+which is what an absolute deadline exists to avoid. A program with no
+page gets `SYS_DEADLINE_NOW` rather than a guessed frequency: a call
+given it returns at once, which fails where it can be seen instead of
+waiting for a length of time nobody chose.
+
+**What it costs, measured.** A program that reads the clock and exits
+enters the kernel once, to exit. Reading the clock sixteen thousand times
+instead of twice leaves that count at one and adds no recoverable fault.
+That number is the whole of this section's claim: a program tells the
+time without asking the kernel.
+
+**No seqlock.** It was specified for a value the kernel writes and a
+program reads, and there is no such value. If one is ever added the
+seqlock comes with it, and the argument for it stands: a 32-bit target
+cannot read a 64-bit field atomically and will occasionally tear.
 
 ---
 
@@ -692,7 +766,7 @@ Because handles are per-process table indices, the kernel rewrites their values 
 
 ## 8. Kernel Memory: Static Object Pools
 
-**There is no kernel heap, at any tier.** Every object type has a pool whose size is fixed at build time, published read-only in the system page so userspace can see the limits it works against.
+**There is no kernel heap, at any tier.** Every object type has a pool whose size is fixed at build time. Section 6.2 intends to publish those limits read-only in the system page so userspace can see what it works against; the page carries the timebase and not yet the limits.
 
 The property being bought is that **kernel memory consumption is a property of the configuration rather than of the workload.** A system's kernel footprint can be computed from its build settings without running it, and cannot be driven upward by application behaviour.
 
@@ -1451,7 +1525,7 @@ nothing to do with the deadline, so the work it was meant to preempt
 carries on undisturbed and the interrupt is taken in the kernel of an
 idle core. That was found as a check failing about one run in ten.
 
-**The timer is a scheduling mechanism, not a clock.** Reading the current time does not involve it at all: uptime is read from the system page with no system call, per section 6.2, and the two are related only in that both derive from the same monotonic source. Nothing in section 14.5 can perturb either, which is what makes clock adjustment safe for real-time behaviour.
+**The timer is a scheduling mechanism, not a clock.** Reading the current time does not involve it at all: a program reads the counter itself with no system call, at the frequency the system page gives it, per section 6.2, and the two are related only in that both derive from the same monotonic source. Nothing in section 14.5 can perturb either, which is what makes clock adjustment safe for real-time behaviour.
 
 ### 14.2 Timers Advance Timelines
 
@@ -1498,7 +1572,7 @@ Every blocking call takes an **absolute deadline** on the system timebase, not a
 
 Relative timeouts drift. A wait that is interrupted and restarted with the same relative value extends its own deadline by however long it had already waited, so a periodic task accumulates phase error proportional to its own scheduling jitter, which is precisely the error real-time code exists to avoid. Absolute deadlines have no such failure mode and make restart-after-interruption exact.
 
-The cost is a clock read when constructing a deadline, and section 6.2 is what makes that affordable: `sys_syspage_uptime()` reads the shared page with no syscall. Relative helpers live in libc.
+The cost is a clock read when constructing a deadline, and section 6.2 is what makes that affordable: `sys_uptime()` reads the counter with one instruction and no syscall. Relative helpers live in libc, and `sys_deadline_in_ms()` is the one a caller usually wants.
 
 **Neither exists yet, which is what keeps deadlines out of programs.** A program has no way to read the clock at all, so the only deadlines this system has are made by the kernel, and a program given one is handed it as an argument. Section 12.1 records what that costs.
 
@@ -1521,7 +1595,7 @@ Everything above is monotonic. Uptime never steps, never runs backwards, and is 
 Calendar time is nonetheless needed by applications, and is provided without a syscall and without a kernel clock driver. The system page carries a **UTC offset** written by a userspace time service:
 
 ```
-calendar time = uptime_ticks / ticks_per_sec + utc_offset
+calendar time = uptime / ticks per second + utc offset
 ```
 
 The kernel neither computes nor validates the offset. It owns no real-time clock driver, which stays outside the kernel like every other driver, and it does no timezone or leap-second handling. Its entire role is to hold a value that one authorized service writes and every process can read cheaply.
@@ -1534,7 +1608,7 @@ Three properties follow, and the third is the reason for the arrangement.
 
 **Clock adjustment cannot disturb real-time behaviour.** Because timers and deadlines are defined against uptime and never against calendar time, a correction of any size, forwards or backwards, cannot cause a periodic task to miss an activation, fire twice, or block for an unexpected duration. Systems that schedule against a settable clock have to defend against exactly that, and here it is structurally impossible.
 
-The offset is protected by the same seqlock as `uptime_ticks` and must be read through `sys_syspage_utc_offset()`, since it is a 64-bit value that a 32-bit target cannot read atomically.
+*None of this is built.* The page carries no offset and there is no time service. What exists is uptime, which is what deadlines and scheduling are defined against; calendar time is the part that is still a plan. When it is built the offset needs the seqlock section 6.2 describes, since it is a 64-bit value a 32-bit target cannot read atomically, and it will be the first field in the page the kernel writes while a program reads.
 
 ---
 
@@ -2799,7 +2873,8 @@ sys_err_t sys_handle_dup(sys_handle_t h, uint32_t new_rights,
 #define SYS_FEATURE_RAM_LOADER   (1u << 5)  /* compile-time; see section 15.2 */
 
 /* Pool sizes are fixed at build time. There is no kernel heap, at any tier.
- * Published read-only so userspace can see the limits it works against. */
+ * To be published read-only in the system page so userspace can see the
+ * limits it works against; the page does not carry them yet. */
 typedef struct sys_pool_limits {
     uint32_t max_processes;
     uint32_t max_threads;
@@ -2813,85 +2888,49 @@ typedef struct sys_pool_limits {
     uint32_t pulse_queue_reserved;  /* slots system pulses may always use */
 } sys_pool_limits_t;
 
-typedef struct sys_syspage {
-    volatile uint32_t seq;          /* seqlock; odd means write in progress */
-    uint32_t          ticks_per_sec;
-    uint32_t          page_size;
-    uint32_t          cpu_count;
-    uint32_t          feature_flags;
-    uint32_t          prio_max;
-    uint32_t          prio_rt_min;  /* at or above this, strict priority only */
-    sys_pool_limits_t pools;
-    uint64_t          uptime_ticks; /* read via sys_syspage_uptime() only */
+/* What the page holds today. The version is checked before anything else
+ * in it is believed, and hz is the frequency of the counter a program
+ * reads for itself. The fields below this line are section 6.2's, and
+ * are added when something needs one. */
+#define SYS_SYSPAGE_VERSION 1
 
-    /* Seconds to add to uptime to obtain calendar time. Written by a
-     * userspace time service, never computed or validated by the kernel,
-     * which owns no clock driver. Scheduling, deadlines and timers are
-     * defined against uptime alone, so adjusting this cannot perturb
-     * real-time behaviour. Read via sys_syspage_utc_offset(). Section 14.5. */
-    int64_t           utc_offset;
+typedef struct sys_syspage {
+    uint32_t version;
+    uint32_t _reserved;
+    uint64_t hz;                    /* counter ticks per second */
+
+    /* Not built: seq, page_size, cpu_count, feature_flags, prio_max,
+     * prio_rt_min, pools, utc_offset. There is deliberately no
+     * uptime_ticks: see section 6.2 for why a stored uptime cannot
+     * carry the time in a tickless kernel. */
 } sys_syspage_t;
 
-typedef struct sys_proc_descriptor {
-    sys_proc_id_t   pid;
-    sys_syspage_t  *syspage;
-    uint32_t        cpu;            /* current core affinity */
-    uint32_t        _reserved;
-} sys_proc_descriptor_t;
+/* Where a program's page is. The address comes from the startup record,
+ * which libc keeps while consuming it; NULL for a process the kernel
+ * built rather than loaded. There is no process descriptor and no
+ * SYS_SYSPAGE_ENTRY(): a program is told, rather than knowing. */
+const sys_syspage_t *sys_syspage(void);
 
-extern sys_proc_descriptor_t *__sys_current_proc;
+/* The clock. One instruction, no system call, and the same counter the
+ * kernel tells the time with. The frequency comes from the page, and is
+ * zero for a process that has none. Sections 6.2 and 14.3. */
+uint64_t sys_uptime(void);
+uint64_t sys_uptime_hz(void);
 
-#define SYS_SYSPAGE_ENTRY(field) (__sys_current_proc->syspage->field)
+/* Relative-to-absolute helpers. In libc rather than the kernel: a
+ * relative deadline converted inside a system call would start counting
+ * from whenever the call arrived. The millisecond form answers
+ * SYS_DEADLINE_NOW for a process with no page, which fails where it can
+ * be seen rather than waiting for a length of time nobody chose. */
+uint64_t sys_deadline_in(uint64_t ticks);
+uint64_t sys_deadline_in_ms(uint32_t ms);
 
-/* Torn-read-safe accessor for the 64-bit uptime field. Direct field access is
- * not valid on 32-bit targets. This is also the clock read that makes
- * absolute deadlines affordable: no syscall. See sections 6.2 and 14.3. */
-static inline uint64_t sys_syspage_uptime(void)
-{
-    const sys_syspage_t *sp = __sys_current_proc->syspage;
-    uint32_t s0, s1;
-    uint64_t v;
-
-    do {
-        s0 = sp->seq;
-        v  = sp->uptime_ticks;
-        s1 = sp->seq;
-    } while ((s0 & 1u) || (s0 != s1));
-
-    return v;
-}
-
-/* Relative-to-absolute helper. Lives here rather than in the kernel. */
-static inline sys_deadline_t sys_deadline_in(sys_ticks_t ticks)
-{
-    return (sys_deadline_t)(sys_syspage_uptime() + ticks);
-}
-
-/* Calendar time, seqlock-protected like uptime. Direct field access is not
- * valid on 32-bit targets. */
-static inline int64_t sys_syspage_utc_offset(void)
-{
-    const sys_syspage_t *sp = __sys_current_proc->syspage;
-    uint32_t s0, s1;
-    int64_t  v;
-
-    do {
-        s0 = sp->seq;
-        v  = sp->utc_offset;
-        s1 = sp->seq;
-    } while ((s0 & 1u) || (s0 != s1));
-
-    return v;
-}
-
-/* Seconds since the epoch. No syscall: both terms come from the mapped
- * system page. */
-static inline int64_t sys_time_now(void)
-{
-    const sys_syspage_t *sp = __sys_current_proc->syspage;
-    return (int64_t)(sys_syspage_uptime() / sp->ticks_per_sec)
-         + sys_syspage_utc_offset();
-}
+/* Not built: calendar time. It needs the UTC offset of section 14.5,
+ * which is the first field the kernel would write while a program reads,
+ * and so the first that would need the seqlock:
+ *
+ *   int64_t sys_time_now(void) = uptime / hz + utc offset
+ */
 
 /* ========================================================================== */
 /* Boot Handoff                                                               */
