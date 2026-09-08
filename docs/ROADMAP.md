@@ -10438,6 +10438,53 @@ serves stop existing.
   from 34 members to 36 and from 233472 bytes to 241664; the compared
   kill count goes from 7 to 10 at Tier 2 and 5 to 8 at Tier 0. No
   threads and no stacks: the high-water marks are what M17 left.
+- *The review found the server outside the model it was written to.* A
+  server thread that has taken a request and not answered it may not
+  take another, per section 19.3, and the first version of this one did:
+  it took the held request and went back to receiving. The kernel let
+  it. The second rendezvous overwrote the client the thread owed, so the
+  first could never be answered, and it called `serving_begin` a second
+  time on a thread already on the channel's list, which left that
+  thread's next pointer naming itself. `serving_end` then replaced the
+  head with that pointer, and the channel ended the boot with its own
+  server thread at the head of a list it was not on: no channel, no
+  client. Section 12.3's walk raises whatever is at that head for work
+  it is not doing.
+- *The server has two threads now*, which is the shape section 19.3 asks
+  for. The first takes the one request that is never answered and stops,
+  which is what makes that request the first one rather than a race, and
+  everything after it is the second thread's, including the death notice
+  when the first thread's client is killed.
+- *Refusing the second receive in the kernel is not the answer, and the
+  boot said so.* A guard at the top of `channel_recv` that refused a
+  thread which owed a reply failed the M12 inversion check at once: that
+  check has a server receive on a second channel while it is serving,
+  which is how it arranges a chain, and it never completes. Blocking in
+  a receive while owing a reply is a legitimate state; completing one is
+  what corrupts. Where the refusal belongs, if it belongs anywhere, is
+  this milestone's to decide and not a review's.
+- *And the check now waits for the reap*, per M13, which found a second
+  defect immediately: **a process that creates a thread and keeps the
+  handle can never be reaped.** The handle holds a reference to the
+  thread, an unreaped thread holds a reference to its process, and a
+  process's own handle table is closed inside `proc_reap`, which will
+  not run until that reference goes. `bin/threads` has done exactly this
+  since it was written, so a boot has been leaking a process slot, two
+  thread slots and their kernel stacks, unnoticed because nothing had
+  ever asserted that a program with two threads was reaped. `ledger`
+  closes its handle and is reaped; taking that close out panics with
+  "the server exited and was never reaped".
+- *Which is where the extra thread went.* With the leak, the boot's
+  high-water rose to 25 threads and 14 processes. With the handle closed
+  it is back to 24 and 13, so the second thread this server needs costs
+  the high-water nothing, and `usage-tier0.txt` and `usage-tier2.txt` are
+  unchanged by the review.
+- *Two smaller things.* The server read a request without checking that
+  the message was long enough to hold one, and now refuses a short one
+  rather than reading past it. And the check asserted the server was
+  empty before its first client, which it can no longer ask, because
+  before the first client there is no thread that would answer: it
+  asserts one record held after one client instead.
 
 **2. Which deaths the server hears about.** *Planned.*
 

@@ -13,8 +13,9 @@
  * to do carefully is take exactly one record and then be predictable
  * about how it goes.
  *
- *   hold    asks for a record and is not answered, so it dies inside
- *           the rendezvous section 12.5 announces a death from
+ *   hold    is the server's first client, and a server never answers
+ *           its first request, so this one dies inside the rendezvous
+ *           section 12.5 announces a death from
  *   idle    takes a record, is answered, and then waits for something
  *           nobody will signal, so it dies with nothing outstanding
  *   leave   takes a record and returns, which is a client that ends
@@ -84,7 +85,7 @@ main(int argc, char **argv)
          * does not answer, so this thread is REPLY-blocked until
          * something ends it, and what ends it is the check.
          */
-        (void)ask(to, LEDGER_OP_HOLD, NULL);
+        (void)ask(to, LEDGER_OP_TAKE, NULL);
         return 3;
     }
 

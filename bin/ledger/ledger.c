@@ -22,6 +22,23 @@
  * Records are keyed by the identifier the server has, which is the
  * thread that sent the request. Whether that is the right key is stage
  * three's question and is deliberately not answered here.
+ *
+ * **Two threads, because one of them stops.** Section 19.3 has a server
+ * thread serve one request at a time, and this server needs one request
+ * left unanswered for as long as its client lives: that is the state
+ * section 12.5 announces a death from, and it is the only way to
+ * arrange a client that dies inside a rendezvous. So the first thread
+ * takes that request, starts the second, and stops. Everything after
+ * the first request is the second thread's, including the death notice
+ * when the first thread's client is killed.
+ *
+ * The first version of this had one thread receive again while it still
+ * owed a reply, and the kernel let it: the second rendezvous overwrote
+ * the client it owed and pushed it onto the channel's serving list a
+ * second time, which left that list naming a thread serving nothing.
+ * The review measured that and this server stopped doing it. What the
+ * kernel should do about a server that tries is written down in the
+ * milestone and is not settled here.
  */
 
 #include <os/sys.h>
@@ -40,6 +57,16 @@ static struct record records[LEDGER_RECORDS];
 /* Records ever taken, and death notices ever seen, both for COUNT. */
 static uint32_t taken_ever;
 static uint32_t notices;
+
+/* The channel, read by both threads and written before the second exists. */
+static sys_handle_t chan;
+
+/*
+ * The serving thread's stack. Its own memory, because a thread's stack
+ * is memory its creator already has: there is no allocator here.
+ */
+#define STACK_BYTES     4096
+static unsigned char serve_stack[STACK_BYTES] __attribute__((aligned(16)));
 
 static uint32_t
 held(void)
@@ -84,21 +111,19 @@ record_for(sys_thread_id_t who)
     return NULL;
 }
 
-int
-main(int argc, char **argv)
+/*
+ * The request loop, which is every request after the first one. It owes
+ * nobody anything across a receive: each request is answered before the
+ * next is taken, which is the shape section 19.3 asks for.
+ */
+static void
+serve(void *arg)
 {
-    sys_handle_t chan;
     sys_msg_t message, reply;
     sys_thread_id_t peer;
     uint64_t cookie;
 
-    (void)argc;
-    (void)argv;
-
-    chan = ns_lookup(SYS_NS_SERVICE);
-    if (chan == SYS_HANDLE_INVALID) {
-        return 1;
-    }
+    (void)arg;
 
     for (;;) {
         const ledger_request_t *req;
@@ -107,7 +132,7 @@ main(int argc, char **argv)
 
         memset(&message, 0, sizeof(message));
         if (sys_msg_recv(chan, &message, &peer, &cookie) != SYS_OK) {
-            return 2;
+            sys_thread_exit(2);
         }
 
         /*
@@ -124,48 +149,47 @@ main(int argc, char **argv)
             continue;
         }
 
-        req = (const ledger_request_t *)message.inline_data;
-
         memset(&reply, 0, sizeof(reply));
         reply.handle = SYS_HANDLE_INVALID;
         reply.inline_len = sizeof(*rep);
         rep = (ledger_reply_t *)reply.inline_data;
         rep->lp_status = SYS_OK;
 
-        switch (req->lr_op) {
-        case LEDGER_OP_HOLD:
-            /*
-             * The record is taken and the client is not answered. It
-             * stays inside the rendezvous, which is the state section
-             * 12.5 announces a death from, and this loop goes back to
-             * receiving rather than waiting on it.
-             */
-            if (record_for(peer) == NULL) {
-                rep->lp_status = SYS_ERR_NO_MEMORY;
+        /*
+         * A request shorter than the header is refused rather than read
+         * past. The reply still goes back, because a client that sent
+         * nonsense is still waiting for an answer.
+         */
+        if (message.inline_len < sizeof(*req)) {
+            rep->lp_status = SYS_ERR_INVALID_ARG;
+            req = NULL;
+        } else {
+            req = (const ledger_request_t *)message.inline_data;
+        }
+
+        if (req != NULL) {
+            switch (req->lr_op) {
+            case LEDGER_OP_TAKE:
+                if (record_for(peer) == NULL) {
+                    rep->lp_status = SYS_ERR_NO_MEMORY;
+                }
+                break;
+
+            case LEDGER_OP_DROP:
+                r = record_for(peer);
+                if (r != NULL) {
+                    r->taken = 0;
+                    r->owner = 0;
+                }
+                break;
+
+            case LEDGER_OP_COUNT:
+                break;
+
+            default:
+                rep->lp_status = SYS_ERR_INVALID_ARG;
                 break;
             }
-            continue;
-
-        case LEDGER_OP_TAKE:
-            if (record_for(peer) == NULL) {
-                rep->lp_status = SYS_ERR_NO_MEMORY;
-            }
-            break;
-
-        case LEDGER_OP_DROP:
-            r = record_for(peer);
-            if (r != NULL) {
-                r->taken = 0;
-                r->owner = 0;
-            }
-            break;
-
-        case LEDGER_OP_COUNT:
-            break;
-
-        default:
-            rep->lp_status = SYS_ERR_INVALID_ARG;
-            break;
         }
 
         rep->lp_held = held();
@@ -173,7 +197,60 @@ main(int argc, char **argv)
         rep->lp_notices = notices;
 
         if (sys_msg_reply(peer, &reply) != SYS_OK) {
-            return 3;
+            sys_thread_exit(3);
         }
     }
+}
+
+int
+main(int argc, char **argv)
+{
+    sys_msg_t message;
+    sys_thread_id_t peer;
+    sys_handle_t never, th;
+    uint64_t cookie;
+
+    (void)argc;
+    (void)argv;
+
+    chan = ns_lookup(SYS_NS_SERVICE);
+    never = ns_lookup(SYS_NS_PRIVATE + 0);
+    if (chan == SYS_HANDLE_INVALID || never == SYS_HANDLE_INVALID) {
+        return 1;
+    }
+
+    /*
+     * The one request that is never answered. It has to be the first,
+     * because this thread is the only receiver until it starts the
+     * other one, and that is what makes which request it is a fact
+     * rather than a race.
+     */
+    memset(&message, 0, sizeof(message));
+    if (sys_msg_recv(chan, &message, &peer, &cookie) != SYS_OK) {
+        return 2;
+    }
+    if ((message.flags & SYS_MSG_IS_PULSE) != 0) {
+        return 3;
+    }
+    if (record_for(peer) == NULL) {
+        return 4;
+    }
+
+    if (sys_thread_create(serve, NULL, serve_stack, STACK_BYTES,
+      SYS_PRIO_INHERIT, &th) != SYS_OK) {
+        return 5;
+    }
+    if (sys_handle_close(th) != SYS_OK) {
+        return 7;
+    }
+
+    /*
+     * And this thread stops here, still owing that reply. It may not
+     * receive again while it does, and it has nothing else to do: the
+     * client it is holding is about to be killed, and what the check
+     * measures is what the record does afterwards.
+     */
+    (void)sys_fence_wait(never, 1, SYS_DEADLINE_NEVER);
+
+    return 6;
 }

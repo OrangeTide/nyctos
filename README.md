@@ -946,6 +946,18 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - A channel is allocated and never released. Section 18.2's teardown is
   not built, so the boot's channel use only grows, and the limit had to
   be raised for a check to have one rather than the boot getting tidier.
+- A process that creates a thread and keeps the handle can never be
+  reaped. The handle references the thread, an unreaped thread
+  references its process, and a process closes its own handle table only
+  when it is reaped, so the three wait on each other. `threads` has done
+  this since it was written, and a boot leaks its process slot, both
+  thread slots and their kernel stacks. A program that closes the handle
+  is reaped normally.
+- A server thread that takes a second request while it still owes a
+  reply on the first is not refused. It loses the client it owed, and it
+  goes onto its channel's serving list a second time, which leaves that
+  list naming a thread that is serving nothing. Section 19.3 says a
+  server thread serves one request at a time; nothing enforces it.
 - Nothing consumes a death notice. The kernel delivers one to a server
   whose client has gone, and no server here holds state per client, so
   whether a restarted server leaks its own per-connection records is

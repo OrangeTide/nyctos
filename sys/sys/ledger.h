@@ -37,15 +37,14 @@
  * Take a record for the sender and answer. Taking twice from the same
  * client is the same record, so a client that asks again has not leaked
  * one: what leaks is a client that never comes back.
+ *
+ * The very first request a server gets is the one it never answers,
+ * whatever it asked for. That is not a request code but an arrangement:
+ * a client has to be left inside a rendezvous for the death section
+ * 12.5 announces to be arrangeable at all, and the thread that holds it
+ * may not receive again while it does.
  */
 #define LEDGER_OP_TAKE      1u
-
-/*
- * Take a record and do not answer. The client stays inside the
- * rendezvous until something ends it, which is how a check arranges a
- * client that dies with a request outstanding.
- */
-#define LEDGER_OP_HOLD      2u
 
 /* Give the record back, which is what a client that leaves politely does. */
 #define LEDGER_OP_DROP      3u

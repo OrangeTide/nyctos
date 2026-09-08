@@ -5302,7 +5302,8 @@ ledger_ask(uint32_t op, ledger_reply_t *out)
  * follows from the argument, and the check says which it expected.
  */
 static void
-ledger_client(const char *how, bool ends_itself, uint32_t want_taken)
+ledger_client(const char *how, bool ends_itself, bool first,
+  uint32_t want_taken)
 {
     struct proc *self = proc_current();
     struct handle_table *ht = &self->p_handles;
@@ -5349,10 +5350,11 @@ ledger_client(const char *how, bool ends_itself, uint32_t want_taken)
     sched_undefer();
 
     /*
-     * Until the server has actually taken a record for it. Waiting on
-     * the count rather than on a length of time: what the check needs
-     * is the state, and a client killed before it asked would be a
-     * client this stage is not about.
+     * Until the server has it. Which of the two ways this waits matters:
+     * the very first client is the one whose request is never answered,
+     * so there is no serving thread to ask yet and what says it arrived
+     * is the client's own state. Everything after it is waited for by
+     * asking the server, because by then there is one to ask.
      *
      * On records ever taken and not on records held, because held goes
      * down again. The client that gives its record back can do both
@@ -5360,16 +5362,27 @@ ledger_client(const char *how, bool ends_itself, uint32_t want_taken)
      * never see it.
      */
     waited = time_now() + time_from_ms(JOIN_MS);
-    for (;;) {
-        ledger_ask(LEDGER_OP_COUNT, &rep);
-        if (rep.lp_taken >= want_taken) {
-            break;
+    if (first) {
+        struct thread *ct = proc_threads(c.c_proc);
+
+        while (ct->t_wait != THREAD_WAIT_REPLY) {
+            if (time_now() > waited) {
+                panic("ledger: %s never reached the server", how);
+            }
+            sched_yield();
         }
-        if (time_now() > waited) {
-            panic("ledger: %s never reached the server, %u records ever "
-              "taken", how, (unsigned int)rep.lp_taken);
+    } else {
+        for (;;) {
+            ledger_ask(LEDGER_OP_COUNT, &rep);
+            if (rep.lp_taken >= want_taken) {
+                break;
+            }
+            if (time_now() > waited) {
+                panic("ledger: %s never reached the server, %u records "
+                  "ever taken", how, (unsigned int)rep.lp_taken);
+            }
+            sched_yield();
         }
-        sched_yield();
     }
 
     if (ends_itself) {
@@ -5404,10 +5417,12 @@ ledger_leak_checks(void)
     struct sys_op_connect_args cargs;
     const struct boot_member *m;
     ledger_reply_t rep;
-    sys_ns_spec_t ns[1];
+    sys_ns_spec_t ns[2];
     struct channel *ch;
     struct child sc;
     sys_handle_t give, keep;
+    sys_id_t sid;
+    uint64_t waited;
 
     cnputs("a server: what it is left holding when its clients go\n");
 
@@ -5443,6 +5458,11 @@ ledger_leak_checks(void)
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_SERVICE;
     ns[0].handle = give;
+    ns[1].id = SYS_NS_PRIVATE + 0;
+    if (handle_insert(ht, ledger_never, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &ns[1].handle) != SYS_OK) {
+        panic("ledger: no handle for the server's timeline");
+    }
 
     /*
      * Above the clients, so that it is at its receive point before any
@@ -5451,7 +5471,7 @@ ledger_leak_checks(void)
      * about which happened first is a check with a second thing in it.
      */
     sched_defer();
-    child_watch(&sc, proc_spawn_image("ledger", 21, ns, 1, NULL, 0));
+    child_watch(&sc, proc_spawn_image("ledger", 21, ns, 2, NULL, 0));
     if (handle_insert(ht, sc.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
       &keep) != SYS_OK) {
         panic("ledger: no handle slot for the server");
@@ -5465,21 +5485,27 @@ ledger_leak_checks(void)
       SYS_OK);
     h_ledger_ask = cargs.out_handle;
 
+    /*
+     * Three ways of dying, in the order that makes each one's state
+     * unambiguous. The first is the one the server never answers, and
+     * it has to be first for that to be a fact rather than a race: this
+     * server has one receiver until that request arrives.
+     */
+    ledger_client("hold", false, true, 1);
+
+    /*
+     * And the server had nothing before it. Asked here rather than
+     * before the first client, because before the first client there is
+     * no thread that would answer.
+     */
     ledger_ask(LEDGER_OP_COUNT, &rep);
-    if (rep.lp_held != 0 || rep.lp_taken != 0) {
-        panic("ledger: the server started holding %u of %u ever taken",
+    if (rep.lp_held != 1 || rep.lp_taken != 1) {
+        panic("ledger: %u records held and %u ever taken after one client",
           (unsigned int)rep.lp_held, (unsigned int)rep.lp_taken);
     }
 
-    /*
-     * Three ways of dying, in the order that makes each one's state
-     * unambiguous. Every one of them takes a record first, and the
-     * count rises by one each time, which is what says the record was
-     * taken rather than assumed.
-     */
-    ledger_client("hold", false, 1);
-    ledger_client("idle", false, 2);
-    ledger_client("leave", true, 3);
+    ledger_client("idle", false, false, 2);
+    ledger_client("leave", true, false, 3);
 
     /*
      * And one that gives its record back, which is the guard on
@@ -5487,7 +5513,7 @@ ledger_leak_checks(void)
      * server whose table only ever fills, and the whole measurement
      * would be of a number that cannot go down.
      */
-    ledger_client("polite", true, 4);
+    ledger_client("polite", true, false, 4);
 
     ledger_ask(LEDGER_OP_COUNT, &rep);
 
@@ -5513,6 +5539,7 @@ ledger_leak_checks(void)
     cnprintf("    %-38s %u\n", "death notices the server saw",
       (unsigned int)rep.lp_notices);
 
+    sid = sc.c_proc->p_id;
     expect("ending the server", proc_kill(sc.c_proc, KILL_CODE), SYS_OK);
     if (child_join(&sc, JOIN_MS) != KILL_CODE) {
         panic("ledger: the server did not end when it was killed");
@@ -5524,6 +5551,22 @@ ledger_leak_checks(void)
       handle_close(ht, h_ledger_ask), SYS_OK);
     expect("giving the server's channel back",
       handle_close(ht, h_ledger_recv), SYS_OK);
+
+    /*
+     * And the server's slot goes back, per M13: the join says it has
+     * exited and closing the handle says nothing can ask about it, but
+     * the slot returning is the reap and is a separate event. A check
+     * that spawns six processes and asserts none of them is left is
+     * cheap here and is the thing that would catch a server this
+     * milestone forgot to end.
+     */
+    waited = time_now() + time_from_ms(JOIN_MS);
+    while (pool_lookup(proc_pool(), sid) != NULL) {
+        if (time_now() > waited) {
+            panic("ledger: the server exited and was never reaped");
+        }
+        sched_yield();
+    }
 }
 
 /*
