@@ -4250,6 +4250,24 @@ syspage_checks(void)
       "the same page, and still held");
 }
 /*
+ * What a status from the reader means. Shared by the two checks that
+ * run it, because a bare number says nothing about which of a
+ * program's several ways of failing happened.
+ */
+static const char *
+clock_why(int32_t code)
+{
+    switch (code) {
+    case -1: return "it read the clock going backwards";
+    case -2: return "it read a clock behind the kernel's";
+    case -3: return "it was handed no time to compare against";
+    case -4: return "the gap was too wide for a status";
+    case -5: return "it has no page, so no frequency";
+    default: return "it did not survive reading the clock";
+    }
+}
+
+/*
  * The clock a program can read, per M16 stage three.
  *
  * The kernel reads the counter, runs a program that reads it twice, and
@@ -4316,17 +4334,7 @@ clock_read_checks(void)
          * the port's permission taken away the read is an illegal
          * instruction, and the program never reaches a return.
          */
-        const char *why;
-
-        switch (code) {
-        case -1: why = "it read the clock going backwards"; break;
-        case -2: why = "it read a clock behind the kernel's"; break;
-        case -3: why = "it was handed no time to compare against"; break;
-        case -4: why = "the gap was too wide for a status"; break;
-        case -5: why = "it has no page, so no frequency"; break;
-        default: why = "it did not survive reading the clock"; break;
-        }
-        panic("the clock: %s, status %d", why, (int)code);
+        panic("the clock: %s, status %d", clock_why(code), (int)code);
     }
 
     span = after - before;
@@ -4388,13 +4396,18 @@ clock_submits(uint64_t reads, uint64_t *took, int32_t *said)
     sys_handle_t keep;
     int32_t code;
 
-    hex_into(now, (uintptr_t)time_now());
+    /*
+     * One reading, handed over and kept, for the reason stage three's
+     * check has one: the program compares its own first reading with
+     * what it was given, and a second reading taken here would make
+     * that comparison a different question from the one it looks like.
+     */
+    began = time_now();
+    hex_into(now, (uintptr_t)began);
     hex_into(many, (uintptr_t)reads);
     argv[0] = "clock";
     argv[1] = now;
     argv[2] = many;
-
-    began = time_now();
 
     sched_defer();
     child_watch(&c, proc_spawn_image("clock", 20, NULL, 0, argv, 3));
@@ -4415,11 +4428,25 @@ clock_submits(uint64_t reads, uint64_t *took, int32_t *said)
     *took = time_now() - began;
 
     if (code <= 0) {
-        panic("the clock: the reader that was to read %lu times said %d",
-          (unsigned long)reads, (int)code);
+        panic("the clock: the reader that was to read %lu times: %s, "
+          "status %d", (unsigned long)reads, clock_why(code), (int)code);
     }
 
     *said = code;
+
+    /*
+     * And it took no recoverable fault either. p_submits counts system
+     * calls, so on its own it would say nothing about a kernel that
+     * trapped the instruction and emulated it. This kernel has no such
+     * path: a user fault either goes to a pager, which this program
+     * has none of and which this number would show, or it ends the
+     * program, which is what taking the port's permission away does.
+     */
+    if (c.c_proc->p_faults != 0) {
+        panic("the clock: the reader faulted %lu times reading it",
+          (unsigned long)c.c_proc->p_faults);
+    }
+
     submits = c.c_proc->p_submits;
     expect("giving the reader's handle back", handle_close(ht, keep),
       SYS_OK);

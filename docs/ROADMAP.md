@@ -9840,6 +9840,25 @@ something needs it, not because the section lists it.
   to cost, and it passed. It was caught only once the program counted
   its own readings, and a count derived from the argument would not have
   caught it either, which was also tried.
+- *The review found the two-readings mistake again.* The instant handed
+  to the reader and the instant this check measured its run from were
+  two reads of the counter taken a few instructions apart, which is what
+  stage three's review had already fixed once in the other check. One
+  reading now, handed over and kept.
+- *And what the count does not cover.* `p_submits` counts system calls,
+  so on its own it says the read is not one. It would not count a kernel
+  that trapped the instruction and emulated it. This kernel has no such
+  path: a user fault either goes to a pager, and the check now asserts
+  the reader took none, or it ends the program, which is what taking the
+  port's permission away does and what that break shows. The assertion
+  is a guard rather than a demonstrated check, because a reader with no
+  pager cannot be made to fault recoverably.
+- *And the statuses are named once.* Both checks that run the reader
+  share one account of what each of its five refusals means, rather than
+  printing a number in one place and a sentence in the other.
+- *The boot is 30 ms longer for it*, 6.95 seconds to the shell on the
+  slowest configuration against 6.92 before, which leaves the paced
+  session where it was.
 
 **6. What it cost, and section 6.2 written around it.** *Planned.*
 
