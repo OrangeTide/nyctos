@@ -131,6 +131,9 @@ syscall_handler(struct sys_op *op, unsigned long count)
 
     /* A moment a stored uptime could be refreshed. M16 stage one. */
     clock_mark();
+
+    /* And a chance to notice a kill, whether or not one is taken. */
+    dying_entry_mark();
     long r = syscall_body(op, count);
 
     klock_exit(s);
@@ -498,6 +501,8 @@ void
 trap_user(unsigned long cause, unsigned long pc, unsigned long addr)
 {
     intr_state_t s = klock_enter();
+
+    dying_entry_mark();
 
     trap_user_body(cause, pc, addr);
     klock_exit(s);

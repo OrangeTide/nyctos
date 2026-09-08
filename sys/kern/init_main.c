@@ -942,6 +942,13 @@ child_watch(struct child *c, struct proc *p)
 #define CLOCK_READS 0x4000u
 
 /*
+ * The status a killed program carries in these checks. A number nothing
+ * else here uses, so a status of it says a kill ended the program and
+ * not the program itself.
+ */
+#define KILL_CODE 23
+
+/*
  * How many sends give up in a boot, and from which of section 12.1's
  * two states. One queued send times out with nobody receiving; one
  * client gives up while a server holds its message, and one program
@@ -4512,6 +4519,84 @@ clock_cost_checks(void)
       "and the run that read them took", (unsigned long)t_many,
       (unsigned long)t_once);
 }
+/*
+ * What a kill reaches today, per M17 stage one.
+ *
+ * `spin` computes for eighty milliseconds and enters the kernel twice in
+ * its life: once when libc starts it and once to exit. Between those it
+ * is a program doing arithmetic, which is the case section 10.5's
+ * promptness is written for and the case it does not cover.
+ *
+ * The kill is real: the process is marked, and every thread of it that
+ * was blocked would have been released. This one is not blocked, so
+ * there is nothing to release and the mark is left for the thread to
+ * find. It finds it at the entry boundary inside a submission, and it
+ * makes no submissions, so it finds it when it has finished.
+ *
+ * What is asserted is that: the program exits with its own status
+ * rather than the code it was killed with. The assertion is the defect
+ * written down, and it fails when the defect is fixed, which is what
+ * stage two is for.
+ */
+static void
+kill_reach_checks(void)
+{
+    struct child c;
+    struct timeline settle;
+    uint64_t before, killed, ran_on, entries;
+    int32_t code;
+
+    cnputs("a kill: what it reaches when nothing is blocked\n");
+
+    /*
+     * Below the boot thread, so that this check keeps the core until it
+     * gives it up. Above it, the program would run to its end before
+     * the kill was written, and the check would be of nothing.
+     */
+    sched_defer();
+    child_watch(&c, proc_spawn_image("spin", PRIO_BOOT - 1, NULL, 0,
+      NULL, 0));
+    sched_undefer();
+
+    /*
+     * Long enough that the program is certainly running in user mode
+     * and not still in its loader. A wait on a timeline nothing signals
+     * is how the rest of this boot sleeps.
+     */
+    timeline_init(&settle, "kill-settle");
+    (void)timeline_wait(&settle, 1, time_now() + time_from_ms(10));
+
+    entries = dying_entry_count();
+    before = time_now();
+
+    if (proc_kill(c.c_proc, KILL_CODE) != SYS_OK) {
+        panic("a kill: the process refused to be killed");
+    }
+    killed = time_now();
+
+    code = child_join(&c, JOIN_MS);
+    ran_on = time_now() - killed;
+
+    /*
+     * Its own status, which is the whole finding. A program that was
+     * stopped would carry the code it was killed with.
+     */
+    if (code != 0) {
+        panic("a kill: it stopped, with status %d, which stage one says "
+          "it cannot yet", (int)code);
+    }
+
+    cnprintf("    %-38s %s\n", "a program that computes and calls",
+      "was killed and finished anyway");
+    cnprintf("    %-38s %lu\n", "entries it made while marked",
+      (unsigned long)(dying_entry_count() - entries));
+    cnprintf("    %-38s %lu ticks, about %lu ms\n",
+      "how long it ran on afterwards", (unsigned long)ran_on,
+      (unsigned long)(ran_on * 1000ULL / time_hz()));
+    cnprintf("    %-38s %lu ticks\n", "and the kill itself took",
+      (unsigned long)(killed - before));
+}
+
 
 
 
@@ -10326,6 +10411,7 @@ kernel_main(void)
     syspage_checks();
     clock_read_checks();
     clock_cost_checks();
+    kill_reach_checks();
     startup_record_checks();
     deadline_checks();
 

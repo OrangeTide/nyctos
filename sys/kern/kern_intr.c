@@ -170,6 +170,13 @@ irq_dispatch(void)
     clock_mark();
 
     /*
+     * And a chance to notice a kill. An interrupt that lands while a
+     * marked thread is running is the kernel running on that thread's
+     * behalf, and it goes back to it without looking.
+     */
+    dying_entry_mark();
+
+    /*
      * Marked so that a thread made runnable in here is known to have
      * been made runnable by an interrupt, which is what section 13.3's
      * second term is measured from.

@@ -9987,16 +9987,30 @@ exists, `md_cpu_ipi`, and is used by the timer.
 supervisor deciding anything. Section 24.3 is where a parent decides
 what a death means; this is only about the death arriving.
 
-**1. What a kill reaches today.** *Planned.*
+**1. What a kill reaches today.** *Built.*
 
-- *Check.* `spin` computes for eighty milliseconds without entering the
-  kernel. The boot kills it as soon as it is running and joins it. The
-  status is the program's own zero, which says the kill did not reach
-  it, and the boot reports how long it went on afterwards and how many
-  traps it took while marked for death: the chances the kernel had and
-  did not take. The status is asserted, the durations are reported.
-- The stage ends with the defect written where the claim is, in section
-  10.5, rather than only in the README.
+- The boot spawns `spin`, which computes for eighty milliseconds and
+  enters the kernel twice in its life, lets it get into its loop, and
+  kills it.
+- *Check.* The status is the program's own zero rather than the code it
+  was killed with, which says the kill did not reach it. The status is
+  asserted; the durations are reported, per M9.
+- *Settled.* It runs on for 59 to 68 milliseconds after being killed,
+  across the four configurations, and makes exactly one entry into the
+  kernel while marked for death: the submission that ends it, by which
+  time it has finished. The kill itself takes 1932 to 14943 ticks, which
+  is the marking and the walk of a one-thread process.
+- *And the contrast is the finding.* One system call anywhere in that
+  loop and the kill lands at it: putting a single `SYS_OP_NOP` halfway
+  through makes the program come back with status 23 and the check
+  panics. What separates a program a kill reaches from one it does not
+  is whether the program asks the kernel for anything.
+- *The counting is kept.* `dying_entry_mark` counts entries by a thread
+  whose process is marked, from all three ways in rather than the one
+  that looks, because the difference between those two numbers is what
+  the milestone is about.
+- *And the defect is written where the claim is*, in section 10.5, which
+  said termination is prompt and did not say for whom.
 
 **2. The mark, on every way back to user mode.** *Planned.*
 

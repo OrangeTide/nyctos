@@ -1293,3 +1293,40 @@ submit_crossings(uint64_t *checks)
 
     return c->cp_syscalls;
 }
+
+/*
+ * How often a thread of a dying process entered this kernel, per M17
+ * stage one.
+ *
+ * A kill marks the process and unblocks whatever was blocked; a thread
+ * that was doing neither is expected to find the mark itself, and the
+ * only place it is looked for is the entry boundary inside a
+ * submission. This counts the entries a marked thread makes by any
+ * route, which is the number of chances the kernel had to stop it.
+ *
+ * Every way in is counted and not only the one that looks: what the
+ * stage is about is the difference between the two.
+ */
+static uint64_t dying_entries;
+
+void
+dying_entry_mark(void)
+{
+    const struct thread *t = thread_current();
+
+    /*
+     * Through the thread and not through proc_current, which panics
+     * for a thread that has no process. An interrupt lands on whatever
+     * was running, and most of what runs in this boot is a kernel
+     * thread.
+     */
+    if (t != NULL && t->t_proc != NULL && t->t_proc->p_dying) {
+        dying_entries++;
+    }
+}
+
+uint64_t
+dying_entry_count(void)
+{
+    return dying_entries;
+}

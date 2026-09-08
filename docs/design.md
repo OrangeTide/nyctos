@@ -882,6 +882,14 @@ The pulse in step 2 is what makes prompt cancellation safe. Without it a server 
 
 A thread cancelled mid-batch stops at the next entry boundary, which is already a preemption point. Remaining entries are marked `SYS_ERR_CANCELED` and pending fences are force-signalled in error state, per section 9.3.
 
+#### What was built, and who a kill reaches
+
+**Promptness covers threads that ask to be reached.** A kill marks the process, and unblocks every thread of it exactly as this section says: each blocked thread comes off what it was waiting on with `SYS_ERR_INTERRUPTED`, its server is told, and its donation goes back. A thread that is not blocked has nothing to release, and the mark is left for it to find.
+
+**There is one place it is found:** the entry boundary inside a submission, which section 17.6 already makes a batch preemptible at. Every other way back into user mode goes without looking. So a program that computes and calls nothing is not stopped by a kill. Killed at the start of an eighty-millisecond loop, `spin` runs for another sixty and exits with its own status, on both ports and at both tiers; the one entry it makes while marked for death is the submission that ends it, and by then it has finished. One system call anywhere in that loop and the kill lands at it.
+
+**Which is a gap in the mechanism and not in the specification.** A supervisor that asks for a process to stop is told `SYS_OK` and the process may run for as long as it likes, provided it asks the kernel for nothing. Milestone 17 is where that is closed: the mark read wherever a thread returns to user mode, and a kill able to cause an entry rather than wait for one, because a tickless kernel arms nothing that would make a computing thread trap.
+
 ### 10.6 States
 
 ```{=typst}
