@@ -5302,8 +5302,8 @@ ledger_ask(uint32_t op, ledger_reply_t *out)
  * follows from the argument, and the check says which it expected.
  */
 static void
-ledger_client(const char *how, bool ends_itself, bool first,
-  uint32_t want_taken, uint32_t want_notices)
+ledger_client(const char *how, bool ends_itself, uint32_t want_taken,
+  uint32_t want_notices)
 {
     struct proc *self = proc_current();
     struct handle_table *ht = &self->p_handles;
@@ -5350,11 +5350,10 @@ ledger_client(const char *how, bool ends_itself, bool first,
     sched_undefer();
 
     /*
-     * Until the server has it. Which of the two ways this waits matters:
-     * the very first client is the one whose request is never answered,
-     * so there is no serving thread to ask yet and what says it arrived
-     * is the client's own state. Everything after it is waited for by
-     * asking the server, because by then there is one to ask.
+     * Until the server has it, asked of the server. Every client is
+     * waited for the same way now: holding a request is a request code
+     * rather than an arrangement about which message arrived first, so
+     * there is always a serving thread to ask.
      *
      * On records ever taken and not on records held, because held goes
      * down again. The client that gives its record back can do both
@@ -5362,27 +5361,16 @@ ledger_client(const char *how, bool ends_itself, bool first,
      * never see it.
      */
     waited = time_now() + time_from_ms(JOIN_MS);
-    if (first) {
-        struct thread *ct = proc_threads(c.c_proc);
-
-        while (ct->t_wait != THREAD_WAIT_REPLY) {
-            if (time_now() > waited) {
-                panic("ledger: %s never reached the server", how);
-            }
-            sched_yield();
+    for (;;) {
+        ledger_ask(LEDGER_OP_COUNT, &rep);
+        if (rep.lp_taken >= want_taken) {
+            break;
         }
-    } else {
-        for (;;) {
-            ledger_ask(LEDGER_OP_COUNT, &rep);
-            if (rep.lp_taken >= want_taken) {
-                break;
-            }
-            if (time_now() > waited) {
-                panic("ledger: %s never reached the server, %u records "
-                  "ever taken", how, (unsigned int)rep.lp_taken);
-            }
-            sched_yield();
+        if (time_now() > waited) {
+            panic("ledger: %s never reached the server, %u records "
+              "ever taken", how, (unsigned int)rep.lp_taken);
         }
+        sched_yield();
     }
 
     if (ends_itself) {
@@ -5506,7 +5494,7 @@ ledger_leak_checks(void)
      * it has to be first for that to be a fact rather than a race: this
      * server has one receiver until that request arrives.
      */
-    ledger_client("hold", false, true, 1, 1);
+    ledger_client("hold", false, 1, 1);
 
     /*
      * And the server had nothing before it, and nothing after it
@@ -5520,8 +5508,8 @@ ledger_leak_checks(void)
           (unsigned int)rep.lp_held, (unsigned int)rep.lp_taken);
     }
 
-    ledger_client("idle", false, false, 2, 1);
-    ledger_client("leave", true, false, 3, 1);
+    ledger_client("idle", false, 2, 1);
+    ledger_client("leave", true, 3, 1);
 
     /*
      * And one that gives its record back, which is the guard on
@@ -5529,7 +5517,7 @@ ledger_leak_checks(void)
      * server whose table only ever fills, and the whole measurement
      * would be of a number that cannot go down.
      */
-    ledger_client("polite", true, false, 4, 1);
+    ledger_client("polite", true, 4, 1);
 
     ledger_ask(LEDGER_OP_COUNT, &rep);
 
@@ -5600,6 +5588,18 @@ ledger_leak_checks(void)
  */
 static sys_handle_t h_ident_send;
 static sys_handle_t h_ident_hold;
+
+/*
+ * A cookie per connection, which is the server's own per-connection
+ * name and the kernel never looks at it. Distinct here so that a server
+ * keying its records on the connection rather than the client would
+ * behave differently, which is what makes that policy falsifiable: with
+ * every connection named zero the two policies are the same policy.
+ */
+#define LEDGER_COOKIE_CHECK     1u
+#define LEDGER_COOKIE_HELD      2u
+#define LEDGER_COOKIE_PAIR      3u
+#define LEDGER_COOKIE_DIES      4u
 static volatile uint32_t ident_took;
 static struct thread *ident_a;
 static struct thread *ident_b;
@@ -5610,7 +5610,8 @@ ident_client(void *arg)
 {
     struct sys_op_send_args tx;
     ledger_request_t *req;
-    bool hold = arg != NULL;
+    unsigned long which = (unsigned long)arg;
+    bool hold = which != 0;
 
     memset(&tx, 0, sizeof(tx));
     tx.request.handle = SYS_HANDLE_INVALID;
@@ -5623,8 +5624,8 @@ ident_client(void *arg)
      * is the client left inside a rendezvous, and it is here to be
      * alive and holding a record rather than to be killed.
      */
-    if (run(SYS_OP_IPC_SEND, hold ? h_ident_hold : h_ident_send, &tx,
-      sizeof(tx)) != SYS_OK) {
+    if (run(SYS_OP_IPC_SEND, which == 1 ? h_ident_hold : h_ident_send,
+      &tx, sizeof(tx)) != SYS_OK) {
         thread_exit(1);
     }
     ident_took++;
@@ -5736,6 +5737,7 @@ ledger_identity_checks(void)
      */
     memset(&cargs, 0, sizeof(cargs));
     cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    cargs.cookie = LEDGER_COOKIE_CHECK;
     expect("a connection to it, for the check",
       run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
       SYS_OK);
@@ -5755,6 +5757,7 @@ ledger_identity_checks(void)
      */
     memset(&cargs, 0, sizeof(cargs));
     cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    cargs.cookie = LEDGER_COOKIE_HELD;
     expect("a connection for a client that is held",
       run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
       SYS_OK);
@@ -5785,12 +5788,21 @@ ledger_identity_checks(void)
      */
     memset(&cargs, 0, sizeof(cargs));
     cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    cargs.cookie = LEDGER_COOKIE_PAIR;
     expect("one connection for two more clients",
       run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
       SYS_OK);
     h_ident_send = cargs.out_handle;
 
-    ident_b = thread_create("ident-b", PRIO_BOOT + 1, ident_client, NULL);
+    /*
+     * One of the pair is held and one is answered, so that the one
+     * that dies below is a client of the connection the other is still
+     * using. Without that the pair is set up and never exercised: a
+     * server keyed by the connection would behave identically, which
+     * is what the first version of this check did.
+     */
+    ident_b = thread_create("ident-b", PRIO_BOOT + 1, ident_client,
+      (void *)2);
     ident_c = thread_create("ident-c", PRIO_BOOT + 1, ident_client, NULL);
     b_id = thread_id(ident_b);
     c_id = thread_id(ident_c);
@@ -5798,10 +5810,14 @@ ledger_identity_checks(void)
     sched_ready(ident_c);
 
     waited = time_now() + time_from_ms(JOIN_MS);
-    while (ident_took < 2) {
+    for (;;) {
+        ledger_ask(LEDGER_OP_COUNT, &rep);
+        if (rep.lp_held == 3) {
+            break;
+        }
         if (time_now() > waited) {
-            panic("ledger: %u of the two sharing clients took a record",
-              (unsigned int)ident_took);
+            panic("ledger: %u records after the sharing pair, not 3",
+              (unsigned int)rep.lp_held);
         }
         sched_yield();
     }
@@ -5812,6 +5828,7 @@ ledger_identity_checks(void)
      */
     memset(&cargs, 0, sizeof(cargs));
     cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    cargs.cookie = LEDGER_COOKIE_DIES;
     expect("a connection for the client that dies",
       run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
       SYS_OK);
@@ -5897,16 +5914,47 @@ ledger_identity_checks(void)
 
     cnprintf("    %-38s %s\n", "the record the notice named",
       "released, and only that one");
+
+    /*
+     * And the sibling case, which is what the shared connection is for.
+     * `ident-b` is held on the connection `ident-c` is also using, and
+     * cancelling it out of that rendezvous is a death section 12.5
+     * announces exactly as it announced the program's. A server keyed
+     * by the connection would drop both records here.
+     */
+    expect("cancelling one of the two on one connection",
+      thread_cancel(ident_b), SYS_OK);
+
+    ledger_ask(LEDGER_OP_COUNT, &rep);
+    if (rep.lp_released != 2) {
+        panic("ledger: %u records released by a notice, not 2",
+          (unsigned int)rep.lp_released);
+    }
+    if (rep.lp_held != 2) {
+        panic("ledger: %u records after the sibling died, not 2",
+          (unsigned int)rep.lp_held);
+    }
+    if (ledger_holds(b_id)) {
+        panic("ledger: the server still holds the cancelled sibling's "
+          "record");
+    }
+    if (!ledger_holds(c_id)) {
+        panic("ledger: the server dropped the record of a client whose "
+          "sibling died");
+    }
+    if (!ledger_holds(a_id)) {
+        panic("ledger: the server dropped an unrelated client's record");
+    }
+
     cnprintf("    %-38s %s\n", "two clients on one connection",
-      "one stayed when another died");
+      "one died, the other kept its record");
 
     expect("giving the dead client's handle back",
       handle_close(ht, akeep), SYS_OK);
     expect("ending the client that was held", thread_cancel(ident_a),
       SYS_OK);
-    expect("ending the two sharing clients", thread_cancel(ident_b),
+    expect("ending the client that shared", thread_cancel(ident_c),
       SYS_OK);
-    expect("and the other one", thread_cancel(ident_c), SYS_OK);
     expect("giving their connection back", handle_close(ht, h_ident_send),
       SYS_OK);
     expect("and the held client's", handle_close(ht, h_ident_hold),

@@ -10583,10 +10583,10 @@ serves stop existing.
   that dies takes the fourth, which is what makes the two policies
   distinguishable at all.
 - *Two of the four share one connection*, which is what tells a record
-  keyed by thread from one keyed by the connection it arrived on. One of
-  them dies in the check that follows and the other keeps its record.
-  Keyed by connection, both would have gone and the server would have
-  been right about the count and wrong about everything else.
+  keyed by thread from one keyed by the connection it arrived on, and
+  the client that dies second is one of that pair. Keyed by connection,
+  both would have gone and the server would have been right about the
+  count and wrong about everything else.
 - *Settled.* The record the notice names is released and only that one,
   in all four configurations, and the leak stage one measured falls from
   **three records to two**: the death that is announced no longer leaks,

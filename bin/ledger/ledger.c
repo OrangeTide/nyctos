@@ -224,6 +224,7 @@ serve(void *arg)
 
             case LEDGER_OP_HOLD: {
                 sys_handle_t th;
+                uint32_t mine;
 
                 /*
                  * The record is taken and this client is not answered.
@@ -231,27 +232,45 @@ serve(void *arg)
                  * reply, per section 19.3, so it starts a replacement
                  * and stops: a held request costs a thread, and the
                  * stack array is the bound on how many there can be.
+                 *
+                 * The stack is claimed before the replacement starts,
+                 * because the replacement runs at this thread's own
+                 * priority and could take a hold of its own: an index
+                 * incremented afterwards is an index the replacement
+                 * can read before it changes, and two threads on one
+                 * stack.
                  */
-                if (serve_next >= SERVE_STACKS ||
-                  record_for(peer) == NULL) {
+                if (serve_next >= SERVE_STACKS) {
                     rep->lp_status = SYS_ERR_NO_MEMORY;
                     break;
                 }
+                mine = serve_next++;
 
-                if (sys_thread_create(serve, NULL,
-                  serve_stack[serve_next], STACK_BYTES,
-                  SYS_PRIO_INHERIT, &th) != SYS_OK) {
+                if (sys_thread_create(serve, NULL, serve_stack[mine],
+                  STACK_BYTES, SYS_PRIO_INHERIT, &th) != SYS_OK) {
+                    serve_next--;
                     rep->lp_status = SYS_ERR_NO_MEMORY;
                     break;
                 }
-                serve_next++;
                 if (sys_handle_close(th) != SYS_OK) {
                     sys_thread_exit(4);
                 }
 
                 /*
+                 * And the record last, so that a client told this
+                 * failed has nothing held for it. Taking it first left
+                 * a record allocated to a client that was refused,
+                 * which is the leak this server exists to measure,
+                 * arrived at from the other end.
+                 */
+                if (record_for(peer) == NULL) {
+                    rep->lp_status = SYS_ERR_NO_MEMORY;
+                    break;
+                }
+
+                /*
                  * And it stops here, still owing that reply. The handle
-                 * goes first: a process that keeps a thread handle can
+                 * went first: a process that keeps a thread handle can
                  * never be reaped, which stage one's review measured.
                  */
                 (void)sys_fence_wait(hold_never, 1, SYS_DEADLINE_NEVER);
