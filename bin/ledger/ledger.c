@@ -77,6 +77,14 @@ static uint32_t drained;
 static uint32_t hints;
 
 /*
+ * Receives that arrived saying a pulse had been dropped. Counted for
+ * the same reason the hints are: this server does not need to know,
+ * because it collects before every answer whether it was told anything
+ * or not, and a check that can see the flag arriving is what says so.
+ */
+static uint32_t losses;
+
+/*
  * Release the record belonging to the client the notice names, per M18
  * stage three.
  *
@@ -247,6 +255,10 @@ serve(void *arg)
          * which is the whole of what a server here has ever done with
          * one and is the behaviour this stage is measuring.
          */
+        if ((message.flags & SYS_MSG_PULSE_LOST) != 0) {
+            losses++;
+        }
+
         if ((message.flags & SYS_MSG_IS_PULSE) != 0) {
             const sys_pulse_t *p = (const sys_pulse_t *)message.inline_data;
 
@@ -389,6 +401,7 @@ serve(void *arg)
         rep->lp_reaped = reaped;
         rep->lp_drained = drained;
         rep->lp_hints = hints;
+        rep->lp_losses = losses;
 
         if (sys_msg_reply(peer, &reply) != SYS_OK) {
             sys_thread_exit(3);

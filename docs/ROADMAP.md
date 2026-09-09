@@ -10737,21 +10737,56 @@ event.** *Built.*
   no check here can arrange.
 
 **5. A notice that never arrives, and a server that is right anyway.**
-*Planned.*
+*Built.*
 
 - What stage four buys is that the edge may be lost. This is the stage
   that loses one on purpose.
-- *Check.* A client fills the channel's user pulse slots, and the
-  notices for dying clients are deliberately dropped rather than
-  queued. The server still ends holding records for exactly the clients
-  still alive, because what it acts on is the connection and not the
-  count of pulses it saw. The number of notices it received is reported
-  and is expected to be lower than the number of deaths: a check where
-  the two are equal has not lost anything and has tested nothing.
-- *And the panic is gone.* A death notice arriving at a full queue
-  evicts rather than halting the machine, and the check reaches that
-  case rather than describing it. Restoring the panic fails the check,
-  which is what says the queue is really full when the eviction happens.
+- *The panic is gone.* A system pulse arriving at a full queue takes a
+  user pulse's slot if there is one, which is the reservation of section
+  13.1 honoured at the full mark as well as at the cap. If there is no
+  user pulse to take, the arriving pulse is dropped and the channel
+  remembers it, where before it halted the machine.
+- *The arriving one goes rather than one already queued*, which is a
+  choice and is written down as one. The pulses in the queue are the
+  ones the receiver is about to take, and spending a slot from them to
+  say the same kind of thing again would lose news that is already on
+  its way.
+- *The plan for this check was wrong and the stage says why.* It had a
+  client fill the user slots so that the notices would drop. That cannot
+  happen: keeping user pulses from crowding out a notice is exactly what
+  the reservation is for, and stage two confirmed it works. The only way
+  to lose a notice is more outstanding deaths than the queue holds.
+- *Check.* Eight deaths nobody has collected, enqueued by the check
+  itself, and then a real one: a client killed inside a request it is
+  holding, which is the one death section 12.5 does announce. Scheduling
+  is held off across all of it, so the server cannot drain any of them
+  in between and leave the ninth a pulse with room.
+- *Settled.* The same in all four configurations. The server saw **eight
+  notices for nine deaths** and was told once that it had missed
+  something. It released no record on a notice, because the notice that
+  would have named this client never arrived, and it ends holding none:
+  the record went when the client's connection was collected. That is
+  stage four's claim reduced to the case it was built for.
+- *Broken four ways.* Restoring the panic panics with "the reserved
+  pulse slots are full", which is what says the queue really was full
+  when the drop happened. Asserting nine notices instead of eight panics
+  with "the server saw 8 notices for nine deaths, not 8", which is what
+  says a notice really was lost rather than the check saying so. Not
+  reaping the dead client, so that its connection never closes, panics
+  with "collecting let go of 0 records, not one", which is what says the
+  connection is where the truth was. And a server that does not collect
+  fails the stage one check before this one is reached.
+- *What is still edge only.* A notice names a thread and a connection
+  can carry two, so a client thread that dies with a live sibling on the
+  same connection is a death with nothing behind it: the connection is
+  not gone, and a lost notice there still leaks that record. Every
+  client that goes away entirely is covered, because its connection goes
+  with it. What is not covered is one thread of a client that stays,
+  which is the same gap stage three's shared-connection case is about,
+  seen from the other end.
+- *It costs the boot two kills*, 13 to 15 at Tier 2 and 11 to 13 at Tier
+  0, and nothing else the usage files compare. The archive does not
+  move.
 
 **6. A queue depth a server chooses, and clients that fail fast.**
 *Planned.*

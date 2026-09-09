@@ -6179,6 +6179,245 @@ ledger_identity_checks(void)
 }
 
 /*
+ * A death the server is never told about, per M18 stage five.
+ *
+ * Stage two found the notice strictly edge triggered and found the edge
+ * unable to fail safely: a system pulse arriving at a full queue halted
+ * the machine, on section 13.1's argument that losing one leaks a dead
+ * client's resources for good. Stage four made that argument false, so
+ * this stage loses one on purpose and asks whether the server is still
+ * right.
+ *
+ * The queue is filled with notices rather than with user pulses, which
+ * is a departure from the plan and is what the plan was wrong about. A
+ * client flooding a channel cannot make a notice drop, because that is
+ * exactly what the reservation prevents and stage two confirmed it
+ * works. The only way to lose a notice is more outstanding deaths than
+ * the queue holds, so that is what this arranges, by enqueueing the
+ * notices itself: eight deaths nobody has collected, and then a real
+ * one.
+ */
+static sys_handle_t h_lost_ask;
+
+#define LOST_COOKIE_CHECK       32u
+#define LOST_COOKIE_DIES        33u
+
+static void
+notice_loss_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_connect_args cargs;
+    ledger_reply_t rep, before;
+    sys_ns_spec_t ns[2];
+    struct channel *ch;
+    struct child sc, c;
+    const char *argv[2];
+    sys_thread_id_t d_id;
+    sys_handle_t give, keep, akeep;
+    uint64_t lost_before, waited;
+    sys_id_t sid;
+    int32_t code;
+    uint32_t i;
+
+    cnputs("a server: a death it is never told about\n");
+
+    ch = channel_create("ledger-lost", self);
+    if (ch == NULL) {
+        panic("lost: no channel");
+    }
+    expect("a channel for a third server",
+      handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_ledger_recv), SYS_OK);
+
+    if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
+        panic("lost: cannot hand the channel on");
+    }
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = give;
+    ns[1].id = SYS_NS_PRIVATE + 0;
+    if (handle_insert(ht, ledger_never, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &ns[1].handle) != SYS_OK) {
+        panic("lost: no handle for the server's timeline");
+    }
+
+    sched_defer();
+    child_watch(&sc, proc_spawn_image("ledger", 21, ns, 2, NULL, 0));
+    if (handle_insert(ht, sc.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &keep) != SYS_OK) {
+        panic("lost: no handle slot for the server");
+    }
+    sched_undefer();
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    cargs.cookie = LOST_COOKIE_CHECK;
+    expect("a connection to it, for the check",
+      run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+    h_ledger_ask = cargs.out_handle;
+    h_lost_ask = cargs.out_handle;
+
+    /*
+     * One client, killed inside a request, which is the one death
+     * section 12.5 does announce. That is deliberate: the case where
+     * losing the notice costs something is the case where the notice
+     * was the only thing that would have said anything.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    cargs.cookie = LOST_COOKIE_DIES;
+    expect("a connection for the client that dies",
+      run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_PRIVATE + 1;
+    ns[0].handle = cargs.out_handle;
+    ns[1].id = SYS_NS_PRIVATE + 0;
+    if (handle_insert(ht, ledger_never, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &ns[1].handle) != SYS_OK) {
+        panic("lost: no handle for the client's timeline");
+    }
+    argv[0] = "patron";
+    argv[1] = "hold";
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("patron", 20, ns, 2, argv, 2));
+    if (handle_insert(ht, c.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &akeep) != SYS_OK) {
+        panic("lost: no handle slot for the client");
+    }
+    sched_undefer();
+
+    waited = time_now() + time_from_ms(JOIN_MS);
+    {
+        struct thread *ct = proc_threads(c.c_proc);
+
+        d_id = thread_id(ct);
+        while (ct->t_wait != THREAD_WAIT_REPLY) {
+            if (time_now() > waited) {
+                panic("lost: the client never reached the server");
+            }
+            sched_yield();
+        }
+    }
+
+    ledger_ask(LEDGER_OP_COUNT, &before);
+    if (before.lp_held != 1) {
+        panic("lost: %u records held before the death, not 1",
+          (unsigned int)before.lp_held);
+    }
+    if (!ledger_holds(d_id)) {
+        panic("lost: the server holds no record for the client");
+    }
+
+    /*
+     * Eight deaths nobody has collected, and then a ninth. Scheduling
+     * is held off across all of it so that the server cannot drain any
+     * of them in between: a queue that emptied halfway would leave the
+     * ninth a pulse with room, which is the case this is not about.
+     *
+     * The eight carry a tag that names no record, so what they cost the
+     * server is a receive each and nothing else. What matters about
+     * them is that they are there.
+     */
+    lost_before = channel_pulses_lost;
+
+    sched_defer();
+    for (i = 0; i < SYS_PULSE_SLOTS; i++) {
+        channel_pulse(ch, SYS_PULSE_DEAD_OWNER, 0);
+    }
+    if (proc_kill(c.c_proc, KILL_CODE) != SYS_OK) {
+        panic("lost: the client refused to be killed");
+    }
+    sched_undefer();
+
+    if (channel_pulses_lost != lost_before + 1) {
+        panic("lost: %lu pulses dropped, not one",
+          (unsigned long)(channel_pulses_lost - lost_before));
+    }
+
+    code = child_join(&c, JOIN_MS);
+    if (code != KILL_CODE) {
+        panic("lost: the client came back %d", (int)code);
+    }
+
+    /*
+     * And the handle back, which is what reaps it and closes the
+     * connection it was holding. That is the level state arriving: the
+     * notice is gone and this is not.
+     */
+    expect("giving the dead client back", handle_close(ht, akeep), SYS_OK);
+
+    ledger_ask(LEDGER_OP_COUNT, &rep);
+
+    /*
+     * The eight it could take, and not the ninth. This is the
+     * assertion the stage exists for: a check where the notices
+     * received equal the deaths has lost nothing and tested nothing.
+     */
+    if (rep.lp_notices != before.lp_notices + SYS_PULSE_SLOTS) {
+        panic("lost: the server saw %u notices for nine deaths, not %u",
+          (unsigned int)(rep.lp_notices - before.lp_notices),
+          (unsigned int)SYS_PULSE_SLOTS);
+    }
+    if (rep.lp_losses == 0) {
+        panic("lost: the server was never told it had missed one");
+    }
+
+    /*
+     * And it is right anyway. No record was released by a notice,
+     * because the one that would have named this client never arrived;
+     * the record went when the connection was collected.
+     */
+    if (rep.lp_released != before.lp_released) {
+        panic("lost: %u records released by a notice, not %u",
+          (unsigned int)rep.lp_released, (unsigned int)before.lp_released);
+    }
+    if (rep.lp_drained != before.lp_drained + 1) {
+        panic("lost: collecting let go of %u records, not one",
+          (unsigned int)(rep.lp_drained - before.lp_drained));
+    }
+    if (ledger_holds(d_id)) {
+        panic("lost: the server still holds the dead client's record");
+    }
+    if (rep.lp_held != 0) {
+        panic("lost: %u records held after the death, not 0",
+          (unsigned int)rep.lp_held);
+    }
+
+    cnprintf("    %-38s %u of %u deaths\n", "notices the server saw",
+      (unsigned int)(rep.lp_notices - before.lp_notices),
+      (unsigned int)SYS_PULSE_SLOTS + 1);
+    cnprintf("    %-38s %s\n", "the record of the death it missed",
+      "released when the connection was collected");
+
+    expect("giving the check's connection back",
+      handle_close(ht, h_lost_ask), SYS_OK);
+
+    sid = sc.c_proc->p_id;
+    expect("ending the third server", proc_kill(sc.c_proc, KILL_CODE),
+      SYS_OK);
+    if (child_join(&sc, JOIN_MS) != KILL_CODE) {
+        panic("lost: the server did not end when it was killed");
+    }
+    expect("giving the third server back", handle_close(ht, keep), SYS_OK);
+    expect("giving the third channel back",
+      handle_close(ht, h_ledger_recv), SYS_OK);
+
+    waited = time_now() + time_from_ms(JOIN_MS);
+    while (pool_lookup(proc_pool(), sid) != NULL) {
+        if (time_now() > waited) {
+            panic("lost: the third server was never reaped");
+        }
+        sched_yield();
+    }
+}
+
+/*
  * The deaths a server is not told about, per M18 stage two.
  *
  * Section 12.5 announces one death and is explicit about which: a
@@ -12341,6 +12580,7 @@ kernel_main(void)
     ledger_leak_checks();
     notice_absence_checks();
     ledger_identity_checks();
+    notice_loss_checks();
     startup_record_checks();
     deadline_checks();
 

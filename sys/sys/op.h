@@ -455,9 +455,12 @@ typedef struct sys_pulse {
  * What a receive found. A server has one receive point for messages and
  * pulses both, and these are how it tells them apart.
  *
- * SYS_MSG_PULSE_LOST says user pulses were dropped since the last
- * receive. It is reported once and cleared, because it answers "did I
- * miss anything" and not "how much".
+ * SYS_MSG_PULSE_LOST says a pulse was dropped since the last receive.
+ * It is reported once and cleared, because it answers "did I miss
+ * anything" and not "how much". Until M18 stage five only a user pulse
+ * could be dropped and a system pulse with nowhere to go halted the
+ * machine; a server that sees this flag has to go and look at whatever
+ * a pulse would have told it, which after stage four it can.
  */
 #define SYS_MSG_IS_PULSE        (1u << 0)
 #define SYS_MSG_PULSE_LOST      (1u << 3)

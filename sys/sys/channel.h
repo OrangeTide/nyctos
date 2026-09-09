@@ -105,6 +105,9 @@ extern uint64_t channel_gave_up_working;
  */
 extern uint64_t channel_stale_clients;
 
+/* Pulses dropped for want of a slot, per M18 stage five. */
+extern uint64_t channel_pulses_lost;
+
 /*
  * Whether any channel still names this process as its owner. A channel
  * keeps that pointer and takes no reference for it, so reaping an owner

@@ -1514,8 +1514,58 @@ channel_thread_cancelled(struct thread *t)
 }
 
 /*
+ * Pulses that were enqueued nowhere, for M18 stage five. A count rather
+ * than a flag because it is the boot's, not a channel's: the receiver
+ * is told that it missed something and does not care how much, and this
+ * is here so that a check can say the queue really did overflow.
+ */
+uint64_t channel_pulses_lost;
+
+/*
+ * Take the oldest user pulse out of the queue, and say whether there
+ * was one.
+ *
+ * It need not be at the head: a system pulse can be in front of it, and
+ * taking that instead would be user pulses displacing a death notice by
+ * a longer route. The oldest goes rather than the newest, which is
+ * worth stating because it is a choice. A notification is about
+ * something that has happened, and the older one is the one whose news
+ * has had longest to be overtaken.
+ *
+ * Called with interrupts off.
+ */
+static bool
+pulse_drop_user(struct channel *ch)
+{
+    uint32_t i;
+
+    for (i = 0; i < ch->c_pulse_count; i++) {
+        uint32_t k = (ch->c_pulse_head + i) % SYS_PULSE_SLOTS;
+        uint32_t j;
+
+        if (ch->c_pulses[k].code < SYS_PULSE_USER_BASE) {
+            continue;
+        }
+        for (j = i; j + 1 < ch->c_pulse_count; j++) {
+            uint32_t a = (ch->c_pulse_head + j) % SYS_PULSE_SLOTS;
+            uint32_t b = (ch->c_pulse_head + j + 1) % SYS_PULSE_SLOTS;
+
+            ch->c_pulses[a] = ch->c_pulses[b];
+        }
+        ch->c_pulse_count--;
+        ch->c_pulse_users--;
+        ch->c_pulse_lost = true;
+        channel_pulses_lost++;
+
+        return true;
+    }
+
+    return false;
+}
+
+/*
  * Enqueue a pulse, per section 13.1. Never blocks, and never fails for
- * want of room: what a full queue costs is an older pulse, not this one.
+ * want of room: what a full queue costs is a pulse, not the caller.
  *
  * The rule is one line and the reason is the whole of why pulses are
  * specified at all. User pulses may fill the queue up to the reserved
@@ -1523,13 +1573,14 @@ channel_thread_cancelled(struct thread *t)
  * pulse is dropped to make room and the channel remembers that it
  * happened. A system pulse may use the reserved slots, so a process
  * that floods a channel with pulses of its own cannot push a death
- * notice out, and a dropped death notice leaks a dead client's
- * resources for good.
+ * notice out.
  *
- * The oldest goes rather than the newest, which is worth stating
- * because it is a choice. A notification is about something that has
- * happened, and the older one is the one whose news has had longest to
- * be overtaken.
+ * What section 13.1 said next was that a dropped death notice leaks a
+ * dead client's resources for good, and it was right while the notice
+ * was the only record of the death. M18 stage four put that record on
+ * the connection, where it stays until the server collects it, so a
+ * queue with more outstanding deaths than slots now drops one instead
+ * of halting the machine, and says so.
  */
 void
 channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
@@ -1541,43 +1592,38 @@ channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
     uint32_t at;
 
     if (!system && ch->c_pulse_users >= limit) {
-        /*
-         * Drop the oldest user pulse. It need not be at the head: a
-         * system pulse can be in front of it, and taking that instead
-         * would be user pulses displacing a death notice by a longer
-         * route.
-         */
-        uint32_t i;
-
-        for (i = 0; i < ch->c_pulse_count; i++) {
-            uint32_t k = (ch->c_pulse_head + i) % SYS_PULSE_SLOTS;
-            uint32_t j;
-
-            if (ch->c_pulses[k].code < SYS_PULSE_USER_BASE) {
-                continue;
-            }
-            for (j = i; j + 1 < ch->c_pulse_count; j++) {
-                uint32_t a = (ch->c_pulse_head + j) % SYS_PULSE_SLOTS;
-                uint32_t b = (ch->c_pulse_head + j + 1) % SYS_PULSE_SLOTS;
-
-                ch->c_pulses[a] = ch->c_pulses[b];
-            }
-            ch->c_pulse_count--;
-            ch->c_pulse_users--;
-            ch->c_pulse_lost = true;
-            break;
-        }
+        (void)pulse_drop_user(ch);
     }
 
     if (ch->c_pulse_count == SYS_PULSE_SLOTS) {
         /*
-         * Only reachable for a system pulse against a queue of system
-         * pulses, which means more deaths are outstanding than the
-         * reservation was sized for. Losing one of those is the thing
-         * the reservation exists to prevent, so it stops rather than
-         * being silently absorbed.
+         * A full queue, which for a system pulse means a user pulse
+         * goes: that is the reservation, and it is honoured here as
+         * well as at the cap above, because a queue that reached eight
+         * with user pulses in it has room the arriving notice is
+         * entitled to.
+         *
+         * And if there are none, the arriving pulse is dropped. This
+         * halted the machine until M18 stage five, on the argument
+         * from section 13.1 that losing a notice leaks a dead client's
+         * resources for good. Stage four made that untrue: what a
+         * notice announces is also on the connection, and a server
+         * reads that rather than counting edges. So the queue stops
+         * being something that must not overflow and becomes what it
+         * says it is, a fixed number of hints, with the flag below
+         * telling the receiver that it missed something.
+         *
+         * The arriving one goes rather than one already queued. The
+         * ones in the queue are the ones the receiver is about to
+         * take, and taking a slot from them to say the same kind of
+         * thing again would lose news that is already on its way.
          */
-        panic("channel %s: the reserved pulse slots are full", ch->c_name);
+        if (!pulse_drop_user(ch)) {
+            ch->c_pulse_lost = true;
+            channel_pulses_lost++;
+            md_intr_restore(s);
+            return;
+        }
     }
 
     at = (ch->c_pulse_head + ch->c_pulse_count) % SYS_PULSE_SLOTS;

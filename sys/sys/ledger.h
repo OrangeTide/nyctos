@@ -93,6 +93,13 @@ typedef struct ledger_reply {
     uint32_t    lp_reaped;
     uint32_t    lp_drained;
     uint32_t    lp_hints;
+
+    /*
+     * Receives that came with SYS_MSG_PULSE_LOST, per M18 stage five.
+     * A server that acts on what it is told would have to care; this
+     * one collects before every answer and does not.
+     */
+    uint32_t    lp_losses;
 } ledger_reply_t;
 
 #endif /* _SYS_LEDGER_H_ */
