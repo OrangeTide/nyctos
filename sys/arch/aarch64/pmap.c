@@ -566,6 +566,12 @@ md_tlb_invalidate_asid(uint32_t asid)
      * Inner-shareable, so this reaches the other core by itself and
      * nothing has to be noted for it. The identifier goes in the same
      * bits of the operand that it occupies in the root register.
+     *
+     * It reaches only entries whose leaf said nG, which is every entry
+     * this port writes and is what M19 stage three made true. Leave one
+     * leaf global and this call stops covering it, and what is left
+     * behind is a translation belonging to a space that no longer
+     * exists, under a name somebody else is about to be given.
      */
     __asm__ volatile ("dsb ishst");
     __asm__ volatile ("tlbi aside1is, %0" :: "r" (arg));

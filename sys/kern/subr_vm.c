@@ -215,14 +215,54 @@ as_release_asid(uint32_t asid)
     md_tlb_invalidate_asid(asid);
 
     spin_lock(&asid_lock);
-    if (asid_freed < SYS_ASID_LIMIT) {
-        asid_free[asid_freed++] = asid;
+    if (asid_freed >= SYS_ASID_LIMIT) {
+        /*
+         * Not reachable: every name is either out or on this list, and
+         * there are as many names as the list has room for. Loud rather
+         * than dropped, because a name quietly lost is a name nothing
+         * can ever hand out again and nothing would say so.
+         */
+        panic("asid: %u names handed back with room for %u",
+          (unsigned int)asid_freed, (unsigned int)SYS_ASID_LIMIT);
     }
+    asid_free[asid_freed++] = asid;
     spin_unlock(&asid_lock);
 }
 
+bool
+vm_as_needs_entry(const struct addrspace *as, uintptr_t root,
+  uint32_t asid, uint64_t maint)
+{
+    /*
+     * A space with no name is entered every time, and that is what
+     * having no name means. Zero is not an identifier: any number of
+     * spaces may hold it, so a root and a zero do not say which space
+     * this is, and two of them can even share a root once a frame has
+     * been freed and handed out again. Entering throws every
+     * translation away, which is what makes them all correct, and
+     * skipping it would run one nameless space through another's.
+     *
+     * Otherwise the root and the name together say which space, because
+     * a name's translations are thrown away where the name is handed
+     * back, before any space can be built with it. See
+     * as_release_asid().
+     *
+     * There used to be a third term, a count of how many spaces had
+     * been destroyed, and it was what actually cleared a stale cache:
+     * it forced an activation and an activation flushed. M19 stage two
+     * took the flush out and left it a comparison that did nothing.
+     *
+     * And the maintenance count, which is what a port with core-local
+     * fences moves when another core invalidates something this core
+     * may still be holding. See vm_note_local_maintenance().
+     */
+    return as->as_asid == 0 || as->as_root != root ||
+      as->as_asid != asid || maint != vm_maint_epoch();
+}
+
 void
-vm_asid_counts(uint32_t *given, uint32_t *reused, uint32_t *none,
+vm_asid_counts(
+uint32_t *given, uint32_t *reused, uint32_t *none,
   uint32_t *live)
 {
     spin_lock(&asid_lock);

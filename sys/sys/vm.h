@@ -385,6 +385,20 @@ uint64_t vm_maint_noted(void);
 void vm_asid_counts(uint32_t *given, uint32_t *reused, uint32_t *none,
   uint32_t *live);
 
+/*
+ * Whether entering this space means writing the root register, given
+ * what a core is already running and how much maintenance it has not
+ * heard about.
+ *
+ * The dispatcher's rule, in one place because it is the rule that keeps
+ * a core from running one space through another space's translations,
+ * and because a rule inside an `if` cannot be asked a question. See
+ * kern_thread.c, which asks it on every switch, and asid_checks(),
+ * which asks it about the cases a boot does not reach.
+ */
+bool vm_as_needs_entry(const struct addrspace *as, uintptr_t root,
+  uint32_t asid, uint64_t maint);
+
 /* The window loaded programs occupy, which no space maps for the kernel. */
 void vm_user_window(uintptr_t *base, size_t *len);
 

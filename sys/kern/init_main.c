@@ -7537,6 +7537,45 @@ asid_checks(void)
           "flushed, and read its own page");
     }
 
+    /*
+     * And the rule that decides whether a switch enters a space at all,
+     * asked directly, about the two cases a boot does not reach.
+     *
+     * The first is a space whose root and name a core already has,
+     * which must not be entered again: that is the saving, and if it
+     * were false every switch would still flush and nothing above here
+     * would notice. The second is a space with no name, which must be
+     * entered every time. Zero is not a name, so any number of spaces
+     * hold it, and two of them can share a root once a frame has been
+     * freed and handed out again; a core that recognised the pair would
+     * run one of them through the other's translations. Nothing in a
+     * boot builds two nameless spaces, so nothing in a boot would find
+     * that out.
+     */
+    {
+        uint64_t heard = vm_maint_epoch();
+        uint32_t asid = one.as_asid;
+
+        if (vm_as_needs_entry(&one, one.as_root, one.as_asid, heard)) {
+            panic("spaces: a space a core is already running would be "
+              "entered again");
+        }
+        if (!vm_as_needs_entry(&two, one.as_root, one.as_asid, heard)) {
+            panic("spaces: a different space would not be entered");
+        }
+
+        one.as_asid = 0;
+        if (!vm_as_needs_entry(&one, one.as_root, 0, heard)) {
+            panic("spaces: a space with no name would not be entered, "
+              "so two of them could share a core's translations");
+        }
+        one.as_asid = asid;
+
+        cnprintf("    %-38s %s\n", "what a switch enters and skips",
+          "the same space no, a nameless one yes");
+    }
+
+
     md_unmap(&one, va, PAGE_SIZE);
     md_unmap(&two, va, PAGE_SIZE);
 

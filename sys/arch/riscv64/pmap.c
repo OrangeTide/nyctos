@@ -516,6 +516,15 @@ md_tlb_invalidate_asid(uint32_t asid)
      * is not zero is one identifier. The one form this port has that
      * names a space rather than an address, and the reason a name can
      * be handed on at all.
+     *
+     * It leaves global mappings alone, which is only safe because there
+     * are none. M19 stage two decided that and a grant is the reason: a
+     * grant rewrites the kernel's own entry for the address it covers,
+     * in the holder's space and no other, so an entry marked as the
+     * same everywhere would be a claim a grant makes false. Mark one
+     * global and this call stops covering it, and what is left behind
+     * is a translation belonging to a space that no longer exists,
+     * under a name somebody else is about to be given.
      */
     __asm__ volatile ("sfence.vma zero, %0" :: "r" ((uint64_t)asid)
       : "memory");

@@ -11511,6 +11511,48 @@ this milestone's.
   gets a name again, which is the half of running out that a pool with a
   leak would fail. Twenty-seven spaces are built to reach it and one
   goes without.
+- *Removing the epoch left a hole where the names run out, and the
+  review is what found it.* Zero is not a name, so any number of spaces
+  hold it at once, and once a root frame has been freed and handed out
+  again two of them can have the same root as well. The dispatcher was
+  comparing the root and the name, so it would have recognised the pair
+  and skipped the entry, and one nameless space would have run through
+  another's translations. The old epoch covered that and the new pair
+  does not, which is the same class of gap the stage was written to
+  close and one step further along. A space with no name is now entered
+  every time, which is what having no name means.
+- *And the rule that decides it had no way to be asked a question.* It
+  was an `if` in the dispatcher, exercised thousands of times a boot and
+  never on the two cases that matter: a space a core is already running
+  in, which must be skipped or the whole saving is fictional, and a
+  space with no name, which must be entered. Neither is reached by a
+  boot, because a boot never builds two nameless spaces and never asks
+  whether a skip was right. The rule is now a function the check asks
+  directly. Recognising a nameless space fails with "a space with no
+  name would not be entered, so two of them could share a core's
+  translations". Entering every time fails with "a space a core is
+  already running would be entered again". Ignoring the root and the
+  name does not reach the check at all: the machine runs every program
+  through the wrong translations and stops with "nothing interrupted a
+  program in 20 runs of one", which is a system failing rather than a
+  check reporting, and is the one of the three that says least.
+- *Two smaller things.* A name handed back into a full list was dropped
+  silently, which cannot happen, since every name is either out or on
+  the list and the list is as long as there are names. It panics now,
+  because a name quietly lost is one nothing can ever hand out again and
+  nothing would say so. And both ports' invalidate-by-name leaves global
+  entries alone, on riscv64 by the instruction's definition and on
+  aarch64 by only reaching entries whose leaf said nG. That is correct
+  only because stage two decided nothing would be global, and the two
+  facts were three stages and two files apart. They are written down at
+  the instruction now.
+- *Noted and not changed.* A space built while the names are exhausted
+  never gets one afterwards, because a name is assigned when a space is
+  created and nothing hands one out later. On a machine that stays past
+  a shortage, that space keeps flushing on every entry for as long as it
+  lives. It is correct and it is slow, and making it otherwise means a
+  space that can change its name underneath a running core, which is a
+  larger mechanism than anything this milestone has needed.
 - *Three more ways to be false.* A pool that never says it has run out
   fails with "32 spaces built and every one of them got a name". A pool
   that does not put names back fails, at the first check that wanted

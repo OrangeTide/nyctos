@@ -417,32 +417,9 @@ thread_switch_to(struct thread *next)
         struct addrspace *as = proc_as(next->t_proc);
         uint64_t maint = vm_maint_epoch();
 
-        /*
-         * The identifier as well as the root, and between them they say
-         * which space this is. A root is a frame and a frame comes
-         * back, so a root this core already has is not by itself the
-         * same space; a name is handed on too, so a name is not by
-         * itself the same space either. What makes the pair enough is
-         * that a name's translations are thrown away where the name is
-         * handed back, before any space can be built with it. See
-         * as_release_asid().
-         *
-         * There used to be a third term here, a count of how many
-         * spaces had been destroyed, and it was what actually cleared a
-         * stale cache: it forced an activation and an activation
-         * flushed. M19 stage two took the flush out and left it a
-         * comparison that did nothing, and M19 stage four replaced what
-         * it was for.
-         *
-         * And the maintenance epoch, which is what a port with
-         * core-local fences moves when another core invalidates
-         * something this core may still be holding. Until M19 stage two
-         * the activation flushed and this was covered by accident. See
-         * vm_note_local_maintenance().
-         */
-        if (as->as_root != current_as_root ||
-          as->as_asid != cpu_self()->cp_as_asid ||
-          maint != cpu_self()->cp_as_maint) {
+        /* The rule lives in vm_as_needs_entry(), which explains it. */
+        if (vm_as_needs_entry(as, current_as_root,
+          cpu_self()->cp_as_asid, cpu_self()->cp_as_maint)) {
             bool flushed = md_as_activate(as);
 
             if (!flushed && maint != cpu_self()->cp_as_maint) {
