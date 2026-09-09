@@ -74,6 +74,15 @@ struct cpu {
     uint32_t        cp_as_asid;
 
     /*
+     * And how much core-local TLB maintenance the system had done when
+     * this core last threw its own translations away. A port whose
+     * fences reach the other core leaves this still, and a port whose
+     * fences do not moves it every time one is issued anywhere. See
+     * vm_note_local_maintenance().
+     */
+    uint64_t        cp_as_maint;
+
+    /*
      * The deferral of section 11: a short run of readies made atomic.
      * Per core because that is what it always meant. Its comment said
      * "one counter for the system, not one per thread", and per system

@@ -981,7 +981,11 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   what its image needs.
 - No cross-core TLB maintenance. Reclaiming a cohort member's memory
   while a peer runs on another core is not safe, and the checks reap
-  processes that are in no cohort.
+  processes that are in no cohort. What a core does get is a flush at
+  its first switch after another core invalidates anything, which is
+  seven flushes in a boot on riscv64. That is a coarse rule and not a
+  shootdown: it bounds how long a stale entry lives, and does not stop
+  one being used before the switch arrives.
 - No calendar time. A program makes its own deadlines now: it reads the
   counter with one instruction and takes the frequency from the system
   page, neither of them a system call, and libc turns a relative wait

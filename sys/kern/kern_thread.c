@@ -416,6 +416,7 @@ thread_switch_to(struct thread *next)
     {
         struct addrspace *as = proc_as(next->t_proc);
         uint64_t epoch = vm_as_epoch();
+        uint64_t maint = vm_maint_epoch();
 
         /*
          * The epoch as well as the root, because a root is a frame and
@@ -423,14 +424,28 @@ thread_switch_to(struct thread *next)
          * is only the same space if no space has been destroyed since;
          * otherwise it is a stale TLB for addresses the new space uses
          * too. See cp_as_epoch.
+         *
+         * And the maintenance epoch, which is what a port with
+         * core-local fences moves when another core invalidates
+         * something this core may still be holding. Until M19 stage two
+         * the activation flushed and this was covered by accident. See
+         * vm_note_local_maintenance().
          */
         if (as->as_root != current_as_root ||
           as->as_asid != cpu_self()->cp_as_asid ||
-          epoch != cpu_self()->cp_as_epoch) {
-            vm_count_switch(md_as_activate(as));
+          epoch != cpu_self()->cp_as_epoch ||
+          maint != cpu_self()->cp_as_maint) {
+            bool flushed = md_as_activate(as);
+
+            if (!flushed && maint != cpu_self()->cp_as_maint) {
+                md_tlb_flush_all();
+                flushed = true;
+            }
+            vm_count_switch(flushed);
             current_as_root = as->as_root;
             cpu_self()->cp_as_asid = as->as_asid;
             cpu_self()->cp_as_epoch = epoch;
+            cpu_self()->cp_as_maint = vm_maint_epoch();
         }
     }
 #endif

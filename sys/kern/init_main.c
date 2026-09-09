@@ -6992,12 +6992,12 @@ asid_checks(void)
 {
     struct addrspace one, two;
     struct addrspace *back;
-    struct vm_cost before, after;
     uintptr_t va, pa_one, pa_two;
     size_t len;
     intr_state_t is;
     uint8_t saw_one, saw_two, saw_again;
     uint32_t told_one, told_two;
+    uint32_t flushed = 0;
     uint32_t want;
     uint32_t bits = md_asid_bits();
 
@@ -7036,33 +7036,35 @@ asid_checks(void)
     }
 
     back = proc_as(thread_current()->t_proc);
-    vm_cost_read(&before);
 
     /*
-     * Interrupts off for all three, because the thing being measured is
+     * Counted here and not through vm_count_switch(), because these are
+     * not dispatches. The boot report's switch count is what a thread
+     * being put on a core costs, and four activations a check made for
+     * itself have no business in it.
+     *
+     * Interrupts off for all four, because the thing being measured is
      * what survives between two of them and a dispatch in the middle
      * would be a third space nobody asked for. Restored to the space
-     * this thread was running in before anything else can look, and the
+     * this thread was running in before anything else can look, so the
      * dispatcher's idea of what is current is left as it found it.
      */
     is = md_intr_disable();
 
-    vm_count_switch(md_as_activate(&one));
+    flushed += md_as_activate(&one) ? 1u : 0u;
     told_one = md_as_current_asid();
     saw_one = *(const volatile uint8_t *)va;
 
-    vm_count_switch(md_as_activate(&two));
+    flushed += md_as_activate(&two) ? 1u : 0u;
     told_two = md_as_current_asid();
     saw_two = *(const volatile uint8_t *)va;
 
-    vm_count_switch(md_as_activate(&one));
+    flushed += md_as_activate(&one) ? 1u : 0u;
     saw_again = *(const volatile uint8_t *)va;
 
-    vm_count_switch(md_as_activate(back));
+    flushed += md_as_activate(back) ? 1u : 0u;
 
     md_intr_restore(is);
-
-    vm_cost_read(&after);
 
     /*
      * What the hardware was told, read back out of the register rather
@@ -7090,22 +7092,40 @@ asid_checks(void)
 
     /*
      * And what it cost to be right about it, which is the half of this
-     * stage the reads cannot show. Four switches: all four flushed
+     * stage the reads cannot show. All four threw everything away
      * before, and none of them does now.
      */
-    if (after.vc_switch - before.vc_switch != 4) {
-        panic("spaces: %u switches, not 4",
-          (unsigned int)(after.vc_switch - before.vc_switch));
-    }
-    if (after.vc_switch_flush - before.vc_switch_flush !=
-      (bits == 0 ? 4u : 0u)) {
+    if (flushed != (bits == 0 ? 4u : 0u)) {
         panic("spaces: %u of 4 switches flushed, with %u bits",
-          (unsigned int)(after.vc_switch_flush - before.vc_switch_flush),
-          (unsigned int)bits);
+          (unsigned int)flushed, (unsigned int)bits);
     }
 
     cnprintf("    %-38s %u of 4\n", "switches that flushed everything",
-      (unsigned int)(after.vc_switch_flush - before.vc_switch_flush));
+      (unsigned int)flushed);
+
+    /*
+     * And the one thing about the maintenance counter a single core can
+     * check: its own work does not make it flush.
+     *
+     * A core that invalidated something is not the core still holding
+     * it, so what the counter answers is what the other cores have
+     * done. One counter for the machine would answer differently here,
+     * and the difference is 2546 flushes in a boot against 7. What this
+     * cannot check is the direction that matters, which is the other
+     * core's maintenance reaching this one; that needs two cores
+     * arranged on purpose and is M19 stage five's.
+     */
+    {
+        uint64_t seen = vm_maint_epoch();
+
+        md_tlb_flush_all();
+
+        if (vm_maint_epoch() != seen) {
+            panic("spaces: this core's own maintenance moved its own "
+              "count, %lu to %lu", (unsigned long)seen,
+              (unsigned long)vm_maint_epoch());
+        }
+    }
 
     /*
      * And whether the host agrees, which the reads above cannot say.
@@ -7132,20 +7152,20 @@ asid_checks(void)
 
             is = md_intr_disable();
 
-            vm_count_switch(md_as_activate(&one));
+            (void)md_as_activate(&one);
             sum += flush_walk(chain, FLUSH_PAGES);
 
             t0 = time_now();
             sum += flush_walk(chain, FLUSH_PAGES);
             t1 = time_now();
 
-            vm_count_switch(md_as_activate(&two));
+            (void)md_as_activate(&two);
 
             t2 = time_now();
             sum += flush_walk(chain, FLUSH_PAGES);
             t3 = time_now();
 
-            vm_count_switch(md_as_activate(back));
+            (void)md_as_activate(back);
 
             md_intr_restore(is);
 
@@ -13628,18 +13648,35 @@ kernel_main(void)
         }
 
         /*
-         * All of them or none of them, and which is decided by whether
-         * the port has identifiers to give. Anything in between is a
-         * space that was handed one and activated as though it had
-         * not, or the reverse, and either is a bug this would otherwise
-         * report as a smaller number.
+         * A port with no identifiers flushes on every one of them, and
+         * a port with identifiers flushes on fewer. Not on none: a
+         * switch also throws everything away when another core has
+         * invalidated something this one may be holding, which is the
+         * guarantee every switch used to give by accident and now
+         * gives on purpose. How many that is depends on how much the
+         * two cores did, so what is asserted is the relation.
          */
-        if (all.vc_switch_flush !=
-          (md_asid_bits() == 0 ? all.vc_switch : 0)) {
+        if (md_asid_bits() == 0) {
+            if (all.vc_switch_flush != all.vc_switch) {
+                panic("%u of %u switches flushed with no identifiers",
+                  (unsigned int)all.vc_switch_flush,
+                  (unsigned int)all.vc_switch);
+            }
+        } else if (all.vc_switch_flush >= all.vc_switch) {
             panic("%u of %u switches flushed, with %u bits of "
               "identifier", (unsigned int)all.vc_switch_flush,
               (unsigned int)all.vc_switch,
               (unsigned int)md_asid_bits());
+        } else if (cpu_count() > 1 && all.vc_switch_flush == 0) {
+            /*
+             * And not none of them either, on a machine with a second
+             * core whose fences do not reach this one. Both sessions
+             * report seven, which is small and is not zero, and zero
+             * would mean the switch had stopped noticing the other
+             * core's maintenance rather than that there was none.
+             */
+            panic("no switch threw anything away, on %u cores",
+              (unsigned int)cpu_count());
         }
 
         {

@@ -11282,11 +11282,43 @@ this milestone's.
 
 - *And the flush count is asserted*, both here and over the whole boot.
   The report line M6's review put above the compared region now reads
-  "address space switches: 5505, of which 0 threw every translation
-  away, against 46 buffer halves" on riscv64, and "5507, of which 5507"
-  on aarch64. What is asserted is all of them or none, decided by
-  whether the port has identifiers, because anything in between is a
-  space that was handed one and activated as though it had not.
+  "address space switches: 5480, of which 7 threw every translation
+  away, against 46 buffer halves" on riscv64, and "5482, of which 5482"
+  on aarch64. A port with no identifiers flushes on every switch, and a
+  port with identifiers flushes on fewer and not on none: the seven are
+  the review's doing and are explained below.
+- *Removing the flush removed a guarantee nobody had written down, and
+  the review is what found it.* riscv64's fences reach only the core
+  that issues them, which the README has listed as a limitation since
+  M13. What made it survivable was that every dispatch into a different
+  address space threw the whole cache away, so a stale entry another
+  core had already invalidated lived at most until this core's next
+  switch. Stage two removed that flush and with it the accident, and an
+  entry another core invalidated would have lived for the rest of the
+  run. The concrete case is `grant_unmap`, which rewrites a page's entry
+  to take user access away and flushes locally: on the other core the
+  old entry, user access and all, would simply have stayed.
+- *So the rule is now kept on purpose.* Each core counts the local
+  maintenance it performs, a core reads the sum of the others, and the
+  dispatcher throws everything away at its first switch after that sum
+  moves. It reproduces the old guarantee exactly, no stronger and no
+  weaker, and it costs seven flushes in a boot where the old rule cost
+  5480. Read as the sum of the others and not as one counter for the
+  machine, because a core that invalidated something is not the core
+  still holding it; one counter costs 2546 flushes instead of seven,
+  since most of this system's page faults are filled on the core that
+  took them.
+- *What that mechanism is not is cross-core maintenance*, which this
+  kernel still does not have. It is the difference between an entry that
+  survives a switch and one that survives the run.
+- *And only half of it can be checked from one core.* That a core's own
+  maintenance does not make it flush is checked and fails with "this
+  core's own maintenance moved its own count, 70 to 71" if the counter
+  is made global. That another core's maintenance reaches this one is
+  not checked directly; what stands in for it is that the boot's flush
+  count is not zero, which fails with "no switch threw anything away, on
+  2 cores" if the counting is removed. Arranging the two cores on
+  purpose is M19 stage five's, and that stage now owns this.
 - *The read of two spaces cannot fail on this host, and that is the
   stage's real finding.* Dropping the identifier out of the value
   written to `satp`, so that every space runs under zero with no flush,
@@ -11357,6 +11389,13 @@ this milestone's.
 - Tier 2 runs two cores. An identifier assigned on one is used on the
   other, and a recycled one leaves entries on a core that never ran the
   space that made them.
+- *And the maintenance counter stage two's review added has to be
+  checked here*, because it cannot be checked anywhere else. One core
+  invalidates an address, the other must throw its translations away at
+  its next switch, and the way to know is to have the second core read
+  the address afterwards and get the new page. Deleting the counting
+  must make that read return the old one. Today the only thing standing
+  in for that is a boot-wide count being non-zero.
 - *The ports differ again.* aarch64's invalidations are inner-shareable
   and reach the other core; riscv64's `sfence.vma` is local to the core
   that executes it, which is the standing limitation this project

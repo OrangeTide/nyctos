@@ -427,6 +427,17 @@ md_mmu_enable(const struct addrspace *as)
     (void)md_as_activate(as);
 
     /*
+     * And a fence of its own, because an enable is not a switch. A
+     * switch into a space with an identifier does not need one and no
+     * longer does one, which for three commits left this path turning
+     * translation on without any fence at all: it worked because the
+     * cache starts empty, which is correctness by luck and not by
+     * argument. This is the one place that has no earlier state to
+     * reason about, so it makes none.
+     */
+    __asm__ volatile ("sfence.vma" ::: "memory");
+
+    /*
      * Instructions fetched with translation off are the same
      * instructions at the same addresses, because the map is
      * identity, and a stale one would survive every print anyone
@@ -439,6 +450,7 @@ void
 md_tlb_flush_all(void)
 {
     vm_charge_flush();
+    vm_note_local_maintenance();
 
     __asm__ volatile ("sfence.vma" ::: "memory");
 }
@@ -453,6 +465,7 @@ void
 md_tlb_invalidate(uintptr_t va)
 {
     vm_charge_inval();
+    vm_note_local_maintenance();
 
     __asm__ volatile ("sfence.vma %0, zero" :: "r" (va) : "memory");
 }

@@ -28,6 +28,7 @@
 #include <sys/measure.h>
 #include <sys/cpu.h>
 #include <sys/page.h>
+#include <sys/lock.h>
 #include <sys/systm.h>
 #include <sys/thread.h>
 #include <sys/vm.h>
@@ -134,14 +135,29 @@ map_kernel_into(struct addrspace *as)
 static uint32_t
 as_next_asid(void)
 {
+    static struct spinlock asid_lock = { 0, 0, "asids" };
     static uint32_t next = 1;
     uint32_t bits = md_asid_bits();
+    uint32_t got;
 
+    /*
+     * Under a lock, unlike the two counters above it. Losing an
+     * increment there costs a comparison that was going to be made
+     * anyway; losing one here hands the same identifier to two spaces,
+     * which is the one thing this must never do. Most callers arrive
+     * holding the kernel lock and would be safe without this, and a
+     * startup check does not, which is exactly the kind of caller that
+     * appears later and is not looked at again.
+     */
+    spin_lock(&asid_lock);
     if (bits == 0 || next >= (1u << bits)) {
-        return 0;
+        got = 0;
+    } else {
+        got = next++;
     }
+    spin_unlock(&asid_lock);
 
-    return next++;
+    return got;
 }
 
 sys_err_t
@@ -199,6 +215,45 @@ uint64_t
 vm_as_epoch(void)
 {
     return as_epoch;
+}
+
+/*
+ * How much core-local TLB maintenance each core has done.
+ *
+ * Per core, and read as the sum of the other cores, because a core that
+ * invalidated something itself is not holding what it invalidated. One
+ * counter for the machine would make every core flush for its own work,
+ * which on this system is most of the work: the boot's page faults are
+ * filled on the core that took them.
+ *
+ * Racing increments, and the same argument as as_epoch above: what a
+ * core asks is whether the value differs from the one it cached, and an
+ * increment that only happened once still differs. A lost increment
+ * would matter only if it took the value back to what a core had
+ * cached, which nothing but wrapping can do.
+ */
+static uint64_t maint_by_core[SYS_MAX_CORES];
+
+void
+vm_note_local_maintenance(void)
+{
+    maint_by_core[cpu_self()->cp_index]++;
+}
+
+uint64_t
+vm_maint_epoch(void)
+{
+    uint32_t me = cpu_self()->cp_index;
+    uint64_t sum = 0;
+    uint32_t i;
+
+    for (i = 0; i < SYS_MAX_CORES; i++) {
+        if (i != me) {
+            sum += maint_by_core[i];
+        }
+    }
+
+    return sum;
 }
 
 void

@@ -302,6 +302,34 @@ void vm_as_destroy(struct addrspace *as);
  */
 uint64_t vm_as_epoch(void);
 
+/*
+ * Said by a port whose TLB maintenance reaches only the core that
+ * performed it, every time it performs some. riscv64's fences are
+ * core-local and say this; aarch64's are inner-shareable and reach the
+ * other core themselves, so that port says nothing.
+ *
+ * What it is for is the guarantee this kernel used to get by accident.
+ * Every dispatch into a different address space threw the whole
+ * translation cache away, so a core's stale entries lasted at most
+ * until its next switch. M19 stage two removed that flush, and with it
+ * the accident, leaving entries another core had already invalidated
+ * alive on this one for as long as nothing else cleared them. The
+ * counter restores the old rule exactly: a core flushes at its first
+ * switch after maintenance happened anywhere, and not otherwise.
+ *
+ * Not a substitute for cross-core maintenance, which this kernel still
+ * does not have. It is the difference between an entry that survives a
+ * switch and one that survives the run.
+ */
+void vm_note_local_maintenance(void);
+
+/*
+ * How much of it the other cores have done, which is what the calling
+ * core compares against. Its own does not count: a core that threw an
+ * entry away is not the core still holding it.
+ */
+uint64_t vm_maint_epoch(void);
+
 /* The window loaded programs occupy, which no space maps for the kernel. */
 void vm_user_window(uintptr_t *base, size_t *len);
 
