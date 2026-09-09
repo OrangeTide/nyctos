@@ -10727,14 +10727,17 @@ event.** *Built.*
   because a pointer would name whoever took the slot next. Nothing this
   system does today changes an owner while connections exist, so no
   check reaches it; the fix is one field and one comparison.
-- *And two paths could free the same connection.* Whichever comes
-  first frees it, the server collecting it or its last reference going,
-  and at Tier 2 those run on different cores with the reference count
-  under a lock that the collecting walk was not taking. Freeing it twice
-  gives back a slot the pool has already handed to somebody else. The
-  decision is made once now, under the same lock the count is under, and
-  the second caller finds it made. Like the owner above, this is a race
-  no check here can arrange.
+- *And two paths free the same connection.* The server collecting it and
+  its last reference going both end in the same call, and giving a slot
+  back twice hands out one the pool has already given to somebody else.
+  The decision is made once now, under the lock the reference count is
+  under, and the second caller finds it made.
+- *That was written up as a race across cores and it is not one*, which
+  the review of stage five caught. Every way into this kernel takes the
+  kernel lock at Tier 2, so two system calls cannot be inside these
+  paths at once, and neither is reachable from an interrupt. What the
+  fix is worth is that the invariant now lives in the function that
+  frees, rather than in an argument about a lock two files away.
 
 **5. A notice that never arrives, and a server that is right anyway.**
 *Built.*
@@ -10787,6 +10790,19 @@ event.** *Built.*
 - *It costs the boot two kills*, 13 to 15 at Tier 2 and 11 to 13 at Tier
   0, and nothing else the usage files compare. The archive does not
   move.
+- *The review found the queue giving up the wrong pulse.* A full queue
+  dropped whatever had just arrived, so a queue holding a hint would
+  lose a notice to keep it. Those are not worth the same: a hint says
+  there is something to collect and the connection says so too, where a
+  notice names a thread and for a thread that dies beside a live sibling
+  it is the only thing that does. A full queue now gives up the pulse it
+  can most afford to lose, in an order: a user pulse, then a hint, then
+  the arriving one.
+- *Which is checked by hand, because a run cannot produce the ordering.*
+  Seven notices, a hint, and a notice arriving at a queue with no room:
+  the queue afterwards holds eight notices and no hint. Dropping the
+  arrival instead panics with "the queue gave up a notice and kept the
+  hint".
 
 **6. A queue depth a server chooses, and clients that fail fast.**
 *Planned.*

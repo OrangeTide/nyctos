@@ -1522,12 +1522,15 @@ channel_thread_cancelled(struct thread *t)
 uint64_t channel_pulses_lost;
 
 /*
- * Take the oldest user pulse out of the queue, and say whether there
- * was one.
+ * Take the oldest pulse of one kind out of the queue, and say whether
+ * there was one. `users` picks a user pulse; otherwise the kind is the
+ * hint of M18 stage four, which is the one system pulse a channel can
+ * lose for nothing, because what it announces is on the connection and
+ * stays there.
  *
- * It need not be at the head: a system pulse can be in front of it, and
- * taking that instead would be user pulses displacing a death notice by
- * a longer route. The oldest goes rather than the newest, which is
+ * It need not be at the head: a pulse of another kind can be in front
+ * of it, and taking that instead would be one kind displacing another
+ * by a longer route. The oldest goes rather than the newest, which is
  * worth stating because it is a choice. A notification is about
  * something that has happened, and the older one is the one whose news
  * has had longest to be overtaken.
@@ -1535,15 +1538,19 @@ uint64_t channel_pulses_lost;
  * Called with interrupts off.
  */
 static bool
-pulse_drop_user(struct channel *ch)
+pulse_drop_oldest(struct channel *ch, bool users)
 {
     uint32_t i;
 
     for (i = 0; i < ch->c_pulse_count; i++) {
         uint32_t k = (ch->c_pulse_head + i) % SYS_PULSE_SLOTS;
+        bool user = ch->c_pulses[k].code >= SYS_PULSE_USER_BASE;
         uint32_t j;
 
-        if (ch->c_pulses[k].code < SYS_PULSE_USER_BASE) {
+        if (user != users) {
+            continue;
+        }
+        if (!user && ch->c_pulses[k].code != SYS_PULSE_PEER_GONE) {
             continue;
         }
         for (j = i; j + 1 < ch->c_pulse_count; j++) {
@@ -1553,7 +1560,9 @@ pulse_drop_user(struct channel *ch)
             ch->c_pulses[a] = ch->c_pulses[b];
         }
         ch->c_pulse_count--;
-        ch->c_pulse_users--;
+        if (user) {
+            ch->c_pulse_users--;
+        }
         ch->c_pulse_lost = true;
         channel_pulses_lost++;
 
@@ -1592,23 +1601,26 @@ channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
     uint32_t at;
 
     if (!system && ch->c_pulse_users >= limit) {
-        (void)pulse_drop_user(ch);
+        (void)pulse_drop_oldest(ch, true);
     }
 
     if (ch->c_pulse_count == SYS_PULSE_SLOTS) {
         /*
-         * A full queue, which for a system pulse means a user pulse
-         * goes: that is the reservation, and it is honoured here as
-         * well as at the cap above, because a queue that reached eight
-         * with user pulses in it has room the arriving notice is
-         * entitled to.
+         * A full queue drops the pulse it can most afford to lose, and
+         * there is an order to that.
          *
-         * And if there are none, the arriving pulse is dropped. This
-         * halted the machine until M18 stage five, on the argument
-         * from section 13.1 that losing a notice leaks a dead client's
-         * resources for good. Stage four made that untrue: what a
-         * notice announces is also on the connection, and a server
-         * reads that rather than counting edges. So the queue stops
+         * A user pulse first, which is the reservation of section 13.1
+         * honoured here as well as at the cap above: a queue that
+         * reached eight with user pulses in it has room an arriving
+         * notice is entitled to. Then a hint, which is the one system
+         * pulse that costs nothing to lose, because what it announces
+         * is on the connection and stays there until the server
+         * collects it. Then the arriving pulse, whatever it is.
+         *
+         * That last case halted the machine until M18 stage five, on
+         * section 13.1's argument that losing a notice leaks a dead
+         * client's resources for good. Stage four made that untrue for
+         * every client that goes away entirely, so the queue stops
          * being something that must not overflow and becomes what it
          * says it is, a fixed number of hints, with the flag below
          * telling the receiver that it missed something.
@@ -1617,8 +1629,14 @@ channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
          * ones in the queue are the ones the receiver is about to
          * take, and taking a slot from them to say the same kind of
          * thing again would lose news that is already on its way.
+         *
+         * Nothing is woken on that path. A receiver blocks only on an
+         * empty queue, because a receive takes a pulse before it waits,
+         * and the pulse that filled the first slot took the receiver
+         * off the list. A full queue therefore has nobody waiting on
+         * it.
          */
-        if (!pulse_drop_user(ch)) {
+        if (!pulse_drop_oldest(ch, true) && !pulse_drop_oldest(ch, false)) {
             ch->c_pulse_lost = true;
             channel_pulses_lost++;
             md_intr_restore(s);

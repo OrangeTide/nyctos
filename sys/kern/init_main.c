@@ -6197,8 +6197,6 @@ ledger_identity_checks(void)
  * notices itself: eight deaths nobody has collected, and then a real
  * one.
  */
-static sys_handle_t h_lost_ask;
-
 #define LOST_COOKIE_CHECK       32u
 #define LOST_COOKIE_DIES        33u
 
@@ -6258,7 +6256,6 @@ notice_loss_checks(void)
       run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
       SYS_OK);
     h_ledger_ask = cargs.out_handle;
-    h_lost_ask = cargs.out_handle;
 
     /*
      * One client, killed inside a request, which is the one death
@@ -6395,8 +6392,66 @@ notice_loss_checks(void)
     cnprintf("    %-38s %s\n", "the record of the death it missed",
       "released when the connection was collected");
 
+    /*
+     * And which of them a full queue gives up, per this stage's
+     * review. A notice and a hint are not worth the same. The hint says
+     * there is something to collect and the connection says so too; a
+     * notice names a thread, and for a thread that dies with a live
+     * sibling on its connection it is the only thing that does. So the
+     * hint is what goes.
+     *
+     * Arranged by hand, because a run cannot be made to produce this
+     * ordering: seven notices, a hint, and then one more notice
+     * arriving at a queue with no room.
+     */
+    {
+        uint32_t queued_hints = 0;
+        uint32_t queued_notices = 0;
+
+        if (ch->c_pulse_count != 0) {
+            panic("lost: %u pulses left over before the second case",
+              (unsigned int)ch->c_pulse_count);
+        }
+
+        sched_defer();
+        for (i = 0; i + 1 < SYS_PULSE_SLOTS; i++) {
+            channel_pulse(ch, SYS_PULSE_DEAD_OWNER, 0);
+        }
+        channel_pulse(ch, SYS_PULSE_PEER_GONE, 0);
+
+        lost_before = channel_pulses_lost;
+        channel_pulse(ch, SYS_PULSE_DEAD_OWNER, 0);
+
+        for (i = 0; i < ch->c_pulse_count; i++) {
+            uint32_t k = (ch->c_pulse_head + i) % SYS_PULSE_SLOTS;
+
+            if (ch->c_pulses[k].code == SYS_PULSE_PEER_GONE) {
+                queued_hints++;
+            }
+            if (ch->c_pulses[k].code == SYS_PULSE_DEAD_OWNER) {
+                queued_notices++;
+            }
+        }
+        sched_undefer();
+
+        if (channel_pulses_lost != lost_before + 1) {
+            panic("lost: %lu pulses dropped by the second case, not one",
+              (unsigned long)(channel_pulses_lost - lost_before));
+        }
+        if (queued_hints != 0) {
+            panic("lost: the queue gave up a notice and kept the hint");
+        }
+        if (queued_notices != SYS_PULSE_SLOTS) {
+            panic("lost: %u notices queued after the hint went, not %u",
+              (unsigned int)queued_notices, (unsigned int)SYS_PULSE_SLOTS);
+        }
+
+        cnprintf("    %-38s %s\n", "what a full queue gave up",
+          "the hint, and it kept the notice");
+    }
+
     expect("giving the check's connection back",
-      handle_close(ht, h_lost_ask), SYS_OK);
+      handle_close(ht, h_ledger_ask), SYS_OK);
 
     sid = sc.c_proc->p_id;
     expect("ending the third server", proc_kill(sc.c_proc, KILL_CODE),
