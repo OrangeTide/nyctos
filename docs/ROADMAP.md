@@ -10560,14 +10560,50 @@ serves stop existing.
   that keeps state across requests cannot be correct by counting edges
   however reliably they are delivered.
 
-**3. Releasing the right record.** *Planned.*
+**3. Releasing the right record.** *Built.*
 
-- The server keys its records so that a notice can find one, and
-  releases exactly the record belonging to the client that died.
-- *Check.* Three clients hold records and one is killed. The server ends
-  holding two, and holding the two that are still alive rather than
-  merely two of them: a check that counted would pass for a server that
-  released whichever record it looked at first.
+- The server keeps `SYS_ID_TAG32` of the owning thread beside each
+  record, which is the same 32 bits a notice carries, and releases the
+  one record whose tag matches. Matching on what arrives is the point: a
+  server that stored something else would be answering a question it was
+  not asked.
+- *A count is not enough, and that is the whole stage.* A server that
+  released whichever record it looked at first would end holding the
+  right number of them and the wrong ones, and every client whose record
+  it took would find itself unknown to a server it is still talking to.
+  So the check asks the server about each client by name, with
+  `LEDGER_OP_HELD_FOR`, and the name is the one the kernel gave it.
+- *Check.* Four clients hold records and one is killed inside a request.
+  The server ends holding three, and holding the three that are still
+  alive rather than merely three of them.
+- *And the client that dies is not the first one.* The first version had
+  it take the first record, so releasing whichever record was found
+  first passed: the check could not fail on the thing it was for. The
+  held client that stays held now takes the first record and the client
+  that dies takes the fourth, which is what makes the two policies
+  distinguishable at all.
+- *Two of the four share one connection*, which is what tells a record
+  keyed by thread from one keyed by the connection it arrived on. One of
+  them dies in the check that follows and the other keeps its record.
+  Keyed by connection, both would have gone and the server would have
+  been right about the count and wrong about everything else.
+- *Settled.* The record the notice names is released and only that one,
+  in all four configurations, and the leak stage one measured falls from
+  **three records to two**: the death that is announced no longer leaks,
+  and the two that remain are the two nothing announces, which is stage
+  four.
+- *Broken both ways.* Releasing whichever record was found first panics
+  with "the server still holds the dead client's record", because the
+  one it took belonged to a client that is still there. Ignoring the
+  notice entirely panics with "1 records held and 1 ever taken after one
+  client", which is stage one's first assertion catching it.
+- *And holding a request is a request now, not an arrangement.* The
+  first version of this server never answered whichever message happened
+  to arrive first, which made every check reason about ordering.
+  `LEDGER_OP_HOLD` takes a record, starts a replacement serving thread
+  and stops, still owing the reply. A held request costs a thread,
+  because the thread holding it may not receive again, and the server's
+  stack array is the bound on how many it can hold at once.
 
 **4. The client that goes quietly, and the state that outlasts the
 event.** *Planned.*

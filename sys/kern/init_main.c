@@ -5509,12 +5509,13 @@ ledger_leak_checks(void)
     ledger_client("hold", false, true, 1, 1);
 
     /*
-     * And the server had nothing before it. Asked here rather than
-     * before the first client, because before the first client there is
-     * no thread that would answer.
+     * And the server had nothing before it, and nothing after it
+     * either: this client died inside a request, so a notice arrived
+     * and stage three released its record. One record was taken and
+     * none is held.
      */
     ledger_ask(LEDGER_OP_COUNT, &rep);
-    if (rep.lp_held != 1 || rep.lp_taken != 1) {
+    if (rep.lp_held != 0 || rep.lp_taken != 1) {
         panic("ledger: %u records held and %u ever taken after one client",
           (unsigned int)rep.lp_held, (unsigned int)rep.lp_taken);
     }
@@ -5543,14 +5544,16 @@ ledger_leak_checks(void)
         panic("ledger: %u records were ever taken, not 4",
           (unsigned int)rep.lp_taken);
     }
-    if (rep.lp_held != 3) {
-        panic("ledger: %u records held after four clients, not 3",
+    if (rep.lp_held != 2) {
+        panic("ledger: %u records held after four clients, not 2",
           (unsigned int)rep.lp_held);
     }
 
     cnprintf("    %-38s %u of %u ever taken\n",
       "records held after every client left",
       (unsigned int)rep.lp_held, (unsigned int)rep.lp_taken);
+    cnprintf("    %-38s %u\n", "records a notice released",
+      (unsigned int)rep.lp_released);
     cnprintf("    %-38s %u of 3 deaths\n",
       "death notices the server saw", (unsigned int)rep.lp_notices);
     cnprintf("    %-38s %s\n", "the one it was told about",
@@ -5581,6 +5584,352 @@ ledger_leak_checks(void)
     while (pool_lookup(proc_pool(), sid) != NULL) {
         if (time_now() > waited) {
             panic("ledger: the server exited and was never reaped");
+        }
+        sched_yield();
+    }
+}
+
+/*
+ * Two clients that share one connection, for M18 stage three. Kernel
+ * threads rather than programs, because what a record is keyed on is
+ * the question and a thread is what the notice names: the server cannot
+ * tell these from any other client, which is the point of using them.
+ *
+ * They take a record and then wait for something nobody signals, so
+ * they are alive and holding when the client that dies is killed.
+ */
+static sys_handle_t h_ident_send;
+static sys_handle_t h_ident_hold;
+static volatile uint32_t ident_took;
+static struct thread *ident_a;
+static struct thread *ident_b;
+static struct thread *ident_c;
+
+static void
+ident_client(void *arg)
+{
+    struct sys_op_send_args tx;
+    ledger_request_t *req;
+    bool hold = arg != NULL;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    req = (ledger_request_t *)tx.request.inline_data;
+    req->lr_op = hold ? LEDGER_OP_HOLD : LEDGER_OP_TAKE;
+    tx.request.inline_len = sizeof(*req);
+
+    /*
+     * A hold never comes back, which is the point of it: this thread
+     * is the client left inside a rendezvous, and it is here to be
+     * alive and holding a record rather than to be killed.
+     */
+    if (run(SYS_OP_IPC_SEND, hold ? h_ident_hold : h_ident_send, &tx,
+      sizeof(tx)) != SYS_OK) {
+        thread_exit(1);
+    }
+    ident_took++;
+
+    (void)timeline_wait(&kill_tl, 1, SYS_DEADLINE_NEVER);
+
+    thread_exit(0);
+}
+
+/* Whether the server holds a record for this thread. */
+static bool
+ledger_holds(sys_thread_id_t who)
+{
+    struct sys_op_send_args tx;
+    ledger_request_t *req;
+    ledger_reply_t rep;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    req = (ledger_request_t *)tx.request.inline_data;
+    req->lr_op = LEDGER_OP_HELD_FOR;
+    req->lr_tag = SYS_ID_TAG32(who);
+    tx.request.inline_len = sizeof(*req);
+
+    if (run(SYS_OP_IPC_SEND, h_ledger_ask, &tx, sizeof(tx)) != SYS_OK) {
+        panic("ledger: the server did not answer a held-for");
+    }
+
+    memcpy(&rep, tx.reply.inline_data, sizeof(rep));
+    if (rep.lp_status != SYS_OK && rep.lp_status != SYS_ERR_NO_ENT) {
+        panic("ledger: a held-for came back %d", (int)rep.lp_status);
+    }
+
+    return rep.lp_status == SYS_OK;
+}
+
+/*
+ * Releasing the right record, per M18 stage three.
+ *
+ * A count is not enough. A server that released whichever record it
+ * looked at first would end holding the right number of them and the
+ * wrong ones, and every client whose record it took would find itself
+ * unknown to a server it is still talking to. So the check asks the
+ * server about each client by name, and the name is the one thing it
+ * has: `SYS_ID_TAG32` of the thread, which is what a notice carries.
+ *
+ * Two of the three clients share a connection, which is the case that
+ * says what the key is. Keyed by thread, one of them goes and the other
+ * stays. Keyed by connection, both would have gone, and the server
+ * would have been right about the count and wrong about everything
+ * else.
+ */
+static void
+ledger_identity_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_connect_args cargs;
+    ledger_reply_t rep;
+    sys_ns_spec_t ns[2];
+    struct channel *ch;
+    struct child sc, c;
+    const char *argv[2];
+    sys_thread_id_t a_id, b_id, c_id, d_id;
+    sys_handle_t give, keep, akeep;
+    sys_id_t sid;
+    uint64_t waited;
+    int32_t code;
+
+    cnputs("a server: releasing the record of the client that died\n");
+
+    ch = channel_create("ledger-id", self);
+    if (ch == NULL) {
+        panic("ledger: no channel for the identity check");
+    }
+    expect("a channel for a second server",
+      handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_ledger_recv), SYS_OK);
+
+    if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
+        panic("ledger: cannot hand the second channel on");
+    }
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = give;
+    ns[1].id = SYS_NS_PRIVATE + 0;
+    if (handle_insert(ht, ledger_never, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &ns[1].handle) != SYS_OK) {
+        panic("ledger: no handle for the second server's timeline");
+    }
+
+    /*
+     * A second server, with an empty table. The first one was killed
+     * and its slot given back, which is what makes loading the same
+     * image again legal at Tier 0.
+     */
+    sched_defer();
+    child_watch(&sc, proc_spawn_image("ledger", 21, ns, 2, NULL, 0));
+    if (handle_insert(ht, sc.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &keep) != SYS_OK) {
+        panic("ledger: no handle slot for the second server");
+    }
+    sched_undefer();
+
+    /*
+     * The check's own connection first, so that there is a way to ask
+     * the server anything at all.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to it, for the check",
+      run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+    h_ledger_ask = cargs.out_handle;
+
+    ledger_ask(LEDGER_OP_COUNT, &rep);
+    if (rep.lp_held != 0) {
+        panic("ledger: the second server started with %u records",
+          (unsigned int)rep.lp_held);
+    }
+
+    /*
+     * A client that is held and stays held. It takes the first record,
+     * which is what makes the record of the client that dies not the
+     * first one: a server releasing whichever record it looked at
+     * first would take this one, and this one is still there.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection for a client that is held",
+      run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+    h_ident_hold = cargs.out_handle;
+
+    ident_took = 0;
+    ident_a = thread_create("ident-a", PRIO_BOOT + 1, ident_client,
+      (void *)1);
+    a_id = thread_id(ident_a);
+    sched_ready(ident_a);
+
+    waited = time_now() + time_from_ms(JOIN_MS);
+    for (;;) {
+        ledger_ask(LEDGER_OP_COUNT, &rep);
+        if (rep.lp_held == 1) {
+            break;
+        }
+        if (time_now() > waited) {
+            panic("ledger: the held client never reached the server");
+        }
+        sched_yield();
+    }
+
+    /*
+     * Two more clients, sharing one connection between them. One
+     * connection and two threads is what tells a record keyed by thread
+     * from a record keyed by the connection it arrived on.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("one connection for two more clients",
+      run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+    h_ident_send = cargs.out_handle;
+
+    ident_b = thread_create("ident-b", PRIO_BOOT + 1, ident_client, NULL);
+    ident_c = thread_create("ident-c", PRIO_BOOT + 1, ident_client, NULL);
+    b_id = thread_id(ident_b);
+    c_id = thread_id(ident_c);
+    sched_ready(ident_b);
+    sched_ready(ident_c);
+
+    waited = time_now() + time_from_ms(JOIN_MS);
+    while (ident_took < 2) {
+        if (time_now() > waited) {
+            panic("ledger: %u of the two sharing clients took a record",
+              (unsigned int)ident_took);
+        }
+        sched_yield();
+    }
+
+    /*
+     * And the client that dies, which is a program because it has to be
+     * killed as a process. Its record is the fourth, not the first.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection for the client that dies",
+      run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_PRIVATE + 1;
+    ns[0].handle = cargs.out_handle;
+    ns[1].id = SYS_NS_PRIVATE + 0;
+    if (handle_insert(ht, ledger_never, SYS_OBJ_TIMELINE,
+      SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &ns[1].handle) != SYS_OK) {
+        panic("ledger: no handle for the client's timeline");
+    }
+    argv[0] = "patron";
+    argv[1] = "hold";
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("patron", 20, ns, 2, argv, 2));
+    if (handle_insert(ht, c.c_proc, SYS_OBJ_PROCESS, SYS_RIGHT_STAT,
+      &akeep) != SYS_OK) {
+        panic("ledger: no handle slot for the client that dies");
+    }
+    sched_undefer();
+
+    waited = time_now() + time_from_ms(JOIN_MS);
+    {
+        struct thread *ct = proc_threads(c.c_proc);
+
+        d_id = thread_id(ct);
+        while (ct->t_wait != THREAD_WAIT_REPLY) {
+            if (time_now() > waited) {
+                panic("ledger: the client that dies never reached the "
+                  "server");
+            }
+            sched_yield();
+        }
+    }
+
+    ledger_ask(LEDGER_OP_COUNT, &rep);
+    if (rep.lp_held != 4) {
+        panic("ledger: %u records before the death, not 4",
+          (unsigned int)rep.lp_held);
+    }
+    if (!ledger_holds(a_id) || !ledger_holds(b_id) ||
+      !ledger_holds(c_id) || !ledger_holds(d_id)) {
+        panic("ledger: the server does not know one of its four clients");
+    }
+
+    if (proc_kill(c.c_proc, KILL_CODE) != SYS_OK) {
+        panic("ledger: the client that dies refused to be killed");
+    }
+    code = child_join(&c, JOIN_MS);
+    if (code != KILL_CODE) {
+        panic("ledger: the client that dies came back %d", (int)code);
+    }
+
+    /*
+     * One round trip, per stage two: a pulse is collected before a
+     * message, so the notice has been acted on by the time this is
+     * answered.
+     */
+    ledger_ask(LEDGER_OP_COUNT, &rep);
+    if (rep.lp_released != 1) {
+        panic("ledger: %u records released by a notice, not 1",
+          (unsigned int)rep.lp_released);
+    }
+    if (rep.lp_held != 3) {
+        panic("ledger: %u records after one death, not 3",
+          (unsigned int)rep.lp_held);
+    }
+
+    /*
+     * And the three it holds are the three that are still there. This
+     * is the assertion the stage exists for: the count above would pass
+     * for a server that released whichever record it saw first, and the
+     * first is the held client's.
+     */
+    if (ledger_holds(d_id)) {
+        panic("ledger: the server still holds the dead client's record");
+    }
+    if (!ledger_holds(a_id) || !ledger_holds(b_id) || !ledger_holds(c_id)) {
+        panic("ledger: the server released a living client's record");
+    }
+
+    cnprintf("    %-38s %s\n", "the record the notice named",
+      "released, and only that one");
+    cnprintf("    %-38s %s\n", "two clients on one connection",
+      "one stayed when another died");
+
+    expect("giving the dead client's handle back",
+      handle_close(ht, akeep), SYS_OK);
+    expect("ending the client that was held", thread_cancel(ident_a),
+      SYS_OK);
+    expect("ending the two sharing clients", thread_cancel(ident_b),
+      SYS_OK);
+    expect("and the other one", thread_cancel(ident_c), SYS_OK);
+    expect("giving their connection back", handle_close(ht, h_ident_send),
+      SYS_OK);
+    expect("and the held client's", handle_close(ht, h_ident_hold),
+      SYS_OK);
+
+
+    sid = sc.c_proc->p_id;
+    expect("ending the second server", proc_kill(sc.c_proc, KILL_CODE),
+      SYS_OK);
+    if (child_join(&sc, JOIN_MS) != KILL_CODE) {
+        panic("ledger: the second server did not end when killed");
+    }
+    expect("giving the second server back", handle_close(ht, keep),
+      SYS_OK);
+    expect("giving the check's connection back",
+      handle_close(ht, h_ledger_ask), SYS_OK);
+    expect("giving the second channel back",
+      handle_close(ht, h_ledger_recv), SYS_OK);
+
+    waited = time_now() + time_from_ms(JOIN_MS);
+    while (pool_lookup(proc_pool(), sid) != NULL) {
+        if (time_now() > waited) {
+            panic("ledger: the second server was never reaped");
         }
         sched_yield();
     }
@@ -11748,6 +12097,7 @@ kernel_main(void)
     kill_server_stale_checks();
     ledger_leak_checks();
     notice_absence_checks();
+    ledger_identity_checks();
     startup_record_checks();
     deadline_checks();
 

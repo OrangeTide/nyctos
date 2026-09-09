@@ -123,7 +123,7 @@ main(int argc, char **argv)
          * does not answer, so this thread is REPLY-blocked until
          * something ends it, and what ends it is the check.
          */
-        (void)ask(to, LEDGER_OP_TAKE, NULL);
+        (void)ask(to, LEDGER_OP_HOLD, NULL);
         return 3;
     }
 

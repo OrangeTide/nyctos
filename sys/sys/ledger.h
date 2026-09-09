@@ -38,13 +38,20 @@
  * client is the same record, so a client that asks again has not leaked
  * one: what leaks is a client that never comes back.
  *
- * The very first request a server gets is the one it never answers,
- * whatever it asked for. That is not a request code but an arrangement:
- * a client has to be left inside a rendezvous for the death section
- * 12.5 announces to be arrangeable at all, and the thread that holds it
- * may not receive again while it does.
  */
 #define LEDGER_OP_TAKE      1u
+
+/*
+ * Take a record and do not answer, per M18 stage three. The thread that
+ * takes this request keeps it: it starts a replacement to go on serving
+ * and then stops, still owing the reply, which is how a client is left
+ * inside the rendezvous section 12.5 announces a death from.
+ *
+ * A server thread may not receive again while it owes a reply, per
+ * section 19.3, so holding a request costs a thread. That is the price
+ * of the arrangement and it is why the number of them is bounded.
+ */
+#define LEDGER_OP_HOLD      2u
 
 /* Give the record back, which is what a client that leaves politely does. */
 #define LEDGER_OP_DROP      3u
@@ -55,9 +62,17 @@
  */
 #define LEDGER_OP_COUNT     4u
 
+/*
+ * Whether a record is held for the client named by the tag, which is
+ * `SYS_ID_TAG32` of its thread id: the same 32 bits a death notice
+ * carries, so a check can ask the server the question the notice makes
+ * it answer. SYS_OK if it is held, SYS_ERR_NO_ENT if it is not.
+ */
+#define LEDGER_OP_HELD_FOR  5u
+
 typedef struct ledger_request {
     uint32_t    lr_op;
-    uint32_t    lr_reserved;
+    uint32_t    lr_tag;         /* the client asked about, for HELD_FOR */
 } ledger_request_t;
 
 typedef struct ledger_reply {
@@ -65,6 +80,7 @@ typedef struct ledger_reply {
     uint32_t    lp_held;        /* records held, after this request */
     uint32_t    lp_taken;       /* records ever taken, for COUNT */
     uint32_t    lp_notices;     /* death notices seen, for COUNT */
+    uint32_t    lp_released;    /* records a notice released, for COUNT */
 } ledger_reply_t;
 
 #endif /* _SYS_LEDGER_H_ */

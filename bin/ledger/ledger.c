@@ -58,15 +58,59 @@ static struct record records[LEDGER_RECORDS];
 static uint32_t taken_ever;
 static uint32_t notices;
 
+/* Records released because a notice named their client. */
+static uint32_t released;
+
+/*
+ * Release the record belonging to the client the notice names, per M18
+ * stage three.
+ *
+ * The notice carries `SYS_ID_TAG32` of the dead thread, which is the
+ * index and twelve bits of generation, per section 10.5. That is what
+ * this server has to match on, so it keeps the same 32 bits beside each
+ * record rather than the whole identifier: matching on what arrives is
+ * the point, and a server that stored something else would be answering
+ * a question it was not asked.
+ *
+ * Exactly one record, and only if it is that client's. Releasing
+ * whichever record was found first would pass a check that counted and
+ * fail every client whose record it took.
+ */
+static void
+release_for(uint32_t tag)
+{
+    uint32_t i;
+
+    for (i = 0; i < LEDGER_RECORDS; i++) {
+        if (records[i].taken && SYS_ID_TAG32(records[i].owner) == tag) {
+            records[i].taken = 0;
+            records[i].owner = 0;
+            released++;
+            return;
+        }
+    }
+}
+
 /* The channel, read by both threads and written before the second exists. */
 static sys_handle_t chan;
 
 /*
- * The serving thread's stack. Its own memory, because a thread's stack
- * is memory its creator already has: there is no allocator here.
+ * A stack for each serving thread. Its own memory, because a thread's
+ * stack is memory its creator already has: there is no allocator here.
+ *
+ * One per hold, plus the one the first replacement runs on. A held
+ * request costs a thread, because the thread holding it may not receive
+ * again, so this array is the bound on how many requests this server
+ * can be holding at once.
  */
 #define STACK_BYTES     4096
-static unsigned char serve_stack[STACK_BYTES] __attribute__((aligned(16)));
+#define SERVE_STACKS    4u
+static unsigned char serve_stack[SERVE_STACKS][STACK_BYTES]
+  __attribute__((aligned(16)));
+static uint32_t serve_next;
+
+/* The timeline a holding thread stops on, which nobody signals. */
+static sys_handle_t hold_never;
 
 static uint32_t
 held(void)
@@ -116,6 +160,8 @@ record_for(sys_thread_id_t who)
  * nobody anything across a receive: each request is answered before the
  * next is taken, which is the shape section 19.3 asks for.
  */
+static void serve(void *arg);
+
 static void
 serve(void *arg)
 {
@@ -145,6 +191,7 @@ serve(void *arg)
 
             if (p->code == SYS_PULSE_DEAD_OWNER) {
                 notices++;
+                release_for(p->value);
             }
             continue;
         }
@@ -175,6 +222,42 @@ serve(void *arg)
                 }
                 break;
 
+            case LEDGER_OP_HOLD: {
+                sys_handle_t th;
+
+                /*
+                 * The record is taken and this client is not answered.
+                 * This thread cannot receive again while it owes a
+                 * reply, per section 19.3, so it starts a replacement
+                 * and stops: a held request costs a thread, and the
+                 * stack array is the bound on how many there can be.
+                 */
+                if (serve_next >= SERVE_STACKS ||
+                  record_for(peer) == NULL) {
+                    rep->lp_status = SYS_ERR_NO_MEMORY;
+                    break;
+                }
+
+                if (sys_thread_create(serve, NULL,
+                  serve_stack[serve_next], STACK_BYTES,
+                  SYS_PRIO_INHERIT, &th) != SYS_OK) {
+                    rep->lp_status = SYS_ERR_NO_MEMORY;
+                    break;
+                }
+                serve_next++;
+                if (sys_handle_close(th) != SYS_OK) {
+                    sys_thread_exit(4);
+                }
+
+                /*
+                 * And it stops here, still owing that reply. The handle
+                 * goes first: a process that keeps a thread handle can
+                 * never be reaped, which stage one's review measured.
+                 */
+                (void)sys_fence_wait(hold_never, 1, SYS_DEADLINE_NEVER);
+                sys_thread_exit(5);
+            }
+
             case LEDGER_OP_DROP:
                 r = record_for(peer);
                 if (r != NULL) {
@@ -186,6 +269,20 @@ serve(void *arg)
             case LEDGER_OP_COUNT:
                 break;
 
+            case LEDGER_OP_HELD_FOR: {
+                uint32_t i;
+
+                rep->lp_status = SYS_ERR_NO_ENT;
+                for (i = 0; i < LEDGER_RECORDS; i++) {
+                    if (records[i].taken &&
+                      SYS_ID_TAG32(records[i].owner) == req->lr_tag) {
+                        rep->lp_status = SYS_OK;
+                        break;
+                    }
+                }
+                break;
+            }
+
             default:
                 rep->lp_status = SYS_ERR_INVALID_ARG;
                 break;
@@ -195,6 +292,7 @@ serve(void *arg)
         rep->lp_held = held();
         rep->lp_taken = taken_ever;
         rep->lp_notices = notices;
+        rep->lp_released = released;
 
         if (sys_msg_reply(peer, &reply) != SYS_OK) {
             sys_thread_exit(3);
@@ -205,10 +303,7 @@ serve(void *arg)
 int
 main(int argc, char **argv)
 {
-    sys_msg_t message;
-    sys_thread_id_t peer;
-    sys_handle_t never, th;
-    uint64_t cookie;
+    sys_handle_t never;
 
     (void)argc;
     (void)argv;
@@ -218,39 +313,16 @@ main(int argc, char **argv)
     if (chan == SYS_HANDLE_INVALID || never == SYS_HANDLE_INVALID) {
         return 1;
     }
+    hold_never = never;
 
     /*
-     * The one request that is never answered. It has to be the first,
-     * because this thread is the only receiver until it starts the
-     * other one, and that is what makes which request it is a fact
-     * rather than a race.
+     * The first thread is a serving thread like any other. Holding a
+     * request is a request code now rather than an arrangement about
+     * which message arrived first, so nothing here is special and a
+     * check does not have to reason about ordering to get a client
+     * left inside a rendezvous.
      */
-    memset(&message, 0, sizeof(message));
-    if (sys_msg_recv(chan, &message, &peer, &cookie) != SYS_OK) {
-        return 2;
-    }
-    if ((message.flags & SYS_MSG_IS_PULSE) != 0) {
-        return 3;
-    }
-    if (record_for(peer) == NULL) {
-        return 4;
-    }
-
-    if (sys_thread_create(serve, NULL, serve_stack, STACK_BYTES,
-      SYS_PRIO_INHERIT, &th) != SYS_OK) {
-        return 5;
-    }
-    if (sys_handle_close(th) != SYS_OK) {
-        return 7;
-    }
-
-    /*
-     * And this thread stops here, still owing that reply. It may not
-     * receive again while it does, and it has nothing else to do: the
-     * client it is holding is about to be killed, and what the check
-     * measures is what the record does afterwards.
-     */
-    (void)sys_fence_wait(never, 1, SYS_DEADLINE_NEVER);
+    serve(NULL);
 
     return 6;
 }
