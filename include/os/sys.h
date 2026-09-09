@@ -21,6 +21,7 @@
 #include <sys/syspage.h>
 #include <sys/startup.h>
 
+#include <stdbool.h>
 #include <stddef.h>
 
 /*
@@ -209,6 +210,19 @@ sys_err_t sys_thread_migrate(sys_handle_t thread, uint32_t core);
  * the pulse that is dropped.
  */
 sys_err_t sys_pulse_send(sys_handle_t chan, const sys_pulse_t *pulse);
+
+/*
+ * Collect one departed peer of a channel, per M18 stage four. The
+ * first call with enable set says this channel keeps a connection
+ * whose client handles have all closed, rather than freeing it; every
+ * call returns one such connection's cookie and lets it go, and
+ * SYS_ERR_NO_ENT when there are none left. Needs SYS_RIGHT_RECV.
+ *
+ * The SYS_PULSE_PEER_GONE pulse is a hint that this is worth calling.
+ * It may be coalesced or lost, so what a server acts on is the answer
+ * here and not the count of pulses it saw.
+ */
+sys_err_t sys_chan_reap(sys_handle_t chan, bool enable, uint64_t *out_cookie);
 
 /*
  * End a process, per section 10.5. Every thread of it is unblocked as

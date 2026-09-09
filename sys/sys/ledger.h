@@ -81,6 +81,18 @@ typedef struct ledger_reply {
     uint32_t    lp_taken;       /* records ever taken, for COUNT */
     uint32_t    lp_notices;     /* death notices seen, for COUNT */
     uint32_t    lp_released;    /* records a notice released, for COUNT */
+
+    /*
+     * What collecting found, per M18 stage four. `lp_reaped` counts
+     * connections whose clients had all gone and this server
+     * collected; `lp_drained` counts the records it let go because one
+     * was collected; `lp_hints` counts the pulses that said there was
+     * something to collect, which this server counts and does not act
+     * on.
+     */
+    uint32_t    lp_reaped;
+    uint32_t    lp_drained;
+    uint32_t    lp_hints;
 } ledger_reply_t;
 
 #endif /* _SYS_LEDGER_H_ */

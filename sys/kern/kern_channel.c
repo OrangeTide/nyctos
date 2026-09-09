@@ -1724,6 +1724,24 @@ channel_owner_died(struct proc *p)
         }
 
         /*
+         * And it collects no more departed peers. A connection kept
+         * back for a server to collect is kept for a server, and there
+         * is no longer one: holding them now would spend the
+         * connection pool on an answer nobody will ask for.
+         */
+        if (ch->c_reaping) {
+            struct connection *cn, *next;
+
+            ch->c_reaping = false;
+            for (cn = ch->c_conns; cn != NULL; cn = next) {
+                next = cn->cn_next;
+                if (cn->cn_gone && cn->cn_refs == 0) {
+                    connection_destroy(cn);
+                }
+            }
+        }
+
+        /*
          * And the channel stops naming a process that has gone. M6
          * left this pointer taking no reference and M7 stage one
          * guarded a reap against it, because a reaped owner would
@@ -1868,4 +1886,119 @@ chain_raise(struct channel *ch, uint8_t prio)
     }
 
     return SYS_ERR_DEADLOCK;
+}
+
+/*
+ * The connections minted on this channel, and collecting the ones whose
+ * peers have gone, per M18 stage four.
+ *
+ * The list is the server's claim on them, which is why it is on the
+ * channel and not somewhere a server would have to hold a handle for:
+ * a connection here is minted by whoever holds the receive right, and
+ * in this system that is usually a parent handing one to a child at
+ * spawn rather than the server itself. The channel is the one thing the
+ * server does hold.
+ */
+void
+channel_conn_add(struct channel *ch, struct connection *cn)
+{
+    intr_state_t s = md_intr_disable();
+
+    cn->cn_next = ch->c_conns;
+    ch->c_conns = cn;
+
+    md_intr_restore(s);
+}
+
+void
+channel_conn_remove(struct channel *ch, struct connection *cn)
+{
+    intr_state_t s = md_intr_disable();
+    struct connection **link;
+
+    for (link = &ch->c_conns; *link != NULL; link = &(*link)->cn_next) {
+        if (*link == cn) {
+            *link = cn->cn_next;
+            break;
+        }
+    }
+    cn->cn_next = NULL;
+
+    md_intr_restore(s);
+}
+
+/*
+ * A connection's peers have all gone. The server is nudged with the
+ * pulse of section 13.1, which is a hint and nothing more: it may be
+ * coalesced with another, and it may be lost, and neither costs
+ * anything because what says which connection it was is the list above.
+ *
+ * Only for a channel that collects, because a pulse to a server that
+ * has no way to act on it is a slot spent on nothing.
+ */
+void
+channel_conn_gone(struct channel *ch, struct connection *cn)
+{
+    (void)cn;
+
+    if (ch == NULL || !ch->c_reaping) {
+        return;
+    }
+
+    channel_pulse(ch, SYS_PULSE_PEER_GONE, 0);
+}
+
+bool
+channel_reaping(const struct channel *ch)
+{
+    return ch != NULL && ch->c_reaping && ch->c_owner != NULL;
+}
+
+/*
+ * Collect one, per M18 stage four. The cookie goes back because it is
+ * the server's own name for the connection and the only one it has:
+ * the kernel never looked at it, and this is the one moment it hands it
+ * back.
+ *
+ * One at a time, and the caller asks again. That is `waitpid` with
+ * WNOHANG and it is the same loop for the same reason: what is
+ * authoritative is the state, and the caller drains it rather than
+ * counting how many times it was told.
+ */
+sys_err_t
+channel_reap(struct channel *ch, bool enable, uint64_t *out)
+{
+    intr_state_t s = md_intr_disable();
+    struct connection *cn;
+    bool doomed;
+
+    if (enable) {
+        ch->c_reaping = true;
+    }
+
+    for (cn = ch->c_conns; cn != NULL; cn = cn->cn_next) {
+        if (!cn->cn_gone) {
+            continue;
+        }
+        *out = cn->cn_cookie;
+        cn->cn_gone = false;
+        doomed = cn->cn_refs == 0;
+        md_intr_restore(s);
+
+        /*
+         * Collected, so what was keeping it is gone. Freed here only
+         * if nothing else names it: the server may hold a handle of
+         * its own, and then the last close frees it as it always did.
+         * Outside the region either way, because destroying it unlinks
+         * it and the walk above is what that would be changing.
+         */
+        if (doomed) {
+            connection_destroy(cn);
+        }
+        return SYS_OK;
+    }
+
+    md_intr_restore(s);
+
+    return SYS_ERR_NO_ENT;
 }

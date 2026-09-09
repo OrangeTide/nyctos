@@ -281,7 +281,32 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_READ_ISSUE         9
 #define SYS_OP_WRITE_ISSUE       10
 
-#define SYS_OP_COUNT             27
+/*
+ * Collect a connection whose peers have all gone, per section 12.5.
+ * target names the channel and carries SYS_RIGHT_RECV, because this is
+ * the server's question about its own clients.
+ *
+ * This is the level half of what a death means to a server. The pulse
+ * of section 13.1 says something has happened and may be coalesced or
+ * lost; this says what, and keeps saying it until the server has
+ * collected it. A server that acts on the pulse alone is a server
+ * counting edges, and one that acts on this is draining a queue: the
+ * difference is the difference between `SIGCHLD` and `waitpid`, and it
+ * is why losing a pulse costs latency rather than a record.
+ *
+ * SYS_CHAN_REAP_ENABLE says this channel is one whose departed peers
+ * are kept for collecting. Without it a connection returns to its pool
+ * when its last handle closes, which is what a channel nobody collects
+ * on wants: keeping every connection anybody ever made would be a pool
+ * spent on servers that were never going to ask.
+ *
+ * Returns the cookie the connection was minted with, which is the
+ * server's own name for it, and SYS_ERR_NO_ENT when there is nothing to
+ * collect.
+ */
+#define SYS_OP_CHAN_REAP         27
+
+#define SYS_OP_COUNT             28
 
 /*
  * Per-entry flags, per section 17.5.
@@ -410,6 +435,14 @@ typedef uint64_t sys_thread_id_t;
  * places where blocking is not permitted.
  */
 #define SYS_PULSE_DEAD_OWNER    1       /* system; uses the reserved slots */
+
+/*
+ * A connection on this channel has lost its last peer, per M18 stage
+ * four. A hint and nothing more: what says which connection it was is
+ * SYS_OP_CHAN_REAP, so this may be coalesced or lost without costing
+ * anything. System, so a program cannot flood it out of the queue.
+ */
+#define SYS_PULSE_PEER_GONE     2
 #define SYS_PULSE_USER_BASE     1024
 
 typedef struct sys_pulse {
@@ -493,6 +526,17 @@ typedef struct sys_op_connect_args {
     uint32_t        _pad;
     sys_handle_t    out_handle; /* written by the kernel */
 } sys_op_connect_args_t;
+
+/*
+ * Argument structure for SYS_OP_CHAN_REAP. target names the channel.
+ */
+#define SYS_CHAN_REAP_ENABLE    (1u << 0)
+
+typedef struct sys_op_chan_reap_args {
+    uint32_t    flags;
+    uint32_t    _reserved;
+    uint64_t    out_cookie;     /* the collected connection's cookie */
+} sys_op_chan_reap_args_t;
 
 /* Argument structures for the three message operations. */
 typedef struct sys_op_send_args {

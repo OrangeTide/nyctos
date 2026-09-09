@@ -1025,9 +1025,9 @@ proc_set_pager(struct proc *p, sys_handle_t h)
      * protects, made reachable by something being reclaimed.
      */
     if (p->p_pager != NULL) {
-        connection_unref(p->p_pager);
+        connection_release(p->p_pager, p);
     }
-    connection_ref(obj);
+    connection_retain(obj, p);
     p->p_pager = obj;
 
     return SYS_OK;
@@ -1737,7 +1737,7 @@ proc_reap(struct proc *p)
      * closing the handle it came from is not what releases it.
      */
     if (p->p_pager != NULL) {
-        connection_unref(p->p_pager);
+        connection_release(p->p_pager, p);
         p->p_pager = NULL;
     }
 

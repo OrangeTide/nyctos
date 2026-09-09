@@ -5294,6 +5294,28 @@ ledger_ask(uint32_t op, ledger_reply_t *out)
 }
 
 /*
+ * A cookie per connection, which is the server's own per-connection
+ * name and the kernel never looks at it. Distinct here so that a server
+ * keying its records on the connection rather than the client would
+ * behave differently, which is what makes that policy falsifiable: with
+ * every connection named zero the two policies are the same policy.
+ */
+#define LEDGER_COOKIE_CHECK     1u
+#define LEDGER_COOKIE_HELD      2u
+#define LEDGER_COOKIE_PAIR      3u
+#define LEDGER_COOKIE_DIES      4u
+
+/*
+ * And one per client of the leak check, which needs them for the same
+ * reason: a record let go because its connection went is a record
+ * found by a name, and every connection named zero is one name.
+ */
+#define LEDGER_COOKIE_LEAK      8u
+
+/* Whether the server holds a record for this thread. Defined below. */
+static bool ledger_holds(sys_thread_id_t who);
+
+/*
  * Start one client, let it get where it is going, and end it the way
  * its argument says it ends.
  *
@@ -5303,7 +5325,7 @@ ledger_ask(uint32_t op, ledger_reply_t *out)
  */
 static void
 ledger_client(const char *how, bool ends_itself, uint32_t want_taken,
-  uint32_t want_notices)
+  uint32_t want_notices, uint64_t cookie)
 {
     struct proc *self = proc_current();
     struct handle_table *ht = &self->p_handles;
@@ -5318,6 +5340,7 @@ ledger_client(const char *how, bool ends_itself, uint32_t want_taken,
 
     memset(&cargs, 0, sizeof(cargs));
     cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    cargs.cookie = cookie;
     if (run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs,
       sizeof(cargs)) != SYS_OK) {
         panic("ledger: no connection for %s", how);
@@ -5423,7 +5446,9 @@ ledger_leak_checks(void)
     sys_ns_spec_t ns[2];
     struct channel *ch;
     struct child sc;
+    sys_thread_id_t mine;
     sys_handle_t give, keep;
+    uint32_t conns_before = connection_pool()->used;
     sys_id_t sid;
     uint64_t waited;
 
@@ -5483,10 +5508,25 @@ ledger_leak_checks(void)
 
     memset(&cargs, 0, sizeof(cargs));
     cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    cargs.cookie = LEDGER_COOKIE_CHECK;
     expect("a connection to it, for the check",
       run(SYS_OP_CHAN_CONNECT, h_ledger_recv, &cargs, sizeof(cargs)),
       SYS_OK);
     h_ledger_ask = cargs.out_handle;
+
+    /*
+     * And a record for the check itself, which is a client like any
+     * other and is the one that never goes away. Without it every
+     * record in this table belongs to a client that has left, and a
+     * server that let go of all of them whenever it collected anything
+     * would end at the same numbers as one that let go of the right
+     * ones.
+     */
+    mine = thread_id(thread_current());
+    ledger_ask(LEDGER_OP_TAKE, &rep);
+    if (!ledger_holds(mine)) {
+        panic("ledger: the server took no record for the check");
+    }
 
     /*
      * Three ways of dying, in the order that makes each one's state
@@ -5494,7 +5534,7 @@ ledger_leak_checks(void)
      * it has to be first for that to be a fact rather than a race: this
      * server has one receiver until that request arrives.
      */
-    ledger_client("hold", false, 1, 1);
+    ledger_client("hold", false, 2, 1, LEDGER_COOKIE_LEAK + 1);
 
     /*
      * And the server had nothing before it, and nothing after it
@@ -5503,13 +5543,13 @@ ledger_leak_checks(void)
      * none is held.
      */
     ledger_ask(LEDGER_OP_COUNT, &rep);
-    if (rep.lp_held != 0 || rep.lp_taken != 1) {
+    if (rep.lp_held != 1 || rep.lp_taken != 2) {
         panic("ledger: %u records held and %u ever taken after one client",
           (unsigned int)rep.lp_held, (unsigned int)rep.lp_taken);
     }
 
-    ledger_client("idle", false, 2, 1);
-    ledger_client("leave", true, 3, 1);
+    ledger_client("idle", false, 3, 1, LEDGER_COOKIE_LEAK + 2);
+    ledger_client("leave", true, 4, 1, LEDGER_COOKIE_LEAK + 3);
 
     /*
      * And one that gives its record back, which is the guard on
@@ -5517,35 +5557,97 @@ ledger_leak_checks(void)
      * server whose table only ever fills, and the whole measurement
      * would be of a number that cannot go down.
      */
-    ledger_client("polite", true, 4, 1);
+    ledger_client("polite", true, 5, 1, LEDGER_COOKIE_LEAK + 4);
 
     ledger_ask(LEDGER_OP_COUNT, &rep);
 
     /*
-     * Four clients took a record and one gave it back, so three are
-     * still held and every one of them belongs to a program that no
-     * longer exists. That is the leak, and it is asserted rather than
-     * printed, because the stages after this one are measured against
-     * it.
+     * Four clients took a record and none of them is still held. One
+     * gave its record back and one was announced dead inside a
+     * request, and the other two were never announced at all: those
+     * two are the leak stages one to three measured, and what closed
+     * it is the server collecting connections whose clients have gone.
+     *
+     * Asserted and not printed, because a stage that only printed this
+     * would pass for a server whose table had emptied for any reason.
      */
-    if (rep.lp_taken != 4) {
-        panic("ledger: %u records were ever taken, not 4",
+    if (rep.lp_taken != 5) {
+        panic("ledger: %u records were ever taken, not 5",
           (unsigned int)rep.lp_taken);
     }
-    if (rep.lp_held != 2) {
-        panic("ledger: %u records held after four clients, not 2",
+    if (rep.lp_held != 1) {
+        panic("ledger: %u records held after four clients, not 1",
           (unsigned int)rep.lp_held);
     }
 
+    /*
+     * And the one still held is the check's own. This is what says the
+     * server let go of the right records: collecting a connection
+     * releases what was taken on it, and a server that emptied its
+     * table on every collection would reach the count above and lose
+     * a client that is still here.
+     */
+    if (!ledger_holds(mine)) {
+        panic("ledger: the server let go of the check's own record");
+    }
+
+    /*
+     * Every client's connection, including the two whose records were
+     * already gone: what is collected is a connection whose peers have
+     * all left, and whether the server still had a record on it is a
+     * separate question it answers for itself.
+     */
+    if (rep.lp_reaped != 4) {
+        panic("ledger: %u connections collected, not 4",
+          (unsigned int)rep.lp_reaped);
+    }
+
+    /*
+     * And exactly the two nobody announced. A server that collected
+     * correctly and released too much would end at the same zero
+     * above, so this is what says which records collecting accounted
+     * for.
+     */
+    if (rep.lp_drained != 2) {
+        panic("ledger: collecting let go of %u records, not 2",
+          (unsigned int)rep.lp_drained);
+    }
+
+    /*
+     * The hints arrived and the server did nothing with them. That is
+     * the claim the level state exists to make: what it acted on is
+     * the connection it collected, and a hint lost would have cost it
+     * nothing.
+     */
+    if (rep.lp_hints != 4) {
+        panic("ledger: %u hints that a peer had gone, not 4",
+          (unsigned int)rep.lp_hints);
+    }
+
     cnprintf("    %-38s %u of %u ever taken\n",
-      "records held after every client left",
+      "records held, and the check holds one",
       (unsigned int)rep.lp_held, (unsigned int)rep.lp_taken);
     cnprintf("    %-38s %u\n", "records a notice released",
       (unsigned int)rep.lp_released);
+    cnprintf("    %-38s %u of %u connections\n",
+      "records collecting let go", (unsigned int)rep.lp_drained,
+      (unsigned int)rep.lp_reaped);
+    cnprintf("    %-38s %u, none acted on\n",
+      "hints that a client had gone", (unsigned int)rep.lp_hints);
     cnprintf("    %-38s %u of 3 deaths\n",
       "death notices the server saw", (unsigned int)rep.lp_notices);
     cnprintf("    %-38s %s\n", "the one it was told about",
       "the client killed inside a request");
+
+    /*
+     * The check's own connection goes back first, while the server is
+     * still alive and still collecting. Nothing asks it anything after
+     * this, so it never collects that one: it is kept, and what frees
+     * it is the server dying. Closing it after the kill would take the
+     * ordinary path and leave that half untested.
+     */
+    expect("giving the check's connection back",
+      handle_close(ht, h_ledger_ask), SYS_OK);
 
     sid = sc.c_proc->p_id;
     expect("ending the server", proc_kill(sc.c_proc, KILL_CODE), SYS_OK);
@@ -5555,8 +5657,6 @@ ledger_leak_checks(void)
 
     expect("giving the server's handle back", handle_close(ht, keep),
       SYS_OK);
-    expect("giving the check's connection back",
-      handle_close(ht, h_ledger_ask), SYS_OK);
     expect("giving the server's channel back",
       handle_close(ht, h_ledger_recv), SYS_OK);
 
@@ -5575,6 +5675,20 @@ ledger_leak_checks(void)
         }
         sched_yield();
     }
+
+    /*
+     * And the connection pool is where it started, per M18 stage four.
+     * A connection kept back for a server to collect is a slot out of a
+     * fixed pool, and one the server never collected is the same leak
+     * this stage closed, moved into the kernel. The four the clients
+     * used were collected; the check's own went with its handle, and
+     * anything still kept for this server went when the server did.
+     */
+    if (connection_pool()->used != conns_before) {
+        panic("ledger: %u connections in use, started with %u",
+          (unsigned int)connection_pool()->used,
+          (unsigned int)conns_before);
+    }
 }
 
 /*
@@ -5589,17 +5703,6 @@ ledger_leak_checks(void)
 static sys_handle_t h_ident_send;
 static sys_handle_t h_ident_hold;
 
-/*
- * A cookie per connection, which is the server's own per-connection
- * name and the kernel never looks at it. Distinct here so that a server
- * keying its records on the connection rather than the client would
- * behave differently, which is what makes that policy falsifiable: with
- * every connection named zero the two policies are the same policy.
- */
-#define LEDGER_COOKIE_CHECK     1u
-#define LEDGER_COOKIE_HELD      2u
-#define LEDGER_COOKIE_PAIR      3u
-#define LEDGER_COOKIE_DIES      4u
 static volatile uint32_t ident_took;
 static struct thread *ident_a;
 static struct thread *ident_b;

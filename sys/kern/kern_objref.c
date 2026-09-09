@@ -77,7 +77,7 @@ handle_object_retain(const struct handle_table *ht, uint32_t type,
     }
 
     if (type == SYS_OBJ_CONNECTION) {
-        connection_ref(obj);
+        connection_retain(obj, ht->ht_proc);
     }
 
     /*
@@ -162,7 +162,7 @@ handle_object_release(const struct handle_table *ht, uint32_t type,
     }
 
     if (type == SYS_OBJ_CONNECTION) {
-        connection_unref(obj);
+        connection_release(obj, ht->ht_proc);
     }
 
     /*

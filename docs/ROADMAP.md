@@ -10606,7 +10606,7 @@ serves stop existing.
   stack array is the bound on how many it can hold at once.
 
 **4. The client that goes quietly, and the state that outlasts the
-event.** *Planned.*
+event.** *Built.*
 
 - The case stage two measured as silent: a client holding a record that
   dies with no request outstanding. A server told nothing keeps that
@@ -10638,6 +10638,65 @@ event.** *Planned.*
   no record for it, and the boot's connection pool is back where it
   started. The record is released because the server drained, not
   because it was told.
+- *Settled, and the leak is closed.* The same in all four
+  configurations. Five clients took a record, four of them left, and the
+  server ends holding **one record, which belongs to the check** and is
+  the only client still there. Stage one measured three leaked records
+  and stage three brought it to two; this brings it to none. Four
+  connections were collected, **two records were let go because a
+  connection was collected**, and those two are exactly the deaths
+  nothing announced.
+- *And the hints were ignored on purpose.* Four pulses said a peer had
+  gone and the server counted them and did nothing else, because it
+  collects before answering anything. That is the claim the level state
+  exists to make: every record was released without a single hint being
+  acted on, so a hint coalesced or dropped costs latency and not a
+  record.
+- *What the kernel gained.* Three fields on a connection and two on a
+  channel. `cn_peers` counts the handles held by anything that is not
+  the channel's owner, so a server's own handle to a connection is not
+  mistaken for a client's; `cn_gone` is set when that count falls to
+  zero having been above it; `cn_next` puts the connection on the
+  channel's list. The channel holds that list and one bit saying it
+  collects. One new operation, `SYS_OP_CHAN_REAP`, needs `SYS_RIGHT_RECV`
+  on the channel, turns collecting on and hands back one departed
+  connection's cookie per call, and answers `SYS_ERR_NO_ENT` when there
+  are none. That is `waitpid` with `WNOHANG` and the loop against it is
+  the same loop for the same reason.
+- *Collecting is opt in, and it has to be.* A connection kept back is a
+  slot out of a pool of 32, so a kernel that kept every dead client's
+  connection for a server that never asks would have moved the leak
+  rather than closed it. A channel that never enables it behaves exactly
+  as it did, which is also what keeps the other checks' connection
+  counts where they were.
+- *And a channel whose owner dies stops collecting.* What is kept back
+  is kept for a server, so when the owner exits the channel drops the
+  bit and frees what it was holding. Without that the boot ends with
+  connections kept for a process that no longer exists: taking it out
+  panics with "3 connections in use, started with 2".
+- *The cookie is the server's own name for the client*, and the one
+  moment the kernel hands it back. Nothing else about the connection is
+  visible: the server learns that a connection it named is finished, and
+  what that meant is a question it answers out of its own table.
+- *Broken three ways.* Not collecting at all panics with "3 records held
+  after four clients, not 1". Freeing a departed peer's connection
+  instead of keeping it panics identically, because there is then
+  nothing to collect. And letting go of every record rather than the
+  collected connection's panics with "0 records held and 2 ever taken
+  after one client", which is the check's own record being taken from
+  it.
+- *Which is why the check is a client of its own.* Every other record in
+  that table belongs to a client that has left, so a server that emptied
+  its table whenever it collected anything would reach the same numbers
+  as one that let go of the right records. The check takes a record
+  first and asks for it by name at the end. That is the fifth milestone
+  running where the first version of a check could not fail on the thing
+  it was for, and the first one where it was caught before the stage was
+  written up.
+- *It costs the archive 4096 bytes*, 249856 to 253952, and nothing else:
+  the same 36 members, the same 24 threads and 13 processes, the same
+  98304 bytes of kernel stack, and the same compared kill counts. The
+  boot's connection high-water is 6 of 32.
 
 **5. A notice that never arrives, and a server that is right anyway.**
 *Planned.*

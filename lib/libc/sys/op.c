@@ -452,6 +452,23 @@ sys_proc_kill(sys_handle_t proc, int32_t code)
 }
 
 sys_err_t
+sys_chan_reap(sys_handle_t chan, bool enable, uint64_t *out_cookie)
+{
+    sys_op_chan_reap_args_t args;
+    sys_err_t err;
+
+    memset(&args, 0, sizeof(args));
+    args.flags = enable ? SYS_CHAN_REAP_ENABLE : 0;
+
+    err = submit(SYS_OP_CHAN_REAP, chan, &args, sizeof(args));
+    if (err == SYS_OK && out_cookie != NULL) {
+        *out_cookie = args.out_cookie;
+    }
+
+    return err;
+}
+
+sys_err_t
 sys_pulse_send(sys_handle_t chan, const sys_pulse_t *pulse)
 {
     sys_op_pulse_args_t args;

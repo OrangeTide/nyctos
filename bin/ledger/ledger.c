@@ -49,6 +49,14 @@
 
 struct record {
     sys_thread_id_t     owner;
+
+    /*
+     * The connection the request arrived on, which is what says the
+     * client is gone after nobody said anything. A record is keyed on
+     * the client and not on this, per stage three: two clients may
+     * share a connection, and one of them dying does not end it.
+     */
+    uint64_t            conn;
     int                 taken;
 };
 
@@ -60,6 +68,13 @@ static uint32_t notices;
 
 /* Records released because a notice named their client. */
 static uint32_t released;
+
+/* Connections collected, and records let go because one was. */
+static uint32_t reaped;
+static uint32_t drained;
+
+/* Hints that a peer has gone, counted and acted on in no other way. */
+static uint32_t hints;
 
 /*
  * Release the record belonging to the client the notice names, per M18
@@ -93,6 +108,51 @@ release_for(uint32_t tag)
 
 /* The channel, read by both threads and written before the second exists. */
 static sys_handle_t chan;
+
+/*
+ * Let go of every record taken on a connection whose peers have all
+ * gone, per M18 stage four.
+ *
+ * Every record, and not one: a connection is not a client, and two
+ * clients that shared one are both gone when it is. That is the same
+ * fact stage three used from the other side, where one of two clients
+ * on a connection died and the other kept its record.
+ */
+static void
+release_on(uint64_t conn)
+{
+    uint32_t i;
+
+    for (i = 0; i < LEDGER_RECORDS; i++) {
+        if (records[i].taken && records[i].conn == conn) {
+            records[i].taken = 0;
+            records[i].owner = 0;
+            records[i].conn = 0;
+            drained++;
+        }
+    }
+}
+
+/*
+ * Collect what has gone, per M18 stage four.
+ *
+ * Called before every request is answered rather than when a pulse
+ * arrives, which is the whole point of the arrangement: the pulse is a
+ * hint that may be coalesced or lost, and this reads the state behind
+ * it. A server that only drained when told would be as fragile as one
+ * that acted on the notice directly, and this one is correct with every
+ * hint thrown away.
+ */
+static void
+drain(void)
+{
+    uint64_t conn;
+
+    while (sys_chan_reap(chan, false, &conn) == SYS_OK) {
+        reaped++;
+        release_on(conn);
+    }
+}
 
 /*
  * A stack for each serving thread. Its own memory, because a thread's
@@ -133,7 +193,7 @@ held(void)
  * client that never comes back, not a client that comes back often.
  */
 static struct record *
-record_for(sys_thread_id_t who)
+record_for(sys_thread_id_t who, uint64_t conn)
 {
     uint32_t i;
 
@@ -147,6 +207,7 @@ record_for(sys_thread_id_t who)
         if (!records[i].taken) {
             records[i].taken = 1;
             records[i].owner = who;
+            records[i].conn = conn;
             taken_ever++;
             return &records[i];
         }
@@ -193,6 +254,16 @@ serve(void *arg)
                 notices++;
                 release_for(p->value);
             }
+
+            /*
+             * Counted and nothing else, deliberately. The hint says
+             * something is worth collecting and this server collects
+             * before every answer anyway, so acting on it here would
+             * hide whether it needs the hint at all.
+             */
+            if (p->code == SYS_PULSE_PEER_GONE) {
+                hints++;
+            }
             continue;
         }
 
@@ -217,7 +288,7 @@ serve(void *arg)
         if (req != NULL) {
             switch (req->lr_op) {
             case LEDGER_OP_TAKE:
-                if (record_for(peer) == NULL) {
+                if (record_for(peer, cookie) == NULL) {
                     rep->lp_status = SYS_ERR_NO_MEMORY;
                 }
                 break;
@@ -263,7 +334,7 @@ serve(void *arg)
                  * which is the leak this server exists to measure,
                  * arrived at from the other end.
                  */
-                if (record_for(peer) == NULL) {
+                if (record_for(peer, cookie) == NULL) {
                     rep->lp_status = SYS_ERR_NO_MEMORY;
                     break;
                 }
@@ -278,10 +349,11 @@ serve(void *arg)
             }
 
             case LEDGER_OP_DROP:
-                r = record_for(peer);
+                r = record_for(peer, cookie);
                 if (r != NULL) {
                     r->taken = 0;
                     r->owner = 0;
+                    r->conn = 0;
                 }
                 break;
 
@@ -308,10 +380,15 @@ serve(void *arg)
             }
         }
 
+        drain();
+
         rep->lp_held = held();
         rep->lp_taken = taken_ever;
         rep->lp_notices = notices;
         rep->lp_released = released;
+        rep->lp_reaped = reaped;
+        rep->lp_drained = drained;
+        rep->lp_hints = hints;
 
         if (sys_msg_reply(peer, &reply) != SYS_OK) {
             sys_thread_exit(3);
@@ -333,6 +410,16 @@ main(int argc, char **argv)
         return 1;
     }
     hold_never = never;
+
+    /*
+     * This channel keeps a connection whose clients have all gone,
+     * rather than freeing it, so that there is something left to
+     * collect. Said once and it stays said: what it costs is a
+     * connection slot per departed client until this server gets
+     * around to asking, and what it buys is a server that is right
+     * about who is still there without having been told.
+     */
+    (void)sys_chan_reap(chan, true, NULL);
 
     /*
      * The first thread is a serving thread like any other. Holding a

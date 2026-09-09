@@ -25,6 +25,8 @@
 #ifndef _SYS_CHANNEL_H_
 #define _SYS_CHANNEL_H_
 
+struct connection;
+
 #include <sys/config.h>
 #include <sys/op.h>
 #include <sys/config.h>
@@ -57,6 +59,15 @@ struct channel {
      * the channel to the thread that is inside a request on it.
      */
     struct thread  *c_serving;
+
+    /*
+     * The connections minted on this channel, and whether their
+     * departed peers are kept for the server to collect, per M18 stage
+     * four. Off by default: keeping every connection anybody ever made
+     * would spend the pool on servers that were never going to ask.
+     */
+    struct connection *c_conns;
+    bool            c_reaping;
 
     /*
      * Pulses waiting to be collected, per section 13.1, oldest first.
@@ -171,5 +182,18 @@ void channel_gave_up(const struct thread *t);
  * a request. A server that exits without replying is not serving.
  */
 void channel_thread_exited(struct thread *t);
+
+/*
+ * Collect a connection on this channel whose peers have all gone,
+ * writing the cookie it was minted with. SYS_ERR_NO_ENT when there is
+ * none. Enabling is what makes departed peers be kept at all.
+ */
+sys_err_t channel_reap(struct channel *ch, bool enable, uint64_t *out);
+
+/* Link and unlink a connection, which the connection code calls. */
+void channel_conn_add(struct channel *ch, struct connection *cn);
+void channel_conn_gone(struct channel *ch, struct connection *cn);
+void channel_conn_remove(struct channel *ch, struct connection *cn);
+bool channel_reaping(const struct channel *ch);
 
 #endif /* _SYS_CHANNEL_H_ */

@@ -27,9 +27,11 @@
 #include <sys/op.h>
 #include <sys/pool.h>
 
+#include <stdbool.h>
 #include <stdint.h>
 
 struct channel;
+struct proc;
 
 struct connection {
     sys_id_t         cn_id;
@@ -46,8 +48,28 @@ struct connection {
      * the last one closes, which is the rule stage one gave processes
      * and threads and did not give this: a connection is named by
      * nothing else, so a handle going is the whole of its lifetime.
+     *
+     * Unless the channel behind it collects its departed peers, per
+     * M18 stage four, in which case the last close is not the end: the
+     * connection is kept, marked gone, and returned to its pool when
+     * the server collects it.
      */
     uint32_t         cn_refs;
+
+    /*
+     * Handles held by anything but the process that owns the channel.
+     * That is what a peer is: the server minting a handle to a
+     * connection of its own is not a client of it, and a connection
+     * whose peers have all gone is one nobody is going to send on
+     * again.
+     */
+    uint32_t         cn_peers;
+
+    /* Whether every peer handle has closed, having once existed. */
+    bool             cn_gone;
+
+    /* The channel's list of connections, for collecting them. */
+    struct connection *cn_next;
 };
 
 struct connection *connection_create(struct channel *ch, uint64_t cookie);
@@ -61,10 +83,18 @@ struct proc *connection_owner(const struct connection *cn);
 void connection_destroy(struct connection *cn);
 
 /*
- * A handle naming this connection was made, or destroyed. The second
- * one returns it to its pool if that was the last.
+ * A reference naming this connection was taken, or dropped, and by
+ * whom. A connection is named by handles and by nothing else, so the
+ * last drop is the whole of its lifetime, unless the channel behind it
+ * collects its departed peers. Who is holding it matters because a
+ * handle in the server's own table is not a client. See the
+ * definitions.
  */
-void connection_ref(struct connection *cn);
-void connection_unref(struct connection *cn);
+void connection_retain(struct connection *cn, const struct proc *by);
+void connection_release(struct connection *cn, const struct proc *by);
+
+/* Whether every peer handle has closed, having once existed. */
+bool connection_gone(const struct connection *cn);
+uint64_t connection_cookie(const struct connection *cn);
 
 #endif /* _SYS_CONNECTION_H_ */
