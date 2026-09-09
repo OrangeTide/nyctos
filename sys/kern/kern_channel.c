@@ -95,6 +95,9 @@ sender_survey(struct channel *ch, struct thread **lowest)
 uint64_t channel_senders_refused;
 uint64_t channel_senders_displaced;
 
+/* Departed peers a server collected. */
+uint64_t channel_peers_collected;
+
 /*
  * How many senders this channel will hold, per M18 stage six and
  * section 12.1. Nothing is evicted here: a depth lowered under a queue
@@ -1647,12 +1650,13 @@ channel_thread_cancelled(struct thread *t)
 }
 
 /*
- * Pulses that were enqueued nowhere, for M18 stage five. A count rather
- * than a flag because it is the boot's, not a channel's: the receiver
- * is told that it missed something and does not care how much, and this
- * is here so that a check can say the queue really did overflow.
+ * Pulses that did not fit, for M18 stage five. Counts rather than
+ * flags because these are the boot's, not a channel's: a receiver is
+ * told that it missed something and does not care how much, and these
+ * are here so that a check can say which way the queue overflowed.
  */
-uint64_t channel_pulses_lost;
+uint64_t channel_pulses_evicted;
+uint64_t channel_pulses_dropped;
 
 /*
  * Take the oldest pulse of one kind out of the queue, and say whether
@@ -1697,7 +1701,7 @@ pulse_drop_oldest(struct channel *ch, bool users)
             ch->c_pulse_users--;
         }
         ch->c_pulse_lost = true;
-        channel_pulses_lost++;
+        channel_pulses_evicted++;
 
         return true;
     }
@@ -1771,7 +1775,7 @@ channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
          */
         if (!pulse_drop_oldest(ch, true) && !pulse_drop_oldest(ch, false)) {
             ch->c_pulse_lost = true;
-            channel_pulses_lost++;
+            channel_pulses_dropped++;
             md_intr_restore(s);
             return;
         }
@@ -2206,6 +2210,7 @@ channel_reap(struct channel *ch, bool enable, uint64_t *out)
         }
         cookie = cn->cn_cookie;
         cn->cn_gone = false;
+        channel_peers_collected++;
         md_intr_restore(s);
 
         /*

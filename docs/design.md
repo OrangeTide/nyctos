@@ -1104,7 +1104,7 @@ Three properties follow, and each is load-bearing elsewhere.
 
 **A sender is a thread the kernel can see, name, prioritise, and release.** A buffered message is anonymous data; a blocked sender is a scheduling entity. Priority ordering of the queue (below), donation (section 12.3), and release on server death (section 12.5) are all only possible because the queue holds threads.
 
-**Flow control needs no mechanism.** A client cannot outrun a server, because the client is stopped for the duration of every request it makes. A system where a fast client can pile work on a slow server needs a policy for the overflow; there is no overflow here to have a policy about.
+**Flow control needs no mechanism, and admission does.** A client cannot outrun a server, because the client is stopped for the duration of every request it makes: there is no buffered work to have an overflow policy about. What can still pile up is clients. Every queued sender is a thread, so a server that falls behind accumulates threads until the machine has no more of them, and a client joining a backlog cannot tell that from being served. The queue therefore takes a depth, below.
 
 **The cost of a request is paid by whoever makes it.** The server's work runs at the client's priority, in a rendezvous the client is blocked in, so a client cannot push cost onto a server without accounting for it.
 
@@ -1148,11 +1148,27 @@ In both cases the server then does its work and calls `sys_msg_reply()`, which c
 
 **Threads blocked in receive are in no particular order.** They are interchangeable by construction, since a receiving thread has no message and no client, so any of them will do and the cheapest choice is correct.
 
+#### How deep the queue is
+
+**A server says how many senders its channel will hold.** `sys_chan_listen()` sets a depth and needs `SYS_RIGHT_RECV`, so only a side that can receive can bound the queue that feeds it: a client able to set the depth could set it to nothing and turn away every other client of a service it merely holds a send handle to. A channel nobody bounds queues without limit, which is what every channel did before this existed.
+
+**This is `listen` and its backlog, and the analogy stops at the depth.** There is no accept here. A send is the connect and the request in one, so joining the queue is connecting, and a client taken off the queue afterwards has not been refused a connection: it made one and was ended before its first request was answered. That is a close after accept rather than a refusal, and saying so is what keeps the rule to one rule.
+
+**A send always joins the queue, and while the queue is over depth its lowest-priority sender is taken off and failed with `SYS_ERR_WOULDBLOCK`.** When that is the arriving client the effect is a refusal it gets at once; when it is a client already waiting the effect is the close after accept. There is no "would this fit" asked before the insert and answered again after it, and there is one error rather than two, because a client cannot usefully act differently on never admitted and admitted then displaced: in both cases nothing happened, nothing was lent, and the server never saw it. The two errors of section 12.5 differ because what the *server* learns differs, and here it learns nothing either way.
+
+**The lowest sender is found by looking, not taken from the end of the queue.** The queue is ordered when a sender is inserted and not afterwards, and section 12.3's chain raises a queued sender where it stands, so the last in line is not always the lowest in priority. Taking the end would displace exactly the client the chain had just raised. Of two that are equally low, the one that has been waiting less is the one that goes, so arrival order still decides inside a level.
+
+**Displacing is cheap, which is why the rule can be this shape.** A queued sender has lent nothing and donated nothing: the buffer is handed over when a server takes the message, and priority is donated at the rendezvous. Taking one off the queue and waking it is the deadline path of section 14.3 without the timer.
+
+**A send that blocks until a slot frees was considered and rejected.** That is a queue for the queue: more state, and a client that learns nothing until it has already waited. Failing fast is the point of a depth, and a mechanism whose refusal arrives late is not one.
+
 #### Timeouts and cancellation
 
 `sys_msg_send()` takes an absolute deadline, per section 14.3. Expiry, and cancellation under section 10.5, act on the two blocked states differently, and the difference has to be stated because the server's view differs.
 
 **A SEND-blocked client is removed from the queue and the server never learns it existed.** Nothing was delivered, nothing was allocated on its behalf, and the client returns `SYS_ERR_TIMEOUT` or `SYS_ERR_CANCELED`. This case is clean.
+
+**And there is a third way a queued send can end, which is neither of those.** A client displaced by somebody who outranked it is woken by another client's arrival rather than by its own deadline or its own death, and returns `SYS_ERR_WOULDBLOCK`. It is clean for the same reasons: it was never received, so there is nothing half done to unwind, and the queue afterwards is exactly the survivors.
 
 **A REPLY-blocked client abandons work already in progress.** The client is released with the same error, but the server is still holding the message and will reply to a thread that is no longer waiting. That reply returns `SYS_ERR_STALE` (section 12.2), which is how the server discovers the outcome. Any resources the server committed to the request are released on that path, in the same place it would release them on a normal reply.
 
@@ -1251,15 +1267,41 @@ A rendezvous has two sides and they fail differently, because they are waiting o
 
 Both directions are therefore covered, and neither depends on a timeout. This matters most during cohort restart (section 18.2), where a supervisor is deliberately destroying processes that may have clients blocked on them and requires those clients to be released promptly rather than at the expiry of whatever deadline each happened to pass.
 
+#### What a server is told, and what it is not
+
+The paragraphs above say what is announced. Measured against every way a client can stop being there, that is one case in five.
+
+| How the client went | What the server is told |
+| ---------------------------------------------- | ------------------------- |
+| killed inside a request the server is holding | `SYS_PULSE_DEAD_OWNER` |
+| killed with nothing outstanding | nothing |
+| returned from `main` | nothing |
+| killed while queued, never received | nothing |
+| gave up at its deadline, server holding it | nothing, then a refused reply |
+
+**That is the specification working, not failing.** A server is told about the client whose request it is holding, because that is the one it has state for and the one whose reply it would otherwise wait to fail. Every other way a client can go leaves the server no worse off than it was, unless the server keeps something across requests, which is exactly what a server with per-client state does.
+
+**So a notice is not enough to keep a server's books, and no improvement to its delivery would make it enough.** It names a thread where the records are per client, it is one edge with nothing behind it, and four departures in five raise no edge at all. What a server needs is not a more reliable event but a fact it can go and read.
+
+#### The connection is that fact
+
+**A connection knows when its peers have gone.** It counts the handles held by processes other than the one that owns the channel, so a handle in the server's own table is not mistaken for a client's, and when that count falls to zero having been above it the connection is marked. Nothing is allocated for this: the connection already exists, already lives as long as the client's handle on it, and already carries the cookie the server named it with.
+
+**A server that wants those connections says so, and then collects them.** `sys_chan_listen()` is not this; `sys_chan_reap()` is. The first call turns collecting on for a channel, which needs `SYS_RIGHT_RECV`, and every call returns the cookie of one connection whose peers have all gone and lets it go, answering `SYS_ERR_NO_ENT` when there are none. A server drains it in a loop and does not count how many times it was told.
+
+**That is `SIGCHLD` and `waitpid`, and it is the same shape for the same reason.** The signal coalesces and can be lost, and the idiom that works is a drain loop against the table, because the authoritative thing is the entry and the signal is only a hint that it is worth looking. `SYS_PULSE_PEER_GONE` is the hint; the kept connection is the entry; losing the hint costs latency and not a record.
+
+**Collecting is something a channel opts into, and the cost of it is a pool slot per departed client.** A connection kept for a server that never asks is a leak in a fixed pool, so a channel that has not asked frees a connection when its last handle closes, exactly as before. A channel whose owner terminates stops collecting and frees what it was holding, because what is kept is kept for a server and there is no longer one.
+
 
 **A channel belongs to whoever may receive on it**, and not to whoever created the object. That is what section 12.5 needs: the process whose death leaves a client with nobody to answer it is the one that was going to answer, and it is also the only workable rule, because a program learns its handles at spawn and so a channel it receives on exists before it does. Ownership follows the right both ways: putting a handle carrying `SYS_RIGHT_RECV` into a table makes that process the owner, and dropping the last one leaves the channel owned by nobody. Section 24.5 already described the arrangement, which is root creating a channel and handing the receive end to a server.
 
 **And a channel stops naming an owner that has terminated.** The pointer is interesting only while that process is alive; leaving it would have it name a freed slot, or a reused one, and no generation protects a pointer. The channel itself outlives the process. Anything still holding a receive handle can still receive on it, and destroying a channel with its owner is the teardown of section 18.2.
 
-**A connection returns to its pool when its last handle closes.** It is named by handles and by nothing else, so that is the whole of its lifetime. Nothing freed one before: a connection was destroyed only when the handle it was going into could not be made, so the pool counted connections ever created rather than connections open at once, which is not the bound section 25.2 says it is.
+**A connection returns to its pool when its last handle closes**, unless the channel behind it collects departed peers, in which case the last close is what makes it collectable and the server's collecting it is what frees it. It is named by handles and by nothing else, so that is the whole of its lifetime. Nothing freed one before: a connection was destroyed only when the handle it was going into could not be made, so the pool counted connections ever created rather than connections open at once, which is not the bound section 25.2 says it is.
 
 That makes every other way of naming a connection a pointer with nothing behind it. A process keeps its pager as an object rather than a handle, because the kernel is what sends a fault message and does not send one from a table, so it holds a reference of its own and gives it back when it is reaped. The pattern is worth naming: reclaiming an object turns every unreferenced pointer to it into a hazard at once, and a generation does not help, because a generation protects an identifier.
-**A server learns nothing when a client merely closes a connection.** Destroying the connection object is a local operation in the client's table and tells the server nothing, so per-connection state is reclaimed on an explicit protocol close (section 25.2) and not before. `PROPOSALS.md` describes what changing that would cost, and section 25.7 describes the shape that avoids needing to.
+**A server learns that a client closed a connection, if it asked to.** This used to say it learned nothing, and that a server therefore had to reclaim per-connection state on an explicit protocol close and not before. That is still the cheap path and still what a client should do; what has changed is that a client which never gets to say goodbye no longer costs the server a record for ever. Closing the last handle is a local operation in the client's table, and it now leaves a mark on an object the server can read.
 
 ### 12.6 The Shape of a Server
 
@@ -1308,17 +1350,23 @@ Pulses are cheap. Eight bytes, no rendezvous, no address-space work, a bounded e
 What needs specifying is not cost but **capacity**. Under static pools a channel's pulse queue has fixed depth, so a policy is required when it fills. The queue is divided:
 
 * **User pulses** occupy the general region. When it is full, the oldest is dropped and an overflow flag is set on the channel, which the receiver observes on its next receive.
-* **System pulses** (`SYS_PULSE_DEAD_OWNER`) occupy a reserved region that user pulses cannot displace.
+* **System pulses** occupy a reserved region that user pulses cannot displace. There are two. `SYS_PULSE_DEAD_OWNER` says a client whose request this server is holding has died. `SYS_PULSE_PEER_GONE` says a connection on this channel has no client handles left and is worth collecting, per section 12.5.
 
 
 **A pulse reaches a channel through a connection**, which is how a message reaches one. A channel handle is the right to receive on it, so a program able to name a channel in order to pulse it could pulse any channel it could name. A program may send only user codes; one below `SYS_PULSE_USER_BASE` is refused rather than renumbered, because the reserved slots are kept from exactly the program that would like to fill them.
 
-**The pulse dropped is the oldest user one, wherever it sits.** A system pulse may be in front of it, and taking the head instead would be user pulses displacing a death notice by a longer route. One queue with a reservation rather than two, so that a server learns of a death in the order it happened rather than ahead of or behind everything around it.
+**The pulse dropped at the cap is the oldest user one, wherever it sits.** A system pulse may be in front of it, and taking the head instead would be user pulses displacing a death notice by a longer route. One queue with a reservation rather than two, so that a server learns of a death in the order it happened rather than ahead of or behind everything around it.
 
 **A pulse is collected before a message.** A notification is about something that has already happened and should not wait behind work. It cannot starve messages, because the queue is bounded and a receiver empties it faster than anything can fill it.
 
 **A receiver woken for a pulse asks again rather than assuming.** The wake and the taking are two steps, and another receiver can run between them, so a receiver that read its staging message on being woken would be handed whatever the last message on that channel was. What tells a pulse wake from a sender's is that a sender fills in the client identifier before readying anybody and a pulse does not.
-The reservation is required for correctness, not politeness. A dropped death notification leaks the resources of a dead client permanently, and a process that floods a channel with user pulses must not be able to cause that.
+**A hint is enqueued once and not once per departure.** `SYS_PULSE_PEER_GONE` carries no connection, because it says only that there is something to collect and the channel's own list says what. A second one queued behind the first would tell the server nothing it does not already know and would spend a reserved slot saying it, so a channel that already has one queued enqueues no more.
+
+**A full queue gives up the pulse it can most afford to lose, and never the machine.** There is an order. A user pulse goes first, which is the reservation honoured at the full mark as well as at the cap. Then a hint, because what it announces is on the connection and stays there. Then the arriving pulse, whatever it is, because the ones already queued are the ones the receiver is about to take and spending a slot from them to say the same kind of thing again would lose news that is already on its way. Whichever happens, the channel remembers that something was lost and the next receive says so.
+
+**The reservation is still required, and what it is required for has changed.** It was correctness. A dropped death notification leaked the resources of a dead client for good, so a process that flooded a channel with user pulses could make a server leak, and a system pulse that found no slot at all halted the machine rather than being absorbed. Section 12.5 now keeps that fact on the connection as well, so a lost notice costs promptness rather than a record, and the halt is gone. What the reservation buys is that a server hears about a death without waiting for its next request, and what it no longer has to buy is the record itself.
+
+**One case is not covered by the level state, and it is the reason the reservation is still worth the two slots.** A notice names a thread and a connection can carry more than one, so a client thread that dies beside a live sibling on the same connection leaves that connection in use and the notice is the only thing that says the thread has gone. Every client that goes away entirely is covered, because its connection goes with it.
 
 Pulses are delivered to a channel and collected by `sys_msg_recv()`, which reports through a flag whether it received a message or a pulse, so a server has one receive point for both.
 
@@ -3161,9 +3209,29 @@ sys_err_t sys_chan_create(sys_handle_t *out_chan);
 sys_err_t sys_chan_connect(sys_handle_t chan, uint64_t cookie,
                            uint32_t rights, sys_handle_t *out_conn);
 
+/* How many senders this channel will hold before it turns one away, which is
+ * listen and its backlog. Requires SYS_RIGHT_RECV: bounding the queue that
+ * feeds a server is the server's business. A send always joins the queue, and
+ * while the queue is over depth its lowest-priority sender is taken off and
+ * failed with SYS_ERR_WOULDBLOCK, which is a refusal when it is the arriving
+ * client and a close after accept when it is one already waiting. A channel
+ * nobody bounds queues without limit. Section 12.1. */
+sys_err_t sys_chan_listen(sys_handle_t chan, uint32_t depth);
+
+/* Collect one connection on this channel whose client handles have all
+ * closed, returning the cookie it was minted with, or SYS_ERR_NO_ENT when
+ * there are none. Requires SYS_RIGHT_RECV. The first call with enable set
+ * says this channel keeps such connections rather than freeing them; without
+ * it a connection returns to its pool at its last close. SYS_PULSE_PEER_GONE
+ * is a hint that this is worth calling and may be coalesced or lost, so a
+ * server drains this rather than counting pulses. Section 12.5. */
+sys_err_t sys_chan_reap(sys_handle_t chan, bool enable, uint64_t *out_cookie);
+
 /* Blocks until a server receives and replies. Sender queues are ordered by
  * sender priority, highest first, ties by arrival. `target` names a
- * connection, or a bare channel handle carrying SYS_RIGHT_SEND. */
+ * connection, or a bare channel handle carrying SYS_RIGHT_SEND. Returns
+ * SYS_ERR_WOULDBLOCK if a bounded queue would not hold it. */
+
 sys_err_t sys_msg_send(sys_handle_t target, const sys_ipc_msg_t *send,
                        sys_ipc_msg_t *reply, sys_deadline_t deadline);
 
@@ -3185,6 +3253,7 @@ sys_err_t sys_msg_reply(sys_thread_id_t client, const sys_ipc_msg_t *reply);
 /* ========================================================================== */
 
 #define SYS_PULSE_DEAD_OWNER    1   /* system pulse; uses reserved slots */
+#define SYS_PULSE_PEER_GONE     2   /* system pulse; a hint, see sys_chan_reap */
 #define SYS_PULSE_USER_BASE  1024
 
 /* For SYS_PULSE_DEAD_OWNER the value is SYS_ID_TAG32 of the departed thread's
@@ -3199,11 +3268,11 @@ typedef struct sys_pulse {
     uint32_t  value;
 } sys_pulse_t;
 
-/* Never blocks. Safe from contexts where blocking is not permitted. User
- * pulses may be dropped when the queue fills, setting SYS_MSG_PULSE_LOST on
- * the next receive; system pulses use reserved slots that user pulses cannot
- * displace, because a lost death notification leaks resources permanently.
- * See section 13.1. */
+/* Never blocks. Safe from contexts where blocking is not permitted. A pulse
+ * may be dropped when the queue fills, setting SYS_MSG_PULSE_LOST on the next
+ * receive; system pulses use reserved slots that user pulses cannot displace,
+ * and a full queue gives up a user pulse, then a hint, then the arriving
+ * pulse. See section 13.1. */
 sys_err_t sys_pulse_send(sys_handle_t chan, const sys_pulse_t *pulse);
 
 /* ========================================================================== */

@@ -10929,18 +10929,54 @@ event.** *Built.*
   next.
 
 **7. What it cost, and sections 12.5, 13.1 and 12.1 written around it.**
-*Planned.*
+*Built.*
 
-- *Check.* The figures as counts: records leaked before and after,
-  notices by kind of death, notices deliberately lost, senders refused,
-  and the pool occupancy at the end of the boot.
-- The sections say what a server actually learns, when it learns
-  nothing, what it has to do for itself, and what it may refuse. Section
-  13.1 loses the claim that a dropped notice leaks permanently, because
-  after stage four it does not. Section 12.1 gains the depth, the rule
-  that a full queue displaces its lowest priority rather than its newest
-  arrival, and the third way a queued send can end: not answered, not
-  timed out, but displaced by somebody who outranked it.
+- *Check.* Three lines in the compared part of the boot report, which is
+  the assertion: a diff against a file per tier. Counts and nothing
+  else, per M9, because every one of them is a property of this kernel
+  and not of the host it ran on.
+
+  ```
+    peers: 8 collected, pulses 1 dropped and 11 evicted
+    senders: 2 refused, 2 displaced
+    connections: 7 in use, 12 at once
+  ```
+
+- *And they are the same numbers at both tiers and on both ports*, which
+  is worth saying because nothing else in this report is. Threads,
+  stacks and remapped pages all differ by tier; what a server outliving
+  its clients costs does not, because none of it is memory.
+- *What the three lines say.* Eight departed clients were collected by
+  the servers that kept records for them. One pulse was dropped for want
+  of any slot, which is the death notice stage five loses on purpose,
+  and eleven were evicted to make room, which is the user-pulse
+  behaviour this channel has always had plus the one hint stage five's
+  review displaced. Two senders were refused at a full queue and two
+  were displaced by somebody who outranked them. The connection pool
+  ends where every boot before this one ended and reached twelve of
+  thirty-two on the way.
+- *The two pulse counts are separate and were not at first.* One number
+  covering both said twelve, of which eleven were the ordinary
+  user-pulse eviction that predates this milestone, so the number
+  stage five is about was invisible inside it. Counted apart, the
+  stages assert the right one: stage five's first case is a drop and
+  its second is an eviction.
+- *Sections 12.5, 13.1 and 12.1 now say what was built.* Section 12.5
+  gains the table of five deaths and what a server is told about each,
+  the argument that no improvement to the notice would make it enough,
+  and the connection as the fact a server reads instead. Section 13.1
+  loses the claim that a dropped notice leaks a dead client's resources
+  permanently, gains the drop order and the coalescing of the hint, and
+  keeps the reservation for what it now buys, which is promptness and
+  the one case the level state does not cover. Section 12.1 gains the
+  depth, the rule that a full queue gives up its lowest-priority sender
+  rather than its newest arrival, why the lowest is found by looking,
+  and the third way a queued send can end.
+- *And two claims in the specification were false and are now marked as
+  such rather than quietly edited.* Section 13.1's reservation was for
+  correctness and is now for promptness. Section 12.5 said a server
+  learns nothing when a client closes a connection, which was the
+  premise the milestone set out to test and is the thing it changed.
 
 *Done when* a server holding a record per client ends the boot holding
 records for exactly the clients still alive, on both ports and at both

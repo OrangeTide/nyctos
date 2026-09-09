@@ -116,8 +116,15 @@ extern uint64_t channel_gave_up_working;
  */
 extern uint64_t channel_stale_clients;
 
-/* Pulses dropped for want of a slot, per M18 stage five. */
-extern uint64_t channel_pulses_lost;
+/*
+ * Pulses that did not fit, counted by which of the two happened. One
+ * queued pulse displaced to make room for an arriving one, which is
+ * what a channel has always done to a user pulse at the cap; and one
+ * arriving pulse with nowhere to go at all, which halted the machine
+ * before M18 stage five.
+ */
+extern uint64_t channel_pulses_evicted;
+extern uint64_t channel_pulses_dropped;
 
 /*
  * Senders a bounded queue would not hold, per M18 stage six. Counted
@@ -128,6 +135,9 @@ extern uint64_t channel_pulses_lost;
  */
 extern uint64_t channel_senders_refused;
 extern uint64_t channel_senders_displaced;
+
+/* Departed peers a server collected, per M18 stage four. */
+extern uint64_t channel_peers_collected;
 
 
 /*

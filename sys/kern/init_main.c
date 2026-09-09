@@ -6213,7 +6213,7 @@ notice_loss_checks(void)
     const char *argv[2];
     sys_thread_id_t d_id;
     sys_handle_t give, keep, akeep;
-    uint64_t lost_before, waited;
+    uint64_t dropped_before, evicted_before, waited;
     sys_id_t sid;
     int32_t code;
     uint32_t i;
@@ -6321,7 +6321,8 @@ notice_loss_checks(void)
      * server is a receive each and nothing else. What matters about
      * them is that they are there.
      */
-    lost_before = channel_pulses_lost;
+    dropped_before = channel_pulses_dropped;
+    evicted_before = channel_pulses_evicted;
 
     sched_defer();
     for (i = 0; i < SYS_PULSE_SLOTS; i++) {
@@ -6332,9 +6333,12 @@ notice_loss_checks(void)
     }
     sched_undefer();
 
-    if (channel_pulses_lost != lost_before + 1) {
-        panic("lost: %lu pulses dropped, not one",
-          (unsigned long)(channel_pulses_lost - lost_before));
+    if (channel_pulses_dropped != dropped_before + 1 ||
+      channel_pulses_evicted != evicted_before) {
+        panic("lost: %lu pulses dropped and %lu evicted, not one and "
+          "none",
+          (unsigned long)(channel_pulses_dropped - dropped_before),
+          (unsigned long)(channel_pulses_evicted - evicted_before));
     }
 
     code = child_join(&c, JOIN_MS);
@@ -6419,7 +6423,8 @@ notice_loss_checks(void)
         }
         channel_pulse(ch, SYS_PULSE_PEER_GONE, 0);
 
-        lost_before = channel_pulses_lost;
+        dropped_before = channel_pulses_dropped;
+        evicted_before = channel_pulses_evicted;
         channel_pulse(ch, SYS_PULSE_DEAD_OWNER, 0);
 
         for (i = 0; i < ch->c_pulse_count; i++) {
@@ -6434,9 +6439,17 @@ notice_loss_checks(void)
         }
         sched_undefer();
 
-        if (channel_pulses_lost != lost_before + 1) {
-            panic("lost: %lu pulses dropped by the second case, not one",
-              (unsigned long)(channel_pulses_lost - lost_before));
+        /*
+         * Evicted and not dropped, which is the whole of the second
+         * case: the arriving notice was kept and something already
+         * queued made room for it.
+         */
+        if (channel_pulses_evicted != evicted_before + 1 ||
+          channel_pulses_dropped != dropped_before) {
+            panic("lost: %lu evicted and %lu dropped by the second "
+              "case, not one and none",
+              (unsigned long)(channel_pulses_evicted - evicted_before),
+              (unsigned long)(channel_pulses_dropped - dropped_before));
         }
         if (queued_hints != 0) {
             panic("lost: the queue gave up a notice and kept the hint");
@@ -13255,6 +13268,30 @@ kernel_main(void)
     cnprintf("  kills: %lu written, pokes %lu, clients told %lu\n",
       (unsigned long)proc_kills, (unsigned long)proc_kill_pokes,
       (unsigned long)channel_stale_clients);
+
+    /*
+     * And what a server outliving its clients cost, per M18. Counts
+     * again, and the same rule: a peer collected, a pulse that found
+     * no slot, a sender a bounded queue would not hold. What any of it
+     * took is above the line.
+     *
+     * The connections are the milestone's own measurement rather than
+     * a cost. A departed client's connection is kept until its server
+     * asks for it, so the number in use at the end of a boot is the
+     * number nobody collected, and it has to be the number the boot
+     * started with rather than one that grew.
+     */
+    cnprintf("  peers: %lu collected, pulses %lu dropped and %lu "
+      "evicted\n", (unsigned long)channel_peers_collected,
+      (unsigned long)channel_pulses_dropped,
+      (unsigned long)channel_pulses_evicted);
+    cnprintf("  senders: %lu refused, %lu displaced\n",
+      (unsigned long)channel_senders_refused,
+      (unsigned long)channel_senders_displaced);
+    cnprintf("  connections: %u in use, %u at once\n",
+      (unsigned int)connection_pool()->used,
+      (unsigned int)connection_pool()->highwater);
+
 
     cnputs("stage 9 complete\n");
     machine_halt(0);
