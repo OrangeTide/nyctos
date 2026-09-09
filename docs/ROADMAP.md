@@ -10896,6 +10896,37 @@ event.** *Built.*
   else's arrival rather than by its own deadline or its own death. What
   it must not have is anything half done, and what says so is that the
   queue afterwards is exactly the survivors, in priority order.
+- *The review found the lowest sender taken from the wrong end.* The
+  queue is ordered when a sender is inserted and not afterwards, and
+  section 12.3's chain raises a queued sender where it stands: a client
+  that took a request and sent on is raised by whoever arrives behind
+  it, and its position does not move. So the tail is not always the
+  lowest, and a queue that gave up its tail gave up exactly the client
+  the chain had just raised. The lowest is found by looking now, and
+  the last of the lowest, so arrival order still decides inside a level.
+- *Which is a check.* Two clients queue, one is raised where it stands,
+  and a third arrives between them in priority: the queue gives up the
+  one that is actually lowest and keeps the raised one. Taking the tail
+  panics with "the lowest client came back 0, not WOULDBLOCK". The raise
+  is done by hand, because building a chain that reaches a queued sender
+  is M12's check and putting one inside this one would be two checks in
+  the place of either.
+- *And a dispatch point in the middle of a send, which is the same
+  finding from the other side.* The eviction deferred scheduling around
+  itself, copying the run of releases this file does when a channel's
+  owner dies. There it is right; here the undefer is reached with this
+  thread already on the queue and nothing yet saying it is blocked on
+  it, which is a thread a server could take a message from while it is
+  still runnable. Nothing can preempt there anyway, because whoever is
+  evicted is at or below the priority of the thread evicting it, so the
+  defer is gone rather than moved.
+- *What the review did not fix.* A raised sender keeps its place, so it
+  is still served after clients it now outranks. That is section 12.3's
+  chain rather than this stage's depth: the raise reaches a queued
+  sender in order to unblock whoever is behind it, and reordering the
+  queue it is sitting in is a change to what M12 measured. This stage
+  settles which sender a full queue gives up and not which one it serves
+  next.
 
 **7. What it cost, and sections 12.5, 13.1 and 12.1 written around it.**
 *Planned.*

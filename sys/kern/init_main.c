@@ -6487,7 +6487,7 @@ notice_loss_checks(void)
  * deadline to come back at, which is the whole claim, and a client that
  * queues stays queued until this check ends it.
  */
-#define DEPTH_CLIENTS   6u
+#define DEPTH_CLIENTS   9u
 
 static sys_handle_t h_depth_send;
 static volatile sys_err_t depth_res[DEPTH_CLIENTS];
@@ -6592,7 +6592,7 @@ depth_checks(void)
     struct sys_op_chan_listen_args largs;
     const struct thread *queued[4];
     struct channel *ch, *open_ch;
-    struct thread *a, *b, *d, *open_t;
+    struct thread *a, *b, *d, *x, *y, *z, *open_t;
     sys_handle_t h_recv, h_norecv, h_first, h_open_recv, h_open_send;
     uint64_t refused, displaced;
     uint32_t n;
@@ -6707,12 +6707,68 @@ depth_checks(void)
     expect("and the one that outranked them", thread_cancel(d), SYS_OK);
     depth_wait(4);
 
+    /*
+     * And the lowest is not always the last, which is this stage's
+     * review. The queue is ordered when a sender is inserted and not
+     * afterwards, and section 12.3's chain raises a queued sender where
+     * it stands: a client that took a request and sent on is raised by
+     * whoever arrives behind it, and its position does not move. A
+     * queue that gave up its tail would give up exactly that client.
+     *
+     * The raise is done here by hand rather than by building the chain,
+     * because a chain that reaches a queued sender is M12's check and
+     * putting one inside this one would be two checks in the place of
+     * either.
+     */
+    x = depth_start("depth-x", PRIO_BOOT + 1, 6);
+    y = depth_start("depth-y", PRIO_BOOT + 1, 7);
+
+    n = depth_queue(ch, queued, 4);
+    if (n != 2 || queued[0] != x || queued[1] != y) {
+        panic("depth: %u senders queued before the raise, not two",
+          (unsigned int)n);
+    }
+
+    {
+        intr_state_t is = md_intr_disable();
+
+        y->t_prio = PRIO_BOOT + 3;
+
+        md_intr_restore(is);
+    }
+
+    displaced = channel_senders_displaced;
+    z = depth_start("depth-z", PRIO_BOOT + 2, 8);
+
+    depth_wait(5);
+    if (depth_res[6] != SYS_ERR_WOULDBLOCK) {
+        panic("depth: the lowest client came back %d, not WOULDBLOCK",
+          (int)depth_res[6]);
+    }
+    if (channel_senders_displaced != displaced + 1) {
+        panic("depth: %lu displaced by the arrival after the raise, not one",
+          (unsigned long)(channel_senders_displaced - displaced));
+    }
+
+    n = depth_queue(ch, queued, 4);
+    if (n != 2 || queued[0] != z || queued[1] != y) {
+        panic("depth: the queue gave up the raised client, not the "
+          "lowest one");
+    }
+
+    cnprintf("    %-38s %s\n", "a queued client raised in place",
+      "kept, and the lowest went instead");
+
+    expect("ending the raised client", thread_cancel(y), SYS_OK);
+    expect("and the one that arrived after it", thread_cancel(z), SYS_OK);
+    depth_wait(7);
+
     largs.depth = 0;
     expect("a depth of nothing",
       run(SYS_OP_CHAN_LISTEN, h_recv, &largs, sizeof(largs)), SYS_OK);
 
     (void)depth_start("depth-e", PRIO_BOOT + 1, 4);
-    depth_wait(5);
+    depth_wait(8);
     if (depth_res[4] != SYS_ERR_WOULDBLOCK) {
         panic("depth: a queue of nothing took a client, %d",
           (int)depth_res[4]);

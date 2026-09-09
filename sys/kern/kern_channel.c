@@ -53,37 +53,39 @@ channel_create(const char *name, struct proc *owner)
 }
 
 /*
- * How many senders are queued, and which of them is lowest. Both walk,
- * because the list is short by construction on the channels that ask:
- * a bounded queue is asked about only while it is at its bound, and an
- * unbounded one is never asked at all.
+ * How many senders are queued here, and which of them is lowest.
+ *
+ * One walk, because a bounded queue is surveyed only while it is at its
+ * bound and an unbounded one is never surveyed at all, so the list is
+ * short wherever this is asked.
+ *
+ * Lowest by priority rather than last in the list, and those are not
+ * always the same thread. The list is ordered when a sender is inserted
+ * and not afterwards, and section 12.3's chain raises a queued sender
+ * in place: a thread that took a request and then sent on is raised
+ * where it stands when somebody high priority arrives behind it, so its
+ * priority goes up and its position does not. Taking the tail would
+ * displace exactly the client the chain had just raised.
+ *
+ * The last of the lowest, so that arrival order still decides inside a
+ * level: of two that are equally low, the one that has been waiting
+ * less is the one that goes.
  */
 static uint32_t
-sender_count(const struct channel *ch)
+sender_survey(struct channel *ch, struct thread **lowest)
 {
-    const struct thread *t;
+    struct thread *t;
     uint32_t n = 0;
 
+    *lowest = NULL;
     for (t = ch->c_senders; t != NULL; t = t->t_snext) {
+        if (*lowest == NULL || t->t_prio <= (*lowest)->t_prio) {
+            *lowest = t;
+        }
         n++;
     }
 
     return n;
-}
-
-static struct thread *
-sender_tail(struct channel *ch)
-{
-    struct thread *t = ch->c_senders;
-
-    if (t == NULL) {
-        return NULL;
-    }
-    while (t->t_snext != NULL) {
-        t = t->t_snext;
-    }
-
-    return t;
 }
 
 /*
@@ -843,19 +845,22 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
          * which is one rule rather than a "would this fit" asked
          * before every insert and answered again after it.
          *
-         * The lowest-priority sender goes, which is the tail, because
-         * `sender_insert` orders by descending priority with arrival
-         * order inside a level. Usually that is this thread; when
+         * The lowest-priority sender goes, found by looking rather
+         * than taken from the end: see sender_survey for why the end is
+         * not always the lowest. Usually it is this thread; when
          * somebody who outranks the queue arrives it is whoever was
-         * last in line.
+         * last in line at the lowest priority there.
          *
          * A loop rather than one, so that a depth lowered under a
          * queue that was already longer converges rather than staying
          * over for as many sends as it is over by.
          */
-        sched_defer();
-        while (ch->c_bounded && sender_count(ch) > ch->c_depth) {
-            struct thread *low = sender_tail(ch);
+        while (ch->c_bounded) {
+            struct thread *low;
+
+            if (sender_survey(ch, &low) <= ch->c_depth) {
+                break;
+            }
 
             (void)list_remove(&ch->c_senders, low);
 
@@ -874,16 +879,25 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
                 self->t_wait = THREAD_WAIT_NONE;
                 self->t_snext = NULL;
                 channel_senders_refused++;
-                sched_undefer();
                 md_intr_restore(s);
 
                 return SYS_ERR_WOULDBLOCK;
             }
 
+            /*
+             * Readied here and not deferred, unlike the other places
+             * this file releases a run of threads. Whoever goes is at
+             * or below the priority of the thread doing the releasing,
+             * so nothing here can preempt, and deferring would put a
+             * dispatch point at the undefer: this thread is on the
+             * queue by now with nothing yet saying it is blocked on
+             * it, and being switched away from in that state is a
+             * thread a server could take a message from while it is
+             * still runnable.
+             */
             channel_senders_displaced++;
             release_blocked(low, SYS_ERR_WOULDBLOCK);
         }
-        sched_undefer();
 
     }
     trace_wait(self, self->t_wait);
