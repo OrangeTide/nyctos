@@ -1735,7 +1735,7 @@ channel_owner_died(struct proc *p)
             ch->c_reaping = false;
             for (cn = ch->c_conns; cn != NULL; cn = next) {
                 next = cn->cn_next;
-                if (cn->cn_gone && cn->cn_refs == 0) {
+                if (cn->cn_gone && connection_unheld(cn)) {
                     connection_destroy(cn);
                 }
             }
@@ -1939,11 +1939,38 @@ channel_conn_remove(struct channel *ch, struct connection *cn)
 void
 channel_conn_gone(struct channel *ch, struct connection *cn)
 {
+    intr_state_t s;
+    uint32_t i;
+
     (void)cn;
 
     if (ch == NULL || !ch->c_reaping) {
         return;
     }
+
+    /*
+     * One at a time, and never two. This pulse says there is something
+     * to collect and says nothing about what, so a second one queued
+     * behind the first would tell the server nothing it does not
+     * already know and would spend a slot doing it.
+     *
+     * That matters because the slot is a reserved one. A system pulse
+     * arriving at a full queue panics, per section 13.1, and a client
+     * may fill the six user slots whenever it likes, so a channel that
+     * enqueued one of these per departing client would halt the
+     * machine on the third departure that nobody had collected. The
+     * queue is a hint and one hint is the whole of it.
+     */
+    s = md_intr_disable();
+    for (i = 0; i < ch->c_pulse_count; i++) {
+        uint32_t k = (ch->c_pulse_head + i) % SYS_PULSE_SLOTS;
+
+        if (ch->c_pulses[k].code == SYS_PULSE_PEER_GONE) {
+            md_intr_restore(s);
+            return;
+        }
+    }
+    md_intr_restore(s);
 
     channel_pulse(ch, SYS_PULSE_PEER_GONE, 0);
 }
@@ -1970,7 +1997,7 @@ channel_reap(struct channel *ch, bool enable, uint64_t *out)
 {
     intr_state_t s = md_intr_disable();
     struct connection *cn;
-    bool doomed;
+    uint64_t cookie;
 
     if (enable) {
         ch->c_reaping = true;
@@ -1980,21 +2007,29 @@ channel_reap(struct channel *ch, bool enable, uint64_t *out)
         if (!cn->cn_gone) {
             continue;
         }
-        *out = cn->cn_cookie;
+        cookie = cn->cn_cookie;
         cn->cn_gone = false;
-        doomed = cn->cn_refs == 0;
         md_intr_restore(s);
 
         /*
          * Collected, so what was keeping it is gone. Freed here only
          * if nothing else names it: the server may hold a handle of
          * its own, and then the last close frees it as it always did.
-         * Outside the region either way, because destroying it unlinks
-         * it and the walk above is what that would be changing.
+         * Outside the walk either way, because destroying it unlinks
+         * it and the walk is what that would be changing.
          */
-        if (doomed) {
+        if (connection_unheld(cn)) {
             connection_destroy(cn);
         }
+
+        /*
+         * And the answer is written last. It goes to memory the caller
+         * named, which is the caller's to have unmapped or shared, and
+         * writing it above would have been a write to whatever that is
+         * with interrupts off and the channel half walked.
+         */
+        *out = cookie;
+
         return SYS_OK;
     }
 

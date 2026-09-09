@@ -65,8 +65,20 @@ struct connection {
      */
     uint32_t         cn_peers;
 
+    /*
+     * The process that owned the channel when this connection was
+     * made, which is who the count above is counted against. Taken
+     * once, because a channel's owner can change and a count that
+     * added on one answer and subtracted on another would be wrong in
+     * whichever direction the change went.
+     */
+    sys_id_t         cn_server;
+
     /* Whether every peer handle has closed, having once existed. */
     bool             cn_gone;
+
+    /* Whether somebody is already giving this slot back. */
+    bool             cn_freeing;
 
     /* The channel's list of connections, for collecting them. */
     struct connection *cn_next;
@@ -93,8 +105,7 @@ void connection_destroy(struct connection *cn);
 void connection_retain(struct connection *cn, const struct proc *by);
 void connection_release(struct connection *cn, const struct proc *by);
 
-/* Whether every peer handle has closed, having once existed. */
-bool connection_gone(const struct connection *cn);
-uint64_t connection_cookie(const struct connection *cn);
+/* Whether nothing names this connection any more. */
+bool connection_unheld(const struct connection *cn);
 
 #endif /* _SYS_CONNECTION_H_ */

@@ -5312,6 +5312,9 @@ ledger_ask(uint32_t op, ledger_reply_t *out)
  */
 #define LEDGER_COOKIE_LEAK      8u
 
+/* And three for the departures nobody collects, which take no client. */
+#define HINT_COOKIE             16u
+
 /* Whether the server holds a record for this thread. Defined below. */
 static bool ledger_holds(sys_thread_id_t who);
 
@@ -5638,6 +5641,95 @@ ledger_leak_checks(void)
       "death notices the server saw", (unsigned int)rep.lp_notices);
     cnprintf("    %-38s %s\n", "the one it was told about",
       "the client killed inside a request");
+
+    /*
+     * And what the hints cost when nobody collects them, which is the
+     * review's finding turned into a check.
+     *
+     * On a channel of its own with nothing receiving on it, because
+     * that is the state that matters: a server busy elsewhere while
+     * its clients leave. The departures are arranged by holding the
+     * references here rather than by programs, because a program
+     * cannot be made to leave while the server is not looking.
+     *
+     * Six user pulses first, which any client may send, then three
+     * clients leaving. The queue holds eight and reserves two, so a
+     * channel that enqueued one hint per departure would panic on the
+     * third with "the reserved pulse slots are full" and take the
+     * machine with it. One hint is all there ever is, so the count is
+     * seven and the three connections are still there to collect.
+     */
+    {
+        struct channel *hints = channel_create("hints", self);
+        struct connection *cn[3];
+        uint32_t queued = 0;
+        uint64_t cookie;
+        uint32_t i;
+
+        if (hints == NULL) {
+            panic("hints: no channel");
+        }
+        if (channel_reap(hints, true, &cookie) != SYS_ERR_NO_ENT) {
+            panic("hints: a channel with no connections collected one");
+        }
+
+        for (i = 0; i < 6; i++) {
+            channel_pulse(hints, SYS_PULSE_USER_BASE, i);
+        }
+
+        for (i = 0; i < 3; i++) {
+            cn[i] = connection_create(hints, HINT_COOKIE + i);
+            if (cn[i] == NULL) {
+                panic("hints: no connection");
+            }
+
+            /*
+             * Held by the server, which is a live process that is not
+             * this channel's owner, so these are a client's references
+             * and dropping the last of them is a client leaving.
+             */
+            connection_retain(cn[i], sc.c_proc);
+        }
+        for (i = 0; i < 3; i++) {
+            connection_release(cn[i], sc.c_proc);
+        }
+
+        for (i = 0; i < hints->c_pulse_count; i++) {
+            uint32_t k = (hints->c_pulse_head + i) % SYS_PULSE_SLOTS;
+
+            if (hints->c_pulses[k].code == SYS_PULSE_PEER_GONE) {
+                queued++;
+            }
+        }
+        if (queued != 1) {
+            panic("hints: %u hints queued for three departures, not 1",
+              (unsigned int)queued);
+        }
+        if (hints->c_pulse_count != 7) {
+            panic("hints: %u pulses queued, not 7",
+              (unsigned int)hints->c_pulse_count);
+        }
+
+        /*
+         * And all three are still collectable, which is what says the
+         * hint being one is not the state being one.
+         */
+        for (i = 0; i < 3; i++) {
+            if (channel_reap(hints, false, &cookie) != SYS_OK) {
+                panic("hints: only %u of three departures collected",
+                  (unsigned int)i);
+            }
+            if (cookie < HINT_COOKIE || cookie >= HINT_COOKIE + 3) {
+                panic("hints: collected a cookie this check never used");
+            }
+        }
+        if (channel_reap(hints, false, &cookie) != SYS_ERR_NO_ENT) {
+            panic("hints: a fourth departure was collected");
+        }
+
+        cnprintf("    %-38s %u for %u departures\n",
+          "hints queued while nobody collected", (unsigned int)queued, 3u);
+    }
 
     /*
      * The check's own connection goes back first, while the server is

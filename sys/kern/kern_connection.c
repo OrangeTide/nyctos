@@ -22,17 +22,56 @@ connection_create(struct channel *ch, uint64_t cookie)
     cn->cn_id = pool_id_of(connection_pool(), cn);
     cn->cn_channel = ch;
     cn->cn_cookie = cookie;
+    cn->cn_refs = 0;
     cn->cn_peers = 0;
     cn->cn_gone = false;
+    cn->cn_freeing = false;
+
+    /*
+     * Who the server is, taken now and not looked up later. A channel's
+     * owner is whoever last received a handle to it and can change
+     * while this connection exists, and the count below has to add and
+     * subtract on the same answer: a reference taken while one process
+     * owned the channel and dropped after another does would leave the
+     * count saying a client is still here, or saying one has gone while
+     * it is still holding.
+     *
+     * An identifier rather than a pointer, because the process may be
+     * reaped and its slot taken by another, and a pointer would then
+     * name the wrong one.
+     */
+    cn->cn_server = (ch != NULL && ch->c_owner != NULL) ?
+      ch->c_owner->p_id : 0;
 
     channel_conn_add(ch, cn);
 
     return cn;
 }
 
+/*
+ * Give the slot back, once however many callers reach here.
+ *
+ * Two of them can. A connection kept back for a server to collect is
+ * freed by whichever comes first, the server collecting it or its last
+ * reference going, and at Tier 2 those run on different cores: the
+ * losing one would free a slot the pool had already given to somebody
+ * else. So the decision is made once, under the same lock the
+ * reference count is under, and the second caller finds it made.
+ */
 void
 connection_destroy(struct connection *cn)
 {
+    intr_state_t s = objref_enter();
+    bool mine = !cn->cn_freeing;
+
+    cn->cn_freeing = true;
+
+    objref_leave(s);
+
+    if (!mine) {
+        return;
+    }
+
     channel_conn_remove(cn->cn_channel, cn);
     (void)pool_free(connection_pool(), cn->cn_id);
 }
@@ -50,6 +89,29 @@ connection_owner(const struct connection *cn)
     }
 
     return cn->cn_channel->c_owner;
+}
+
+/* Whether a reference held by this process is a client's. */
+static bool
+is_peer(const struct connection *cn, const struct proc *by)
+{
+    return by == NULL || by->p_id != cn->cn_server;
+}
+
+/*
+ * Whether nothing names this connection any more. Read under the lock
+ * the count is kept under, for a caller outside this file that has to
+ * decide whether a connection it is holding onto can go.
+ */
+bool
+connection_unheld(const struct connection *cn)
+{
+    intr_state_t s = objref_enter();
+    bool none = cn->cn_refs == 0;
+
+    objref_leave(s);
+
+    return none;
 }
 
 /*
@@ -77,7 +139,7 @@ connection_retain(struct connection *cn, const struct proc *by)
     intr_state_t s = objref_enter();
 
     cn->cn_refs++;
-    if (by != connection_owner(cn)) {
+    if (is_peer(cn, by)) {
         cn->cn_peers++;
     }
 
@@ -96,8 +158,11 @@ connection_release(struct connection *cn, const struct proc *by)
         panic("connection: unreferenced more often than referenced");
     }
 
-    if (by != connection_owner(cn) && cn->cn_peers > 0) {
+    if (is_peer(cn, by) && cn->cn_peers > 0) {
         gone = --cn->cn_peers == 0;
+        if (gone) {
+            cn->cn_gone = true;
+        }
     }
 
     doomed = --cn->cn_refs == 0;
@@ -111,23 +176,10 @@ connection_release(struct connection *cn, const struct proc *by)
      * frees it exactly as it always did.
      */
     if (gone) {
-        cn->cn_gone = true;
         channel_conn_gone(cn->cn_channel, cn);
     }
 
     if (doomed && !(cn->cn_gone && channel_reaping(cn->cn_channel))) {
         connection_destroy(cn);
     }
-}
-
-bool
-connection_gone(const struct connection *cn)
-{
-    return cn->cn_gone;
-}
-
-uint64_t
-connection_cookie(const struct connection *cn)
-{
-    return cn->cn_cookie;
 }

@@ -10697,6 +10697,44 @@ event.** *Built.*
   the same 36 members, the same 24 threads and 13 processes, the same
   98304 bytes of kernel stack, and the same compared kill counts. The
   boot's connection high-water is 6 of 32.
+- *The review found the stage had made the panic easier to reach, and
+  that is now fixed.* A hint is a system pulse, so it goes to the
+  reserved slots that a death notice goes to, and one was enqueued per
+  departing client. Six of the eight slots are reachable by any client
+  that wants to fill them, so three clients leaving while the server was
+  busy elsewhere halted the machine with "the reserved pulse slots are
+  full". The hint says there is something to collect and says nothing
+  about what, so a second one behind the first tells the server nothing:
+  it is coalesced now, one per channel, and the state behind it is what
+  says how many there are.
+- *Which is a check of its own.* On a channel nobody receives on, six
+  user pulses and three clients leaving: the queue ends with seven
+  pulses and exactly one hint, and all three departures are still there
+  to collect, one cookie at a time, followed by `SYS_ERR_NO_ENT`.
+  Enqueueing one hint per departure panics on the third. The departures
+  are arranged by the check holding the references itself, because a
+  program cannot be made to leave while the server is not looking.
+- *And the peer count was keyed on something that moves.* A channel's
+  owner is whoever last received a handle to it, and it changes: it is
+  set on every insert of a receive handle and cleared when the owner
+  drops one. The count added and subtracted on whatever the answer was
+  at the time, so a reference taken before an ownership change and
+  dropped after it would either leave the count saying a departed client
+  is still here, or say a client has gone while it is still holding, and
+  the second one hands a server the records of a client that is still
+  talking to it. The connection remembers the process that owned the
+  channel when it was made, by identifier rather than by pointer,
+  because a pointer would name whoever took the slot next. Nothing this
+  system does today changes an owner while connections exist, so no
+  check reaches it; the fix is one field and one comparison.
+- *And two paths could free the same connection.* Whichever comes
+  first frees it, the server collecting it or its last reference going,
+  and at Tier 2 those run on different cores with the reference count
+  under a lock that the collecting walk was not taking. Freeing it twice
+  gives back a slot the pool has already handed to somebody else. The
+  decision is made once now, under the same lock the count is under, and
+  the second caller finds it made. Like the owner above, this is a race
+  no check here can arrange.
 
 **5. A notice that never arrives, and a server that is right anyway.**
 *Planned.*
