@@ -485,9 +485,16 @@ void
 md_tlb_flush_all(void)
 {
     vm_charge_flush();
-    vm_note_local_maintenance();
 
     __asm__ volatile ("sfence.vma" ::: "memory");
+
+    /*
+     * Said afterwards, because what another core has to see before it
+     * acts on this is the table entry that changed, and sfence.vma is
+     * what orders the write to it. Saying so first publishes the news
+     * ahead of the thing it is news about.
+     */
+    vm_note_local_maintenance();
 }
 
 /*
@@ -500,16 +507,15 @@ void
 md_tlb_invalidate(uintptr_t va)
 {
     vm_charge_inval();
-    vm_note_local_maintenance();
 
     __asm__ volatile ("sfence.vma %0, zero" :: "r" (va) : "memory");
+    vm_note_local_maintenance();
 }
 
 void
 md_tlb_invalidate_asid(uint32_t asid)
 {
     vm_count_asid_inval();
-    vm_note_local_maintenance();
 
     /*
      * A zero first operand is every address, and a second operand that
@@ -528,6 +534,7 @@ md_tlb_invalidate_asid(uint32_t asid)
      */
     __asm__ volatile ("sfence.vma zero, %0" :: "r" ((uint64_t)asid)
       : "memory");
+    vm_note_local_maintenance();
 }
 
 

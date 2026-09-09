@@ -979,13 +979,17 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   frames and they become unreachable. The boot's frame ledger counts
   them: 14 across a boot, where it was 512 before a member was mapped
   what its image needs.
-- No cross-core TLB maintenance. Reclaiming a cohort member's memory
-  while a peer runs on another core is not safe, and the checks reap
-  processes that are in no cohort. What a core does get is a flush at
-  its first switch after another core invalidates anything, which is
-  seven flushes in a boot on riscv64. That is a coarse rule and not a
-  shootdown: it bounds how long a stale entry lives, and does not stop
-  one being used before the switch arrives.
+- No cross-core TLB maintenance on riscv64, whose fences reach only the
+  core that issues them. Measured rather than assumed: this core changes
+  an address and invalidates it, the other core reads that address
+  without being dispatched, and on riscv64 it reads the old page while
+  on aarch64, whose fences are inner-shareable, it reads the new one.
+  Reclaiming a cohort member's memory while a peer runs on another core
+  is not safe, and the checks reap processes that are in no cohort. What
+  a core does get is a flush at its first switch after another core
+  invalidates anything, which is seven flushes in a boot. That is a
+  coarse rule and not a shootdown: it bounds how long a stale entry
+  lives, and does not stop one being used before the switch arrives.
 - No calendar time. A program makes its own deadlines now: it reads the
   counter with one instruction and takes the frequency from the system
   page, neither of them a system call, and libc turns a relative wait

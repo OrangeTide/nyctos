@@ -378,6 +378,13 @@ uint64_t vm_maint_epoch(void);
 uint64_t vm_maint_noted(void);
 
 /*
+ * And how much of it this core has done, which is what says whether
+ * this port's fences reach anybody else. A port whose maintenance is
+ * inner-shareable notes none and moves this not at all.
+ */
+uint64_t vm_maint_here(void);
+
+/*
  * How many identifiers have been given out, how many of those were
  * somebody else's first, how many spaces got none at all, and how many
  * names are out on loan now.
@@ -397,7 +404,7 @@ void vm_asid_counts(uint32_t *given, uint32_t *reused, uint32_t *none,
  * which asks it about the cases a boot does not reach.
  */
 bool vm_as_needs_entry(const struct addrspace *as, uintptr_t root,
-  uint32_t asid, uint64_t maint);
+  uint32_t asid, uint64_t seen, uint64_t now);
 
 /* The window loaded programs occupy, which no space maps for the kernel. */
 void vm_user_window(uintptr_t *base, size_t *len);

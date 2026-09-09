@@ -7016,6 +7016,251 @@ chain_free(uintptr_t head)
  * whole system running nameless in order to test one branch of it, and
  * what a check should cost is the check.
  */
+/*
+ * What the other core is still holding, per M19 stage five.
+ *
+ * riscv64's fences reach only the core that issues them and aarch64's
+ * are inner-shareable and reach both. That is a claim each port makes,
+ * and until now nothing had asked the machine whether it was true. It
+ * is asked here in the only way that means anything: this core changes
+ * what an address maps to, invalidates it, and the other core reads the
+ * address without having been dispatched in between. What comes back
+ * says which kind of port this is.
+ *
+ * The read has to be the other core's own, with no switch between it
+ * and the one before it. That is not fussiness about isolation, it is
+ * the whole window the emulator gives: a translation it is holding
+ * survives a handful of instructions and does not survive a thread
+ * being dispatched, whatever the kernel does. So this measures what a
+ * core is holding, and the rule about what a switch does with that is
+ * checked where a rule can be checked, in asid_checks().
+ *
+ * Both threads run in the kernel's own address space, because that is
+ * the space kernel threads run in and this is a check about one core's
+ * cache and not about spaces at all.
+ */
+#define STALE_SPINS     40000000u
+
+static volatile uint32_t stale_step;
+static volatile uint8_t stale_before;
+static volatile uint8_t stale_during;
+static volatile uint8_t stale_after;
+static uintptr_t stale_va;
+
+static void
+stale_first(void *arg)
+{
+    intr_state_t is;
+    uint32_t spin;
+
+    (void)arg;
+
+    /*
+     * Interrupts off across both reads, and a spin rather than a yield
+     * between them. Nothing else may run on this core in that window:
+     * the first read is what puts the translation here, and anything
+     * dispatched in between takes it away by itself, on this emulator,
+     * whatever the kernel did.
+     */
+    is = md_intr_disable();
+
+    stale_before = *(const volatile uint8_t *)stale_va;
+    md_cpu_fence();
+    stale_step = 1;
+
+    for (spin = 0; spin < STALE_SPINS && stale_step < 2; spin++) {
+        md_cpu_fence();
+    }
+
+    stale_during = *(const volatile uint8_t *)stale_va;
+    md_cpu_fence();
+    stale_step = 3;
+
+    md_intr_restore(is);
+
+    while (stale_step < 5) {
+        sched_yield();
+    }
+
+    thread_exit(0);
+}
+
+/*
+ * And the second reader, which has never run before this and is made
+ * ready only after the change. Its first instruction is reached by
+ * being dispatched, so what it reads is what the address means to a
+ * core that has just been given work.
+ */
+static void
+stale_second(void *arg)
+{
+    (void)arg;
+
+    stale_after = *(const volatile uint8_t *)stale_va;
+    md_cpu_fence();
+    stale_step = 5;
+
+    thread_exit(0);
+}
+
+static void
+cross_core_stale_checks(void)
+{
+    struct thread *first, *second;
+    uintptr_t pa_old, pa_new;
+    size_t len;
+    uint64_t noted;
+    uint32_t spin;
+    bool local;
+
+    cnputs("the other core: what it is still holding\n");
+
+    if (cpu_count() < 2) {
+        cnprintf("    %-38s %s\n", "one core, so nothing to hold it",
+          "skipped");
+        return;
+    }
+
+    vm_user_window(&stale_va, &len);
+
+    pa_old = page_alloc();
+    pa_new = page_alloc();
+    if (pa_old == 0 || pa_new == 0) {
+        panic("stale: no frame to put behind the address");
+    }
+    *(volatile uint8_t *)pa_old = 0xF1;
+    *(volatile uint8_t *)pa_new = 0xF2;
+
+    /*
+     * Into the kernel's own space, at the base of the window programs
+     * live in, which is the one range the kernel maps nowhere else.
+     *
+     * It costs one page table that stays. md_unmap takes the entry out
+     * and leaves the table it was in, so the boot's ledger reports one
+     * more frame added to the kernel's own address space than it did.
+     * That is a real frame and it is counted where it went.
+     */
+    if (md_map(vm_kernel(), stale_va, pa_old, PAGE_SIZE,
+      VM_READ | VM_WRITE) != SYS_OK) {
+        panic("stale: the address would not map");
+    }
+    md_tlb_flush_all();
+
+    stale_step = 0;
+    stale_before = 0;
+    stale_during = 0;
+    stale_after = 0;
+    md_cpu_fence();
+
+    first = thread_create("stale-a", PRIO_BOOT, stale_first, NULL);
+    second = thread_create("stale-b", PRIO_BOOT, stale_second, NULL);
+    if (first == NULL || second == NULL) {
+        panic("stale: no thread to read with");
+    }
+    expect("two readers on the other core", sched_migrate(first, 1),
+      SYS_OK);
+    expect("and the one that follows it", sched_migrate(second, 1),
+      SYS_OK);
+    sched_ready(first);
+
+    for (spin = 0; spin < STALE_SPINS && stale_step < 1; spin++) {
+        sched_yield();
+    }
+    if (stale_step < 1) {
+        panic("stale: the other core never read the first page");
+    }
+    md_cpu_fence();
+
+    /*
+     * The address now names a different frame, and this core throws
+     * away what it had for it. Whether that reached the other core is
+     * the question, and whether this port thinks it did is the count:
+     * a port whose fences are inner-shareable notes nothing here,
+     * because there is nothing for anybody else to hear about.
+     */
+    if (md_map(vm_kernel(), stale_va, pa_new, PAGE_SIZE,
+      VM_READ | VM_WRITE) != SYS_OK) {
+        panic("stale: the address would not map again");
+    }
+
+    noted = vm_maint_here();
+    md_tlb_invalidate(stale_va);
+    local = vm_maint_here() != noted;
+
+    md_cpu_fence();
+    stale_step = 2;
+
+    for (spin = 0; spin < STALE_SPINS && stale_step < 3; spin++) {
+        sched_yield();
+    }
+    if (stale_step < 3) {
+        panic("stale: the other core never read the second time");
+    }
+    md_cpu_fence();
+
+    if (stale_before != 0xF1) {
+        panic("stale: the other core read 0x%x before the change, not "
+          "0xf1", (unsigned int)stale_before);
+    }
+
+    /*
+     * And the port's claim against what the machine did.
+     *
+     * A port that says its fences are local must leave the other core
+     * holding what it had, because nothing has reached that core yet.
+     * A port that says they are shareable must not, because the
+     * hardware carried the invalidation across without being asked. A
+     * port that is wrong about itself fails here, and this is the only
+     * check in M19 the emulator will let fail: everywhere else it
+     * throws every translation away on its own and hides the answer.
+     */
+    if (local && stale_during != 0xF1) {
+        panic("stale: this port says its fences are its own, and the "
+          "other core read 0x%x rather than what it was holding",
+          (unsigned int)stale_during);
+    }
+    if (!local && stale_during != 0xF2) {
+        panic("stale: this port says its fences reach the other core, "
+          "and that core read 0x%x", (unsigned int)stale_during);
+    }
+
+    /*
+     * Then a thread that has to be dispatched to run at all, which is
+     * where the kernel's rule takes over from the hardware's. It reads
+     * the new page on both ports. That cannot fail here and is asserted
+     * anyway: the emulator loses a translation across a dispatch by
+     * itself, so what this says is that nothing else went wrong, and
+     * not that the rule works. The rule is checked in asid_checks().
+     */
+    sched_ready(second);
+    md_cpu_fence();
+    stale_step = 4;
+
+    for (spin = 0; spin < STALE_SPINS && stale_step < 5; spin++) {
+        sched_yield();
+    }
+    if (stale_step < 5) {
+        panic("stale: the other core never read after a dispatch");
+    }
+    md_cpu_fence();
+
+    if (stale_after != 0xF2) {
+        panic("stale: the other core read 0x%x after a dispatch, not "
+          "0xf2", (unsigned int)stale_after);
+    }
+
+    cnprintf("    %-38s %s\n", "this port's fences reach",
+      local ? "the core that issues them" : "every core");
+    cnprintf("    %-38s 0x%x, 0x%x, then 0x%x\n",
+      "one address read three times there", (unsigned int)stale_before,
+      (unsigned int)stale_during, (unsigned int)stale_after);
+
+    md_unmap(vm_kernel(), stale_va, PAGE_SIZE);
+    md_tlb_flush_all();
+    page_free(pa_old);
+    page_free(pa_new);
+}
+
 static void
 asid_exhaustion_checks(void)
 {
@@ -7556,16 +7801,18 @@ asid_checks(void)
         uint64_t heard = vm_maint_epoch();
         uint32_t asid = one.as_asid;
 
-        if (vm_as_needs_entry(&one, one.as_root, one.as_asid, heard)) {
+        if (vm_as_needs_entry(&one, one.as_root, one.as_asid, heard,
+          heard)) {
             panic("spaces: a space a core is already running would be "
               "entered again");
         }
-        if (!vm_as_needs_entry(&two, one.as_root, one.as_asid, heard)) {
+        if (!vm_as_needs_entry(&two, one.as_root, one.as_asid, heard,
+          heard)) {
             panic("spaces: a different space would not be entered");
         }
 
         one.as_asid = 0;
-        if (!vm_as_needs_entry(&one, one.as_root, 0, heard)) {
+        if (!vm_as_needs_entry(&one, one.as_root, 0, heard, heard)) {
             panic("spaces: a space with no name would not be entered, "
               "so two of them could share a core's translations");
         }
@@ -13939,6 +14186,7 @@ kernel_main(void)
 #if SYS_TIER == 2
     asid_checks();
     asid_reuse_checks();
+    cross_core_stale_checks();
     flush_cost_checks();
 #endif
     startup_record_checks();

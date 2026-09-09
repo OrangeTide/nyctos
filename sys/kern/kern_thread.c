@@ -415,22 +415,37 @@ thread_switch_to(struct thread *next)
      */
     {
         struct addrspace *as = proc_as(next->t_proc);
-        uint64_t maint = vm_maint_epoch();
+
+        /*
+         * One reading of how much maintenance the other cores have
+         * done, used to decide, to flush, and to record what this core
+         * has heard.
+         *
+         * Read once and not three times. It used to be read again at
+         * the end, and what that records is maintenance done while this
+         * core was flushing, which this core has not honoured: the next
+         * switch then finds nothing new to hear about and skips, and an
+         * entry another core invalidated survives. The burst session
+         * caught it, once every five or so runs, as the other core
+         * reading a page that had been replaced.
+         */
+        uint64_t now = vm_maint_epoch();
 
         /* The rule lives in vm_as_needs_entry(), which explains it. */
         if (vm_as_needs_entry(as, current_as_root,
-          cpu_self()->cp_as_asid, cpu_self()->cp_as_maint)) {
+          cpu_self()->cp_as_asid, cpu_self()->cp_as_maint, now)) {
             bool flushed = md_as_activate(as);
 
-            if (!flushed && maint != cpu_self()->cp_as_maint) {
+            if (!flushed && now != cpu_self()->cp_as_maint) {
                 md_tlb_flush_all();
                 flushed = true;
             }
             vm_count_switch(flushed);
             current_as_root = as->as_root;
             cpu_self()->cp_as_asid = as->as_asid;
-            cpu_self()->cp_as_maint = vm_maint_epoch();
+            cpu_self()->cp_as_maint = now;
         }
+
     }
 #endif
 

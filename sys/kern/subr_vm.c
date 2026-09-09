@@ -231,7 +231,7 @@ as_release_asid(uint32_t asid)
 
 bool
 vm_as_needs_entry(const struct addrspace *as, uintptr_t root,
-  uint32_t asid, uint64_t maint)
+  uint32_t asid, uint64_t seen, uint64_t now)
 {
     /*
      * A space with no name is entered every time, and that is what
@@ -254,10 +254,14 @@ vm_as_needs_entry(const struct addrspace *as, uintptr_t root,
      *
      * And the maintenance count, which is what a port with core-local
      * fences moves when another core invalidates something this core
-     * may still be holding. See vm_note_local_maintenance().
+     * may still be holding. Passed in as two values, what the core has
+     * heard and what there is to hear, rather than read here: the
+     * caller has to record the same reading it acted on, and a function
+     * that looked for itself would let it record a different one.
+     * See vm_note_local_maintenance().
      */
     return as->as_asid == 0 || as->as_root != root ||
-      as->as_asid != asid || maint != vm_maint_epoch();
+      as->as_asid != asid || seen != now;
 }
 
 void
@@ -329,6 +333,12 @@ vm_maint_epoch(void)
     }
 
     return sum;
+}
+
+uint64_t
+vm_maint_here(void)
+{
+    return maint_by_core[cpu_self()->cp_index];
 }
 
 uint64_t

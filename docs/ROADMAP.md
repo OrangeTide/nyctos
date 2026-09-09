@@ -11560,26 +11560,64 @@ this milestone's.
   without a flush fails with "entering a space with no identifier kept
   what it had".
 
-**5. Two cores, one identifier space.** *Planned.*
+**5. Two cores, one identifier space.** *Built.*
 
-- Tier 2 runs two cores. An identifier assigned on one is used on the
-  other, and a recycled one leaves entries on a core that never ran the
-  space that made them.
-- *And the maintenance counter stage two's review added has to be
-  checked here*, because it cannot be checked anywhere else. One core
-  invalidates an address, the other must throw its translations away at
-  its next switch, and the way to know is to have the second core read
-  the address afterwards and get the new page. Deleting the counting
-  must make that read return the old one. Today the only thing standing
-  in for that is a boot-wide count being non-zero.
-- *The ports differ again.* aarch64's invalidations are inner-shareable
-  and reach the other core; riscv64's `sfence.vma` is local to the core
-  that executes it, which is the standing limitation this project
-  already carries. An identifier makes that limitation sharper, because
-  what is stale is now filed under a name somebody else will use.
-- *Check.* The other core's view after a recycle, arranged with the
-  migration M11 built, asserted as the page read rather than as an
-  absence of faults.
+- *The ports differ, and until now nothing had asked the machine
+  whether they do.* aarch64's invalidations are inner-shareable and
+  reach the other core; riscv64's `sfence.vma` is local to the core that
+  executes it, which is the standing limitation this project has carried
+  since M13. Both are claims made in comments. This core changes what an
+  address maps to, invalidates it, and the other core reads the address
+  without having been dispatched in between, and what comes back says
+  which kind of port this is.
+
+  ```
+  the other core: what it is still holding
+      two readers on the other core          OK
+      and the one that follows it            OK
+      this port's fences reach               the core that issues them
+      one address read three times there     0xf1, 0xf1, then 0xf2
+  ```
+
+  aarch64 prints "every core" and "0xf1, 0xf2, then 0xf2". The middle
+  read is the whole check: the same kernel, the same arrangement, and
+  two different answers because the two ports are different machines.
+- *The port's claim is checked against the machine's behaviour, and
+  neither is assumed.* What the check knows about the port is whether
+  the invalidation moved this core's count of maintenance the other core
+  has to hear about, which is what a port with local fences raises and a
+  port with shareable ones does not. A port that raises it must leave
+  the other core holding what it had; a port that does not must not. So
+  a port that is wrong about itself fails here.
+- *This is the one check in M19 the emulator will let fail.* Everywhere
+  else it discards every translation whenever the root register is
+  written, and hides the answer. Here nothing is written. Making
+  aarch64's invalidation non-shareable while it still claims otherwise
+  fails with "this port says its fences reach the other core, and that
+  core read 0xf1", and so does making riscv64 stop saying its fences are
+  its own.
+- *What it cannot check is the rule, and three attempts established
+  that.* The plan asked for the other core to read the new page after a
+  dispatch, and for deleting the counting to make that read return the
+  old one. It does not. The emulator holds a translation for a handful
+  of instructions and loses it across a thread being dispatched,
+  whatever the kernel does, so the read after a dispatch is right on a
+  system with the counting removed and on a system without it. It is
+  asserted anyway, as a statement that nothing else went wrong. The rule
+  itself is checked where a rule can be checked, by asking it directly,
+  which is what M19 stage four's review built it a function for.
+- *And the check was wrong twice before it was right, both times in the
+  same direction.* The first version had the second reader spin on
+  `sched_yield()` waiting for a flag, and a thread that spins that way
+  can be handed the core straight back without any switch having
+  happened: it failed about one run in twenty, in the burst session,
+  with the message it would print if the kernel were wrong. The second
+  version let the first reader yield through the window between the
+  change and the read, and anything dispatched there takes a page fault
+  sooner or later, and filling a fault flushes the core that takes it.
+  Both times the check was measuring the scheduler. What it does now is
+  hold the other core with interrupts off across both reads, which is
+  the only window the emulator gives.
 
 **6. The buffer path, and whether M6's correction was right.** *Planned.*
 
