@@ -3595,9 +3595,9 @@ them names no identifier and reaches every space, so a page moving between
 two spaces still needs one call and the compared report still says
 "46 invalidations" for 46 pages. The narrow form that names a space exists
 on both ports and was measured against the broad one, in case two of it
-were cheaper anyway. They are not: on riscv64 one broad call is 10750
-nanoseconds and two narrow ones are 21362, and on aarch64 one broad call is
-1722 and two narrow ones are 6102. So the buffer path pays what it always
+were cheaper anyway. They are not: on riscv64 one broad call is 10387
+nanoseconds and two narrow ones are 20537, and on aarch64 one broad call is
+3134 and two narrow ones are 7534. So the buffer path pays what it always
 paid, and this paragraph is left standing above rather than edited, because
 what it got wrong is the shape of the thing worth recording.
 
@@ -11686,18 +11686,39 @@ this milestone's.
   ```
   a page moved: one call that names no space, or two that do
       what is invalidated                    1 pages, 128 times each
-      one call naming no space               10750 ns
-      two that name the two spaces           21362 ns
+      one call naming no space               10387 ns
+      one that names one space               10400 ns
+      two that name the two spaces           20537 ns
       so a page moved is cheaper with        the one broad call
+      naming this space drops its entry      yes
+      naming another space drops it too      yes, so nothing here is narrower
   ```
 
-  aarch64 answers 1722 against 6102. On riscv64 two calls cost twice
-  one, which is what a reader would guess; on aarch64 one narrow call
-  costs nearly twice one broad call, so two of them cost more than three
-  times, which a reader would not.
+  aarch64 answers 3134, 2978 and 7534. One narrow call costs what one
+  broad call costs on riscv64 and slightly less on aarch64, and two of
+  them cost twice, so on neither port is there a case for the buffer
+  path to name its spaces.
+- *Whether the narrow call does anything is asked, and whether it is
+  narrow is only reported.* The review added the first: a call that
+  dropped its argument on the floor would cost the same, come out of the
+  comparison the same way, and invalidate nothing, so the address is
+  mapped in the kernel's own space, read once to cache it, made to name
+  a different frame, invalidated in the space that holds it, and read
+  again. Taking the instruction out of either port fails with "naming
+  this space read 0x11, not 0x22, so the narrow call reached nothing".
+- *The second is reported because over-invalidating is legal.* An
+  implementation may throw away more than it was asked for and stay
+  correct, and both of these do: naming a space that does not hold the
+  entry drops it anyway, on both ports. So the narrow form is not
+  narrower here whatever the instruction means, which is the same thing
+  the timings say from the other side. What is not the cause is the
+  rewriting of the page table entry, which was tried: with the
+  invalidation taken out, the second read still shows the frame the
+  first one cached.
 - *And what that says about the buffer path's own numbers is larger than
-  the stage.* An invalidation of one address costs 10750 nanoseconds on
-  riscv64, and stage one measured a whole-TLB flush at 11252 plus 479
+  the stage.* An invalidation of one address costs about 10400
+  nanoseconds on riscv64, and stage one measured a whole-TLB flush at
+  11252 plus 479
   for each page the next thread wants back. On this host, removing one
   address costs what throwing everything away costs. The buffer path's
   case for naming its addresses rests on the narrower call being
@@ -11715,6 +11736,15 @@ this milestone's.
   became the longest region in the boot by a factor of fifteen. Eight is
   still hundreds of ticks, which is resolution enough, and core 0's
   longest region is back where it was.
+- *And nothing is asserted about the frame count, which the first
+  version of this stage did.* The count is the whole machine's and the
+  other core is running, so an assertion that it is exactly what it was
+  is an assertion that nothing else moved a frame in the instant this
+  looked. M13 stage four ruled that out and M19 stage one's review had
+  already taken the same assertion out of the flush check; this stage
+  put it straight back in. What catches a leak is the boot's own frame
+  ledger, which accounts for every frame still held when the run is
+  over.
 - *And the boot's flush count moved from seven to ten*, because the
   check's own invalidations are maintenance the other core has to hear
   about. That is the check paying for itself in the number it is

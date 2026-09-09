@@ -7172,8 +7172,7 @@ invalidate_cost_checks(void)
     struct addrspace one, two;
     uintptr_t va, pa_one, pa_two;
     size_t len;
-    uint64_t bare = 0, broad = 0, narrow = 0;
-    uint32_t frames = page_used();
+    uint64_t bare = 0, broad = 0, one_narrow = 0, narrow = 0;
     uint32_t i, t;
 
     cnputs("a page moved: one call that names no space, or two that "
@@ -7196,7 +7195,7 @@ invalidate_cost_checks(void)
 
     for (t = 0; t < INVAL_TRIALS; t++) {
         intr_state_t is;
-        uint64_t t0, t1, t2, t3, t4, t5;
+        uint64_t t0, t1, t2, t3, t4, t5, t6, t7;
 
         /*
          * One trial at a time with interrupts off, and the shortest of
@@ -7227,9 +7226,15 @@ invalidate_cost_checks(void)
         t4 = time_now();
         for (i = 0; i < INVAL_ROUNDS; i++) {
             md_tlb_invalidate_in(one.as_asid, va);
-            md_tlb_invalidate_in(two.as_asid, va);
         }
         t5 = time_now();
+
+        t6 = time_now();
+        for (i = 0; i < INVAL_ROUNDS; i++) {
+            md_tlb_invalidate_in(one.as_asid, va);
+            md_tlb_invalidate_in(two.as_asid, va);
+        }
+        t7 = time_now();
 
         md_intr_restore(is);
 
@@ -7239,8 +7244,11 @@ invalidate_cost_checks(void)
         if (t == 0 || t3 - t2 < broad) {
             broad = t3 - t2;
         }
-        if (t == 0 || t5 - t4 < narrow) {
-            narrow = t5 - t4;
+        if (t == 0 || t5 - t4 < one_narrow) {
+            one_narrow = t5 - t4;
+        }
+        if (t == 0 || t7 - t6 < narrow) {
+            narrow = t7 - t6;
         }
     }
 
@@ -7261,13 +7269,93 @@ invalidate_cost_checks(void)
     cnprintf("    %-38s %u pages, %u times each\n",
       "what is invalidated", 1u,
       (unsigned int)(INVAL_ROUNDS * INVAL_TRIALS));
+    if (one_narrow <= bare) {
+        panic("moved: %lu ticks for %u narrow calls against %lu for "
+          "none", (unsigned long)one_narrow, (unsigned int)INVAL_ROUNDS,
+          (unsigned long)bare);
+    }
+
     cnprintf("    %-38s %lu ns\n", "one call naming no space",
       (unsigned long)(flush_ns(broad - bare) / INVAL_ROUNDS));
+    cnprintf("    %-38s %lu ns\n", "one that names one space",
+      (unsigned long)(flush_ns(one_narrow - bare) / INVAL_ROUNDS));
     cnprintf("    %-38s %lu ns\n", "two that name the two spaces",
       (unsigned long)(flush_ns(narrow - bare) / INVAL_ROUNDS));
     cnprintf("    %-38s %s\n", "so a page moved is cheaper with",
       broad - bare <= narrow - bare ? "the one broad call" :
       "the two narrow ones");
+
+    /*
+     * And whether the narrow call does anything, which the timings
+     * cannot say and the first version of this stage never asked. A
+     * call that dropped its argument on the floor would cost the same,
+     * come out of the comparison the same way, and invalidate nothing.
+     *
+     * Asked of the space this core is running in, because that is the
+     * one whose translations this core is holding. The address is
+     * mapped in the kernel's own space, read once to put it in the
+     * cache, then made to name a different frame twice over: once
+     * invalidated in the space that holds it, and once in a space that
+     * does not.
+     *
+     * The first must show the new frame and is asserted. The second is
+     * reported and not asserted, because over-invalidating is something
+     * a machine is allowed to do: an implementation may throw away more
+     * than it was asked to and stay correct. Both of these do. Naming
+     * another space drops this one's entry on both ports, so the narrow
+     * form is not narrow here whatever the instruction means, which is
+     * the same thing the timings say from the other side.
+     *
+     * Both reads are in one region with interrupts off, because a
+     * thread dispatched between them takes the translation away by
+     * itself on this emulator, which is M19 stage five's finding.
+     * Rewriting the entry does not: with the invalidation taken out,
+     * the second read still shows the frame the first one cached.
+     */
+    {
+        intr_state_t is;
+        uint32_t mine = md_as_current_asid();
+        uint8_t named, other;
+
+        *(volatile uint8_t *)pa_one = 0x11;
+        *(volatile uint8_t *)pa_two = 0x22;
+
+        if (md_map(vm_kernel(), va, pa_one, PAGE_SIZE,
+          VM_READ | VM_WRITE) != SYS_OK) {
+            panic("moved: the kernel's own space would not map it");
+        }
+        md_tlb_flush_all();
+
+        is = md_intr_disable();
+
+        (void)*(const volatile uint8_t *)va;
+
+        (void)md_map(vm_kernel(), va, pa_two, PAGE_SIZE,
+          VM_READ | VM_WRITE);
+        md_tlb_invalidate_in(mine, va);
+        named = *(const volatile uint8_t *)va;
+
+        (void)md_map(vm_kernel(), va, pa_one, PAGE_SIZE,
+          VM_READ | VM_WRITE);
+        md_tlb_invalidate_in(one.as_asid, va);
+        other = *(const volatile uint8_t *)va;
+
+        md_intr_restore(is);
+
+        md_unmap(vm_kernel(), va, PAGE_SIZE);
+        md_tlb_flush_all();
+
+        if (named != 0x22) {
+            panic("moved: naming this space read 0x%x, not 0x22, so the "
+              "narrow call reached nothing", (unsigned int)named);
+        }
+
+        cnprintf("    %-38s %s\n", "naming this space drops its entry",
+          "yes");
+        cnprintf("    %-38s %s\n", "naming another space drops it too",
+          other == 0x11 ? "yes, so nothing here is narrower" :
+          "no, so the narrow form is narrower");
+    }
 
     md_unmap(&one, va, PAGE_SIZE);
     md_unmap(&two, va, PAGE_SIZE);
@@ -7277,10 +7365,15 @@ invalidate_cost_checks(void)
     page_free(pa_one);
     page_free(pa_two);
 
-    if (page_used() != frames) {
-        panic("moved: %u frames in use, started with %u",
-          (unsigned int)page_used(), (unsigned int)frames);
-    }
+    /*
+     * And nothing is asserted about page_used() here, which the first
+     * version of this check did. The frame count is the whole machine's
+     * and the other core is running, so an assertion that it is exactly
+     * what it was is an assertion that nothing else moved a frame in
+     * the instant this looked, which M13 stage four ruled out. What
+     * would catch a leak is the boot's own frame ledger, which accounts
+     * for every frame still held when the run is over.
+     */
 }
 
 static void

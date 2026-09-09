@@ -601,8 +601,8 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
          * the by-address form on both of them names no space and
          * reaches every one. M19 stage six then asked whether two
          * calls that do name the two spaces would be cheaper anyway,
-         * and they are not: two of them cost twice one on riscv64 and
-         * more than three times one on aarch64.
+         * and they are not: two of them cost about twice one on both,
+         * and one of them costs about what one broad call costs.
          *
          * Throwing the whole cache away instead was correct and was
          * also every other translation in the system, most of which
