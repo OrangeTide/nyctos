@@ -98,6 +98,25 @@
 #endif
 
 #define SYS_MAX_PROCESSES         24
+
+/*
+ * How many address space identifiers this system will use, whatever the
+ * hardware is willing to give.
+ *
+ * Both ports answer sixteen bits, which is 65535 names for a system
+ * that has 24 processes. What the cap is for is the list of names
+ * handed back, which is an array of this size and has to be one: a
+ * kernel that allocates in order to free is a kernel with a way to fail
+ * while giving something up.
+ *
+ * Thirty-two is above the number of spaces ever live at once, which is
+ * what keeps a space from having to run with no name at all. It is not
+ * what makes names get reused; a name goes back the moment its space
+ * dies and the next space takes it, which happens at any cap. What a
+ * cap this size makes possible is running out, which is a state the
+ * checks reach on purpose. See vm_as_create() and asid_reuse_checks().
+ */
+#define SYS_ASID_LIMIT            32
 #define SYS_MAX_THREADS           32
 /*
  * Channels are allocated and never released: section 18.2's teardown is

@@ -11448,25 +11448,75 @@ this milestone's.
   both.
 
 **4. Running out of identifiers, and the entry that outlives its space.**
-*Planned.*
+*Built.*
 
-- The pool is finite and small: eight bits is two hundred and fifty-six,
-  and a system that spawns is a system that eventually reuses one. A
-  space that inherits an identifier inherits the translations filed
-  under it.
-- *The epoch that covers this today stops covering it.* When an address
-  space is destroyed, a counter is bumped and every core re-activates at
-  its next switch, which today means a flush, which is what actually
-  clears the stale entries. Take the flush out of activation and the
-  epoch is a comparison that no longer does anything. That is a defect
-  this stage introduces and must close, and it is the reason the stage
-  exists rather than being folded into stage two.
-- *Check.* The identifier space is capped at build time to something
-  small enough for a boot to exhaust, so that reuse is reached rather
-  than argued about. A space that takes a recycled identifier must see
-  its own pages, and the check has to be able to fail: with the
-  invalidation removed it must fail, and the failure must be the wrong
-  page rather than a fault.
+- A name goes back to a list when its space is destroyed, and the next
+  space built takes it. What makes that safe is one call: the
+  translations filed under the name are thrown away where it is handed
+  back, which is the place that knows nothing is running in the space
+  any more. Both ports have an instruction that names a space rather
+  than an address, and neither had been asked for it before.
+- *The epoch that covered this is gone, which is what the stage was
+  for.* A count of how many spaces had been destroyed used to force an
+  activation at every core's next switch, and an activation flushed, and
+  that flush is what actually cleared a stale cache. Stage two took the
+  flush out and left the count a comparison that did nothing. It is
+  removed, along with the per-core copy of it, and the dispatcher now
+  compares the root and the name. A root is a frame and comes back, so a
+  root is not by itself a space; a name is handed on, so a name is not
+  by itself a space either. What makes the pair enough is that a name's
+  translations are gone before any space can be built with it.
+- *Reuse is not what a cap causes, which is a correction to this plan.*
+  The plan said to cap the identifier space small enough for a boot to
+  exhaust so that reuse would be reached. It is reached at any cap: a
+  name goes back the moment its space dies and the next space takes it,
+  so a boot hands 36 names on with a cap of 32 and hands the same 36 on
+  with a cap of 4096. What the cap is really for is the list of names
+  handed back, which is an array and has to be one, since a kernel that
+  allocates in order to free is a kernel with a way to fail while giving
+  something up. Thirty-two is above the number of spaces ever live at
+  once, which is what keeps a space from having to run with no name.
+- *Check.* One space is run in until the hardware has learned the
+  address that matters, destroyed, and the next space built takes its
+  name and maps a different frame at the same address. Reading it must
+  give the new page.
+
+  ```
+  names: what a space inherits with a second-hand one
+      one name, two spaces                   8, twice
+      the same address in each of them       0xc3, then 0xd4
+      names in use, of the cap               6 of 32, 36 given a second time
+      taking every name there is             27 built, 1 went without
+  ```
+
+- *The read cannot fail on this host and the plan asked that it should,
+  so the assertion is elsewhere.* The plan wanted the failure to be the
+  wrong page rather than a fault, and on a host that honoured
+  identifiers it would be. This one discards every translation whenever
+  the root register is written, so a system that recycled a name without
+  throwing anything away would read the right page anyway. What can be
+  false is whether the kernel asked: the release is bracketed and the
+  count of names thrown away must be exactly one. Removing the
+  invalidation fails with "0 identifiers thrown away when one space
+  died". Handing names back first-first instead of last-first fails with
+  "the second space got 3, not the 8 the first handed back", which is
+  the check losing its arrangement rather than the kernel losing its
+  correctness, and is worth failing on for that reason.
+- *And running out is reached on purpose rather than by crippling the
+  cap.* Every remaining name is taken, and the space after that gets
+  zero, which is not a name: it is entered by throwing every translation
+  away, so any number of spaces may hold it and each is correct. That
+  space still reads what it mapped, because a name it did not get is not
+  a mapping it did not get. Then all of them go back and a further space
+  gets a name again, which is the half of running out that a pool with a
+  leak would fail. Twenty-seven spaces are built to reach it and one
+  goes without.
+- *Three more ways to be false.* A pool that never says it has run out
+  fails with "32 spaces built and every one of them got a name". A pool
+  that does not put names back fails, at the first check that wanted
+  two, with "both were given identifier 0". Entering a nameless space
+  without a flush fails with "entering a space with no identifier kept
+  what it had".
 
 **5. Two cores, one identifier space.** *Planned.*
 

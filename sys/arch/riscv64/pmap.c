@@ -505,6 +505,22 @@ md_tlb_invalidate(uintptr_t va)
     __asm__ volatile ("sfence.vma %0, zero" :: "r" (va) : "memory");
 }
 
+void
+md_tlb_invalidate_asid(uint32_t asid)
+{
+    vm_count_asid_inval();
+    vm_note_local_maintenance();
+
+    /*
+     * A zero first operand is every address, and a second operand that
+     * is not zero is one identifier. The one form this port has that
+     * names a space rather than an address, and the reason a name can
+     * be handed on at all.
+     */
+    __asm__ volatile ("sfence.vma zero, %0" :: "r" ((uint64_t)asid)
+      : "memory");
+}
+
 
 /*
  * What a virtual address names, for a caller handing a page to another

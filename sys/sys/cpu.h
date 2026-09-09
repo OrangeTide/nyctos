@@ -55,16 +55,6 @@ struct cpu {
     uintptr_t       cp_as_root;
 
     /*
-     * Which generation of address spaces that root belonged to. A root
-     * is a frame, and since M13 stage 3 a frame goes back and comes out
-     * again, so the same address can name a different space. Without
-     * this a core would recognise the root it already has and skip the
-     * activation, keeping a TLB full of the space that used to be
-     * there. See vm_as_epoch().
-     */
-    uint64_t        cp_as_epoch;
-
-    /*
      * And which identifier that space carries, because a root alone no
      * longer names a space to the hardware. Two spaces cannot share a
      * root, so this is not what makes the comparison correct; what it

@@ -6987,6 +6987,283 @@ chain_free(uintptr_t head)
  * that is what is asked, and the answer is a byte that says which space
  * it came from.
  */
+/*
+ * A name handed on, per M19 stage four.
+ *
+ * There are more spaces in a boot than there are identifiers to give
+ * them, because SYS_ASID_LIMIT says so and says why. So a space is
+ * built with a name somebody else has been running under, and what it
+ * inherits along with the name is whatever the hardware learned while
+ * the other one had it. That is the hazard, and it is the reason a name
+ * cannot simply be a number handed out twice.
+ *
+ * Read from the kernel, in one region with interrupts off, the same way
+ * stage two's two spaces were read: what is being tested is what
+ * happens to a translation cache, and a program would prove it through
+ * five other mechanisms and be suspected of them first.
+ */
+/*
+ * And what happens when there are none left, per M19 stage four.
+ *
+ * A name is a scarce thing and this system caps it well below what the
+ * hardware offers, so a machine with enough spaces alive at once runs
+ * out. What a space then gets is zero, which is not a name: it is
+ * entered by throwing every translation away, so any number of spaces
+ * may hold it at once and each of them is correct.
+ *
+ * Reached by taking them all rather than by making the cap small enough
+ * that a boot reaches it by accident. A cap that low would leave the
+ * whole system running nameless in order to test one branch of it, and
+ * what a check should cost is the check.
+ */
+static void
+asid_exhaustion_checks(void)
+{
+    struct addrspace spare[SYS_ASID_LIMIT];
+    struct addrspace nameless;
+    uintptr_t va, pa;
+    size_t len;
+    intr_state_t is;
+    uint32_t given, reused, none, live;
+    uint32_t taken = 0;
+    uint32_t frames = page_used();
+    uint32_t i;
+    uint8_t saw;
+    bool flushed;
+
+    vm_user_window(&va, &len);
+
+    /*
+     * Every name that is left, and then one space more. The loop is
+     * bounded by the cap and not by trust: a create that kept answering
+     * with a name would otherwise run until the frames ran out.
+     */
+    while (taken < SYS_ASID_LIMIT) {
+        if (vm_as_create(&spare[taken]) != SYS_OK) {
+            panic("names: no room to take the %uth name",
+              (unsigned int)taken);
+        }
+        taken++;
+        if (spare[taken - 1].as_asid == 0) {
+            break;
+        }
+    }
+
+    if (spare[taken - 1].as_asid != 0) {
+        panic("names: %u spaces built and every one of them got a name",
+          (unsigned int)taken);
+    }
+
+    nameless = spare[taken - 1];
+
+    /*
+     * And a space with no name still runs. Entering it throws
+     * everything away, which is what makes it safe, and it reads what
+     * it mapped: a name it did not get is not a mapping it did not get.
+     */
+    pa = page_alloc();
+    if (pa == 0) {
+        panic("names: no frame for the nameless space");
+    }
+    *(volatile uint8_t *)pa = 0xE5;
+    if (md_map(&nameless, va, pa, PAGE_SIZE, VM_PROGRAM) != SYS_OK) {
+        panic("names: the nameless space would not map");
+    }
+
+    is = md_intr_disable();
+    flushed = md_as_activate(&nameless);
+    saw = *(const volatile uint8_t *)va;
+    (void)md_as_activate(proc_as(thread_current()->t_proc));
+    md_intr_restore(is);
+
+    if (!flushed) {
+        panic("names: entering a space with no name kept what it had");
+    }
+    if (saw != 0xE5) {
+        panic("names: the nameless space read 0x%x, not 0xe5",
+          (unsigned int)saw);
+    }
+
+    vm_asid_counts(&given, &reused, &none, &live);
+    cnprintf("    %-38s %u built, %u went without\n",
+      "taking every name there is", (unsigned int)taken,
+      (unsigned int)none);
+
+    md_unmap(&nameless, va, PAGE_SIZE);
+    md_tlb_flush_all();
+    page_free(pa);
+
+    for (i = 0; i < taken; i++) {
+        vm_as_destroy(&spare[i]);
+    }
+
+    /*
+     * And the names came back, which is the other half of running out.
+     * A pool that hands nothing back after a burst is a pool that has
+     * run out permanently, and nothing above here would say so.
+     */
+    if (vm_as_create(&nameless) != SYS_OK) {
+        panic("names: no room for the space that asks for one back");
+    }
+    if (nameless.as_asid == 0) {
+        panic("names: still nothing to give after %u went back",
+          (unsigned int)taken);
+    }
+    vm_as_destroy(&nameless);
+
+    if (page_used() != frames) {
+        panic("names: %u frames in use, started with %u",
+          (unsigned int)page_used(), (unsigned int)frames);
+    }
+}
+
+static void
+asid_reuse_checks(void)
+{
+    struct addrspace one, two;
+    struct addrspace *back;
+    uintptr_t va, pa_one, pa_two;
+    size_t len;
+    intr_state_t is;
+    struct vm_cost before, after;
+    uint32_t given, reused, none, live;
+    uint32_t asid;
+    uint8_t saw, saw_first;
+
+    cnputs("names: what a space inherits with a second-hand one\n");
+
+    vm_user_window(&va, &len);
+    back = proc_as(thread_current()->t_proc);
+
+    pa_one = page_alloc();
+    pa_two = page_alloc();
+    if (pa_one == 0 || pa_two == 0) {
+        panic("names: no frame to put behind the address");
+    }
+    *(volatile uint8_t *)pa_one = 0xC3;
+    *(volatile uint8_t *)pa_two = 0xD4;
+
+    /*
+     * The first space, run in long enough for the hardware to have
+     * learned the one address that matters. Reading it is what puts a
+     * translation in the cache under this name; without the read there
+     * would be nothing to inherit and the check would pass on a system
+     * that recycles names wrongly.
+     */
+    if (vm_as_create(&one) != SYS_OK) {
+        panic("names: no room for the first space");
+    }
+    asid = one.as_asid;
+    if (asid == 0) {
+        panic("names: the first space got no identifier at all");
+    }
+    if (md_map(&one, va, pa_one, PAGE_SIZE, VM_PROGRAM) != SYS_OK) {
+        panic("names: the address would not map");
+    }
+
+    is = md_intr_disable();
+    (void)md_as_activate(&one);
+    saw = *(const volatile uint8_t *)va;
+    (void)md_as_activate(back);
+    md_intr_restore(is);
+
+    saw_first = saw;
+    if (saw_first != 0xC3) {
+        panic("names: the first space read 0x%x, not 0xc3",
+          (unsigned int)saw_first);
+    }
+
+    md_unmap(&one, va, PAGE_SIZE);
+
+    vm_cost_read(&before);
+    vm_as_destroy(&one);
+    vm_cost_read(&after);
+
+    /*
+     * The name went back, and going back is what throws its
+     * translations away. Asserted as a count, because on this host the
+     * consequence cannot be observed: writing the root register makes
+     * the emulator discard everything whatever the identifier says, so
+     * the read below would come out right even from a system that never
+     * invalidated anything. What can be false is whether the kernel
+     * asked.
+     */
+    if (after.vc_asid_inval - before.vc_asid_inval != 1) {
+        panic("names: %lu identifiers thrown away when one space died",
+          (unsigned long)(after.vc_asid_inval - before.vc_asid_inval));
+    }
+
+    /*
+     * The next space built takes it, because names go back last-first
+     * and this one went back last. That is arranged rather than hoped
+     * for: a check that took whichever name came up would be a check
+     * that usually tested nothing.
+     */
+    if (vm_as_create(&two) != SYS_OK) {
+        panic("names: no room for the second space");
+    }
+    if (two.as_asid != asid) {
+        panic("names: the second space got %u, not the %u the first "
+          "handed back", (unsigned int)two.as_asid, (unsigned int)asid);
+    }
+    if (md_map(&two, va, pa_two, PAGE_SIZE, VM_PROGRAM) != SYS_OK) {
+        panic("names: the address would not map twice");
+    }
+
+    is = md_intr_disable();
+    (void)md_as_activate(&two);
+    saw = *(const volatile uint8_t *)va;
+    (void)md_as_activate(back);
+    md_intr_restore(is);
+
+    if (saw != 0xD4) {
+        panic("names: the second space read 0x%x at the address the "
+          "first had, not 0xd4", (unsigned int)saw);
+    }
+
+    cnprintf("    %-38s %u, twice\n", "one name, two spaces",
+      (unsigned int)asid);
+    cnprintf("    %-38s 0x%x, then 0x%x\n",
+      "the same address in each of them", (unsigned int)saw_first,
+      (unsigned int)saw);
+
+    md_unmap(&two, va, PAGE_SIZE);
+    md_tlb_flush_all();
+    vm_as_destroy(&two);
+    page_free(pa_one);
+    page_free(pa_two);
+
+    /*
+     * And what the boot did on its own, which is the half this check
+     * cannot arrange. Reported rather than compared, because how many
+     * spaces a boot builds depends on how far the session got.
+     *
+     * Reuse is not what the cap causes and the count is not evidence
+     * that it does: a name goes back the moment its space dies and the
+     * next space built takes it, which happens whatever the cap is.
+     * What is asserted is that no space has had to run without a name,
+     * because the cap is chosen to be above the number live at once and
+     * a boot that reached zero would mean it is not.
+     */
+    vm_asid_counts(&given, &reused, &none, &live);
+
+    cnprintf("    %-38s %u of %u, %u given a second time\n",
+      "names in use, of the cap", (unsigned int)live,
+      (unsigned int)SYS_ASID_LIMIT, (unsigned int)reused);
+
+    if (reused == 0) {
+        panic("names: %u handed out and none of them twice",
+          (unsigned int)given);
+    }
+    if (none != 0) {
+        panic("names: %u spaces got none at all, so %u is too few",
+          (unsigned int)none, (unsigned int)SYS_ASID_LIMIT);
+    }
+
+    asid_exhaustion_checks();
+}
+
+
 static void
 asid_checks(void)
 {
@@ -13622,6 +13899,7 @@ kernel_main(void)
     }
 #if SYS_TIER == 2
     asid_checks();
+    asid_reuse_checks();
     flush_cost_checks();
 #endif
     startup_record_checks();

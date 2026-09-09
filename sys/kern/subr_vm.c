@@ -132,32 +132,105 @@ map_kernel_into(struct addrspace *as)
  * which is what a port with no identifiers to give gets for every space
  * it has.
  */
+/*
+ * The identifiers, and who has had them.
+ *
+ * Under a lock, unlike the two epoch counters above. Losing an
+ * increment there costs a comparison that was going to be made anyway;
+ * losing one here hands the same identifier to two spaces, which is the
+ * one thing this must never do. Most callers arrive holding the kernel
+ * lock and would be safe without this, and a startup check does not,
+ * which is exactly the kind of caller that appears later and is not
+ * looked at again.
+ */
+static struct spinlock asid_lock = { 0, 0, "asids" };
+static uint32_t asid_next = 1;
+static uint32_t asid_free[SYS_ASID_LIMIT];
+static uint32_t asid_freed;
+static uint32_t asid_given;
+static uint32_t asid_reused;
+static uint32_t asid_none;
+
+/*
+ * A name for a new space: one nobody has had if there are any left,
+ * and otherwise one somebody has finished with.
+ *
+ * Given back last-first, which is not for speed. It is so that the
+ * space built immediately after one is destroyed takes that one's name,
+ * which is the case a check can arrange and read a page through. A
+ * queue would hand out the oldest name, which is the safest one and the
+ * one that proves least.
+ *
+ * Zero when there are none, which is not a name: a space holding it is
+ * entered by throwing every translation away, so any number of spaces
+ * may hold it and stay correct. That is what a port with no identifiers
+ * gets for every space, and what this system gets when more spaces are
+ * live at once than there are names.
+ */
 static uint32_t
 as_next_asid(void)
 {
-    static struct spinlock asid_lock = { 0, 0, "asids" };
-    static uint32_t next = 1;
-    uint32_t bits = md_asid_bits();
+    uint32_t limit = md_asid_bits() == 0 ? 0 : SYS_ASID_LIMIT;
     uint32_t got;
 
-    /*
-     * Under a lock, unlike the two counters above it. Losing an
-     * increment there costs a comparison that was going to be made
-     * anyway; losing one here hands the same identifier to two spaces,
-     * which is the one thing this must never do. Most callers arrive
-     * holding the kernel lock and would be safe without this, and a
-     * startup check does not, which is exactly the kind of caller that
-     * appears later and is not looked at again.
-     */
+    if (limit > (1u << md_asid_bits()) - 1u) {
+        limit = (1u << md_asid_bits()) - 1u;
+    }
+
     spin_lock(&asid_lock);
-    if (bits == 0 || next >= (1u << bits)) {
-        got = 0;
+    if (asid_freed > 0) {
+        got = asid_free[--asid_freed];
+        asid_reused++;
+    } else if (asid_next <= limit) {
+        got = asid_next++;
     } else {
-        got = next++;
+        got = 0;
+        asid_none++;
+    }
+    if (got != 0) {
+        asid_given++;
     }
     spin_unlock(&asid_lock);
 
     return got;
+}
+
+/*
+ * And a name handed back, which is where the translations filed under
+ * it go.
+ *
+ * Thrown away here rather than when the name is next given out, because
+ * here is where it is known that nothing is running in the space any
+ * more. On riscv64 this reaches only the calling core and says so, so
+ * the other core throws everything away at its next switch before it
+ * can use the name.
+ */
+static void
+as_release_asid(uint32_t asid)
+{
+    if (asid == 0) {
+        return;
+    }
+
+    md_tlb_invalidate_asid(asid);
+
+    spin_lock(&asid_lock);
+    if (asid_freed < SYS_ASID_LIMIT) {
+        asid_free[asid_freed++] = asid;
+    }
+    spin_unlock(&asid_lock);
+}
+
+void
+vm_asid_counts(uint32_t *given, uint32_t *reused, uint32_t *none,
+  uint32_t *live)
+{
+    spin_lock(&asid_lock);
+    *given = asid_given;
+    *reused = asid_reused;
+    *none = asid_none;
+    *live = (asid_next - 1u) - asid_freed;
+    spin_unlock(&asid_lock);
 }
 
 sys_err_t
@@ -180,44 +253,6 @@ vm_as_create(struct addrspace *as)
 }
 
 /*
- * Which generation of address spaces the system is on.
- *
- * Bumped every time one is destroyed, and read by the context switch
- * beside the root it is switching to. Before M13 stage 3 a root was
- * allocated and never freed, so a root address named one space for the
- * life of the machine and a core that already had that root was already
- * in that space. Now a root is a frame like any other: it goes back, it
- * comes out again, and the allocator hands out the lowest free frame,
- * so the same root address naming a different space is not a remote
- * possibility but the likely case for a program spawned twice.
- *
- * What that would cost is not a wrong root register, which would still
- * point at the right table. It is the flush that goes with writing it:
- * skip the activation and the core keeps translations for the space
- * that used to be there, at the same addresses, pointing at frames that
- * have since been given to somebody else.
- *
- * A counter rather than a message to each core, because there is no way
- * to send one: section 13.3 has no cross-core call and M13 did not add
- * one. Every core notices at its next switch, which is the first moment
- * it could use a translation anyway.
- *
- * Unlocked, and it is the one counter here that can be. Two destroys at
- * once can lose an increment, which matters for a counter somebody
- * reads as a total and not for this one: what a core asks is whether
- * the value differs from the one it cached, and an increment that only
- * happened once still differs. Nothing but wrapping could return it to
- * a cached value, and that is 2^64 address spaces away.
- */
-static uint64_t as_epoch;
-
-uint64_t
-vm_as_epoch(void)
-{
-    return as_epoch;
-}
-
-/*
  * How much core-local TLB maintenance each core has done.
  *
  * Per core, and read as the sum of the other cores, because a core that
@@ -226,11 +261,11 @@ vm_as_epoch(void)
  * which on this system is most of the work: the boot's page faults are
  * filled on the core that took them.
  *
- * Racing increments, and the same argument as as_epoch above: what a
- * core asks is whether the value differs from the one it cached, and an
- * increment that only happened once still differs. A lost increment
- * would matter only if it took the value back to what a core had
- * cached, which nothing but wrapping can do.
+ * Racing increments, deliberately. What a core asks is whether the
+ * value differs from the one it cached, and an increment that only
+ * happened once still differs. A lost increment would matter only if it
+ * took the value back to what a core had cached, which nothing but
+ * wrapping can do.
  */
 static uint64_t maint_by_core[SYS_MAX_CORES];
 
@@ -276,8 +311,15 @@ vm_as_destroy(struct addrspace *as)
         return;
     }
 
+    /*
+     * The name goes back before the tables do, because what makes it
+     * safe to give away is that nothing the hardware learned under it
+     * is left, and the tables are what it learned from.
+     */
+    as_release_asid(as->as_asid);
+    as->as_asid = 0;
+
     md_as_destroy(as);
-    as_epoch++;
 }
 
 void
@@ -436,6 +478,16 @@ vm_charge_inval(void)
 }
 
 /*
+ * Not bracketed, because a name being handed back is not the buffer
+ * path and happens wherever a space stops existing.
+ */
+void
+vm_count_asid_inval(void)
+{
+    vm_cost_self.vc_asid_inval++;
+}
+
+/*
  * Not charged and not bracketed: a switch happens between threads and
  * belongs to neither. It is counted always because it is the thing the
  * buffer path has to be compared against.
@@ -477,6 +529,7 @@ vm_cost_read(struct vm_cost *out)
     out->vc_table = 0;
     out->vc_flush = 0;
     out->vc_inval = 0;
+    out->vc_asid_inval = 0;
     out->vc_pages = 0;
     out->vc_halves = 0;
     out->vc_switch = 0;
@@ -487,6 +540,7 @@ vm_cost_read(struct vm_cost *out)
         out->vc_table += vm_buffer_cost[i].vc_table;
         out->vc_flush += vm_buffer_cost[i].vc_flush;
         out->vc_inval += vm_buffer_cost[i].vc_inval;
+        out->vc_asid_inval += vm_buffer_cost[i].vc_asid_inval;
         out->vc_pages += vm_buffer_cost[i].vc_pages;
         out->vc_halves += vm_buffer_cost[i].vc_halves;
         out->vc_switch += vm_buffer_cost[i].vc_switch;
@@ -503,7 +557,7 @@ vm_cost_read_core(struct vm_cost *out, uint32_t core)
          * answers nothing and says nothing hands back whatever the
          * caller's structure held before it asked.
          */
-        struct vm_cost none = { 0, 0, 0, 0, 0, 0, 0, 0 };
+        struct vm_cost none = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
         *out = none;
         return;

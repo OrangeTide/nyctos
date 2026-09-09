@@ -415,15 +415,24 @@ thread_switch_to(struct thread *next)
      */
     {
         struct addrspace *as = proc_as(next->t_proc);
-        uint64_t epoch = vm_as_epoch();
         uint64_t maint = vm_maint_epoch();
 
         /*
-         * The epoch as well as the root, because a root is a frame and
-         * a frame comes back. Recognising a root this core already has
-         * is only the same space if no space has been destroyed since;
-         * otherwise it is a stale TLB for addresses the new space uses
-         * too. See cp_as_epoch.
+         * The identifier as well as the root, and between them they say
+         * which space this is. A root is a frame and a frame comes
+         * back, so a root this core already has is not by itself the
+         * same space; a name is handed on too, so a name is not by
+         * itself the same space either. What makes the pair enough is
+         * that a name's translations are thrown away where the name is
+         * handed back, before any space can be built with it. See
+         * as_release_asid().
+         *
+         * There used to be a third term here, a count of how many
+         * spaces had been destroyed, and it was what actually cleared a
+         * stale cache: it forced an activation and an activation
+         * flushed. M19 stage two took the flush out and left it a
+         * comparison that did nothing, and M19 stage four replaced what
+         * it was for.
          *
          * And the maintenance epoch, which is what a port with
          * core-local fences moves when another core invalidates
@@ -433,7 +442,6 @@ thread_switch_to(struct thread *next)
          */
         if (as->as_root != current_as_root ||
           as->as_asid != cpu_self()->cp_as_asid ||
-          epoch != cpu_self()->cp_as_epoch ||
           maint != cpu_self()->cp_as_maint) {
             bool flushed = md_as_activate(as);
 
@@ -444,7 +452,6 @@ thread_switch_to(struct thread *next)
             vm_count_switch(flushed);
             current_as_root = as->as_root;
             cpu_self()->cp_as_asid = as->as_asid;
-            cpu_self()->cp_as_epoch = epoch;
             cpu_self()->cp_as_maint = vm_maint_epoch();
         }
     }

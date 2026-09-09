@@ -103,6 +103,15 @@ struct vm_cost {
     uint64_t    vc_flush;
     uint64_t    vc_inval;
 
+    /*
+     * And how many times one identifier's worth of translations was
+     * thrown away, which happens when a space stops existing and its
+     * name goes back to be given to another. Counted always rather than
+     * inside the buffer path's bracket, because it is not the buffer
+     * path: a name being recycled is what M19 stage four is about.
+     */
+    uint64_t    vc_asid_inval;
+
     /* What was asked of them. */
     uint64_t    vc_pages;
     uint64_t    vc_halves;
@@ -136,6 +145,9 @@ void vm_charge_leaf(void);
 void vm_charge_table(void);
 void vm_charge_flush(void);
 void vm_charge_inval(void);
+
+/* Called by a port when it throws one identifier's translations away. */
+void vm_count_asid_inval(void);
 
 /*
  * Called by the rendezvous for each half of a move, saying how many
@@ -290,6 +302,22 @@ void md_tlb_flush_all(void);
 void md_tlb_invalidate(uintptr_t va);
 
 /*
+ * One identifier, for a space that is about to stop existing.
+ *
+ * Everything the hardware learned while running under that name goes,
+ * and nothing filed under any other name does. What this is for is
+ * handing the name to somebody else: a space that inherits an
+ * identifier inherits the translations filed under it, and this is what
+ * makes sure there are none.
+ *
+ * Local to the core that calls it on riscv64, which is what that port's
+ * fences are, so it says so through vm_note_local_maintenance() and the
+ * other core throws everything away at its next switch. Inner-shareable
+ * on aarch64, which reaches the other core itself.
+ */
+void md_tlb_invalidate_asid(uint32_t asid);
+
+/*
  * Map the registers this port's kernel reaches directly: the console it
  * panics through, and the interrupt controller. A driver's device memory
  * is not here, because a driver is a process and gets a grant.
@@ -312,14 +340,6 @@ sys_err_t vm_as_create(struct addrspace *as);
  * memory, so what this returns is the tables and the root.
  */
 void vm_as_destroy(struct addrspace *as);
-
-/*
- * How many address spaces have been destroyed. The context switch reads
- * it beside the root it is switching to, because a root that has been
- * freed and handed out again names a different space at the same
- * address. See subr_vm.c.
- */
-uint64_t vm_as_epoch(void);
 
 /*
  * Said by a port whose TLB maintenance reaches only the core that
@@ -356,6 +376,14 @@ uint64_t vm_maint_epoch(void);
  * away was something to expect.
  */
 uint64_t vm_maint_noted(void);
+
+/*
+ * How many identifiers have been given out, how many of those were
+ * somebody else's first, how many spaces got none at all, and how many
+ * names are out on loan now.
+ */
+void vm_asid_counts(uint32_t *given, uint32_t *reused, uint32_t *none,
+  uint32_t *live);
 
 /* The window loaded programs occupy, which no space maps for the kernel. */
 void vm_user_window(uintptr_t *base, size_t *len);
