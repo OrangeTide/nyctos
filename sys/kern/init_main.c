@@ -7219,8 +7219,61 @@ asid_checks(void)
           (unsigned long)flush_ns(moved), (unsigned long)flush_ns(kept));
     }
 
+    /*
+     * And the path neither port takes any more.
+     *
+     * Zero means the absence of an identifier, and a space holding it
+     * is entered by throwing every translation away. That is what a
+     * port with none to give does for every space and what this system
+     * will do when it runs out, which is M19 stage four. Both ports
+     * answer sixteen bits now, so nothing reaches that path in a boot
+     * and it would sit unrun until the day it mattered. One space is
+     * asked to hold zero here, and what is checked is that entering it
+     * flushes and that it still reads its own page: an identifier taken
+     * away is not a mapping taken away.
+     */
+    {
+        uint32_t asid = one.as_asid;
+        uint8_t saw;
+        bool flushed_zero;
+
+        one.as_asid = 0;
+
+        is = md_intr_disable();
+        flushed_zero = md_as_activate(&one);
+        saw = *(const volatile uint8_t *)va;
+        (void)md_as_activate(back);
+        md_intr_restore(is);
+
+        one.as_asid = asid;
+
+        if (!flushed_zero) {
+            panic("spaces: entering a space with no identifier kept "
+              "what it had");
+        }
+        if (saw != 0xA1) {
+            panic("spaces: a space with no identifier read 0x%x, not "
+              "0xa1", (unsigned int)saw);
+        }
+
+        cnprintf("    %-38s %s\n", "a space with no identifier at all",
+          "flushed, and read its own page");
+    }
+
     md_unmap(&one, va, PAGE_SIZE);
     md_unmap(&two, va, PAGE_SIZE);
+
+    /*
+     * md_unmap does no maintenance and says so: an entry gone from the
+     * table and still in the translation cache is a mapping that is
+     * still there. These two spaces are about to be destroyed and their
+     * frames handed back, so what would be left behind is a translation
+     * to somebody else's memory, filed under an identifier nothing
+     * hands out twice yet. That last clause is the whole of why it does
+     * not matter today and none of why it would be right to leave.
+     */
+    md_tlb_flush_all();
+
     vm_as_destroy(&one);
     vm_as_destroy(&two);
     page_free(pa_one);

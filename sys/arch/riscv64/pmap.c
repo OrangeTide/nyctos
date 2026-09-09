@@ -351,6 +351,19 @@ md_asid_bits(void)
         return bits;
     }
 
+    /*
+     * And it has to be the first time before translation is on, because
+     * the way to ask is to write satp. Asking afterwards would write
+     * mode zero into the register the kernel is running through and
+     * turn translation off in the middle of the sentence. The caller
+     * that gets this wrong is a caller that is added later, so it is
+     * refused here rather than left to the ordering in vm_kernel_init.
+     */
+    __asm__ volatile ("csrr %0, satp" : "=r" (back));
+    if (back != 0) {
+        panic("asid: asked how wide the field is with translation on");
+    }
+
     __asm__ volatile ("csrw satp, %0" ::
       "r" (SATP_ASID_MAX << SATP_ASID_SHIFT) : "memory");
     __asm__ volatile ("csrr %0, satp" : "=r" (back));

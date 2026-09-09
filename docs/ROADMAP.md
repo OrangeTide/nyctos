@@ -11412,6 +11412,32 @@ this milestone's.
   for the kernel's own memory is not tagged". Leaving either port's
   fence in the switch fails with "4 of 4 switches flushed, with 16
   bits".
+- *Both ports answering sixteen bits left the fallback unrun, and the
+  review is what noticed.* Zero means the absence of an identifier, and
+  a space holding it is entered by throwing every translation away.
+  Nothing in a boot reaches that now, so the branch would have sat there
+  until the day it mattered, which is the day identifiers run out. The
+  check asks one space to hold zero and requires two things of it: that
+  entering it flushes, and that it still reads its own page, since an
+  identifier taken away is not a mapping taken away. Removing the flush
+  from that branch fails on both ports with "entering a space with no
+  identifier kept what it had".
+- *The check was violating the contract it was checking.* `md_unmap`
+  does no TLB maintenance and says so, and the check unmapped two
+  spaces, destroyed them and handed their frames back without any. What
+  that leaves is a translation to somebody else's memory, filed under an
+  identifier nothing hands out twice yet. The last clause is the whole
+  of why it did not matter and none of why it would be right to leave,
+  and it stops being true at stage four.
+- *And the width probe is a loaded gun on riscv64.* The way to ask is to
+  write `satp`, so asking after translation is on writes mode zero into
+  the register the kernel is running through and turns translation off
+  in the middle of the sentence. Ordering in `vm_kernel_init` is what
+  keeps that from happening, and the caller who gets it wrong is a
+  caller added later. It is refused where it happens now: with the
+  answer no longer remembered, the next spawn fails with "asid: asked
+  how wide the field is with translation on" instead of the machine
+  disappearing.
 - *What the host still does not do is honour any of it.* The same chain
   walked twice, once without leaving the space and once having just
   entered another: 133152 nanoseconds against 7888 on aarch64, 131400
