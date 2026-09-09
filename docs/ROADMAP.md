@@ -11066,6 +11066,208 @@ what a full queue displaces.
 
 ---
 
+### M19. Telling Address Spaces Apart
+
+**Every switch throws away every translation, and neither port has to.**
+
+The boot prints the number above the compared line, where M6's review
+put it: **5480 address space switches, each a whole-TLB flush, against
+46 buffer halves.** A dispatch into a different address space writes the
+root register and discards everything the hardware had learned, so the
+next few hundred memory accesses walk page tables that were already
+walked a moment ago. Both architectures have a field that would prevent
+this. Neither port fills it in.
+
+**M6 said this milestone would have to happen and said what it would
+find.** Its retrospective is explicit: what a cohort removes that costs
+anything is the whole-TLB flush on a switch between members, the
+mechanism that removes the same cost without a shared fault domain is
+address space identifiers, and they would remove the flush from all
+three hundred and ninety-five switches rather than from thirty-seven.
+Two of the three things a cohort was measured doing are better served by
+a mechanism that costs no isolation, and the case for section 18 now
+rests on forwarding rather than on mapping. That is a claim about a
+mechanism nobody had built. This milestone builds it, and section 9.2 is
+answered against it or it is not answered at all.
+
+**The two ports are wrong in opposite directions, which is the first
+thing to say about them.** riscv64 puts an identifier in `satp` and
+tags every translation with it: this port writes zero, so every space
+this system has ever had shares one identifier, and the entries are
+already tagged with the wrong thing. aarch64 puts an identifier in
+`TTBR0_EL1` and tags a translation only if its leaf descriptor says the
+translation is not global: this port never sets that bit, so every entry
+is global, and an identifier would be ignored. One port needs a number
+it is already carrying; the other needs the entries to admit they belong
+to somebody.
+
+**And the width is not a constant.** riscv64's is implementation
+defined and may be zero, discoverable only by writing ones and reading
+back what stuck. aarch64's is eight or sixteen bits depending on a field
+in `TCR_EL1` that this port leaves at eight. A mechanism that assumes
+sixteen bits is a mechanism that breaks on a board nobody has run yet,
+which is the thing this project has been careful about everywhere else.
+
+**The specification is silent, which is a different gap from the last
+two milestones.** M17 and M18 both found sentences in `design.md` that
+were false. Here there are none: section 13.3 accounts for what bounds
+interrupt latency and says nothing about what a dispatch into another
+address space costs, section 15 describes address spaces without
+mentioning that translations might be told apart, and section 18 argues
+for cohorts partly from a cost that is about to change. The absent
+sentence is the more usual failure and the harder one to notice.
+
+*Needs.* Nothing in the kernel is missing. The address space object
+exists, the switch has one place it happens, and the destroy path
+already has an epoch counter for the case where a root frame is reused,
+which is the same shape as an identifier being reused and is the reason
+that mechanism is worth reading before writing another one.
+
+**What this is not.** Not cross-core TLB maintenance in general, which
+is section 13.3's and stays a limitation except where an identifier
+makes it worse. Not a rewrite of the page tables. Not a second address
+space for the kernel: this kernel is identity mapped and shares the
+program's tables, and changing that is section 15's business and not
+this milestone's.
+
+**1. What a flush costs, before anything changes.** *Planned.*
+
+- The number of switches is already printed. What is not known is what
+  one costs, and a milestone that removes a cost it never measured is a
+  milestone reporting a number rather than an improvement.
+- A kernel thread walks a fixed set of pages twice: once with the
+  translations it just used still in the cache, and once after a flush.
+  The difference is what the flush costs on this host, and the same walk
+  on the same pages is what makes the two comparable.
+- *Check.* The count is asserted and the durations are reported, per M9:
+  the number of pages walked and the number of flushes are the kernel's,
+  and how long the walk took is the host's. What is asserted about the
+  durations is the relation, which is that the walk after a flush is
+  slower, with a margin wide enough that a fast host does not fail it
+  and narrow enough that an unchanged system does.
+- *And the relation has to be able to be false.* Removing the flush from
+  between the two walks must make the check fail, or it is measuring the
+  walk rather than the flush.
+
+**2. An identifier per space, and a switch that keeps its translations.**
+*Planned.*
+
+- One field on `struct addrspace`, assigned when the space is created,
+  written into the root register at activation, and the flush removed
+  from that path.
+- riscv64 first, because its entries are already tagged and the port
+  needs the number rather than the entries changing.
+- *Which entries are global* is a decision this stage has to make rather
+  than inherit. Every address space carries the same identity map of
+  kernel and device memory, so those entries are the same in all of
+  them, and marking them global keeps one copy for the machine instead
+  of one per space. The alternative is a translation cache holding the
+  same kernel mapping under every identifier that has run.
+- *Check.* Two spaces, the same virtual address, different physical
+  pages, and a dispatch between them: each sees its own page. That is
+  the thing tagging must get right and it fails immediately if the
+  identifier is not being written or the entries are not carrying it.
+- *And the flush count is asserted*, because the whole point is that it
+  goes to zero on the switch path while the system still runs.
+
+**3. The other port, and what the two do not share.** *Planned.*
+
+- aarch64 needs the leaf descriptors to say they are not global, the
+  identifier in the high bits of the root register, and a decision about
+  eight bits or sixteen.
+- *The ports diverge here in a way worth writing down.* On one, making
+  an entry global is an optimisation; on the other, it is what every
+  entry already is and the work is making them stop.
+- *Check.* The same two-space check, and the identical count of flushes
+  removed, on both ports at Tier 2.
+
+**4. Running out of identifiers, and the entry that outlives its space.**
+*Planned.*
+
+- The pool is finite and small: eight bits is two hundred and fifty-six,
+  and a system that spawns is a system that eventually reuses one. A
+  space that inherits an identifier inherits the translations filed
+  under it.
+- *The epoch that covers this today stops covering it.* When an address
+  space is destroyed, a counter is bumped and every core re-activates at
+  its next switch, which today means a flush, which is what actually
+  clears the stale entries. Take the flush out of activation and the
+  epoch is a comparison that no longer does anything. That is a defect
+  this stage introduces and must close, and it is the reason the stage
+  exists rather than being folded into stage two.
+- *Check.* The identifier space is capped at build time to something
+  small enough for a boot to exhaust, so that reuse is reached rather
+  than argued about. A space that takes a recycled identifier must see
+  its own pages, and the check has to be able to fail: with the
+  invalidation removed it must fail, and the failure must be the wrong
+  page rather than a fault.
+
+**5. Two cores, one identifier space.** *Planned.*
+
+- Tier 2 runs two cores. An identifier assigned on one is used on the
+  other, and a recycled one leaves entries on a core that never ran the
+  space that made them.
+- *The ports differ again.* aarch64's invalidations are inner-shareable
+  and reach the other core; riscv64's `sfence.vma` is local to the core
+  that executes it, which is the standing limitation this project
+  already carries. An identifier makes that limitation sharper, because
+  what is stale is now filed under a name somebody else will use.
+- *Check.* The other core's view after a recycle, arranged with the
+  migration M11 built, asserted as the page read rather than as an
+  absence of faults.
+
+**6. The buffer path, and whether M6's correction was right.** *Planned.*
+
+- M6's review said that once entries are tagged, one invalidation stops
+  covering both spaces and the buffer path needs two calls per page
+  instead of one. Both ports have an invalidate-by-address form that
+  covers every identifier, so the choice is one broad call or two narrow
+  ones, and which is cheaper is a measurement rather than an argument.
+- *Check.* The buffer remapping counts, which are already in the
+  compared report, and the same walk-and-time comparison stage one
+  built. Whichever is kept, the number of invalidations per page moved
+  is asserted, and if it goes from one to two the report says so.
+
+**7. What it cost, and sections 13.3, 15 and 18 written around it.**
+*Planned.*
+
+- *Check.* The figures as counts: flushes removed, invalidations added,
+  identifiers assigned and recycled in a boot, and the switch count that
+  no longer flushes.
+- Section 13.3 gains what a dispatch into another address space costs
+  now. Section 15 gains the identifier, what is global and why, and the
+  rule for reuse. Section 18's case is restated against a measurement
+  rather than against a mechanism nobody had built, which is what
+  section 9.2 asked for and could not have.
+
+*Done when* a boot's address space switches keep their translations on
+both ports and at Tier 2, a space that reuses an identifier sees its own
+pages and not the previous holder's, and the cost of a flush and of the
+maintenance that replaces it are both numbers rather than assertions.
+
+*Would falsify.* That address space identifiers are the cheaper way to
+buy what a cohort buys. If the bookkeeping to be correct about reuse
+costs more than the flushes it removes, or if a port's identifier space
+is too small to be worth managing, then the flush is the honest thing
+and section 18's case is stronger than M6 left it. The measurement that
+settles it is stage one's cost of a flush against stage six's cost of
+the maintenance, in the same units on the same host.
+
+*Watch for.* A check that cannot fail on the thing it is for, which this
+project has produced in six consecutive milestones. Here the shape is
+obvious in advance: a system with stale translations mostly works, and a
+check that boots and prints has not tested tagging at all. Every stage's
+check has to read a page whose content says which space it came from.
+And a number that moves on its own: the switch count is not
+deterministic, which M6's review found the hard way, so what is compared
+has to be the flushes on that path and not how many times it was taken.
+
+*Size.* Medium. Two ports, one field, and one mechanism for reuse, which
+is the part that is neither small nor optional. The measurement either
+side of it is most of the work and the reason to do it in this order.
+
+---
+
 
 ## 4. Milestone 1, in Retrospect
 
