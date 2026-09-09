@@ -11352,16 +11352,74 @@ this milestone's.
   cannot measure the saving, and stage seven has to say so in those
   words rather than report a number it did not observe.
 
-**3. The other port, and what the two do not share.** *Planned.*
+**3. The other port, and what the two do not share.** *Built.*
 
-- aarch64 needs the leaf descriptors to say they are not global, the
-  identifier in the high bits of the root register, and a decision about
-  eight bits or sixteen.
-- *The ports diverge here in a way worth writing down.* On one, making
-  an entry global is an optimisation; on the other, it is what every
-  entry already is and the work is making them stop.
-- *Check.* The same two-space check, and the identical count of flushes
-  removed, on both ports at Tier 2.
+- aarch64 sets nG on every leaf it writes, puts the identifier in the
+  top of `TTBR0_EL1` beside the root, and selects the width in
+  `TCR_EL1.AS`.
+- *The ports diverge here in a way worth writing down, and it is the
+  whole of the difference.* On riscv64 the entries were tagged already
+  and the port needed the number; on aarch64 the number was already
+  writable and the entries had to stop calling themselves global. So on
+  one port marking an entry global is an optimisation, and on the other
+  it is what every entry already was. None is left global on either, for
+  stage two's reason: a grant rewrites the kernel's own entry for the
+  address it covers, in one space and no other.
+- *Eight bits or sixteen is the hardware's to say, not the header's.*
+  `ID_AA64MMFR0_EL1.ASIDBits` is asked, and sixteen taken when it is
+  offered, because an identifier space that runs out has to be recycled
+  and recycling is the expensive part. Asked of a register rather than
+  written and read back, which is riscv64's method only because riscv64
+  has no register that answers. The selection goes into `TCR_EL1` in
+  `md_mmu_enable` and nowhere else, since that is the one place allowed
+  to write the registers that describe the format, and both cores come
+  through it.
+- *Check.* The same two-space check on both ports at Tier 2, and the
+  count of flushes removed is not merely comparable but identical.
+
+  ```
+  spaces: whether a switch keeps what it learned
+      identifiers this port has              16 bits, 65535 to give
+      leaves say which space they belong to  the program's and the kernel's
+      the identifier the hardware ran under  41, then 42
+      one address in two spaces reads        0xa1, 0xb2, then 0xa1 again
+      switches that flushed everything       0 of 4
+  ```
+
+  That block is what both ports print, line for line. Over the boot,
+  riscv64 reports 5480 switches with 7 flushes and aarch64 reports 5482
+  with none. The seven are the other core's invalidations reaching this
+  one, which aarch64 does not need because its fences are
+  inner-shareable and reach the other core themselves. That is the
+  second thing the two ports do not share, and it is the one that shows
+  up in a number.
+- *The stage's own work needed a check the stage did not have.* An
+  identifier written into the root register while every leaf still calls
+  itself global is a number nothing reads, and a system in that state
+  boots, runs, and prints: every space would share every translation,
+  and a cache that answers for the wrong space answers with the right
+  page until two spaces disagree about one address. Neither the read of
+  two spaces nor the read-back of the register would notice. So the
+  descriptor itself is read back, at whatever level the port put the
+  leaf, and asked whether it says the translation belongs to one space.
+  Both ports answer the same question and spell it in opposite
+  directions, which is why it is asked of the port.
+- *And it can be false, four ways.* Leaving aarch64's leaves global
+  fails with "the leaf for a program's page is not tagged". Dropping the
+  identifier out of `TTBR0_EL1` fails with "the hardware was running
+  under 0 and 0, not 41 and 42". Marking riscv64's kernel mappings
+  global, which is what stage two decided against, fails with "the leaf
+  for the kernel's own memory is not tagged". Leaving either port's
+  fence in the switch fails with "4 of 4 switches flushed, with 16
+  bits".
+- *What the host still does not do is honour any of it.* The same chain
+  walked twice, once without leaving the space and once having just
+  entered another: 133152 nanoseconds against 7888 on aarch64, 131400
+  against 8000 on riscv64. Writing the root register discards every
+  translation on this emulator whichever port asks, so both ports now
+  pay the same price for the same saving, which is none. The kernel is
+  correct and the measurement is unchanged, and stage seven has to say
+  both.
 
 **4. Running out of identifiers, and the entry that outlives its space.**
 *Planned.*

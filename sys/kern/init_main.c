@@ -6998,6 +6998,7 @@ asid_checks(void)
     uint8_t saw_one, saw_two, saw_again;
     uint32_t told_one, told_two;
     uint32_t flushed = 0;
+    bool tagged;
     uint32_t want;
     uint32_t bits = md_asid_bits();
 
@@ -7034,6 +7035,34 @@ asid_checks(void)
       md_map(&two, va, pa_two, PAGE_SIZE, VM_PROGRAM) != SYS_OK) {
         panic("spaces: the address would not map");
     }
+
+    /*
+     * What the leaves say, before anything is run in either space.
+     *
+     * This is the half of the stage the two ports do in opposite
+     * directions, and the half a working system does not notice is
+     * missing. An identifier written into the root register while the
+     * entries call themselves global is a number nothing reads: every
+     * space would share every translation and the machine would run,
+     * because a translation cache that answers for the wrong space
+     * answers with the right page until two spaces disagree. So the
+     * descriptor is read back rather than inferred.
+     *
+     * The kernel's own address as well as the program's, because M19
+     * stage two decided that nothing is global and a grant is the
+     * reason. An entry the kernel put in every space is exactly the one
+     * somebody would be tempted to mark shared.
+     */
+    if (md_leaf_tagged(&one, va, &tagged) != SYS_OK || !tagged) {
+        panic("spaces: the leaf for a program's page is not tagged");
+    }
+    if (md_leaf_tagged(&one, pa_one, &tagged) != SYS_OK || !tagged) {
+        panic("spaces: the leaf for the kernel's own memory is not "
+          "tagged");
+    }
+
+    cnprintf("    %-38s %s\n", "leaves say which space they belong to",
+      "the program's and the kernel's");
 
     back = proc_as(thread_current()->t_proc);
 
@@ -13667,16 +13696,21 @@ kernel_main(void)
               "identifier", (unsigned int)all.vc_switch_flush,
               (unsigned int)all.vc_switch,
               (unsigned int)md_asid_bits());
-        } else if (cpu_count() > 1 && all.vc_switch_flush == 0) {
+        } else if (cpu_count() > 1 && vm_maint_noted() > 0 &&
+          all.vc_switch_flush == 0) {
             /*
-             * And not none of them either, on a machine with a second
-             * core whose fences do not reach this one. Both sessions
-             * report seven, which is small and is not zero, and zero
-             * would mean the switch had stopped noticing the other
-             * core's maintenance rather than that there was none.
+             * And not none of them either, where there is a second core
+             * whose fences do not reach this one and it did some
+             * maintenance. riscv64 reports seven, which is small and is
+             * not zero, and zero would mean the switch had stopped
+             * noticing the other core rather than that there was
+             * nothing to notice. aarch64's fences are inner-shareable
+             * and reach the other core themselves, so that port notes
+             * no maintenance and expects no such flush.
              */
-            panic("no switch threw anything away, on %u cores",
-              (unsigned int)cpu_count());
+            panic("no switch threw anything away, on %u cores with %lu "
+              "invalidations to hear about", (unsigned int)cpu_count(),
+              (unsigned long)vm_maint_noted());
         }
 
         {

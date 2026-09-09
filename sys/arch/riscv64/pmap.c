@@ -368,6 +368,28 @@ md_asid_bits(void)
     return bits;
 }
 
+sys_err_t
+md_leaf_tagged(const struct addrspace *as, uintptr_t va, bool *out)
+{
+    uint64_t *table = table_at(as->as_root);
+    unsigned int level;
+
+    for (level = 0; level < 3; level++) {
+        uint64_t e = table[INDEX(va, level)];
+
+        if ((e & PTE_V) == 0) {
+            return SYS_ERR_INVALID_ARG;
+        }
+        if (PTE_LEAF(e) || level == 2) {
+            *out = (e & PTE_G) == 0;
+            return SYS_OK;
+        }
+        table = table_at((uintptr_t)PTE_ADDR(e));
+    }
+
+    return SYS_ERR_INVALID_ARG;
+}
+
 uint32_t
 md_as_current_asid(void)
 {

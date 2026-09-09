@@ -256,6 +256,19 @@ vm_maint_epoch(void)
     return sum;
 }
 
+uint64_t
+vm_maint_noted(void)
+{
+    uint64_t sum = 0;
+    uint32_t i;
+
+    for (i = 0; i < SYS_MAX_CORES; i++) {
+        sum += maint_by_core[i];
+    }
+
+    return sum;
+}
+
 void
 vm_as_destroy(struct addrspace *as)
 {

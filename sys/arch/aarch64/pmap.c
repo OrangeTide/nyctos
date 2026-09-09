@@ -43,6 +43,26 @@
 #define ATTR_AP_RO_ALL  (3ULL << 6)
 #define ATTR_SH_INNER   (3ULL << 8)
 #define ATTR_AF         (1ULL << 10)
+
+/*
+ * Not global: file this translation under whatever identifier was
+ * current when it was made, and consult it only under that one.
+ *
+ * Set on every leaf this port writes, per M19 stage three. The other
+ * port had to be given an identifier and its entries were tagged
+ * already; here the entries are what had to change, and an identifier
+ * written into the root register was a number nothing read. That is the
+ * whole of the difference between the two ports, and it runs in
+ * opposite directions: there, marking an entry global would be an
+ * optimisation, and here it is what every entry already was.
+ *
+ * None of them is left global, for M19 stage two's reason. The kernel's
+ * identity map looks like the one thing that is the same in every
+ * space, and it is not: a grant rewrites the kernel's own entry for the
+ * address it covers, with user access, in the holder's space and no
+ * other.
+ */
+#define ATTR_NG         (1ULL << 11)
 #define ATTR_PXN        (1ULL << 53)
 #define ATTR_UXN        (1ULL << 54)
 
@@ -65,16 +85,34 @@
                          (1ULL << 23)  | /* EPD1: no TTBR1 walks */         \
                          (0ULL << 32))   /* IPS: 32 bits */
 
+/*
+ * Where the identifier sits in the root register, and the bit in TCR
+ * that says how much of it is read. AS selects sixteen bits; with it
+ * clear only the low eight of the field mean anything.
+ */
+#define TTBR_ASID_SHIFT 48
+#define TCR_AS          (1ULL << 36)
+
 #define SCTLR_M         (1ULL << 0)
 #define SCTLR_C         (1ULL << 2)
 #define SCTLR_I         (1ULL << 12)
+
+/*
+ * The root register's value for a space: which tables, and which space.
+ */
+static uint64_t
+as_ttbr0(const struct addrspace *as)
+{
+    return (uint64_t)as->as_root |
+      ((uint64_t)as->as_asid << TTBR_ASID_SHIFT);
+}
 
 static uint64_t
 leaf_attrs(uint32_t flags, bool block)
 {
     uint64_t e = block ? DESC_BLOCK : DESC_PAGE;
 
-    e |= ATTR_AF;
+    e |= ATTR_AF | ATTR_NG;
     if (flags & VM_DEVICE) {
         e |= ATTR_IDX(MAIR_DEVICE);
     } else {
@@ -345,20 +383,37 @@ md_map_devices(struct addrspace *as)
 }
 
 /*
- * How wide this port's identifier field is, which is nothing yet.
+ * How wide this port's identifier field is: eight bits or sixteen, and
+ * which one is the hardware's to say.
  *
- * The register has one and the field that selects eight bits or sixteen
- * is real, but an identifier only tags a translation whose leaf
- * descriptor says the translation is not global, and every descriptor
- * this port writes says it is. An identifier written into the root
- * register here would be a number nothing reads. Answering zero is what
- * makes the switch keep flushing, which is correct; M19 stage three is
- * where the descriptors change and this stops being zero.
+ * Asked of ID_AA64MMFR0_EL1 rather than written and read back, which is
+ * the other port's method because the other port has no register that
+ * answers. Here one does, and its answer is the architecture's own.
+ * Sixteen is taken when it is offered, because an identifier space that
+ * runs out is a space that has to be recycled, and recycling is the
+ * expensive part.
+ *
+ * Answered once and remembered, because md_mmu_enable has to put the
+ * matching selection into TCR_EL1 and the second core has to make the
+ * same choice as the first.
  */
 uint32_t
 md_asid_bits(void)
 {
-    return 0;
+    static uint32_t bits;
+    static bool asked;
+    uint64_t mmfr0;
+
+    if (asked) {
+        return bits;
+    }
+
+    __asm__ volatile ("mrs %0, id_aa64mmfr0_el1" : "=r" (mmfr0));
+
+    bits = (((mmfr0 >> 4) & 0xFULL) == 2) ? 16u : 8u;
+    asked = true;
+
+    return bits;
 }
 
 /*
@@ -366,6 +421,28 @@ md_asid_bits(void)
  * reads it whether or not anything writes it. Today nothing does, so
  * this answers zero, which is the true answer and not a placeholder.
  */
+sys_err_t
+md_leaf_tagged(const struct addrspace *as, uintptr_t va, bool *out)
+{
+    uint64_t *table = table_at(as->as_root);
+    unsigned int level;
+
+    for (level = 1; level <= 3; level++) {
+        uint64_t e = table[INDEX(va, level)];
+
+        if ((e & 0x3u) == 0) {
+            return SYS_ERR_INVALID_ARG;
+        }
+        if ((e & 0x3u) == DESC_BLOCK || level == 3) {
+            *out = (e & ATTR_NG) != 0;
+            return SYS_OK;
+        }
+        table = table_at(e & 0x0000fffffffff000ULL);
+    }
+
+    return SYS_ERR_INVALID_ARG;
+}
+
 uint32_t
 md_as_current_asid(void)
 {
@@ -373,7 +450,8 @@ md_as_current_asid(void)
 
     __asm__ volatile ("mrs %0, ttbr0_el1" : "=r" (ttbr0));
 
-    return (uint32_t)((ttbr0 >> 48) & 0xFFFFULL);
+    return (uint32_t)((ttbr0 >> TTBR_ASID_SHIFT) &
+      ((1ULL << md_asid_bits()) - 1));
 }
 
 bool
@@ -381,29 +459,46 @@ md_as_activate(const struct addrspace *as)
 {
     /*
      * A switch, not an enable. It writes the root register and
-     * discards what the hardware remembers, and it deliberately does
-     * not touch the registers that describe the format: changing
-     * those while translation is live is a different operation with
-     * different rules, and doing it on every context switch was how
-     * this port ended up raising an undefined instruction on a valid
-     * one.
+     * deliberately does not touch the registers that describe the
+     * format: changing those while translation is live is a different
+     * operation with different rules, and doing it on every context
+     * switch was how this port ended up raising an undefined
+     * instruction on a valid one.
+     *
+     * The identifier rides in the top of the same register as the root,
+     * so one write says both which tables and which space. A space with
+     * one keeps what the hardware learned about everywhere else; a
+     * space with none is a space the hardware cannot tell from any
+     * other with none, so entering it means throwing everything away.
      */
-    __asm__ volatile ("msr ttbr0_el1, %0" :: "r" ((uint64_t)as->as_root));
+    __asm__ volatile ("msr ttbr0_el1, %0" :: "r" (as_ttbr0(as)));
     __asm__ volatile ("isb");
 
-    md_tlb_flush_all();
+    if (as->as_asid == 0) {
+        md_tlb_flush_all();
+        return true;
+    }
 
-    return true;
+    return false;
 }
+
 
 void
 md_mmu_enable(const struct addrspace *as)
 {
     uint64_t sctlr;
 
+    /*
+     * The identifier width goes into TCR here and nowhere else, because
+     * this is the one place that is allowed to write it: changing the
+     * registers that describe the format while translation is live is a
+     * different operation with different rules. Both cores come through
+     * here and md_asid_bits() answers both of them the same.
+     */
     __asm__ volatile ("msr mair_el1, %0" :: "r" (MAIR_VALUE));
-    __asm__ volatile ("msr tcr_el1, %0" :: "r" ((uint64_t)TCR_VALUE));
-    __asm__ volatile ("msr ttbr0_el1, %0" :: "r" ((uint64_t)as->as_root));
+    __asm__ volatile ("msr tcr_el1, %0" :: "r" ((uint64_t)TCR_VALUE |
+      (md_asid_bits() == 16 ? TCR_AS : 0)));
+    __asm__ volatile ("msr ttbr0_el1, %0" :: "r" (as_ttbr0(as)));
     __asm__ volatile ("isb");
 
     /*

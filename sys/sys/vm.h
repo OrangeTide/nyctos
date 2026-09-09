@@ -242,6 +242,25 @@ uint32_t md_asid_bits(void);
  */
 uint32_t md_as_current_asid(void);
 
+/*
+ * Whether the leaf that covers this address says its translation
+ * belongs to one space rather than to the machine.
+ *
+ * The two ports spell it in opposite directions, which is why this is
+ * asked of the port and not read from a bit somebody named. riscv64
+ * tags every entry unless it is marked global; aarch64 tags none of
+ * them unless it is marked not global. What both answer is the same
+ * question, and the answer says whether an identifier means anything
+ * for this address.
+ *
+ * SYS_ERR_INVALID_ARG if nothing covers the address. Any leaf answers,
+ * at whatever level the port put it, because the kernel's own mappings
+ * are blocks and a check that could only ask about pages could not ask
+ * about them.
+ */
+sys_err_t md_leaf_tagged(const struct addrspace *as, uintptr_t va,
+  bool *out);
+
 /* Turn translation on for the first time, in this space. */
 void md_mmu_enable(const struct addrspace *as);
 
@@ -329,6 +348,14 @@ void vm_note_local_maintenance(void);
  * entry away is not the core still holding it.
  */
 uint64_t vm_maint_epoch(void);
+
+/*
+ * And how much every core has done between them, which is zero on a
+ * port whose fences reach the other core by themselves. What reads it
+ * is the boot report, to know whether a switch that threw everything
+ * away was something to expect.
+ */
+uint64_t vm_maint_noted(void);
 
 /* The window loaded programs occupy, which no space maps for the kernel. */
 void vm_user_window(uintptr_t *base, size_t *len);

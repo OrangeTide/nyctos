@@ -1039,10 +1039,14 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - Collecting departed peers is written for more than one draining thread
   and has only been run with one, and every collection, notice and
   displacement measured here happens on the core the event happened on.
-- Neither port assigns address space identifiers, so every dispatch into
-  a different address space discards the whole translation cache. That is
-  the largest cost the milestone 6 measurements turned up and the one
-  that would most change what a cohort is worth.
+- Both ports assign address space identifiers now, and a dispatch into
+  another address space no longer discards anything: 5480 switches in a
+  boot, 7 of them a flush on riscv64 and none on aarch64. What that
+  bought on the machine this runs on is nothing. Writing the root
+  register makes the emulator throw every translation away whichever
+  port asks, so a walk after a switch still costs 131400 nanoseconds
+  against 8000 for the same walk without one. The kernel is correct and
+  the saving is not measurable here.
 
 ## Next steps
 
