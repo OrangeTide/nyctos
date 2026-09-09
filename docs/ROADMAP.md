@@ -10628,28 +10628,52 @@ event.** *Planned.*
   queued sender is a blocked thread, and one slow server can take the
   whole thread budget with it. There is no way for a client to learn
   that it is joining a backlog rather than being served.
-- *The mechanism is `listen`'s.* The server sets a maximum depth on the
-  channel it receives on, which only it can do because setting it needs
-  `SYS_RIGHT_RECV`, and a send that would exceed it is refused at once
-  with `SYS_ERR_WOULDBLOCK` rather than queued. A client that is refused
-  knows the difference between a server that is slow and a server that
-  is overloaded, which a deadline cannot tell it: a deadline says how
-  long this client is willing to wait and says nothing about how many
-  others are already waiting.
-- *The refusal has to respect priority, which is where this differs from
-  `listen`.* Section 12.1 orders the queue by sender priority, so
-  refusing whoever arrives last would let low-priority clients fill the
-  queue and lock a high-priority one out, which is priority inversion in
-  a new place. The queue is a priority queue and the thing to displace
-  is its lowest, exactly as the pulse queue drops its oldest user pulse
-  and keeps the reservation. Whether a displaced sender is refused or
-  merely told is this stage's question.
+- *The mechanism is `listen`'s: a depth the server sets*, which only it
+  can do because setting it needs `SYS_RIGHT_RECV` on the channel.
+- *But the analogy stops at the depth, because there is no accept here.*
+  A send is the connect and the request in one, so joining the queue is
+  connecting, and a client displaced from the queue afterwards has not
+  been refused a connection: it made one and was then terminated before
+  its first request was answered. That is `close` after `accept`, not
+  `ECONNREFUSED`, and saying so is what makes the rule simple.
+- *So the rule is one rule.* A send always joins the queue, and while
+  the queue is over depth its lowest-priority sender is taken off and
+  failed. When that is the arriving client, the effect is a refusal it
+  gets at once; when it is a client already waiting, the effect is the
+  close after accept. Neither is a special case and there is no "would
+  this fit" question asked before the insert, which is the same
+  comparison written twice.
+- *And the eviction is cheap, which is why this is worth doing this
+  way.* A queued sender has lent nothing and donated nothing: section
+  12.1 hands the buffer over when a server takes the message, and
+  `t_donee` is set at the rendezvous. `sender_insert` already orders the
+  queue by descending priority with arrival order within a level, so the
+  lowest is the tail. Taking it off and waking it is the deadline path
+  without the timer.
+- *The alternative is rejected and the reason is worth keeping.* A send
+  could block until a slot frees rather than being failed, which is a
+  queue for the queue: more state, and a client that learns nothing
+  until it has already waited. Failing fast is the whole point, and a
+  mechanism whose refusal arrives late is not one.
+- *One error for both outcomes, deliberately.* A client cannot usefully
+  act differently on "never admitted" and "admitted and then displaced":
+  in both cases nothing happened, nothing was lent, and the server never
+  saw it. Two errors would invite a client to try. Section 12.5's two
+  errors differ because what the *server* learns differs, and here it
+  learns nothing either way, which stage two measured.
 - *Check.* A server that never receives, a depth of two, and three
   clients. The first two queue and the third is refused at once rather
   than at its deadline, which the clock says. Then the same three with
-  the third at a higher priority: it is the one that queues and a lower
-  one is displaced. A depth of zero refuses everything, and no depth at
-  all behaves as it does today.
+  the third at a higher priority: it is the one that queues, the tail is
+  displaced, and the displaced client comes back with its buffer still
+  its own and a server that never saw it. A depth of zero refuses
+  everything. No depth at all behaves as it does today, so a channel
+  nobody bounded is a channel this stage did not change.
+- *And the corner case is the displaced client*, which is the one shape
+  that did not exist before: a thread woken out of a queue by somebody
+  else's arrival rather than by its own deadline or its own death. What
+  it must not have is anything half done, and what says so is that the
+  queue afterwards is exactly the survivors, in priority order.
 
 **7. What it cost, and sections 12.5, 13.1 and 12.1 written around it.**
 *Planned.*
@@ -10660,15 +10684,17 @@ event.** *Planned.*
 - The sections say what a server actually learns, when it learns
   nothing, what it has to do for itself, and what it may refuse. Section
   13.1 loses the claim that a dropped notice leaks permanently, because
-  after stage four it does not. Section 12.1 gains the depth and the
-  rule that a full queue displaces its lowest priority rather than its
-  newest arrival.
+  after stage four it does not. Section 12.1 gains the depth, the rule
+  that a full queue displaces its lowest priority rather than its newest
+  arrival, and the third way a queued send can end: not answered, not
+  timed out, but displaced by somebody who outranked it.
 
 *Done when* a server holding a record per client ends the boot holding
 records for exactly the clients still alive, on both ports and at both
 tiers, with at least one death notice deliberately lost on the way; and
-a client sending to a server that is not keeping up is refused rather
-than queued behind it.
+a client sending to a server that is not keeping up is failed rather
+than queued behind it, whether it is turned away on arrival or
+displaced afterwards by somebody who outranked it.
 
 *Would falsify.* That the notice as specified is enough for a server to
 keep its own books. Stage two has already answered half of it: one death
@@ -10691,9 +10717,12 @@ received has to be lower than the number of deaths, and asserted to be.
 *Size.* Medium to large, and larger than it was. Stages one to three are
 the server and the identity, and are small. Stage four moves where the
 truth lives, stage five is what that buys, and stage six adds a
-mechanism to section 12.1 rather than exercising one that exists. The
-boot report grows by two counts and the design gains a rule about what a
-full queue displaces.
+mechanism to section 12.1 rather than exercising one that exists. That
+one is smaller than it first looked: a queued sender has lent nothing
+and donated nothing, so evicting one is the deadline path without the
+timer, and the queue is already ordered so that the lowest is its tail.
+The boot report grows by two counts and the design gains a rule about
+what a full queue displaces.
 
 ---
 
