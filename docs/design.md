@@ -1285,9 +1285,11 @@ The paragraphs above say what is announced. Measured against every way a client 
 
 #### The connection is that fact
 
-**A connection knows when its peers have gone.** It counts the handles held by processes other than the one that owns the channel, so a handle in the server's own table is not mistaken for a client's, and when that count falls to zero having been above it the connection is marked. Nothing is allocated for this: the connection already exists, already lives as long as the client's handle on it, and already carries the cookie the server named it with.
+**A connection knows when its peers have gone.** It counts the references held by anything but its server, so a handle in the server's own table is not mistaken for a client's, and when that count falls to zero having been above it the connection is marked. Nothing is allocated for this: the connection already exists, already lives as long as the client's handle on it, and already carries the cookie the server named it with.
 
-**A server that wants those connections says so, and then collects them.** `sys_chan_listen()` is not this; `sys_chan_reap()` is. The first call turns collecting on for a channel, which needs `SYS_RIGHT_RECV`, and every call returns the cookie of one connection whose peers have all gone and lets it go, answering `SYS_ERR_NO_ENT` when there are none. A server drains it in a loop and does not count how many times it was told.
+**Its server is the process that owned the channel when the connection was made, remembered rather than looked up.** Ownership follows the receive right and can move, so a count that asked afresh each time would add on one answer and subtract on another: a reference taken before ownership moved and dropped after it would leave the count saying a departed client is still there, or saying a client has gone while it is still holding, and the second of those hands a server the records of a client it is still talking to.
+
+**A server that wants those connections says so, and then collects them.** `sys_chan_reap()` does both: the first call turns collecting on for the channel, which needs `SYS_RIGHT_RECV`, and every call returns the cookie of one connection whose peers have all gone and lets it go, answering `SYS_ERR_NO_ENT` when there are none. A server drains it in a loop and does not count how many times it was told.
 
 **That is `SIGCHLD` and `waitpid`, and it is the same shape for the same reason.** The signal coalesces and can be lost, and the idiom that works is a drain loop against the table, because the authoritative thing is the entry and the signal is only a hint that it is worth looking. `SYS_PULSE_PEER_GONE` is the hint; the kept connection is the entry; losing the hint costs latency and not a record.
 
@@ -1350,7 +1352,7 @@ Pulses are cheap. Eight bytes, no rendezvous, no address-space work, a bounded e
 What needs specifying is not cost but **capacity**. Under static pools a channel's pulse queue has fixed depth, so a policy is required when it fills. The queue is divided:
 
 * **User pulses** occupy the general region. When it is full, the oldest is dropped and an overflow flag is set on the channel, which the receiver observes on its next receive.
-* **System pulses** occupy a reserved region that user pulses cannot displace. There are two. `SYS_PULSE_DEAD_OWNER` says a client whose request this server is holding has died. `SYS_PULSE_PEER_GONE` says a connection on this channel has no client handles left and is worth collecting, per section 12.5.
+* **System pulses** occupy a reserved region that user pulses cannot displace. There are two. `SYS_PULSE_DEAD_OWNER` says a client whose request this server is holding has died. `SYS_PULSE_PEER_GONE` says a connection on this channel has no client handles left and is worth collecting, per section 12.5, and reaches only a channel that has asked to collect them: a hint to a server with no way to act on it is a reserved slot spent on nothing.
 
 
 **A pulse reaches a channel through a connection**, which is how a message reaches one. A channel handle is the right to receive on it, so a program able to name a channel in order to pulse it could pulse any channel it could name. A program may send only user codes; one below `SYS_PULSE_USER_BASE` is refused rather than renumbered, because the reserved slots are kept from exactly the program that would like to fill them.

@@ -10946,15 +10946,27 @@ event.** *Built.*
   is worth saying because nothing else in this report is. Threads,
   stacks and remapped pages all differ by tier; what a server outliving
   its clients costs does not, because none of it is memory.
-- *What the three lines say.* Eight departed clients were collected by
-  the servers that kept records for them. One pulse was dropped for want
-  of any slot, which is the death notice stage five loses on purpose,
-  and eleven were evicted to make room, which is the user-pulse
-  behaviour this channel has always had plus the one hint stage five's
-  review displaced. Two senders were refused at a full queue and two
-  were displaced by somebody who outranked them. The connection pool
-  ends where every boot before this one ended and reached twelve of
-  thirty-two on the way.
+- *What the three lines say, and the review made this account exact.*
+  Eight departed peers were collected: four are the leak check's
+  clients, one is the client whose death notice stage five loses, and
+  three are the departures stage four's review arranges to fill a queue
+  with hints. The identity check's dead client is not among them, and
+  that is correct rather than missing: nothing asked its server again
+  before the server was killed, and a connection nobody collects is
+  freed when the channel loses its owner. One pulse was dropped for want
+  of any slot, which is that lost notice, and eleven were evicted to
+  make room, which is the user-pulse behaviour this channel has always
+  had plus the one hint stage five's review displaced. Two senders were
+  refused at a full queue and two were displaced by somebody who
+  outranked them.
+- *The pool line is the one number the report cannot check on its own.*
+  Seven connections are in use when the machine halts, and none of them
+  is this milestone's: the shell session opens files. What says so is an
+  assertion rather than the report, and the review added it. The five
+  M18 checks run between two readings of the pool and it holds what it
+  held, which is two. Forgetting to give one connection handle back in
+  the last of them panics with "a server: 3 connections in use after all
+  of it, started with 2".
 - *The two pulse counts are separate and were not at first.* One number
   covering both said twelve, of which eleven were the ordinary
   user-pulse eviction that predates this milestone, so the number
@@ -10977,6 +10989,14 @@ event.** *Built.*
   correctness and is now for promptness. Section 12.5 said a server
   learns nothing when a client closes a connection, which was the
   premise the milestone set out to test and is the thing it changed.
+- *The review found the new prose saying something the code stopped
+  doing.* Section 12.5 had the peer count kept against whoever owns the
+  channel, which is what stage four wrote and what stage four's own
+  review then changed: ownership moves, so the count is kept against the
+  process that owned it when the connection was made. The section says
+  that now, and says why, because a count that added on one answer and
+  subtracted on another is the failure that hands a server the records
+  of a client it is still talking to.
 
 *Done when* a server holding a record per client ends the boot holding
 records for exactly the clients still alive, on both ports and at both

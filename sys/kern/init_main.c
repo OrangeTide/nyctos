@@ -12994,11 +12994,35 @@ kernel_main(void)
     kill_faulting_checks();
 #endif
     kill_server_stale_checks();
-    ledger_leak_checks();
-    notice_absence_checks();
-    ledger_identity_checks();
-    notice_loss_checks();
-    depth_checks();
+
+    /*
+     * Everything M18 does, between two readings of the connection
+     * pool. Each of these checks accounts for its own, and this is the
+     * one that says so about all of them together: five servers, a
+     * dozen clients and two channels of departed peers later, the pool
+     * holds what it held. The number in the boot report at the end of
+     * the run is larger than this because the shell session opens
+     * files, and none of that is this milestone's.
+     */
+    {
+        uint32_t before = connection_pool()->used;
+
+        ledger_leak_checks();
+        notice_absence_checks();
+        ledger_identity_checks();
+        notice_loss_checks();
+        depth_checks();
+
+        if (connection_pool()->used != before) {
+            panic("a server: %u connections in use after all of it, "
+              "started with %u",
+              (unsigned int)connection_pool()->used,
+              (unsigned int)before);
+        }
+        cnprintf("    %-38s %u, where it started\n",
+          "connections in use after all of it",
+          (unsigned int)connection_pool()->used);
+    }
     startup_record_checks();
     deadline_checks();
 
