@@ -10536,6 +10536,29 @@ serves stop existing.
 - *Broken to check it.* Expecting a second notice from the client killed
   with nothing outstanding panics with "the server was told 1 times
   after idle, not 2", so the counts are read rather than assumed.
+- *And the review found what happens when the edge is missed.* The
+  notice is strictly edge-triggered: it is enqueued once, at the cancel,
+  and nothing regenerates it. `channel_pulse` does not evict anything to
+  make room for a system pulse, so a death notice arriving at a full
+  queue does not drop, it panics: "the reserved pulse slots are full".
+  Section 13.1's reservation is the guarantee, and what it guarantees is
+  exactly `SYS_PULSE_RESERVED`, which is two.
+- *Which is reachable from ordinary use.* User pulses are capped at six
+  of the eight slots, and any client holding a send connection may fill
+  them, so a client can reduce the death-notice headroom to the reserved
+  two whenever it likes. A server with three threads each holding a
+  request, whose clients all die before it drains, then halts the
+  machine. Three threads holding requests is the shape section 19.3
+  recommends for a server that needs concurrency, and nothing states the
+  invariant "at most two outstanding deaths per channel" or checks it.
+  The panic is the enforcement.
+- *So the edge is the wrong thing to harden*, which is what stages four
+  and five were rewritten around. An event that must not be missed, in a
+  queue that panics when it is, is a correctness argument resting on a
+  bound nobody states. The measurement above says the same thing from
+  the other side: one death in five is announced at all, so a server
+  that keeps state across requests cannot be correct by counting edges
+  however reliably they are delivered.
 
 **3. Releasing the right record.** *Planned.*
 
@@ -10546,61 +10569,131 @@ serves stop existing.
   merely two of them: a check that counted would pass for a server that
   released whichever record it looked at first.
 
-**4. The client that goes quietly.** *Planned.*
+**4. The client that goes quietly, and the state that outlasts the
+event.** *Planned.*
 
-- The case stage two will have measured as silent: a client holding a
-  record that dies with no request outstanding. A server told nothing
-  keeps that record for ever, and a system that restarts its clients
-  fills the table.
-- What answers it is not decided here. The candidates are a notice when
-  the last handle to a connection closes, which is a thing the kernel
-  already knows and section 12.5 already describes the lifetime of, and
-  a server that asks. Which one is built depends on what stage two
-  measured and what it costs.
+- The case stage two measured as silent: a client holding a record that
+  dies with no request outstanding. A server told nothing keeps that
+  record for ever, and a system that restarts its clients fills the
+  table.
+- *The shape is Unix's, and the reason is Unix's.* `SIGCHLD` coalesces
+  and is unreliable, and the idiom that works is a drain loop against
+  `waitpid`, because the authoritative thing is the process table and
+  the signal is only a hint that it is worth looking. The zombie entry
+  is what makes coalescing safe. This kernel has the notice and nothing
+  to drain, so the notice has to be right or the record is lost, and
+  stage two's review measured what "not right" costs.
+- *What plays the part of the zombie here is the connection.* It is
+  already per client, already an object with a defined lifetime, and
+  already carries the cookie a server named it with, which the kernel
+  never looks at. So the level state is a bit on the connection saying
+  the peer is gone, set when the client's last handle closes, readable
+  by the server that owns the channel. Nothing new is allocated and no
+  new bound is introduced, which is the trap a list of dead peers would
+  have walked into under static pools: it would be the pulse queue
+  again, larger and in a second place.
+- *And the pulse becomes a hint.* Losing one then costs latency rather
+  than a record, the drop policy stops being correctness-critical, and
+  the panic stage two's review found becomes an eviction. Section 13.1's
+  strongest sentence, that a dropped notice leaks a dead client's
+  resources permanently, stops being true, which is the point.
 - *Check.* A client connects, takes a record, and exits with nothing
-  outstanding. The server ends holding no record for it, and the boot's
-  connection pool is back where it started.
+  outstanding, which produces no notice at all. The server ends holding
+  no record for it, and the boot's connection pool is back where it
+  started. The record is released because the server drained, not
+  because it was told.
 
-**5. The reservation, finally tested.** *Planned.*
+**5. A notice that never arrives, and a server that is right anyway.**
+*Planned.*
 
-- Section 13.1 reserves two of a channel's eight pulse slots so that a
-  program cannot flood a death notice out of the queue. Nothing has ever
-  tested it, because nothing has ever cared whether a notice arrived.
-- *Check.* A program fills the channel with user pulses, past the point
-  where the oldest is being dropped, and then a client of that channel
-  dies. The notice arrives and the record is released. Removing the
-  reservation loses it, which is what says the reservation is what saved
-  it.
+- What stage four buys is that the edge may be lost. This is the stage
+  that loses one on purpose.
+- *Check.* A client fills the channel's user pulse slots, and the
+  notices for dying clients are deliberately dropped rather than
+  queued. The server still ends holding records for exactly the clients
+  still alive, because what it acts on is the connection and not the
+  count of pulses it saw. The number of notices it received is reported
+  and is expected to be lower than the number of deaths: a check where
+  the two are equal has not lost anything and has tested nothing.
+- *And the panic is gone.* A death notice arriving at a full queue
+  evicts rather than halting the machine, and the check reaches that
+  case rather than describing it. Restoring the panic fails the check,
+  which is what says the queue is really full when the eviction happens.
 
-**6. What it cost, and sections 12.5 and 13.1 written around it.**
+**6. A queue depth a server chooses, and clients that fail fast.**
+*Planned.*
+
+- A channel's sender queue is unbounded, so a server that falls behind
+  accumulates clients until the machine runs out of threads: every
+  queued sender is a blocked thread, and one slow server can take the
+  whole thread budget with it. There is no way for a client to learn
+  that it is joining a backlog rather than being served.
+- *The mechanism is `listen`'s.* The server sets a maximum depth on the
+  channel it receives on, which only it can do because setting it needs
+  `SYS_RIGHT_RECV`, and a send that would exceed it is refused at once
+  with `SYS_ERR_WOULDBLOCK` rather than queued. A client that is refused
+  knows the difference between a server that is slow and a server that
+  is overloaded, which a deadline cannot tell it: a deadline says how
+  long this client is willing to wait and says nothing about how many
+  others are already waiting.
+- *The refusal has to respect priority, which is where this differs from
+  `listen`.* Section 12.1 orders the queue by sender priority, so
+  refusing whoever arrives last would let low-priority clients fill the
+  queue and lock a high-priority one out, which is priority inversion in
+  a new place. The queue is a priority queue and the thing to displace
+  is its lowest, exactly as the pulse queue drops its oldest user pulse
+  and keeps the reservation. Whether a displaced sender is refused or
+  merely told is this stage's question.
+- *Check.* A server that never receives, a depth of two, and three
+  clients. The first two queue and the third is refused at once rather
+  than at its deadline, which the clock says. Then the same three with
+  the third at a higher priority: it is the one that queues and a lower
+  one is displaced. A depth of zero refuses everything, and no depth at
+  all behaves as it does today.
+
+**7. What it cost, and sections 12.5, 13.1 and 12.1 written around it.**
 *Planned.*
 
 - *Check.* The figures as counts: records leaked before and after,
-  notices by kind of death, and the pool occupancy at the end of the
-  boot. The two sections say what a server actually learns, when it does
-  not learn anything, and what it has to do for itself.
+  notices by kind of death, notices deliberately lost, senders refused,
+  and the pool occupancy at the end of the boot.
+- The sections say what a server actually learns, when it learns
+  nothing, what it has to do for itself, and what it may refuse. Section
+  13.1 loses the claim that a dropped notice leaks permanently, because
+  after stage four it does not. Section 12.1 gains the depth and the
+  rule that a full queue displaces its lowest priority rather than its
+  newest arrival.
 
 *Done when* a server holding a record per client ends the boot holding
-records for exactly the clients still alive, having been told about
-every death that took one, on both ports and at both tiers.
+records for exactly the clients still alive, on both ports and at both
+tiers, with at least one death notice deliberately lost on the way; and
+a client sending to a server that is not keeping up is refused rather
+than queued behind it.
 
 *Would falsify.* That the notice as specified is enough for a server to
-keep its own books. If a server can only stay correct by asking about
-its clients rather than being told, or by keying its records on
-something the kernel does not give it, then sections 12.5 and 13.1
-overstate what the notice does and the reservation protects less than
-they claim.
+keep its own books. Stage two has already answered half of it: one death
+in five is announced, and the notice names a thread where a server's
+records are per client, so a server cannot be correct by counting edges
+however reliably they are delivered. What is left to falsify is the
+replacement. If the connection cannot carry the fact that its peer has
+gone without a new allocation, or if the server cannot reach that fact
+without a handle it has no reason to hold, then the level state is
+somewhere else and this is not the cheap answer it looks like.
 
 *Watch for.* A check that passes because the server was empty anyway.
 The occupancy has to be able to be wrong: a table that is never filled,
 or a client that never takes a record, would make every later stage pass
-for nothing. And a notice counted rather than acted on, which is what
-the one existing check does and is exactly not the point.
+for nothing. A notice counted rather than acted on, which is what the
+first server here did and is exactly not the point. And, in stage five,
+a check that says it lost a notice without losing one: the number
+received has to be lower than the number of deaths, and asserted to be.
 
-*Size.* Medium. The server is new and is most of the work. The kernel
-side is small for the first three stages and unknown for the fourth,
-which is why the fourth says what it will decide rather than what it
-will build.
+*Size.* Medium to large, and larger than it was. Stages one to three are
+the server and the identity, and are small. Stage four moves where the
+truth lives, stage five is what that buys, and stage six adds a
+mechanism to section 12.1 rather than exercising one that exists. The
+boot report grows by two counts and the design gains a rule about what a
+full queue displaces.
 
 ---
 
