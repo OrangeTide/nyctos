@@ -11606,6 +11606,36 @@ this milestone's.
   asserted anyway, as a statement that nothing else went wrong. The rule
   itself is checked where a rule can be checked, by asking it directly,
   which is what M19 stage four's review built it a function for.
+- *And what the check itself costs, which the review had to measure
+  rather than assume.* Both cores hold interrupts off across their half
+  of the arrangement, and the first version had each of them wait inside
+  that half for the other to be dispatched, which is a scheduler away.
+  Core 0's longest interrupts-off region in a boot went from about 1200
+  microseconds to about 10000, in two runs out of three, which is an
+  order of magnitude worse than anything else this system does and is
+  the number section 13.3 exists to bound. Waiting for the other core to
+  be running is done outside the region now, and what is left inside is
+  a handshake with a core already spinning for it and one entry written
+  into a page table that already exists. Core 0 is back to about 900.
+- *Core 1's longest region is now this check's, at about 450
+  microseconds against about 250 before, and that is as short as it
+  gets.* What is in it is two hart-to-hart handshakes, and each one
+  costs whatever an emulator that interleaves its harts charges to make
+  one hart's store visible to the other. Both are needed: the other core
+  has to have read the address before this one changes it, and this one
+  has to have changed it before the other reads again. It is a check's
+  cost and not the kernel's, and it is reported where every other
+  duration is, above the compared line.
+- *A wait that runs out is a panic now, and was not.* The first version
+  read the second time whether or not the change had happened, so a
+  system too slow to make the arrangement would have compared two reads
+  of the same page and said something about a port. Every wait here says
+  what it was waiting for when it gives up.
+- *And the maintenance count is sampled with interrupts off*, which it
+  was not. What that count says has to be what this invalidation did,
+  and a thread dispatched between the two readings could invalidate
+  something of its own and make a port with inner-shareable fences look
+  like a port without them.
 - *And the check was wrong twice before it was right, both times in the
   same direction.* The first version had the second reader spin on
   `sched_yield()` waiting for a flag, and a thread that spins that way

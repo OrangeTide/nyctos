@@ -7039,7 +7039,19 @@ chain_free(uintptr_t head)
  * the space kernel threads run in and this is a check about one core's
  * cache and not about spaces at all.
  */
-#define STALE_SPINS     40000000u
+/*
+ * Two bounds, because the two waits are not the same wait. One core
+ * waits for the other to be dispatched at all, which takes as long as a
+ * scheduler takes and is done by yielding. The other waits for a
+ * handshake with a core that is already running and about to answer,
+ * which is a few thousand instructions and is done by spinning.
+ *
+ * Neither is a timeout in the sense of a system that carries on. A wait
+ * that runs out here means the arrangement did not happen and every
+ * number below it would be about something else, so it panics.
+ */
+#define STALE_YIELDS    4000000u
+#define STALE_SPINS     100000000u
 
 static volatile uint32_t stale_step;
 static volatile uint8_t stale_before;
@@ -7056,29 +7068,55 @@ stale_first(void *arg)
     (void)arg;
 
     /*
-     * Interrupts off across both reads, and a spin rather than a yield
-     * between them. Nothing else may run on this core in that window:
-     * the first read is what puts the translation here, and anything
-     * dispatched in between takes it away by itself, on this emulator,
-     * whatever the kernel did.
+     * Running on the other core, and saying so with interrupts still
+     * on. Waiting to be dispatched is a scheduler's business and takes
+     * a scheduler's time, so it is done out here where a wait costs
+     * nothing.
      */
-    is = md_intr_disable();
-
-    stale_before = *(const volatile uint8_t *)stale_va;
     md_cpu_fence();
     stale_step = 1;
 
     for (spin = 0; spin < STALE_SPINS && stale_step < 2; spin++) {
         md_cpu_fence();
     }
+    if (stale_step < 2) {
+        panic("stale: the other core waited out its turn to start");
+    }
 
-    stale_during = *(const volatile uint8_t *)stale_va;
+    /*
+     * Then both reads with interrupts off and nothing but a spin
+     * between them. Nothing else may run on this core in that window:
+     * the first read is what puts the translation here, and anything
+     * dispatched in between takes it away by itself, on this emulator,
+     * whatever the kernel did.
+     *
+     * What the window holds is a handshake with a core that is already
+     * spinning for it, and one entry written into a page table that
+     * already exists. It used to hold the other core noticing, which is
+     * a scheduler away, and that made this the longest region in the
+     * boot by an order of magnitude. Section 13.3 counts these.
+     */
+    is = md_intr_disable();
+
+    stale_before = *(const volatile uint8_t *)stale_va;
     md_cpu_fence();
     stale_step = 3;
 
+    for (spin = 0; spin < STALE_SPINS && stale_step < 4; spin++) {
+        md_cpu_fence();
+    }
+
+    stale_during = *(const volatile uint8_t *)stale_va;
+    md_cpu_fence();
+    stale_step = 5;
+
     md_intr_restore(is);
 
-    while (stale_step < 5) {
+    if (spin >= STALE_SPINS) {
+        panic("stale: the other core waited out the change");
+    }
+
+    while (stale_step < 7) {
         sched_yield();
     }
 
@@ -7098,7 +7136,7 @@ stale_second(void *arg)
 
     stale_after = *(const volatile uint8_t *)stale_va;
     md_cpu_fence();
-    stale_step = 5;
+    stale_step = 7;
 
     thread_exit(0);
 }
@@ -7109,9 +7147,10 @@ cross_core_stale_checks(void)
     struct thread *first, *second;
     uintptr_t pa_old, pa_new;
     size_t len;
-    uint64_t noted;
+    intr_state_t is;
+    uint64_t noted = 0;
     uint32_t spin;
-    bool local;
+    bool local = false;
 
     cnputs("the other core: what it is still holding\n");
 
@@ -7163,37 +7202,68 @@ cross_core_stale_checks(void)
       SYS_OK);
     sched_ready(first);
 
-    for (spin = 0; spin < STALE_SPINS && stale_step < 1; spin++) {
+    for (spin = 0; spin < STALE_YIELDS && stale_step < 1; spin++) {
         sched_yield();
     }
     if (stale_step < 1) {
-        panic("stale: the other core never read the first page");
+        panic("stale: the other core never started");
     }
     md_cpu_fence();
 
     /*
-     * The address now names a different frame, and this core throws
-     * away what it had for it. Whether that reached the other core is
-     * the question, and whether this port thinks it did is the count:
-     * a port whose fences are inner-shareable notes nothing here,
-     * because there is nothing for anybody else to hear about.
+     * From here to the restore is this core's half of the window, and
+     * it is deliberately the same shape as the other core's: a
+     * handshake with a core already spinning for it, and one entry
+     * written into a page table that already exists, because the
+     * mapping above built it.
+     *
+     * Interrupts off for it, and not only to keep the region short.
+     * What the count of maintenance says has to be what this
+     * invalidation did, and a thread dispatched here could invalidate
+     * something of its own and make a port with inner-shareable fences
+     * look like a port without them.
      */
-    if (md_map(vm_kernel(), stale_va, pa_new, PAGE_SIZE,
-      VM_READ | VM_WRITE) != SYS_OK) {
-        panic("stale: the address would not map again");
-    }
-
-    noted = vm_maint_here();
-    md_tlb_invalidate(stale_va);
-    local = vm_maint_here() != noted;
+    is = md_intr_disable();
 
     md_cpu_fence();
     stale_step = 2;
 
     for (spin = 0; spin < STALE_SPINS && stale_step < 3; spin++) {
+        md_cpu_fence();
+    }
+
+    if (spin < STALE_SPINS) {
+        if (md_map(vm_kernel(), stale_va, pa_new, PAGE_SIZE,
+          VM_READ | VM_WRITE) != SYS_OK) {
+            panic("stale: the address would not map again");
+        }
+
+        /*
+         * The address now names a different frame, and this core throws
+         * away what it had for it. Whether that reached the other core
+         * is the question, and whether this port thinks it did is the
+         * count: a port whose fences are inner-shareable notes nothing
+         * here, because there is nothing for anybody else to hear
+         * about.
+         */
+        noted = vm_maint_here();
+        md_tlb_invalidate(stale_va);
+        local = vm_maint_here() != noted;
+    }
+
+    md_cpu_fence();
+    stale_step = 4;
+
+    md_intr_restore(is);
+
+    if (spin >= STALE_SPINS) {
+        panic("stale: the other core never reached its first read");
+    }
+
+    for (spin = 0; spin < STALE_YIELDS && stale_step < 5; spin++) {
         sched_yield();
     }
-    if (stale_step < 3) {
+    if (stale_step < 5) {
         panic("stale: the other core never read the second time");
     }
     md_cpu_fence();
@@ -7234,12 +7304,12 @@ cross_core_stale_checks(void)
      */
     sched_ready(second);
     md_cpu_fence();
-    stale_step = 4;
+    stale_step = 6;
 
-    for (spin = 0; spin < STALE_SPINS && stale_step < 5; spin++) {
+    for (spin = 0; spin < STALE_YIELDS && stale_step < 7; spin++) {
         sched_yield();
     }
-    if (stale_step < 5) {
+    if (stale_step < 7) {
         panic("stale: the other core never read after a dispatch");
     }
     md_cpu_fence();
