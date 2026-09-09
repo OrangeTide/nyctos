@@ -50,6 +50,8 @@
 #define PTE_LEAF(pte)   (((pte) & (PTE_R | PTE_W | PTE_X)) != 0)
 
 #define SATP_SV39       (8ULL << 60)
+#define SATP_ASID_SHIFT 44
+#define SATP_ASID_MAX   0xFFFFULL   /* what the field is wide enough for */
 
 /*
  * Accessed and dirty are set here rather than left to the hardware. Some
@@ -327,13 +329,86 @@ md_map_devices(struct addrspace *as)
       VM_READ | VM_WRITE | VM_DEVICE);
 }
 
-void
+/*
+ * How wide satp's identifier field is here.
+ *
+ * The width is implementation defined and may be nothing at all, so it
+ * is asked rather than assumed: write ones into the field and read back
+ * what stuck. Done with the mode field left at zero, which is the mode
+ * that translates nothing, so the probe cannot turn translation on or
+ * point it anywhere. That is also why this has to be asked before the
+ * first space is built, while satp still holds nothing worth keeping.
+ */
+uint32_t
+md_asid_bits(void)
+{
+    static uint32_t bits;
+    static bool asked;
+    uint64_t back;
+    uint32_t n = 0;
+
+    if (asked) {
+        return bits;
+    }
+
+    __asm__ volatile ("csrw satp, %0" ::
+      "r" (SATP_ASID_MAX << SATP_ASID_SHIFT) : "memory");
+    __asm__ volatile ("csrr %0, satp" : "=r" (back));
+    __asm__ volatile ("csrw satp, zero" ::: "memory");
+
+    back = (back >> SATP_ASID_SHIFT) & SATP_ASID_MAX;
+    while (back & 1) {
+        n++;
+        back >>= 1;
+    }
+
+    bits = n;
+    asked = true;
+
+    return bits;
+}
+
+uint32_t
+md_as_current_asid(void)
+{
+    uint64_t satp;
+
+    __asm__ volatile ("csrr %0, satp" : "=r" (satp));
+
+    return (uint32_t)((satp >> SATP_ASID_SHIFT) & SATP_ASID_MAX);
+}
+
+/*
+ * The switch itself.
+ *
+ * A space with an identifier does not need the fence: satp names the
+ * space as well as the tables, translations are filed under the name
+ * they were made with, and the ones belonging to somewhere else stay
+ * where they are without being consulted. What would need a fence is an
+ * identifier handed to a second space while the first one's entries are
+ * still filed under it, which is M19 stage four's problem and is why
+ * nothing hands one out twice yet.
+ *
+ * A space with no identifier is a space the hardware cannot tell from
+ * any other space with none, so activating it means throwing every
+ * translation away. That is what this port did for every space until
+ * now, and it is still what a port with no identifiers to give does.
+ */
+bool
 md_as_activate(const struct addrspace *as)
 {
-    uint64_t satp = SATP_SV39 | ((uint64_t)as->as_root >> 12);
+    uint64_t satp = SATP_SV39 |
+      ((uint64_t)as->as_asid << SATP_ASID_SHIFT) |
+      ((uint64_t)as->as_root >> 12);
 
     __asm__ volatile ("csrw satp, %0" :: "r" (satp) : "memory");
-    __asm__ volatile ("sfence.vma" ::: "memory");
+
+    if (as->as_asid == 0) {
+        __asm__ volatile ("sfence.vma" ::: "memory");
+        return true;
+    }
+
+    return false;
 }
 
 void
@@ -349,7 +424,7 @@ md_mmu_enable(const struct addrspace *as)
      */
     __asm__ volatile ("csrs sstatus, %0" :: "r" (1UL << 18) : "memory");
 
-    md_as_activate(as);
+    (void)md_as_activate(as);
 
     /*
      * Instructions fetched with translation off are the same

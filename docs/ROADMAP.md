@@ -11236,25 +11236,89 @@ this milestone's.
   the frames reports "handed back 255 frames of 256".
 
 **2. An identifier per space, and a switch that keeps its translations.**
-*Planned.*
+*Built.*
 
 - One field on `struct addrspace`, assigned when the space is created,
   written into the root register at activation, and the flush removed
-  from that path.
-- riscv64 first, because its entries are already tagged and the port
-  needs the number rather than the entries changing.
-- *Which entries are global* is a decision this stage has to make rather
-  than inherit. Every address space carries the same identity map of
-  kernel and device memory, so those entries are the same in all of
-  them, and marking them global keeps one copy for the machine instead
-  of one per space. The alternative is a translation cache holding the
-  same kernel mapping under every identifier that has run.
-- *Check.* Two spaces, the same virtual address, different physical
-  pages, and a dispatch between them: each sees its own page. That is
-  the thing tagging must get right and it fails immediately if the
-  identifier is not being written or the entries are not carrying it.
-- *And the flush count is asserted*, because the whole point is that it
-  goes to zero on the switch path while the system still runs.
+  from that path. riscv64 first, because its entries are already tagged
+  and the port needs the number rather than the entries changing.
+- *The width is asked and not assumed.* Ones are written into the
+  field and what stuck is read back, with the mode field left at zero so
+  the probe cannot turn translation on or point it anywhere. Asked
+  before the first space is built, which is the moment there is nothing
+  in the register worth keeping. This host answers sixteen bits, so
+  65535 spaces it can tell apart. A port that answers zero gets the old
+  behaviour for every space, and that is how aarch64 still runs.
+- *Zero is not an identifier, it is the absence of one.* A space holding
+  it is activated by throwing every translation away, which is what
+  makes it safe for several spaces to hold it at once. That is the
+  fallback for a port with none to give and for a system that has run
+  out, and it is what keeps the tree correct at this stage rather than
+  at stage four.
+- *Which entries are global: none of them, and the reason is a grant.*
+  The plan said the kernel's identity map is the same in every space and
+  so could be marked global, one copy for the machine instead of one per
+  space. It is not the same in every space. `grant_unmap` says so in its
+  own comment: a grant covers memory the kernel maps as well, so a
+  process holding one has the kernel's own entry for that address
+  rewritten with user access, in its space and no other. The console
+  page is the standing example. An entry marked global is an entry
+  claiming to be the same everywhere while a grant is busy making it
+  not, so nothing is marked global and each space keeps its own copy of
+  the kernel's translations.
+- *Check.* Two spaces, one virtual address, two frames behind it, read
+  from the kernel with interrupts off. The address is the base of the
+  window programs live in, which is the one range no space maps for the
+  kernel, so what answers there is what the space being asked put there.
+
+  ```
+  spaces: whether a switch keeps what it learned
+      identifiers this port has              16 bits, 65535 to give
+      the identifier the hardware ran under  41, then 42
+      one address in two spaces reads        0xa1, 0xb2, then 0xa1 again
+      switches that flushed everything       0 of 4
+      a walk after a switch, and without one 131200 ns against 7900
+  ```
+
+- *And the flush count is asserted*, both here and over the whole boot.
+  The report line M6's review put above the compared region now reads
+  "address space switches: 5505, of which 0 threw every translation
+  away, against 46 buffer halves" on riscv64, and "5507, of which 5507"
+  on aarch64. What is asserted is all of them or none, decided by
+  whether the port has identifiers, because anything in between is a
+  space that was handed one and activated as though it had not.
+- *The read of two spaces cannot fail on this host, and that is the
+  stage's real finding.* Dropping the identifier out of the value
+  written to `satp`, so that every space runs under zero with no flush,
+  changes nothing: both spaces still read their own page. QEMU discards
+  every translation whenever the root register is written, tagged or
+  not. So that check tests the emulator's caution and not this kernel's
+  tagging, which is exactly the thing M19's own *Watch for* warned
+  against and this project has now produced seven milestones running.
+- *What can fail is what the hardware was told*, and that is checked
+  instead: the identifier is read back out of the register rather than
+  taken from the structure that was written into it. Dropping it from
+  the value fails at once with "the hardware was running under 0 and 0,
+  not 41 and 42". Giving both spaces the same one fails with "both were
+  given identifier 1". Leaving the flush in fails with "4 of 4 switches
+  flushed, with 16 bits".
+- *And what the host does about it is measured, not asserted.* The same
+  chain of pages walked twice, once without leaving the space and once
+  having just entered another one: 131200 nanoseconds against 7900. A
+  switch costs what a flush costs. The comparison that settles it is
+  across the two ports, since aarch64 still flushes on every switch and
+  answers 131056 against 8032. The port that stopped flushing and the
+  port that did not are within a tenth of a percent of each other. On
+  this host the identifier buys nothing, because the emulator throws its
+  own translation cache away on every write of the root register.
+- *That is a result and not a broken stage.* The kernel now performs no
+  flush on a switch, which is a property of the kernel and is asserted.
+  Whether a machine keeps anything because of it is a property of the
+  machine, and the only machine this project runs on does not. M19's
+  *Would falsify* asks whether identifiers are the cheaper way to buy
+  what a cohort buys; the honest answer so far is that this project
+  cannot measure the saving, and stage seven has to say so in those
+  words rather than report a number it did not observe.
 
 **3. The other port, and what the two do not share.** *Planned.*
 

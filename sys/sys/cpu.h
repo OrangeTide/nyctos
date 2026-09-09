@@ -65,6 +65,15 @@ struct cpu {
     uint64_t        cp_as_epoch;
 
     /*
+     * And which identifier that space carries, because a root alone no
+     * longer names a space to the hardware. Two spaces cannot share a
+     * root, so this is not what makes the comparison correct; what it
+     * is for is the space with no identifier, which several may hold at
+     * once and each of which has to be activated to be entered.
+     */
+    uint32_t        cp_as_asid;
+
+    /*
      * The deferral of section 11: a short run of readies made atomic.
      * Per core because that is what it always meant. Its comment said
      * "one counter for the system, not one per thread", and per system

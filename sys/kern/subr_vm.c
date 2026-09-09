@@ -116,6 +116,34 @@ map_kernel_into(struct addrspace *as)
     return md_map_devices(as);
 }
 
+/*
+ * The next identifier nobody has had.
+ *
+ * Handed out and never handed back, which is the whole of the policy
+ * this stage needs and none of the policy a long-running system needs.
+ * A boot builds a few dozen spaces and the field is wide enough for
+ * thousands, so what this cannot do is not reached here; what it cannot
+ * do is give one out twice, and M19 stage four is where running out
+ * stops being hypothetical and reuse gets a mechanism.
+ *
+ * Zero is never handed out. It means the absence of an identifier, and
+ * a space holding it is activated by throwing every translation away,
+ * which is what a port with no identifiers to give gets for every space
+ * it has.
+ */
+static uint32_t
+as_next_asid(void)
+{
+    static uint32_t next = 1;
+    uint32_t bits = md_asid_bits();
+
+    if (bits == 0 || next >= (1u << bits)) {
+        return 0;
+    }
+
+    return next++;
+}
+
 sys_err_t
 vm_as_create(struct addrspace *as)
 {
@@ -129,6 +157,8 @@ vm_as_create(struct addrspace *as)
     if (err != SYS_OK) {
         return err;
     }
+
+    as->as_asid = as_next_asid();
 
     return SYS_OK;
 }
@@ -188,9 +218,18 @@ vm_kernel_init(void)
     uintptr_t base, hold;
     size_t len, hold_len;
     uint32_t before = page_used();
+    uint32_t bits;
 
     boot_user_window(&window_base, &window_len);
     md_memory_map(&base, &len, &hold, &hold_len);
+
+    /*
+     * Asked here, before anything is built, because the way to ask is
+     * to write a value into the register that names the current space
+     * and read back what stuck. There is no current space yet, which is
+     * what makes now the safe moment.
+     */
+    bits = md_asid_bits();
 
     if (vm_as_create(&kernel_as) != SYS_OK) {
         panic("vm: could not build the kernel's own address space");
@@ -200,6 +239,14 @@ vm_kernel_init(void)
 
     cnprintf("vm: translation on, %zu MiB mapped, %u frames of tables\n",
       len / (1024 * 1024), page_used() - before);
+    if (bits == 0) {
+        cnputs("  no address space identifiers, so every switch is a "
+          "whole-TLB flush\n");
+    } else {
+        cnprintf("  %u bits of address space identifier, so %u spaces "
+          "the hardware can tell apart\n", (unsigned int)bits,
+          (unsigned int)(1u << bits) - 1u);
+    }
     cnprintf("  programs live in %p..%p, which no other space maps\n",
       (void *)window_base, (void *)(window_base + window_len));
 }
@@ -324,11 +371,19 @@ vm_charge_inval(void)
  * Not charged and not bracketed: a switch happens between threads and
  * belongs to neither. It is counted always because it is the thing the
  * buffer path has to be compared against.
+ *
+ * Whether it flushed is the port's answer and not this one's guess. A
+ * switch into a space the hardware can tell apart keeps what it learned
+ * about everywhere else, and the two counts differing is the only thing
+ * that says so.
  */
 void
-vm_count_switch(void)
+vm_count_switch(bool flushed)
 {
     vm_cost_self.vc_switch++;
+    if (flushed) {
+        vm_cost_self.vc_switch_flush++;
+    }
 }
 
 /*
@@ -357,6 +412,7 @@ vm_cost_read(struct vm_cost *out)
     out->vc_pages = 0;
     out->vc_halves = 0;
     out->vc_switch = 0;
+    out->vc_switch_flush = 0;
 
     for (i = 0; i < SYS_MAX_CORES; i++) {
         out->vc_leaf += vm_buffer_cost[i].vc_leaf;
@@ -366,6 +422,7 @@ vm_cost_read(struct vm_cost *out)
         out->vc_pages += vm_buffer_cost[i].vc_pages;
         out->vc_halves += vm_buffer_cost[i].vc_halves;
         out->vc_switch += vm_buffer_cost[i].vc_switch;
+        out->vc_switch_flush += vm_buffer_cost[i].vc_switch_flush;
     }
 }
 
@@ -378,7 +435,7 @@ vm_cost_read_core(struct vm_cost *out, uint32_t core)
          * answers nothing and says nothing hands back whatever the
          * caller's structure held before it asked.
          */
-        struct vm_cost none = { 0, 0, 0, 0, 0, 0, 0 };
+        struct vm_cost none = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
         *out = none;
         return;

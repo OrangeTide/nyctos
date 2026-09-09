@@ -344,7 +344,39 @@ md_map_devices(struct addrspace *as)
       VM_READ | VM_WRITE | VM_DEVICE);
 }
 
-void
+/*
+ * How wide this port's identifier field is, which is nothing yet.
+ *
+ * The register has one and the field that selects eight bits or sixteen
+ * is real, but an identifier only tags a translation whose leaf
+ * descriptor says the translation is not global, and every descriptor
+ * this port writes says it is. An identifier written into the root
+ * register here would be a number nothing reads. Answering zero is what
+ * makes the switch keep flushing, which is correct; M19 stage three is
+ * where the descriptors change and this stops being zero.
+ */
+uint32_t
+md_asid_bits(void)
+{
+    return 0;
+}
+
+/*
+ * The field is in the top sixteen bits of the root register, and this
+ * reads it whether or not anything writes it. Today nothing does, so
+ * this answers zero, which is the true answer and not a placeholder.
+ */
+uint32_t
+md_as_current_asid(void)
+{
+    uint64_t ttbr0;
+
+    __asm__ volatile ("mrs %0, ttbr0_el1" : "=r" (ttbr0));
+
+    return (uint32_t)((ttbr0 >> 48) & 0xFFFFULL);
+}
+
+bool
 md_as_activate(const struct addrspace *as)
 {
     /*
@@ -360,6 +392,8 @@ md_as_activate(const struct addrspace *as)
     __asm__ volatile ("isb");
 
     md_tlb_flush_all();
+
+    return true;
 }
 
 void

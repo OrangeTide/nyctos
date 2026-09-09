@@ -425,10 +425,11 @@ thread_switch_to(struct thread *next)
          * too. See cp_as_epoch.
          */
         if (as->as_root != current_as_root ||
+          as->as_asid != cpu_self()->cp_as_asid ||
           epoch != cpu_self()->cp_as_epoch) {
-            md_as_activate(as);
-            vm_count_switch();
+            vm_count_switch(md_as_activate(as));
             current_as_root = as->as_root;
+            cpu_self()->cp_as_asid = as->as_asid;
             cpu_self()->cp_as_epoch = epoch;
         }
     }

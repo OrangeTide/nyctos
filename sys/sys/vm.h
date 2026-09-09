@@ -29,6 +29,7 @@
 #include <sys/op.h>
 #include <sys/page.h>
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -66,6 +67,18 @@
 
 struct addrspace {
     uintptr_t   as_root;        /* physical address of the port's root table */
+
+    /*
+     * What the hardware files this space's translations under, or zero
+     * for a space the hardware cannot tell apart from another.
+     *
+     * Zero is not an identifier, it is the absence of one, and a space
+     * that has it is activated by throwing every translation away. Two
+     * spaces may hold it at once and remain correct for that reason.
+     * See vm_as_create(), which hands them out, and md_asid_bits(),
+     * which says how many the port has.
+     */
+    uint32_t    as_asid;
 };
 
 /*
@@ -97,12 +110,18 @@ struct vm_cost {
     /*
      * And how many times a thread was dispatched into a different
      * address space, which is not the buffer path and is counted
-     * beside it for scale. Neither port tags translations with the
-     * space they came from, so every one of these throws the whole
-     * cache away too. A number for the buffer path with nothing to
-     * compare it against would be a number with no size.
+     * beside it for scale. A number for the buffer path with nothing
+     * to compare it against would be a number with no size.
      */
     uint64_t    vc_switch;
+
+    /*
+     * How many of those had to throw the whole translation cache away,
+     * which is every one of them on a port with no identifiers and
+     * none of them on a port with some. The two counted separately
+     * because the difference is what M19 is for.
+     */
+    uint64_t    vc_switch_flush;
 };
 
 /*
@@ -126,8 +145,12 @@ void vm_charge_inval(void);
  */
 void vm_charge_pages(uint32_t pages);
 
-/* Called by the dispatcher when it enters a different address space. */
-void vm_count_switch(void);
+/*
+ * Called by the dispatcher when it enters a different address space,
+ * saying whether the port had to throw the translation cache away to
+ * get there.
+ */
+void vm_count_switch(bool flushed);
 
 /* What has been spent so far. */
 void vm_cost_read(struct vm_cost *out);
@@ -189,8 +212,35 @@ void md_unmap(struct addrspace *as, uintptr_t va, size_t len);
  * This is a switch and not an enable: it does not touch the registers that
  * describe the table format, because changing those while translation is
  * live is a different operation with different rules.
+ *
+ * Returns whether it threw the translation cache away, which it has to
+ * do for a space with no identifier and does not for a space with one.
+ * The caller counts it; the port is what knows.
  */
-void md_as_activate(const struct addrspace *as);
+bool md_as_activate(const struct addrspace *as);
+
+/*
+ * How many bits of identifier this port has, or zero if it has none it
+ * can use. Implementation defined on both, so it is asked of the
+ * hardware rather than assumed: a width written down in a header is a
+ * width that is wrong on the first board nobody tried.
+ *
+ * Answered once and remembered. It must be asked before the first
+ * address space is built, because what it does is write a value and
+ * read back what stuck.
+ */
+uint32_t md_asid_bits(void);
+
+/*
+ * What identifier the hardware is running under right now, read back
+ * out of the register that holds it.
+ *
+ * Asked rather than remembered, because what a check wants to know is
+ * what was written and not what the writer intended. A port that builds
+ * the register value and drops the identifier out of it answers zero
+ * here while every other count in the system stays right.
+ */
+uint32_t md_as_current_asid(void);
 
 /* Turn translation on for the first time, in this space. */
 void md_mmu_enable(const struct addrspace *as);
@@ -201,21 +251,22 @@ void md_tlb_flush_all(void);
 /*
  * One address, for a change that names the addresses it made.
  *
- * Across every address space rather than the current one, because
- * neither port tags its translations with which space they came from.
- * That makes this coarser than it looks and still far narrower than
- * throwing the whole cache away: it removes one page of one address
- * from every space at once, which for a page being moved between two
- * spaces is exactly the two entries that changed.
+ * Across every address space rather than the current one, which is what
+ * makes a single call correct for a page moving between two of them: it
+ * removes one page of one address from every space at once, and for a
+ * page being handed over that is exactly the two entries that changed.
+ * Coarser than it looks, and still far narrower than throwing the whole
+ * cache away.
  *
- * That one call covering every space is not a convenience, it is what
- * makes a single call correct for a page moving between two of them.
- * The day either port assigns address space identifiers, an entry
- * carries the space it came from, this stops covering both, and the
- * callers here have to name the space and call twice. Both would then
- * be cheaper than what this replaced, and neither would be this
- * function: the signature would grow the space, so it is left out
- * today rather than carried as a parameter nothing reads.
+ * M19 stage two expected this to be where identifiers cost something.
+ * It is not, or not yet. Once riscv64 tags its translations an entry
+ * does carry the space it came from, but the instruction this uses
+ * names no identifier and every space is still covered by one call, so
+ * nothing here had to change. What is left for M19 stage six is whether
+ * one call across every space is dearer than two that name the two
+ * spaces that matter, which is a measurement and not an argument. The
+ * signature would grow the space if the answer said so, so it is left
+ * out today rather than carried as a parameter nothing reads.
  */
 void md_tlb_invalidate(uintptr_t va);
 

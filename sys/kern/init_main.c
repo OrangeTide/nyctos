@@ -6911,6 +6911,273 @@ flush_ns(uint64_t ticks)
     return ticks * 1000000000ULL / time_hz();
 }
 
+/*
+ * Build the chain, and say what a walk of it should add up to.
+ *
+ * Frames rather than memory of the kernel's own, because a megabyte
+ * that exists so that a check can walk it is a megabyte every boot
+ * carries for one measurement. Every space maps them, because they are
+ * ordinary memory and the identity map is in every space, which is what
+ * lets the same chain be walked either side of a switch.
+ */
+static uintptr_t
+chain_build(uint32_t n, uint32_t *want)
+{
+    uintptr_t head = 0;
+    uint32_t i;
+
+    *want = 0;
+    for (i = 0; i < n; i++) {
+        uintptr_t pg = page_alloc();
+
+        if (pg == 0) {
+            panic("chain: no frame for page %u", (unsigned int)i);
+        }
+        *(volatile uintptr_t *)pg = head;
+        *(volatile uint8_t *)(pg + sizeof(uintptr_t)) = (uint8_t)(i + 1);
+        *want += (uint8_t)(i + 1);
+        head = pg;
+    }
+
+    return head;
+}
+
+/*
+ * And take it apart, answering with how many frames went back.
+ *
+ * That count and not page_used() before against page_used() after: the
+ * frame count is the whole machine's, the other core is running, and
+ * M13 stage four already settled that asserting such a count is
+ * unchanged is asserting that nothing else moved a frame in the instant
+ * this looked.
+ */
+static uint32_t
+chain_free(uintptr_t head)
+{
+    uint32_t given = 0;
+
+    while (head != 0) {
+        uintptr_t next = *(const volatile uintptr_t *)head;
+
+        page_free(head);
+        given++;
+        head = next;
+    }
+
+    return given;
+}
+
+/*
+ * Whether a switch keeps what it learned, per M19 stage two.
+ *
+ * Two spaces, one virtual address, two frames behind it. The address is
+ * the base of the window programs live in, which is the one range no
+ * space maps for the kernel, so what answers at it is whatever the
+ * space being asked put there and nothing the kernel arranged.
+ *
+ * Read from the kernel rather than from two programs, because what is
+ * being tested is the hardware's filing and not the loader's. A program
+ * would prove the same thing through five other mechanisms, and when it
+ * failed it would be the five that were suspected first.
+ *
+ * The read is what makes this a check. A switch that dropped the
+ * identifier still boots, still runs, and still prints, because a space
+ * whose translations were thrown away simply walks its tables again.
+ * Nothing goes wrong until two spaces disagree about one address, so
+ * that is what is asked, and the answer is a byte that says which space
+ * it came from.
+ */
+static void
+asid_checks(void)
+{
+    struct addrspace one, two;
+    struct addrspace *back;
+    struct vm_cost before, after;
+    uintptr_t va, pa_one, pa_two;
+    size_t len;
+    intr_state_t is;
+    uint8_t saw_one, saw_two, saw_again;
+    uint32_t told_one, told_two;
+    uint32_t want;
+    uint32_t bits = md_asid_bits();
+
+    cnputs("spaces: whether a switch keeps what it learned\n");
+
+    if (bits == 0) {
+        cnprintf("    %-38s %s\n", "identifiers this port has",
+          "none, so every switch still flushes");
+    } else {
+        cnprintf("    %-38s %u bits, %u to give\n",
+          "identifiers this port has", (unsigned int)bits,
+          (unsigned int)(1u << bits) - 1u);
+    }
+
+    vm_user_window(&va, &len);
+
+    if (vm_as_create(&one) != SYS_OK || vm_as_create(&two) != SYS_OK) {
+        panic("spaces: no room for two address spaces");
+    }
+    if (bits != 0 && one.as_asid == two.as_asid) {
+        panic("spaces: both were given identifier %u",
+          (unsigned int)one.as_asid);
+    }
+
+    pa_one = page_alloc();
+    pa_two = page_alloc();
+    if (pa_one == 0 || pa_two == 0) {
+        panic("spaces: no frame to put behind the address");
+    }
+    *(volatile uint8_t *)pa_one = 0xA1;
+    *(volatile uint8_t *)pa_two = 0xB2;
+
+    if (md_map(&one, va, pa_one, PAGE_SIZE, VM_PROGRAM) != SYS_OK ||
+      md_map(&two, va, pa_two, PAGE_SIZE, VM_PROGRAM) != SYS_OK) {
+        panic("spaces: the address would not map");
+    }
+
+    back = proc_as(thread_current()->t_proc);
+    vm_cost_read(&before);
+
+    /*
+     * Interrupts off for all three, because the thing being measured is
+     * what survives between two of them and a dispatch in the middle
+     * would be a third space nobody asked for. Restored to the space
+     * this thread was running in before anything else can look, and the
+     * dispatcher's idea of what is current is left as it found it.
+     */
+    is = md_intr_disable();
+
+    vm_count_switch(md_as_activate(&one));
+    told_one = md_as_current_asid();
+    saw_one = *(const volatile uint8_t *)va;
+
+    vm_count_switch(md_as_activate(&two));
+    told_two = md_as_current_asid();
+    saw_two = *(const volatile uint8_t *)va;
+
+    vm_count_switch(md_as_activate(&one));
+    saw_again = *(const volatile uint8_t *)va;
+
+    vm_count_switch(md_as_activate(back));
+
+    md_intr_restore(is);
+
+    vm_cost_read(&after);
+
+    /*
+     * What the hardware was told, read back out of the register rather
+     * than taken from the structure that was written into it. This is
+     * the half of the stage that can fail on this host: the reads below
+     * cannot, and the number further down says why.
+     */
+    if (told_one != one.as_asid || told_two != two.as_asid) {
+        panic("spaces: the hardware was running under %u and %u, not %u "
+          "and %u", (unsigned int)told_one, (unsigned int)told_two,
+          (unsigned int)one.as_asid, (unsigned int)two.as_asid);
+    }
+
+    if (saw_one != 0xA1 || saw_two != 0xB2 || saw_again != 0xA1) {
+        panic("spaces: read 0x%x, 0x%x and 0x%x, wanted 0xa1, 0xb2 and "
+          "0xa1", (unsigned int)saw_one, (unsigned int)saw_two,
+          (unsigned int)saw_again);
+    }
+
+    cnprintf("    %-38s %u, then %u\n", "the identifier the hardware ran "
+      "under", (unsigned int)told_one, (unsigned int)told_two);
+    cnprintf("    %-38s 0x%x, 0x%x, then 0x%x again\n",
+      "one address in two spaces reads", (unsigned int)saw_one,
+      (unsigned int)saw_two, (unsigned int)saw_again);
+
+    /*
+     * And what it cost to be right about it, which is the half of this
+     * stage the reads cannot show. Four switches: all four flushed
+     * before, and none of them does now.
+     */
+    if (after.vc_switch - before.vc_switch != 4) {
+        panic("spaces: %u switches, not 4",
+          (unsigned int)(after.vc_switch - before.vc_switch));
+    }
+    if (after.vc_switch_flush - before.vc_switch_flush !=
+      (bits == 0 ? 4u : 0u)) {
+        panic("spaces: %u of 4 switches flushed, with %u bits",
+          (unsigned int)(after.vc_switch_flush - before.vc_switch_flush),
+          (unsigned int)bits);
+    }
+
+    cnprintf("    %-38s %u of 4\n", "switches that flushed everything",
+      (unsigned int)(after.vc_switch_flush - before.vc_switch_flush));
+
+    /*
+     * And whether the host agrees, which the reads above cannot say.
+     *
+     * The kernel not flushing is a property of the kernel and the count
+     * says so. Whether anything was kept is a property of the machine
+     * underneath, and the way to ask is to walk the same pages twice:
+     * once without leaving the space, and once having just entered
+     * another one. Two numbers that match mean the switch kept what it
+     * learned. A switch that costs what a flush costs means the machine
+     * threw it away whatever the identifier said.
+     *
+     * The chain is ordinary memory and the identity map is in every
+     * space, so it is the same walk over the same frames on both sides.
+     */
+    {
+        uintptr_t chain = chain_build(FLUSH_PAGES, &want);
+        uint64_t kept = 0, moved = 0;
+        uint32_t sum = 0;
+        uint32_t t;
+
+        for (t = 0; t < FLUSH_TRIALS; t++) {
+            uint64_t t0, t1, t2, t3;
+
+            is = md_intr_disable();
+
+            vm_count_switch(md_as_activate(&one));
+            sum += flush_walk(chain, FLUSH_PAGES);
+
+            t0 = time_now();
+            sum += flush_walk(chain, FLUSH_PAGES);
+            t1 = time_now();
+
+            vm_count_switch(md_as_activate(&two));
+
+            t2 = time_now();
+            sum += flush_walk(chain, FLUSH_PAGES);
+            t3 = time_now();
+
+            vm_count_switch(md_as_activate(back));
+
+            md_intr_restore(is);
+
+            if (t == 0 || t1 - t0 < kept) {
+                kept = t1 - t0;
+            }
+            if (t == 0 || t3 - t2 < moved) {
+                moved = t3 - t2;
+            }
+        }
+
+        if (sum != want * FLUSH_TRIALS * 3) {
+            panic("spaces: the walks read %u, not %u", (unsigned int)sum,
+              (unsigned int)(want * FLUSH_TRIALS * 3));
+        }
+        if (chain_free(chain) != FLUSH_PAGES) {
+            panic("spaces: the chain did not all come back");
+        }
+
+        cnprintf("    %-38s %lu ns against %lu\n",
+          "a walk after a switch, and without one",
+          (unsigned long)flush_ns(moved), (unsigned long)flush_ns(kept));
+    }
+
+    md_unmap(&one, va, PAGE_SIZE);
+    md_unmap(&two, va, PAGE_SIZE);
+    vm_as_destroy(&one);
+    vm_as_destroy(&two);
+    page_free(pa_one);
+    page_free(pa_two);
+}
+
 static void
 flush_cost_checks(void)
 {
@@ -6927,24 +7194,15 @@ flush_cost_checks(void)
 
     cnputs("a switch: what throwing every translation away costs\n");
 
-    /*
-     * Frames rather than memory of the kernel's own, because a
-     * megabyte that exists so that a check can walk it is a megabyte
-     * every boot carries for one measurement.
-     */
-    for (i = 0; i < FLUSH_PAGES; i++) {
-        uintptr_t pg = page_alloc();
+    head = chain_build(FLUSH_PAGES, &want);
 
-        if (pg == 0) {
-            panic("flush: no frame for page %u", (unsigned int)i);
-        }
-        *(volatile uintptr_t *)pg = head;
-        *(volatile uint8_t *)(pg + sizeof(uintptr_t)) = (uint8_t)(i + 1);
-        want += (uint8_t)(i + 1);
-        if (i >= FLUSH_PAGES - FLUSH_SHORT) {
-            want_short += (uint8_t)(i + 1);
-        }
-        head = pg;
+    /*
+     * What a walk of the last sixty-four links adds up to, which is the
+     * short pass's answer. The chain runs newest first, so the prefix a
+     * short walk covers is what the build put in last.
+     */
+    for (i = FLUSH_PAGES - FLUSH_SHORT; i < FLUSH_PAGES; i++) {
+        want_short += (uint8_t)(i + 1);
     }
 
     for (t = 0; t < FLUSH_TRIALS; t++) {
@@ -7062,21 +7320,7 @@ flush_cost_checks(void)
       "and each page it makes the walk want",
       (unsigned long)(step - flush_ns(warm) / FLUSH_PAGES));
 
-    /*
-     * The chain says how many frames went back, and that is this
-     * check's own count. What it is not is page_used() before against
-     * page_used() after: the frame count is the whole machine's, the
-     * other core is running, and M13 stage four already settled that
-     * asserting such a count is unchanged is asserting that nothing
-     * else moved a frame in the instant this looked.
-     */
-    while (head != 0) {
-        uintptr_t next = *(const volatile uintptr_t *)head;
-
-        page_free(head);
-        given++;
-        head = next;
-    }
+    given = chain_free(head);
     if (given != FLUSH_PAGES) {
         panic("flush: handed back %u frames of %u", (unsigned int)given,
           (unsigned int)FLUSH_PAGES);
@@ -13275,6 +13519,7 @@ kernel_main(void)
           (unsigned int)connection_pool()->used);
     }
 #if SYS_TIER == 2
+    asid_checks();
     flush_cost_checks();
 #endif
     startup_record_checks();
@@ -13359,20 +13604,42 @@ kernel_main(void)
          * gives three hundred and eighty-eight. Pinning a number that
          * moves with the host would be a check that failed for
          * reasons no change caused. What does not move is that there
-         * are far more of these than there are buffer moves, and each
-         * of them discards the whole translation cache because
-         * neither port assigns address space identifiers.
+         * are far more of these than there are buffer moves.
+         *
+         * How many of them threw the whole translation cache away used
+         * to be all of them, and the line used to say so. Since M19
+         * stage two a port with identifiers keeps what it learned, and
+         * what is printed is the pair: a number that moves with the
+         * host beside a number that does not, since a port either tags
+         * its translations or does not.
          *
          * If a later stage ever makes this false, that is a result
          * rather than a broken check, and it should be read as one.
          */
-        cnprintf("address space switches: %u, each a whole-TLB flush, "
-          "against %u buffer halves\n", (unsigned int)all.vc_switch,
+        cnprintf("address space switches: %u, of which %u threw every "
+          "translation away, against %u buffer halves\n",
+          (unsigned int)all.vc_switch,
+          (unsigned int)all.vc_switch_flush,
           (unsigned int)all.vc_halves);
 #if SYS_TIER == 2
         if (all.vc_switch <= all.vc_halves) {
             panic("switching stopped dominating: %u switches, %u halves",
               (unsigned int)all.vc_switch, (unsigned int)all.vc_halves);
+        }
+
+        /*
+         * All of them or none of them, and which is decided by whether
+         * the port has identifiers to give. Anything in between is a
+         * space that was handed one and activated as though it had
+         * not, or the reverse, and either is a bug this would otherwise
+         * report as a smaller number.
+         */
+        if (all.vc_switch_flush !=
+          (md_asid_bits() == 0 ? all.vc_switch : 0)) {
+            panic("%u of %u switches flushed, with %u bits of "
+              "identifier", (unsigned int)all.vc_switch_flush,
+              (unsigned int)all.vc_switch,
+              (unsigned int)md_asid_bits());
         }
 
         {
