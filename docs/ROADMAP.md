@@ -3588,6 +3588,19 @@ number this stage records for the buffer path is therefore a number for a
 system that is not paying that, and the retrospective has to say so rather
 than comparing the two as if they were like for like.
 
+**And that correction was itself wrong, which M19 stage six found by
+building the thing.** Both ports have address space identifiers now and the
+buffer path still makes one call per page: the by-address form on both of
+them names no identifier and reaches every space, so a page moving between
+two spaces still needs one call and the compared report still says
+"46 invalidations" for 46 pages. The narrow form that names a space exists
+on both ports and was measured against the broad one, in case two of it
+were cheaper anyway. They are not: on riscv64 one broad call is 10750
+nanoseconds and two narrow ones are 21362, and on aarch64 one broad call is
+1722 and two narrow ones are 6102. So the buffer path pays what it always
+paid, and this paragraph is left standing above rather than edited, because
+what it got wrong is the shape of the thing worth recording.
+
 **5. The two layers in one cohort.** *Built.* One line in a build-time table
 removes seventy-one percent of the buffer remapping in the system and a copy
 per block, and the recorded session does not move.
@@ -11283,10 +11296,12 @@ this milestone's.
 - *And the flush count is asserted*, both here and over the whole boot.
   The report line M6's review put above the compared region now reads
   "address space switches: 5480, of which 7 threw every translation
-  away, against 46 buffer halves" on riscv64, and "5482, of which 5482"
-  on aarch64. A port with no identifiers flushes on every switch, and a
-  port with identifiers flushes on fewer and not on none: the seven are
-  the review's doing and are explained below.
+  away, against 46 buffer halves" on riscv64 when this was written, and
+  ten since stage six added a check that does maintenance of its own.
+  aarch64 reads "5482, of which 5482". A port with no identifiers
+  flushes on every switch, and a port with identifiers flushes on fewer
+  and not on none: the seven are the review's doing and are explained
+  below.
 - *Removing the flush removed a guarantee nobody had written down, and
   the review is what found it.* riscv64's fences reach only the core
   that issues them, which the README has listed as a limitation since
@@ -11302,7 +11317,7 @@ this milestone's.
   maintenance it performs, a core reads the sum of the others, and the
   dispatcher throws everything away at its first switch after that sum
   moves. It reproduces the old guarantee exactly, no stronger and no
-  weaker, and it costs seven flushes in a boot where the old rule cost
+  weaker, and it cost seven flushes in a boot where the old rule cost
   5480. Read as the sum of the others and not as one counter for the
   machine, because a core that invalidated something is not the core
   still holding it; one counter costs 2546 flushes instead of seven,
@@ -11649,17 +11664,61 @@ this milestone's.
   hold the other core with interrupts off across both reads, which is
   the only window the emulator gives.
 
-**6. The buffer path, and whether M6's correction was right.** *Planned.*
+**6. The buffer path, and whether M6's correction was right.** *Built.*
 
-- M6's review said that once entries are tagged, one invalidation stops
-  covering both spaces and the buffer path needs two calls per page
-  instead of one. Both ports have an invalidate-by-address form that
-  covers every identifier, so the choice is one broad call or two narrow
-  ones, and which is cheaper is a measurement rather than an argument.
-- *Check.* The buffer remapping counts, which are already in the
-  compared report, and the same walk-and-time comparison stage one
-  built. Whichever is kept, the number of invalidations per page moved
-  is asserted, and if it goes from one to two the report says so.
+- *It was not right, and the buffer path did not change.* M6's review
+  said that once entries are tagged, one invalidation stops covering
+  both spaces and the buffer path needs two calls per page instead of
+  one. Both ports have a by-address form that names no identifier and
+  reaches every space, and that is the form the buffer path has always
+  used, so a page moving between two spaces still needs one call. The
+  compared report still says "46 invalidations" for 46 pages, on both
+  ports and at both tiers, and that file is the assertion.
+- *So the question became whether two calls that name the two spaces
+  would be cheaper anyway*, which is a measurement and not an argument.
+  The narrow form exists on both ports and had never been written: it is
+  `sfence.vma va, asid` on one and `tlbi vae1is` with the identifier in
+  the operand on the other. Both are built, and both are timed against
+  the broad call over two spaces with the address really mapped in each,
+  because an invalidation naming a space nothing holds is not the work
+  being priced.
+
+  ```
+  a page moved: one call that names no space, or two that do
+      what is invalidated                    1 pages, 128 times each
+      one call naming no space               10750 ns
+      two that name the two spaces           21362 ns
+      so a page moved is cheaper with        the one broad call
+  ```
+
+  aarch64 answers 1722 against 6102. On riscv64 two calls cost twice
+  one, which is what a reader would guess; on aarch64 one narrow call
+  costs nearly twice one broad call, so two of them cost more than three
+  times, which a reader would not.
+- *And what that says about the buffer path's own numbers is larger than
+  the stage.* An invalidation of one address costs 10750 nanoseconds on
+  riscv64, and stage one measured a whole-TLB flush at 11252 plus 479
+  for each page the next thread wants back. On this host, removing one
+  address costs what throwing everything away costs. The buffer path's
+  case for naming its addresses rests on the narrower call being
+  cheaper, and on this emulator it is not, which is a fact about the
+  emulator and is exactly the kind of thing stage seven has to say
+  rather than report a saving nobody can see.
+- *The counts are asserted and the durations reported, per M9*, and an
+  empty run of the same length is timed beside them, because a loop of
+  calls the compiler decided to drop would be the fastest of all of
+  them. Removing the invalidation from the timed loop fails with a
+  broad run no slower than an empty one.
+- *Eight rounds a trial and not two hundred and fifty-six*, which is M19
+  stage five's lesson arriving one stage later. At ten microseconds a
+  call the longer run held interrupts off for eight milliseconds and
+  became the longest region in the boot by a factor of fifteen. Eight is
+  still hundreds of ticks, which is resolution enough, and core 0's
+  longest region is back where it was.
+- *And the boot's flush count moved from seven to ten*, because the
+  check's own invalidations are maintenance the other core has to hear
+  about. That is the check paying for itself in the number it is
+  measured against, and it is reported rather than hidden.
 
 **7. What it cost, and sections 13.3, 15 and 18 written around it.**
 *Planned.*

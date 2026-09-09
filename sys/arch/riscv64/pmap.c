@@ -513,6 +513,22 @@ md_tlb_invalidate(uintptr_t va)
 }
 
 void
+md_tlb_invalidate_in(uint32_t asid, uintptr_t va)
+{
+    vm_charge_inval();
+
+    /*
+     * Both operands, which is the one form that names an address and a
+     * space together. Like the by-name call it leaves global mappings
+     * alone, and like that call it is safe here only because there are
+     * none.
+     */
+    __asm__ volatile ("sfence.vma %0, %1" :: "r" (va),
+      "r" ((uint64_t)asid) : "memory");
+    vm_note_local_maintenance();
+}
+
+void
 md_tlb_invalidate_asid(uint32_t asid)
 {
     vm_count_asid_inval();

@@ -556,6 +556,26 @@ md_tlb_invalidate(uintptr_t va)
 }
 
 void
+md_tlb_invalidate_in(uint32_t asid, uintptr_t va)
+{
+    uint64_t arg = ((uint64_t)asid << TTBR_ASID_SHIFT) |
+      ((uint64_t)va >> 12);
+
+    vm_charge_inval();
+
+    /*
+     * The operand carries both, the identifier where the root register
+     * keeps it and the page number below. Inner-shareable, so it
+     * reaches the other core by itself. It reaches only entries whose
+     * leaf said nG, which is every entry this port writes.
+     */
+    __asm__ volatile ("dsb ishst");
+    __asm__ volatile ("tlbi vae1is, %0" :: "r" (arg));
+    __asm__ volatile ("dsb ish");
+    __asm__ volatile ("isb");
+}
+
+void
 md_tlb_invalidate_asid(uint32_t asid)
 {
     uint64_t arg = (uint64_t)asid << TTBR_ASID_SHIFT;

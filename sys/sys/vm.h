@@ -318,6 +318,17 @@ void md_tlb_invalidate(uintptr_t va);
 void md_tlb_invalidate_asid(uint32_t asid);
 
 /*
+ * One address in one space, which is the narrow form of the two above.
+ *
+ * The broad call removes an address from every space at once, which for
+ * a page being handed between two of them is the two entries that
+ * changed and nothing else. This removes one of them. Whether two of
+ * these are cheaper than one of those is a measurement, and M19 stage
+ * six is where it was made.
+ */
+void md_tlb_invalidate_in(uint32_t asid, uintptr_t va);
+
+/*
  * Map the registers this port's kernel reaches directly: the console it
  * panics through, and the interrupt controller. A driver's device memory
  * is not here, because a driver is a process and gets a grant.

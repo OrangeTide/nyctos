@@ -7141,6 +7141,148 @@ stale_second(void *arg)
     thread_exit(0);
 }
 
+/*
+ * One broad invalidation against two narrow ones, per M19 stage six.
+ *
+ * M6's review said that once entries are tagged, one call would stop
+ * covering both spaces and the buffer path would need two. It does not:
+ * both ports have a by-address form that names no identifier and
+ * reaches every space, and it is what the buffer path has always used.
+ * So the question is not whether one call still works but whether it is
+ * still the cheaper way to move a page, and that is a measurement.
+ *
+ * What is timed is what the buffer path would do either way: one call
+ * that removes an address everywhere, against two that remove it from
+ * the two spaces the page is actually moving between. The two spaces
+ * are real ones with the address really mapped in both, because an
+ * invalidation naming a space nothing holds is not the work being
+ * priced.
+ *
+ * Counts asserted and durations reported, per M9. An empty run of the
+ * same length is timed beside them, because a loop of calls the
+ * compiler decided to drop would be the fastest of all of them, and
+ * M11's clock check found that out the hard way.
+ */
+#define INVAL_ROUNDS    8u
+#define INVAL_TRIALS    16u
+
+static void
+invalidate_cost_checks(void)
+{
+    struct addrspace one, two;
+    uintptr_t va, pa_one, pa_two;
+    size_t len;
+    uint64_t bare = 0, broad = 0, narrow = 0;
+    uint32_t frames = page_used();
+    uint32_t i, t;
+
+    cnputs("a page moved: one call that names no space, or two that "
+      "do\n");
+
+    vm_user_window(&va, &len);
+
+    if (vm_as_create(&one) != SYS_OK || vm_as_create(&two) != SYS_OK) {
+        panic("moved: no room for two address spaces");
+    }
+    pa_one = page_alloc();
+    pa_two = page_alloc();
+    if (pa_one == 0 || pa_two == 0) {
+        panic("moved: no frame to move");
+    }
+    if (md_map(&one, va, pa_one, PAGE_SIZE, VM_PROGRAM) != SYS_OK ||
+      md_map(&two, va, pa_two, PAGE_SIZE, VM_PROGRAM) != SYS_OK) {
+        panic("moved: the address would not map");
+    }
+
+    for (t = 0; t < INVAL_TRIALS; t++) {
+        intr_state_t is;
+        uint64_t t0, t1, t2, t3, t4, t5;
+
+        /*
+         * One trial at a time with interrupts off, and the shortest of
+         * all of them, which is M19 stage one's discipline and its
+         * reasons.
+         *
+         * Eight rounds and not two hundred and fifty-six, which is M19
+         * stage five's lesson about what a check may cost: an
+         * invalidation is ten microseconds here, so the longer run
+         * held interrupts off for eight milliseconds and became the
+         * longest region in the boot by a factor of fifteen. Eight is
+         * still hundreds of ticks, which is resolution enough.
+         */
+        is = md_intr_disable();
+
+        t0 = time_now();
+        for (i = 0; i < INVAL_ROUNDS; i++) {
+            __asm__ volatile ("" ::: "memory");
+        }
+        t1 = time_now();
+
+        t2 = time_now();
+        for (i = 0; i < INVAL_ROUNDS; i++) {
+            md_tlb_invalidate(va);
+        }
+        t3 = time_now();
+
+        t4 = time_now();
+        for (i = 0; i < INVAL_ROUNDS; i++) {
+            md_tlb_invalidate_in(one.as_asid, va);
+            md_tlb_invalidate_in(two.as_asid, va);
+        }
+        t5 = time_now();
+
+        md_intr_restore(is);
+
+        if (t == 0 || t1 - t0 < bare) {
+            bare = t1 - t0;
+        }
+        if (t == 0 || t3 - t2 < broad) {
+            broad = t3 - t2;
+        }
+        if (t == 0 || t5 - t4 < narrow) {
+            narrow = t5 - t4;
+        }
+    }
+
+    /*
+     * The calls happened, which the durations cannot say on their own.
+     */
+    if (broad <= bare) {
+        panic("moved: %lu ticks for %u broad calls against %lu for "
+          "none", (unsigned long)broad, (unsigned int)INVAL_ROUNDS,
+          (unsigned long)bare);
+    }
+    if (narrow <= bare) {
+        panic("moved: %lu ticks for %u narrow calls against %lu for "
+          "none", (unsigned long)narrow,
+          (unsigned int)(INVAL_ROUNDS * 2), (unsigned long)bare);
+    }
+
+    cnprintf("    %-38s %u pages, %u times each\n",
+      "what is invalidated", 1u,
+      (unsigned int)(INVAL_ROUNDS * INVAL_TRIALS));
+    cnprintf("    %-38s %lu ns\n", "one call naming no space",
+      (unsigned long)(flush_ns(broad - bare) / INVAL_ROUNDS));
+    cnprintf("    %-38s %lu ns\n", "two that name the two spaces",
+      (unsigned long)(flush_ns(narrow - bare) / INVAL_ROUNDS));
+    cnprintf("    %-38s %s\n", "so a page moved is cheaper with",
+      broad - bare <= narrow - bare ? "the one broad call" :
+      "the two narrow ones");
+
+    md_unmap(&one, va, PAGE_SIZE);
+    md_unmap(&two, va, PAGE_SIZE);
+    md_tlb_flush_all();
+    vm_as_destroy(&one);
+    vm_as_destroy(&two);
+    page_free(pa_one);
+    page_free(pa_two);
+
+    if (page_used() != frames) {
+        panic("moved: %u frames in use, started with %u",
+          (unsigned int)page_used(), (unsigned int)frames);
+    }
+}
+
 static void
 cross_core_stale_checks(void)
 {
@@ -14257,6 +14399,7 @@ kernel_main(void)
     asid_checks();
     asid_reuse_checks();
     cross_core_stale_checks();
+    invalidate_cost_checks();
     flush_cost_checks();
 #endif
     startup_record_checks();

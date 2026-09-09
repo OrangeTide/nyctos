@@ -590,12 +590,19 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
          *
          * By address, and one call covers both spaces. The page went
          * into the receiver at the address it had in the sender and
-         * was taken away from the sender at that same address, and
-         * neither port tags a translation with the space it came
-         * from, so removing that address removes both entries. A
-         * port with address space identifiers would need two calls
-         * here rather than one, which is a cost this counts as one
-         * because it is not paying it.
+         * was taken away from the sender at that same address, and the
+         * call names no identifier, so removing that address removes
+         * both entries.
+         *
+         * This used to say that a port with address space identifiers
+         * would need two calls here rather than one, and that the
+         * count of one was a cost this was not paying. Both ports have
+         * identifiers since M19 and this is still one call, because
+         * the by-address form on both of them names no space and
+         * reaches every one. M19 stage six then asked whether two
+         * calls that do name the two spaces would be cheaper anyway,
+         * and they are not: two of them cost twice one on riscv64 and
+         * more than three times one on aarch64.
          *
          * Throwing the whole cache away instead was correct and was
          * also every other translation in the system, most of which

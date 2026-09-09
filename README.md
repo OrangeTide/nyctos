@@ -987,7 +987,7 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   Reclaiming a cohort member's memory while a peer runs on another core
   is not safe, and the checks reap processes that are in no cohort. What
   a core does get is a flush at its first switch after another core
-  invalidates anything, which is seven flushes in a boot. That is a
+  invalidates anything, which is ten flushes in a boot. That is a
   coarse rule and not a shootdown: it bounds how long a stale entry
   lives, and does not stop one being used before the switch arrives.
 - No calendar time. A program makes its own deadlines now: it reads the
@@ -1045,7 +1045,7 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   displacement measured here happens on the core the event happened on.
 - Both ports assign address space identifiers now, and a dispatch into
   another address space no longer discards anything: 5480 switches in a
-  boot, 7 of them a flush on riscv64 and none on aarch64. What that
+  boot, 10 of them a flush on riscv64 and none on aarch64. What that
   bought on the machine this runs on is nothing. Writing the root
   register makes the emulator throw every translation away whichever
   port asks, so a walk after a switch still costs 131400 nanoseconds
