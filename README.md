@@ -29,7 +29,70 @@ hidden, and it narrows one stage at a time.
 
 ## Status
 
-**Milestone 17 is done: a kill reaches a thread that is not asking to be
+**Milestone 18 is done: a server can keep its own books when its clients
+stop existing.** Section 12.5 specified a death notice and section 13.1
+reserved queue slots for it, both arguing from a server that would leak
+without one, and no server in this system had anything to leak. So the
+milestone wrote one. `ledger` holds a record per client out of a table
+of eight, and four clients took one and left in four different ways:
+
+```
+              how the client went     what the server was told
+  killed inside a request it held                    a notice
+  killed with nothing outstanding                     nothing
+  returned from main                                  nothing
+  killed while queued, never received                 nothing
+  gave up at its deadline                 nothing, then a refused reply
+```
+
+One death in five is announced, which is what section 12.5 says and not
+a defect in it. But a server that keeps anything per client cannot work
+from that: the notice names a thread where records are per client, and
+four departures in five raise no edge at all. Three of the four records
+leaked.
+
+**So the fact moved onto the connection, which was already there.** A
+connection counts the references held by anything but its server, and
+when that count falls to zero having been above it the connection is
+kept rather than freed, marked, and returned to the server that asks for
+it. `sys_chan_reap()` hands back one cookie per call and `SYS_ERR_NO_ENT`
+when there are none, so a server drains it in a loop. That is `SIGCHLD`
+and `waitpid`: the pulse is now a hint that may be coalesced or lost, and
+the kept connection is the entry that cannot be.
+
+```
+              records leaked, of four clients
+  told only by the notice, and acting on it              2
+  reading the connection instead                         0
+```
+
+**A notice can be lost now, and the server is still right.** A system
+pulse arriving at a full queue used to halt the machine, on the argument
+that losing one leaks a dead client's resources permanently. That
+argument is no longer true, so the queue gives up the pulse it can most
+afford to lose: a user pulse, then a hint, then the arrival. With eight
+uncollected deaths queued and a ninth arriving, the server sees eight of
+nine, is told once that it missed something, and still ends holding no
+record for the client that died, because it collected the connection.
+
+**And a queue has a depth its server chooses.** Every sender waiting on
+a channel is a thread, so a server that falls behind used to accumulate
+them until the machine ran out, and a client had no way to tell a
+backlog from being served. `sys_chan_listen()` sets a depth, needing the
+receive right because bounding the queue that feeds a server is the
+server's business. A send always joins the queue, and while the queue is
+over depth its lowest-priority sender is taken off and failed with
+`SYS_ERR_WOULDBLOCK`. That is a refusal when it is the arriving client
+and a close after accept when it is one already waiting, and it is
+deliberately the same answer for both: nothing happened, nothing was
+lent, and the server never saw it.
+
+Sections 12.1, 12.5 and 13.1 have been rewritten around what was built,
+and two sentences of the specification were false and are marked as
+such rather than quietly edited.
+
+**Milestone 17 is done:
+ a kill reaches a thread that is not asking to be
 reached.** Section 10.5 says process termination is prompt, and the
 kernel did unblock every thread of the target. A thread that was never
 blocked was left to find a mark on its own, and there was exactly one
@@ -958,10 +1021,20 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   goes onto its channel's serving list a second time, which leaves that
   list naming a thread that is serving nothing. Section 19.3 says a
   server thread serves one request at a time; nothing enforces it.
-- Nothing consumes a death notice. The kernel delivers one to a server
-  whose client has gone, and no server here holds state per client, so
-  whether a restarted server leaks its own per-connection records is
-  still an open question rather than an answered one.
+- A client thread that dies beside a live sibling on the same connection
+  is announced by a notice and by nothing else, because the connection
+  is still in use. If that notice is lost, the record it named leaks.
+  Every client that goes away entirely is covered, since its connection
+  goes with it.
+- Nothing here restarts a server. The case section 18.2 argues from is a
+  supervisor restarting one under its clients, and the checks kill
+  servers rather than replacing them.
+- A bounded queue has only been measured on a channel with nothing at
+  its receive point. What a depth does to a working service, and how a
+  server would choose one, is not answered.
+- Collecting departed peers is written for more than one draining thread
+  and has only been run with one, and every collection, notice and
+  displacement measured here happens on the core the event happened on.
 - Neither port assigns address space identifiers, so every dispatch into
   a different address space discards the whole translation cache. That is
   the largest cost the milestone 6 measurements turned up and the one
@@ -969,7 +1042,7 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). Seventeen milestones are
+See [docs/ROADMAP.md](docs/ROADMAP.md). Eighteen milestones are
 finished. The plan as written ran to ten; each milestone since was
 chosen after the last one ended, out of what it left open: a question
 only half answered, or a limitation this file had been carrying. What

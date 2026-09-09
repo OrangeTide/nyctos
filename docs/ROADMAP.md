@@ -531,6 +531,31 @@ to wait out its own deadline; the error says the server is still there
 to be asked again, which is what distinguishes it from the death of the
 whole server.
 
+**M18 gave a server a way to know that its clients have gone.** Sections
+12.5 and 13.1 both argued from a server that would leak without a death
+notice, and no server here had anything to leak, so the milestone wrote
+one. `ledger` keeps a record per client out of a table of eight. Four
+clients took one and left in four different ways, and the server was
+told about exactly one of them, which is what section 12.5 promises and
+not a defect in it: the client killed inside a request the server was
+holding. Three records leaked.
+
+A notice is an edge, it names a thread where records are per client, and
+four departures in five raise no edge at all, so the fact moved onto the
+connection, which was already per client and already lived exactly as
+long as the client's handle on it. A connection whose references have
+all gone is kept rather than freed, and `sys_chan_reap()` hands it back
+to the server that owns the channel, one cookie at a time. That is
+`SIGCHLD` and `waitpid`, and it makes the pulse a hint: a notice
+deliberately lost now costs latency rather than a record, and a system
+pulse arriving at a full queue no longer halts the machine.
+
+A channel also takes a depth now, because every sender waiting on one is
+a thread and a server that falls behind used to accumulate them without
+limit. A send joins the queue and the queue gives up its lowest-priority
+sender, which is a refusal for the arriving client and a close after
+accept for one already waiting.
+
 Nothing has run on hardware, so every duration this project has
 published is the right shape and the wrong magnitude. The counts are not
 durations, which is why these milestones assert counts.
@@ -10363,6 +10388,12 @@ stages that are about what a death means to somebody else.
 
 **The death notice nobody has ever read.**
 
+**Done.** All seven stages are built. Section 21 says what it answered,
+what it cost, what the building kept finding, and what it left
+untested. The gap it closed was in the specification and not only in
+the mechanism: two sentences of `design.md` were false, and they were
+false in the direction that made a server's books impossible to keep.
+
 Section 13.1 says the reservation in a channel's pulse queue is
 "required for correctness, not politeness", because "a dropped death
 notification leaks the resources of a dead client permanently". Section
@@ -13369,7 +13400,181 @@ tidier. The limit is not what is short.
 
 ---
 
-## 21. Bring-Up Order Within M1
+## 21. Milestone 18, in Retrospect
+
+M18 set out to read a death notice, because nothing ever had. Section
+12.5 specified one and section 13.1 reserved queue slots for it, both
+arguing from a server that would leak without it, and no server in this
+system had anything to leak. The milestone built one, measured what the
+notice is worth, and found the answer was one death in five.
+
+### 21.1 The Questions
+
+**Is the notice as specified enough for a server to keep its own books?**
+
+No, and the number is one in five. `ledger` holds a record per client
+out of a table of eight. Four clients took one and left in four
+different ways, and the server was told about one of them: the client
+killed inside a request it was holding. A client killed with nothing
+outstanding, a client that returned from `main`, a client killed while
+queued and a client that gave up at its deadline all produced nothing.
+Three records leaked at stage one, two after the server learned to act
+on the notice it did get, and none after the fact moved onto the
+connection.
+
+**And no improvement to delivery would have made it enough.** The notice
+names a thread where the records are per client, four departures in five
+raise no edge at all, and the queue it arrives in is eight deep. That is
+not a delivery problem, so a better-delivered edge was never the answer.
+
+**Was the falsification condition met?**
+
+No, and the condition was specific: that the connection could not carry
+the fact without a new allocation, or that a server could not reach it
+without a handle it has no reason to hold. Neither happened. The fact is
+five fields on a connection and four on a channel, and the connection
+was already there, already lived exactly as long as the client's handle
+on it, and already carried the cookie the server named it with. And the
+server reaches it through the channel, which is the one thing a server
+does hold: `sys_chan_reap()` takes the receive right, not a connection
+handle. The worry was real and the shape it warned about is the one that
+was avoided.
+
+**What made the checks able to fail?**
+
+A record is a slot in a fixed table, so a leak costs something a check
+can count, and the check is itself a client that holds one. The second
+of those was a retrofit: with every record belonging to a client that
+had left, a server that emptied its table whenever it collected anything
+reached exactly the same numbers as one that let go of the right
+records.
+
+**What does a queue cost when nobody bounds it?**
+
+Threads. Every queued sender is one, so a server that falls behind
+accumulates them until the machine has none, and a client joining a
+backlog cannot tell that from being served. A depth the server sets
+answers both: the queue gives up its lowest-priority sender, which is a
+refusal when that is the arriving client and a close after accept when
+it is one already waiting, and one error says both because nothing
+happened in either case.
+
+### 21.2 What It Cost
+
+**Two operations and one pulse code.** `SYS_OP_CHAN_REAP` collects a
+departed peer and `SYS_OP_CHAN_LISTEN` sets a depth, both needing
+`SYS_RIGHT_RECV` because both are the receiving side's business.
+`SYS_PULSE_PEER_GONE` is a hint and is coalesced to one per channel.
+
+**1920 bytes of kernel object memory**, 243040 to 244960: five fields on
+each of thirty-two connections and four on each of forty-eight channels,
+and nothing allocated at run time at all.
+
+**32768 bytes of archive**, 233472 to 266240, and two more members.
+`ledger` and `patron` are most of it; the last 12288 is every program
+growing by about 1.6 KB when a system call wrapper was added, because
+they all link the same object, and three of them crossing a page
+boundary in an archive that pads its members.
+
+**No threads, no processes and no kernel stacks.** 24 threads and 98304
+bytes at Tier 2, 22 and 90112 at Tier 0, exactly as M16 and M17 left
+them. Twelve programs are spawned and every one of them is joined,
+reaped and asserted gone.
+
+**Two more kills**, 13 to 15 at Tier 2 and 11 to 13 at Tier 0, and four
+more channels, which the sixteen slots M17 added absorbed.
+
+**Three lines in the compared report**, and they are the same numbers at
+both tiers and on both ports, which nothing else in that report is.
+
+**About 150 to 175 milliseconds of boot**, which is where the cost
+actually is. Almost all of it is spawning, joining and reaping a dozen
+programs; the mechanisms themselves are microseconds.
+
+### 21.3 What the Building Kept Finding
+
+**A check that could not fail on the thing it was for, twice.** Stage
+three's first version had the dying client hold the first record, so a
+server releasing whichever record it saw first passed. Stage four's had
+no record that belonged to a client still present, so a server releasing
+everything passed. This shape has now appeared in six consecutive
+milestones. What is new is that the second one was caught while the
+stage was being built rather than by the review after it.
+
+**Prose that outran the code.** Section 12.5 was written with the peer
+count kept against whoever owns the channel, which is what stage four
+did until stage four's own review changed it. A stage that writes the
+specification last is a stage that can describe the version it started
+with.
+
+**A count that covered two different things.** One number for pulses
+that did not fit said twelve, of which eleven were the ordinary
+user-pulse eviction that predates this milestone. The number the
+milestone was about was invisible inside it until the two were counted
+apart.
+
+**A new mechanism making an old panic easier to reach.** The hint is a
+system pulse, so it uses the slots reserved for death notices, and one
+per departing client meant three departures could halt the machine. The
+fix was the mechanism's own argument applied to itself: the hint says
+there is something to collect and nothing about what, so one is as good
+as three.
+
+**An invariant that was true by accident.** The sender queue is ordered
+at insert time, so the tail is the lowest priority, except that
+section 12.3's chain raises a queued sender where it stands. The
+eviction rule said lowest and the code said last, and they agreed only
+because nothing had raised anybody.
+
+**A claimed race that could not happen.** The review of stage four
+recorded a double free reachable across cores, and the review of stage
+five withdrew it: every entry into this kernel takes the kernel lock at
+Tier 2. The fix stayed because it puts the invariant in the function
+that frees, but the claim was wrong and saying so is cheaper than
+leaving it.
+
+**And the plan being wrong about its own check.** Stage five was
+planned to lose a notice by having a client flood the user slots. That
+cannot happen, because it is exactly what the reservation prevents.
+The only way to lose a notice is more outstanding deaths than the queue
+holds, which is what the stage does instead, and the plan's version is
+kept in the entry rather than quietly replaced.
+
+### 21.4 What Is Still Untested
+
+**A thread that dies beside a live sibling on one connection, with the
+notice lost.** That is the one case the level state does not cover: the
+connection is still in use, so only the notice says the thread has gone.
+Both halves are checked separately and their combination is not.
+
+**A server with two threads collecting at once.** Draining is written to
+be safe for it and nothing here does it: every check has one thread
+asking.
+
+**A bounded queue on a channel somebody receives on.** Every depth check
+uses a channel with nothing at its receive point, because what is being
+measured is the queue. What a depth does to a working service, and
+whether a server can pick one, is not answered.
+
+**A depth lowered under a queue that is already longer.** The loop
+converges rather than shedding one per send, and nothing exercises it.
+
+**Which sender a raised client is served after.** The chain raises it
+where it stands, so it is served in its old position and evicted by its
+new priority. Only the second of those is settled.
+
+**Collecting across cores.** Every collection, every notice and every
+displacement in these checks happens on the core the event happened on.
+
+**A server that restarts.** The whole argument is about a server
+outliving its clients, and the case that motivates it in section 18.2 is
+a supervisor restarting one. Nothing here restarts anything.
+
+**Hardware, still.**
+
+---
+
+## 22. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -13413,7 +13618,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 22. Ordering: What Is Forced and What Is Chosen
+## 23. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -13444,7 +13649,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 23. What Would Change This Plan
+## 24. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -13491,7 +13696,7 @@ else.
 
 ---
 
-## 24. Deliberately Not Scheduled
+## 25. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 
