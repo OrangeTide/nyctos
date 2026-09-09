@@ -6834,6 +6834,185 @@ depth_checks(void)
     expect("and the first one", handle_close(ht, h_recv), SYS_OK);
 }
 
+#if SYS_TIER == 2
+
+/*
+ * What a whole-TLB flush costs, per M19 stage one.
+ *
+ * Measured before anything changes, because a milestone that removes a
+ * cost it never measured is a milestone reporting a number rather than
+ * an improvement. The boot prints how many address space switches it
+ * makes and says each one is a flush; this says what one of those is
+ * worth.
+ *
+ * Tier 2 only, and that is the measurement rather than a gap in it.
+ * There is one address space at Tier 0 and nothing to throw away.
+ *
+ * What is timed is a flush and the walk that follows it, together,
+ * because that is the quantity: the instruction costs almost nothing
+ * and the translations it discards are the cost. The same walk without
+ * the flush is what it is measured against, so what the two differ by
+ * is the flush and the page walks it forces and nothing else.
+ */
+#define FLUSH_PAGES     256u
+#define FLUSH_PASSES    8u
+#define FLUSH_TRIALS    7u
+
+/*
+ * Walk the chain and add up what each page holds. The sum is what says
+ * the reads happened: a walk the compiler decided to skip, or one that
+ * stopped early, cannot produce it. M11's clock check found the hard
+ * way that timing two runs and asserting one took longer passes with
+ * the work taken out, so every timed thing here answers with a count
+ * as well.
+ *
+ * A chain rather than an array of addresses, because two hundred and
+ * fifty-six of those is two kilobytes and a kernel stack is four. Each
+ * page holds the address of the next one and a byte of its own, so the
+ * walk carries no index of where it is going and the only memory it
+ * touches is the memory being measured.
+ */
+static uint32_t
+flush_walk(uintptr_t head, uint32_t n)
+{
+    uintptr_t at = head;
+    uint32_t sum = 0;
+    uint32_t i;
+
+    for (i = 0; i < n; i++) {
+        sum += *(const volatile uint8_t *)(at + sizeof(uintptr_t));
+        at = *(const volatile uintptr_t *)at;
+    }
+
+    return sum;
+}
+
+static void
+flush_cost_checks(void)
+{
+    uintptr_t head = 0;
+    uint64_t warm = 0;
+    uint64_t cold = 0;
+    uint32_t want = 0;
+    uint32_t sum = 0;
+    uint32_t frames;
+    uint32_t i, t;
+
+    cnputs("a switch: what throwing every translation away costs\n");
+
+    frames = page_used();
+
+    /*
+     * Frames rather than memory of the kernel's own, because a
+     * megabyte that exists so that a check can walk it is a megabyte
+     * every boot carries for one measurement. These go back at the end
+     * and the count says so.
+     */
+    for (i = 0; i < FLUSH_PAGES; i++) {
+        uintptr_t pg = page_alloc();
+
+        if (pg == 0) {
+            panic("flush: no frame for page %u", (unsigned int)i);
+        }
+        *(volatile uintptr_t *)pg = head;
+        *(volatile uint8_t *)(pg + sizeof(uintptr_t)) = (uint8_t)(i + 1);
+        want += (uint8_t)(i + 1);
+        head = pg;
+    }
+
+    for (t = 0; t < FLUSH_TRIALS; t++) {
+        uint32_t p;
+
+        for (p = 0; p < FLUSH_PASSES; p++) {
+            intr_state_t is;
+            uint64_t t0, t1, t2, t3;
+
+            /*
+             * The flushed walk first and the warm one straight after
+             * it, in one region with interrupts off.
+             *
+             * The warm walk is warm because the flushed walk it
+             * follows installed exactly the translations it wants,
+             * and nothing at all runs between them. Keeping that so
+             * is not about interrupts. What runs between two samples
+             * is whatever the scheduler had, and dispatching anything
+             * in another address space is itself a whole-TLB flush:
+             * with the samples in separate regions the burst session
+             * reported a warm walk eleven times slower than the paced
+             * one, because a console with input waiting gets
+             * dispatched in between and the warm sample was not warm.
+             * That is the cost this stage is measuring, arriving
+             * uninvited in the measurement of it.
+             *
+             * One pass at a time and the shortest of all of them,
+             * because timing the whole run at once measures how much
+             * of the host the emulator was getting. The pages are
+             * counted in hundreds for the same reason from the other
+             * side: the warm walk has to be long enough that a hiccup
+             * of the host's is small next to it, and at sixty-four
+             * pages it was not, so the burst session's shortest warm
+             * walk was eight times the paced session's.
+             */
+            is = md_intr_disable();
+
+            t0 = time_now();
+            md_tlb_flush_all();
+            sum += flush_walk(head, FLUSH_PAGES);
+            t1 = time_now();
+
+            t2 = time_now();
+            sum += flush_walk(head, FLUSH_PAGES);
+            t3 = time_now();
+
+            md_intr_restore(is);
+
+            if ((t == 0 && p == 0) || t1 - t0 < cold) {
+                cold = t1 - t0;
+            }
+            if ((t == 0 && p == 0) || t3 - t2 < warm) {
+                warm = t3 - t2;
+            }
+        }
+    }
+
+    /*
+     * The reads happened, which the durations cannot say: a walk the
+     * compiler decided to skip would be the fastest of all of them.
+     */
+    if (sum != want * FLUSH_PASSES * FLUSH_TRIALS * 2) {
+        panic("flush: the walks read %u, not %u", (unsigned int)sum,
+          (unsigned int)(want * FLUSH_PASSES * FLUSH_TRIALS * 2));
+    }
+
+    if (cold < warm * 2) {
+        panic("flush: %lu ticks flushed against %lu warm, which is not "
+          "a cost", (unsigned long)cold, (unsigned long)warm);
+    }
+
+    cnprintf("    %-38s %u pages, %u walks of them\n",
+      "what the walk touches", (unsigned int)FLUSH_PAGES,
+      (unsigned int)(FLUSH_PASSES * FLUSH_TRIALS * 2));
+    cnprintf("    %-38s %lu ns against %lu\n",
+      "the shortest walk flushed, and warm",
+      (unsigned long)(cold * 1000000000ULL / time_hz()),
+      (unsigned long)(warm * 1000000000ULL / time_hz()));
+    cnprintf("    %-38s about %lu ns\n", "so one flush and its refills",
+      (unsigned long)((cold - warm) * 1000000000ULL / time_hz()));
+
+    while (head != 0) {
+        uintptr_t next = *(const volatile uintptr_t *)head;
+
+        page_free(head);
+        head = next;
+    }
+    if (page_used() != frames) {
+        panic("flush: %u frames in use, started with %u",
+          (unsigned int)page_used(), (unsigned int)frames);
+    }
+}
+
+#endif /* SYS_TIER == 2 */
+
 /*
  * The deaths a server is not told about, per M18 stage two.
  *
@@ -13023,6 +13202,9 @@ kernel_main(void)
           "connections in use after all of it",
           (unsigned int)connection_pool()->used);
     }
+#if SYS_TIER == 2
+    flush_cost_checks();
+#endif
     startup_record_checks();
     deadline_checks();
 

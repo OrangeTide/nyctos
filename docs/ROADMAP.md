@@ -11130,24 +11130,71 @@ space for the kernel: this kernel is identity mapped and shares the
 program's tables, and changing that is section 15's business and not
 this milestone's.
 
-**1. What a flush costs, before anything changes.** *Planned.*
+**1. What a flush costs, before anything changes.** *Built.*
 
 - The number of switches is already printed. What is not known is what
   one costs, and a milestone that removes a cost it never measured is a
   milestone reporting a number rather than an improvement.
-- A kernel thread walks a fixed set of pages twice: once with the
-  translations it just used still in the cache, and once after a flush.
-  The difference is what the flush costs on this host, and the same walk
-  on the same pages is what makes the two comparable.
+- A kernel thread walks a fixed set of pages twice: once after a flush,
+  and once with the translations that walk just installed still in the
+  cache. The difference is what the flush costs on this host, and the
+  same walk on the same pages is what makes the two comparable.
 - *Check.* The count is asserted and the durations are reported, per M9:
-  the number of pages walked and the number of flushes are the kernel's,
-  and how long the walk took is the host's. What is asserted about the
-  durations is the relation, which is that the walk after a flush is
-  slower, with a margin wide enough that a fast host does not fail it
-  and narrow enough that an unchanged system does.
-- *And the relation has to be able to be false.* Removing the flush from
-  between the two walks must make the check fail, or it is measuring the
-  walk rather than the flush.
+  two hundred and fifty-six pages, a hundred and twelve walks of them,
+  and the sum of every byte read, which is a property of this kernel.
+  How long a walk took is the host's and is printed above the compared
+  line. What is asserted about the durations is only the relation, that
+  the flushed walk is at least twice the warm one.
+
+  ```
+    what the walk touches                  256 pages, 112 walks of them
+    the shortest walk flushed, and warm    140100 ns against 7700
+    so one flush and its refills           about 132400 ns
+  ```
+
+- *The margin is wide because the thing being measured is large.* On
+  riscv64 the flushed walk is eighteen times the warm one, on aarch64
+  between seven and nine, and the threshold is two. A host four times
+  faster at refilling translations than at anything else would still
+  pass it, and a system that stopped flushing would not.
+- *Tier 2 only, and that is the measurement rather than a gap in it.*
+  There is one address space at Tier 0 and nothing to throw away.
+- *What one flush costs here is about 130 microseconds*, on both ports,
+  in both the paced and the burst session. That is the price of
+  refilling two hundred and fifty-six translations, not the price of an
+  average switch: what a real dispatch pays is however many of its
+  translations it walks again before it blocks, which this does not
+  measure and stage seven will have to.
+- *The measurement kept measuring the host, four times over, and each
+  time the fix was to make the two samples more alike.* Timing the whole
+  run of passes at once reported the warm walk four times slower in the
+  burst session than in the paced one, because how fast an emulator runs
+  is how much of the host it is getting; the shortest single pass is the
+  one that was least disturbed and is the same number in both. Putting
+  the two samples in separate regions reported a warm walk eleven times
+  slower in the burst session, because a console with input waiting gets
+  dispatched in between and *that dispatch is itself a whole-TLB flush*,
+  so the warm sample was not warm. That is this milestone's subject
+  arriving uninvited in the measurement of it. Turning interrupts off
+  for the whole run instead cost the burst session its console input
+  entirely: a millisecond and a half without them and the session never
+  finished. And with the samples finally adjacent and the region short,
+  sixty-four pages was still too little work to hide a hiccup of the
+  host's, so the burst session's shortest warm walk was 19300
+  nanoseconds against the paced session's 2400. Two hundred and
+  fifty-six pages puts them at 7400 and 7700.
+- *The pages are a chain and not an array*, because two hundred and
+  fifty-six addresses is two kilobytes and a kernel stack is four. Each
+  page holds the address of the next and a byte of its own, so the walk
+  carries no index of where it is going and the only memory it touches
+  is the memory being measured. The frames are allocated for the check
+  and given back, and the count of frames in use says so.
+- *And the relation can be false.* Removing the flush from between the
+  two walks fails with "flush: 1327 ticks flushed against 1323 warm,
+  which is not a cost", which is the whole margin gone. The other two
+  assertions fail too: a walk that stops one page early reports "the
+  walks read 3655568, not 3655680", and leaking one of the frames
+  reports "9485 frames in use, started with 9484".
 
 **2. An identifier per space, and a switch that keeps its translations.**
 *Planned.*
