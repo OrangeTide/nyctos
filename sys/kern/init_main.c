@@ -6848,13 +6848,29 @@ depth_checks(void)
  * Tier 2 only, and that is the measurement rather than a gap in it.
  * There is one address space at Tier 0 and nothing to throw away.
  *
- * What is timed is a flush and the walk that follows it, together,
- * because that is the quantity: the instruction costs almost nothing
- * and the translations it discards are the cost. The same walk without
- * the flush is what it is measured against, so what the two differ by
- * is the flush and the page walks it forces and nothing else.
+ * A flush does not have one price, and the first version of this check
+ * reported as though it did. What it costs is a fixed part, which is
+ * the flush itself, and a part that grows with how much the next thread
+ * touches before it blocks, because every translation it wants back it
+ * has to walk for again. So the walk is timed at two lengths and the
+ * two parts are separated: multiplying one working set's answer by the
+ * number of switches in a boot is what this arrangement exists to stop
+ * a reader doing.
+ *
+ * What the numbers are the price of, exactly. The pages are frames read
+ * through the identity map, and that map is made of megapages, so on
+ * real hardware this walk would want one or two translations and not
+ * two hundred and fifty-six. It costs what it costs here because an
+ * emulator's translation cache is per page of virtual address whatever
+ * the guest's leaf describes. That makes these figures the emulator's
+ * price rather than any machine's, and the reason to keep them anyway
+ * is that a user address space is page granular, so what is measured
+ * has the shape of what a program pays even though the absolute numbers
+ * are the host's. Every later stage is compared against this same
+ * arrangement on this same host, which is what the baseline is for.
  */
 #define FLUSH_PAGES     256u
+#define FLUSH_SHORT     64u
 #define FLUSH_PASSES    8u
 #define FLUSH_TRIALS    7u
 
@@ -6870,7 +6886,8 @@ depth_checks(void)
  * fifty-six of those is two kilobytes and a kernel stack is four. Each
  * page holds the address of the next one and a byte of its own, so the
  * walk carries no index of where it is going and the only memory it
- * touches is the memory being measured.
+ * touches is the memory being measured. Walking a prefix of it is what
+ * makes the short pass the same walk over fewer pages.
  */
 static uint32_t
 flush_walk(uintptr_t head, uint32_t n)
@@ -6887,26 +6904,33 @@ flush_walk(uintptr_t head, uint32_t n)
     return sum;
 }
 
+/* Ticks to nanoseconds, which is the only unit any of this is read in. */
+static uint64_t
+flush_ns(uint64_t ticks)
+{
+    return ticks * 1000000000ULL / time_hz();
+}
+
 static void
 flush_cost_checks(void)
 {
     uintptr_t head = 0;
     uint64_t warm = 0;
     uint64_t cold = 0;
+    uint64_t part = 0;
+    uint64_t step, fixed;
     uint32_t want = 0;
+    uint32_t want_short = 0;
     uint32_t sum = 0;
-    uint32_t frames;
+    uint32_t given = 0;
     uint32_t i, t;
 
     cnputs("a switch: what throwing every translation away costs\n");
 
-    frames = page_used();
-
     /*
      * Frames rather than memory of the kernel's own, because a
      * megabyte that exists so that a check can walk it is a megabyte
-     * every boot carries for one measurement. These go back at the end
-     * and the count says so.
+     * every boot carries for one measurement.
      */
     for (i = 0; i < FLUSH_PAGES; i++) {
         uintptr_t pg = page_alloc();
@@ -6917,6 +6941,9 @@ flush_cost_checks(void)
         *(volatile uintptr_t *)pg = head;
         *(volatile uint8_t *)(pg + sizeof(uintptr_t)) = (uint8_t)(i + 1);
         want += (uint8_t)(i + 1);
+        if (i >= FLUSH_PAGES - FLUSH_SHORT) {
+            want_short += (uint8_t)(i + 1);
+        }
         head = pg;
     }
 
@@ -6925,7 +6952,7 @@ flush_cost_checks(void)
 
         for (p = 0; p < FLUSH_PASSES; p++) {
             intr_state_t is;
-            uint64_t t0, t1, t2, t3;
+            uint64_t t0, t1, t2, t3, t4, t5;
 
             /*
              * The flushed walk first and the warm one straight after
@@ -6964,6 +6991,11 @@ flush_cost_checks(void)
             sum += flush_walk(head, FLUSH_PAGES);
             t3 = time_now();
 
+            t4 = time_now();
+            md_tlb_flush_all();
+            sum += flush_walk(head, FLUSH_SHORT);
+            t5 = time_now();
+
             md_intr_restore(is);
 
             if ((t == 0 && p == 0) || t1 - t0 < cold) {
@@ -6972,6 +7004,9 @@ flush_cost_checks(void)
             if ((t == 0 && p == 0) || t3 - t2 < warm) {
                 warm = t3 - t2;
             }
+            if ((t == 0 && p == 0) || t5 - t4 < part) {
+                part = t5 - t4;
+            }
         }
     }
 
@@ -6979,35 +7014,72 @@ flush_cost_checks(void)
      * The reads happened, which the durations cannot say: a walk the
      * compiler decided to skip would be the fastest of all of them.
      */
-    if (sum != want * FLUSH_PASSES * FLUSH_TRIALS * 2) {
+    if (sum != (want * 2 + want_short) * FLUSH_PASSES * FLUSH_TRIALS) {
         panic("flush: the walks read %u, not %u", (unsigned int)sum,
-          (unsigned int)(want * FLUSH_PASSES * FLUSH_TRIALS * 2));
+          (unsigned int)((want * 2 + want_short) * FLUSH_PASSES *
+          FLUSH_TRIALS));
     }
 
+    /*
+     * Three relations, which is all that is asserted about durations
+     * here. A flushed walk costs more than a warm one; a flushed walk
+     * over more pages costs more than one over fewer; and a flushed
+     * walk over the short set costs more than its pages alone, which is
+     * the flush having a price of its own. If the third were false the
+     * two parts below would not be two parts.
+     */
     if (cold < warm * 2) {
         panic("flush: %lu ticks flushed against %lu warm, which is not "
           "a cost", (unsigned long)cold, (unsigned long)warm);
     }
+    if (cold <= part) {
+        panic("flush: %lu ticks over %u pages against %lu over %u, "
+          "which does not grow", (unsigned long)cold,
+          (unsigned int)FLUSH_PAGES, (unsigned long)part,
+          (unsigned int)FLUSH_SHORT);
+    }
 
-    cnprintf("    %-38s %u pages, %u walks of them\n",
+    step = (flush_ns(cold) - flush_ns(part)) / (FLUSH_PAGES - FLUSH_SHORT);
+    if (flush_ns(part) <= step * FLUSH_SHORT) {
+        panic("flush: %lu ns over %u pages is %lu a page and nothing "
+          "for the flush", (unsigned long)flush_ns(part),
+          (unsigned int)FLUSH_SHORT, (unsigned long)step);
+    }
+    fixed = flush_ns(part) - step * FLUSH_SHORT;
+
+    cnprintf("    %-38s %u pages, %u walks and %u short\n",
       "what the walk touches", (unsigned int)FLUSH_PAGES,
-      (unsigned int)(FLUSH_PASSES * FLUSH_TRIALS * 2));
+      (unsigned int)(FLUSH_PASSES * FLUSH_TRIALS * 2),
+      (unsigned int)(FLUSH_PASSES * FLUSH_TRIALS));
     cnprintf("    %-38s %lu ns against %lu\n",
       "the shortest walk flushed, and warm",
-      (unsigned long)(cold * 1000000000ULL / time_hz()),
-      (unsigned long)(warm * 1000000000ULL / time_hz()));
-    cnprintf("    %-38s about %lu ns\n", "so one flush and its refills",
-      (unsigned long)((cold - warm) * 1000000000ULL / time_hz()));
+      (unsigned long)flush_ns(cold), (unsigned long)flush_ns(warm));
+    cnprintf("    %-38s %lu ns\n", "the same walk over 64 of the pages",
+      (unsigned long)flush_ns(part));
+    cnprintf("    %-38s about %lu ns\n", "so the flush itself",
+      (unsigned long)fixed);
+    cnprintf("    %-38s about %lu ns\n",
+      "and each page it makes the walk want",
+      (unsigned long)(step - flush_ns(warm) / FLUSH_PAGES));
 
+    /*
+     * The chain says how many frames went back, and that is this
+     * check's own count. What it is not is page_used() before against
+     * page_used() after: the frame count is the whole machine's, the
+     * other core is running, and M13 stage four already settled that
+     * asserting such a count is unchanged is asserting that nothing
+     * else moved a frame in the instant this looked.
+     */
     while (head != 0) {
         uintptr_t next = *(const volatile uintptr_t *)head;
 
         page_free(head);
+        given++;
         head = next;
     }
-    if (page_used() != frames) {
-        panic("flush: %u frames in use, started with %u",
-          (unsigned int)page_used(), (unsigned int)frames);
+    if (given != FLUSH_PAGES) {
+        panic("flush: handed back %u frames of %u", (unsigned int)given,
+          (unsigned int)FLUSH_PAGES);
     }
 }
 
