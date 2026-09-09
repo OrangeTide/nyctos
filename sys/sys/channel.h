@@ -70,6 +70,17 @@ struct channel {
     bool            c_reaping;
 
     /*
+     * How many senders this channel will hold, and whether anybody
+     * said. Per M18 stage six: a queue nobody bounded grows until the
+     * machine runs out of threads, because every queued sender is one.
+     * Zero is a depth like any other and refuses everything, which is
+     * why the bound needs a flag of its own rather than a reserved
+     * value.
+     */
+    uint32_t        c_depth;
+    bool            c_bounded;
+
+    /*
      * Pulses waiting to be collected, per section 13.1, oldest first.
      *
      * One array with a reservation rather than two queues, so that
@@ -107,6 +118,17 @@ extern uint64_t channel_stale_clients;
 
 /* Pulses dropped for want of a slot, per M18 stage five. */
 extern uint64_t channel_pulses_lost;
+
+/*
+ * Senders a bounded queue would not hold, per M18 stage six. Counted
+ * apart by which of the two it was, because the client cannot tell them
+ * apart and the boot should be able to: one arrived at a full queue and
+ * was turned away, and one was already waiting when somebody who
+ * outranked it arrived.
+ */
+extern uint64_t channel_senders_refused;
+extern uint64_t channel_senders_displaced;
+
 
 /*
  * Whether any channel still names this process as its owner. A channel
@@ -192,6 +214,9 @@ void channel_thread_exited(struct thread *t);
  * none. Enabling is what makes departed peers be kept at all.
  */
 sys_err_t channel_reap(struct channel *ch, bool enable, uint64_t *out);
+
+/* How many senders this channel will hold, per M18 stage six. */
+void channel_listen(struct channel *ch, uint32_t depth);
 
 /* Link and unlink a connection, which the connection code calls. */
 void channel_conn_add(struct channel *ch, struct connection *cn);

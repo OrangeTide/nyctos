@@ -212,7 +212,24 @@ sys_err_t sys_thread_migrate(sys_handle_t thread, uint32_t core);
 sys_err_t sys_pulse_send(sys_handle_t chan, const sys_pulse_t *pulse);
 
 /*
- * Collect one departed peer of a channel, per M18 stage four. The
+ * How many senders this channel will hold before it turns one away,
+ * per M18 stage six, which is `listen` and its backlog. Needs
+ * SYS_RIGHT_RECV: bounding the queue that feeds a server is the
+ * server's business.
+ *
+ * A send always joins the queue, and while the queue is over depth its
+ * lowest-priority sender is taken off and failed with
+ * SYS_ERR_WOULDBLOCK. That is a refusal when it is the arriving client
+ * and a client dropped after connecting when it is one already
+ * waiting, and it is deliberately the same answer for both: in each
+ * case nothing happened, nothing was lent, and the server never saw
+ * it. A channel nobody bounds queues without limit.
+ */
+sys_err_t sys_chan_listen(sys_handle_t chan, uint32_t depth);
+
+/*
+ * Collect one departed peer of a channel, per M18 stage four.
+ The
  * first call with enable set says this channel keeps a connection
  * whose client handles have all closed, rather than freeing it; every
  * call returns one such connection's cookie and lets it go, and

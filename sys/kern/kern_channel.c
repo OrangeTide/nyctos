@@ -37,7 +37,77 @@ channel_create(const char *name, struct proc *owner)
     ch->c_senders = NULL;
     ch->c_receivers = NULL;
 
+    /*
+     * And what M18 added, said rather than inherited. Nothing here has
+     * ever needed writing, because a channel is never released and a
+     * pool slot starts as zero; that stops being true with section
+     * 18.2's teardown, and a field set at creation is one less thing
+     * for it to remember.
+     */
+    ch->c_conns = NULL;
+    ch->c_reaping = false;
+    ch->c_depth = 0;
+    ch->c_bounded = false;
+
     return ch;
+}
+
+/*
+ * How many senders are queued, and which of them is lowest. Both walk,
+ * because the list is short by construction on the channels that ask:
+ * a bounded queue is asked about only while it is at its bound, and an
+ * unbounded one is never asked at all.
+ */
+static uint32_t
+sender_count(const struct channel *ch)
+{
+    const struct thread *t;
+    uint32_t n = 0;
+
+    for (t = ch->c_senders; t != NULL; t = t->t_snext) {
+        n++;
+    }
+
+    return n;
+}
+
+static struct thread *
+sender_tail(struct channel *ch)
+{
+    struct thread *t = ch->c_senders;
+
+    if (t == NULL) {
+        return NULL;
+    }
+    while (t->t_snext != NULL) {
+        t = t->t_snext;
+    }
+
+    return t;
+}
+
+/*
+ * Senders a bounded queue would not hold. See channel.h for why the two
+ * are counted apart when the client is told the same thing by both.
+ */
+uint64_t channel_senders_refused;
+uint64_t channel_senders_displaced;
+
+/*
+ * How many senders this channel will hold, per M18 stage six and
+ * section 12.1. Nothing is evicted here: a depth lowered under a queue
+ * that is already longer takes effect at the next send, which is the
+ * one moment the queue is being looked at anyway.
+ */
+void
+channel_listen(struct channel *ch, uint32_t depth)
+{
+    intr_state_t s = md_intr_disable();
+
+    ch->c_depth = depth;
+    ch->c_bounded = true;
+
+    md_intr_restore(s);
 }
 
 /*
@@ -765,6 +835,55 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
         sender_insert(ch, self);
         self->t_wait = THREAD_WAIT_SEND;
+
+        /*
+         * And the depth of section 12.1, per M18 stage six. The insert
+         * happened first and is not conditional: a send joins the
+         * queue and then the queue gives up whatever it cannot hold,
+         * which is one rule rather than a "would this fit" asked
+         * before every insert and answered again after it.
+         *
+         * The lowest-priority sender goes, which is the tail, because
+         * `sender_insert` orders by descending priority with arrival
+         * order inside a level. Usually that is this thread; when
+         * somebody who outranks the queue arrives it is whoever was
+         * last in line.
+         *
+         * A loop rather than one, so that a depth lowered under a
+         * queue that was already longer converges rather than staying
+         * over for as many sends as it is over by.
+         */
+        sched_defer();
+        while (ch->c_bounded && sender_count(ch) > ch->c_depth) {
+            struct thread *low = sender_tail(ch);
+
+            (void)list_remove(&ch->c_senders, low);
+
+            if (low == self) {
+                /*
+                 * Never blocked, so there is nothing to wake: this is
+                 * an answer, returned the way the poll above returns
+                 * one. What it does not do is undo the raise, because
+                 * a queued sender that gives up at its deadline does
+                 * not either, and a priority this send lent to the
+                 * chain is not this send's to take back on its way
+                 * out.
+                 */
+                self->t_msg = NULL;
+                self->t_reply = NULL;
+                self->t_wait = THREAD_WAIT_NONE;
+                self->t_snext = NULL;
+                channel_senders_refused++;
+                sched_undefer();
+                md_intr_restore(s);
+
+                return SYS_ERR_WOULDBLOCK;
+            }
+
+            channel_senders_displaced++;
+            release_blocked(low, SYS_ERR_WOULDBLOCK);
+        }
+        sched_undefer();
 
     }
     trace_wait(self, self->t_wait);

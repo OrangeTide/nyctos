@@ -6473,6 +6473,299 @@ notice_loss_checks(void)
 }
 
 /*
+ * A queue with a depth, and the clients it turns away, per M18 stage
+ * six and section 12.1.
+ *
+ * A channel's sender queue was unbounded, so a server that fell behind
+ * accumulated clients until the machine ran out of threads: every
+ * queued sender is one. A client had no way to learn it was joining a
+ * backlog rather than being served.
+ *
+ * Kernel threads as clients, on a channel nothing receives on, because
+ * what is being measured is the queue rather than a service. Nothing
+ * here carries a deadline: a client that is refused comes back with no
+ * deadline to come back at, which is the whole claim, and a client that
+ * queues stays queued until this check ends it.
+ */
+#define DEPTH_CLIENTS   6u
+
+static sys_handle_t h_depth_send;
+static volatile sys_err_t depth_res[DEPTH_CLIENTS];
+static volatile bool depth_touched[DEPTH_CLIENTS];
+static volatile uint32_t depth_done;
+
+static void
+depth_client(void *arg)
+{
+    unsigned long which = (unsigned long)arg;
+    struct sys_op_send_args args;
+    uint32_t mark = 0xd0d0d000u + (uint32_t)which;
+    uint32_t *word;
+    uint32_t i;
+    bool touched = false;
+
+    memset(&args, 0, sizeof(args));
+    args.request.handle = SYS_HANDLE_INVALID;
+    args.request.inline_len = sizeof(*word);
+    word = (uint32_t *)args.request.inline_data;
+    *word = mark;
+
+    depth_res[which] = run(SYS_OP_IPC_SEND, h_depth_send, &args,
+      sizeof(args));
+
+    /*
+     * And its message is still its own. A queued sender lends nothing:
+     * section 12.1 hands the buffer over when a server takes the
+     * message, and nothing here ever took one. So the request reads
+     * back as it was written and the reply was never filled in.
+     */
+    if (*word != mark) {
+        touched = true;
+    }
+    if (args.reply.inline_len != 0 || args.reply.handle != 0) {
+        touched = true;
+    }
+    for (i = 0; i < sizeof(args.reply.inline_data); i++) {
+        if (args.reply.inline_data[i] != 0) {
+            touched = true;
+        }
+    }
+    depth_touched[which] = touched;
+
+    depth_done++;
+    thread_exit(0);
+}
+
+/* The senders queued on this channel, in the order they would be served. */
+static uint32_t
+depth_queue(const struct channel *ch, const struct thread **out,
+  uint32_t max)
+{
+    const struct thread *t;
+    uint32_t n = 0;
+
+    for (t = ch->c_senders; t != NULL; t = t->t_snext) {
+        if (n < max) {
+            out[n] = t;
+        }
+        n++;
+    }
+
+    return n;
+}
+
+/* Start one and let it get to wherever it is going. */
+static struct thread *
+depth_start(const char *name, uint8_t prio, unsigned long which)
+{
+    struct thread *t = thread_create(name, prio, depth_client,
+      (void *)which);
+
+    if (t == NULL) {
+        panic("depth: no thread for %s", name);
+    }
+    sched_ready(t);
+
+    return t;
+}
+
+static void
+depth_wait(uint32_t want)
+{
+    uint64_t waited = time_now() + time_from_ms(JOIN_MS);
+
+    while (depth_done < want) {
+        if (time_now() > waited) {
+            panic("depth: %u clients came back, not %u",
+              (unsigned int)depth_done, (unsigned int)want);
+        }
+        sched_yield();
+    }
+}
+
+static void
+depth_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_connect_args cargs;
+    struct sys_op_chan_listen_args largs;
+    const struct thread *queued[4];
+    struct channel *ch, *open_ch;
+    struct thread *a, *b, *d, *open_t;
+    sys_handle_t h_recv, h_norecv, h_first, h_open_recv, h_open_send;
+    uint64_t refused, displaced;
+    uint32_t n;
+
+    cnputs("a queue: how deep, and who is turned away\n");
+
+    ch = channel_create("depth", self);
+    if (ch == NULL) {
+        panic("depth: no channel");
+    }
+    expect("a channel nothing receives on",
+      handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_recv), SYS_OK);
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND;
+    expect("one connection for every client",
+      run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)), SYS_OK);
+    h_first = cargs.out_handle;
+    h_depth_send = h_first;
+
+    /*
+     * Through the operation, so that the right is checked the way a
+     * program's would be. A send handle cannot set the depth of the
+     * queue it is waiting in.
+     */
+    if (handle_insert(ht, ch, SYS_OBJ_CHANNEL, SYS_RIGHT_TRANSFER,
+      &h_norecv) != SYS_OK) {
+        panic("depth: no handle without the receive right");
+    }
+    memset(&largs, 0, sizeof(largs));
+    largs.depth = 2;
+    expect("a handle that cannot receive cannot bound",
+      run(SYS_OP_CHAN_LISTEN, h_norecv, &largs, sizeof(largs)),
+      SYS_ERR_PERM_DENIED);
+    expect("a depth of two, set by the receiving side",
+      run(SYS_OP_CHAN_LISTEN, h_recv, &largs, sizeof(largs)), SYS_OK);
+
+    refused = channel_senders_refused;
+    displaced = channel_senders_displaced;
+
+    /*
+     * Two that fit, and a third that does not. Started one at a time,
+     * each above the boot thread so that it reaches its send before
+     * this one looks again: a check that had to reason about which of
+     * three arrived first would be a check with a second thing in it.
+     */
+    a = depth_start("depth-a", PRIO_BOOT + 1, 0);
+    b = depth_start("depth-b", PRIO_BOOT + 1, 1);
+    (void)depth_start("depth-c", PRIO_BOOT + 1, 2);
+
+    depth_wait(1);
+    if (depth_res[2] != SYS_ERR_WOULDBLOCK) {
+        panic("depth: the third client came back %d, not WOULDBLOCK",
+          (int)depth_res[2]);
+    }
+    if (depth_touched[2]) {
+        panic("depth: the refused client's message was not its own");
+    }
+    if (channel_senders_refused != refused + 1 ||
+      channel_senders_displaced != displaced) {
+        panic("depth: %lu refused and %lu displaced, not one and none",
+          (unsigned long)(channel_senders_refused - refused),
+          (unsigned long)(channel_senders_displaced - displaced));
+    }
+
+    n = depth_queue(ch, queued, 4);
+    if (n != 2 || queued[0] != a || queued[1] != b) {
+        panic("depth: %u senders queued after the refusal, not two",
+          (unsigned int)n);
+    }
+
+    /*
+     * And one that outranks the queue, which is the other end of the
+     * same rule: it joins, and the queue gives up its tail rather than
+     * refusing the arrival. The tail is `depth-b`, which arrived last
+     * at the priority the two of them share.
+     */
+    d = depth_start("depth-d", PRIO_BOOT + 2, 3);
+
+    depth_wait(2);
+    if (depth_res[1] != SYS_ERR_WOULDBLOCK) {
+        panic("depth: the displaced client came back %d, not WOULDBLOCK",
+          (int)depth_res[1]);
+    }
+    if (depth_touched[1]) {
+        panic("depth: the displaced client's message was not its own");
+    }
+    if (channel_senders_displaced != displaced + 1) {
+        panic("depth: %lu displaced, not one",
+          (unsigned long)(channel_senders_displaced - displaced));
+    }
+
+    n = depth_queue(ch, queued, 4);
+    if (n != 2 || queued[0] != d || queued[1] != a) {
+        panic("depth: the queue after the displacement is not the "
+          "survivors in priority order");
+    }
+
+    cnprintf("    %-38s %s\n", "a queue two deep, three clients",
+      "the third refused, nothing lent");
+    cnprintf("    %-38s %s\n", "and one that outranked the queue",
+      "it queued, the tail was displaced");
+
+    /*
+     * A depth of nothing, which is a depth like any other: this is what
+     * the flag beside it is for, because a channel that has said zero
+     * and a channel that has said nothing are opposites.
+     */
+    expect("ending the two that are still queued", thread_cancel(a),
+      SYS_OK);
+    expect("and the one that outranked them", thread_cancel(d), SYS_OK);
+    depth_wait(4);
+
+    largs.depth = 0;
+    expect("a depth of nothing",
+      run(SYS_OP_CHAN_LISTEN, h_recv, &largs, sizeof(largs)), SYS_OK);
+
+    (void)depth_start("depth-e", PRIO_BOOT + 1, 4);
+    depth_wait(5);
+    if (depth_res[4] != SYS_ERR_WOULDBLOCK) {
+        panic("depth: a queue of nothing took a client, %d",
+          (int)depth_res[4]);
+    }
+    if (depth_queue(ch, queued, 4) != 0) {
+        panic("depth: a queue of nothing has somebody in it");
+    }
+
+    /*
+     * And a channel nobody bounded, which is every channel before this
+     * stage. It queues, which is what says the depth is something a
+     * server asks for rather than something the kernel now does.
+     */
+    open_ch = channel_create("depth-open", self);
+    if (open_ch == NULL) {
+        panic("depth: no second channel");
+    }
+    expect("a second channel, unbounded",
+      handle_insert(ht, open_ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_open_recv), SYS_OK);
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND;
+    expect("a connection to it",
+      run(SYS_OP_CHAN_CONNECT, h_open_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+    h_open_send = cargs.out_handle;
+
+    depth_done = 0;
+    h_depth_send = h_open_send;
+    open_t = depth_start("depth-f", PRIO_BOOT + 1, 5);
+
+    if (depth_queue(open_ch, queued, 4) != 1 || queued[0] != open_t) {
+        panic("depth: a channel nobody bounded refused a client");
+    }
+    if (depth_done != 0) {
+        panic("depth: a channel nobody bounded answered a client");
+    }
+
+    cnprintf("    %-38s %s\n", "a depth of nothing, and no depth",
+      "refused everything, queued everything");
+
+    expect("ending the one that queued", thread_cancel(open_t), SYS_OK);
+    depth_wait(1);
+
+    expect("giving the connections back",
+      handle_close(ht, h_open_send), SYS_OK);
+    expect("and the bounded one's", handle_close(ht, h_first), SYS_OK);
+    expect("giving the channels back", handle_close(ht, h_open_recv),
+      SYS_OK);
+    expect("and the first one", handle_close(ht, h_recv), SYS_OK);
+}
+
+/*
  * The deaths a server is not told about, per M18 stage two.
  *
  * Section 12.5 announces one death and is explicit about which: a
@@ -12636,6 +12929,7 @@ kernel_main(void)
     notice_absence_checks();
     ledger_identity_checks();
     notice_loss_checks();
+    depth_checks();
     startup_record_checks();
     deadline_checks();
 

@@ -306,7 +306,33 @@ typedef uintptr_t sys_handle_t;
  */
 #define SYS_OP_CHAN_REAP         27
 
-#define SYS_OP_COUNT             28
+/*
+ * Set how many senders a channel will hold before it turns one away,
+ * per M18 stage six. Needs SYS_RIGHT_RECV, so only a side that can
+ * receive can bound the queue that feeds it: this is `listen`, and the
+ * depth is the backlog.
+ *
+ * The analogy stops at the depth, because there is no accept here. A
+ * send is the connect and the request in one, so joining the queue is
+ * connecting, and a client taken off the queue afterwards has not been
+ * refused a connection: it made one and was ended before its first
+ * request was answered. That is a close after accept.
+ *
+ * So the rule is one rule. A send always joins the queue, and while the
+ * queue is over depth its lowest-priority sender is taken off and
+ * failed with SYS_ERR_WOULDBLOCK. When that is the arriving client the
+ * effect is a refusal it gets at once; when it is a client already
+ * waiting the effect is the close after accept. One error for both,
+ * because a client cannot usefully act differently on them: in each
+ * case nothing happened, nothing was lent, and the server never saw it.
+ *
+ * A channel nobody bounds queues without limit, which is what every
+ * channel did before this and what a channel with one client wants.
+ */
+#define SYS_OP_CHAN_LISTEN       28
+
+#define SYS_OP_COUNT             29
+
 
 /*
  * Per-entry flags, per section 17.5.
@@ -535,7 +561,14 @@ typedef struct sys_op_connect_args {
  */
 #define SYS_CHAN_REAP_ENABLE    (1u << 0)
 
+/* Argument structure for SYS_OP_CHAN_LISTEN. target names the channel. */
+typedef struct sys_op_chan_listen_args {
+    uint32_t        depth;
+    uint32_t        _reserved;
+} sys_op_chan_listen_args_t;
+
 typedef struct sys_op_chan_reap_args {
+
     uint32_t    flags;
     uint32_t    _reserved;
     uint64_t    out_cookie;     /* the collected connection's cookie */

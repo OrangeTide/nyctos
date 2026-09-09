@@ -215,7 +215,37 @@ op_handle_close(struct proc *p, struct sys_op *op)
 }
 
 static sys_err_t
+op_chan_listen(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_chan_listen_args *args;
+    sys_err_t err;
+    void *obj;
+
+    args = (struct sys_op_chan_listen_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    /*
+     * The receive right, because bounding the queue that feeds a
+     * server is the server's business and nobody else's: a client that
+     * could set the depth could set it to nothing and turn away every
+     * other client of a service it merely holds a send handle to.
+     */
+    err = handle_lookup(&p->p_handles, op->target, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &obj);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    channel_listen(obj, args->depth);
+
+    return SYS_OK;
+}
+
+static sys_err_t
 op_chan_reap(struct proc *p, struct sys_op *op)
+
 {
     struct sys_op_chan_reap_args *args;
     sys_err_t err;
@@ -988,6 +1018,9 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
         break;
     case SYS_OP_CHAN_REAP:
         err = op_chan_reap(p, op);
+        break;
+    case SYS_OP_CHAN_LISTEN:
+        err = op_chan_listen(p, op);
         break;
     case SYS_OP_GRANT_MAP:
         err = op_grant_map(p, op);

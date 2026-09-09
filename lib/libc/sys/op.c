@@ -452,7 +452,19 @@ sys_proc_kill(sys_handle_t proc, int32_t code)
 }
 
 sys_err_t
+sys_chan_listen(sys_handle_t chan, uint32_t depth)
+{
+    sys_op_chan_listen_args_t args;
+
+    memset(&args, 0, sizeof(args));
+    args.depth = depth;
+
+    return submit(SYS_OP_CHAN_LISTEN, chan, &args, sizeof(args));
+}
+
+sys_err_t
 sys_chan_reap(sys_handle_t chan, bool enable, uint64_t *out_cookie)
+
 {
     sys_op_chan_reap_args_t args;
     sys_err_t err;

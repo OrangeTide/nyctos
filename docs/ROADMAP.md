@@ -10805,7 +10805,7 @@ event.** *Built.*
   hint".
 
 **6. A queue depth a server chooses, and clients that fail fast.**
-*Planned.*
+*Built.*
 
 - A channel's sender queue is unbounded, so a server that falls behind
   accumulates clients until the machine runs out of threads: every
@@ -10845,14 +10845,52 @@ event.** *Built.*
   saw it. Two errors would invite a client to try. Section 12.5's two
   errors differ because what the *server* learns differs, and here it
   learns nothing either way, which stage two measured.
-- *Check.* A server that never receives, a depth of two, and three
-  clients. The first two queue and the third is refused at once rather
-  than at its deadline, which the clock says. Then the same three with
-  the third at a higher priority: it is the one that queues, the tail is
-  displaced, and the displaced client comes back with its buffer still
-  its own and a server that never saw it. A depth of zero refuses
-  everything. No depth at all behaves as it does today, so a channel
-  nobody bounded is a channel this stage did not change.
+- *Check.* A channel nothing receives on, a depth of two, and three
+  clients. The first two queue and the third is refused; then one that
+  outranks them arrives, queues, and the tail is displaced. A depth of
+  zero refuses everything, and a channel nobody bounded queues.
+- *No deadline anywhere in it, which is better than the clock the plan
+  asked for.* A client that is refused comes back having named no
+  deadline to come back at, so returning at all is the whole claim, and
+  the error tells the two apart by itself: `SYS_ERR_WOULDBLOCK` is a
+  refusal and `SYS_ERR_TIMEOUT` is a client that waited. M9's rule is
+  that a count is the kernel's and a duration is the host's, and this
+  turned out to need neither.
+- *Settled.* The same in all four configurations. Three clients at one
+  priority on a queue two deep leave the third refused with the queue
+  holding the first two. One arriving above them queues at the head and
+  the queue gives up `depth-b`, the last arrival at the priority the two
+  of them shared, leaving exactly the survivors in priority order. Both
+  refused clients come back with their request as they wrote it and
+  their reply untouched: a queued sender lends nothing, so there is
+  nothing to give back.
+- *Zero is a depth, and that needs a flag.* A channel that has said zero
+  and a channel that has said nothing are opposites, so the bound is a
+  depth and a bit saying somebody set it, rather than a reserved value.
+  Making zero mean unbounded panics with "4 clients came back, not 5".
+- *Only a side that can receive may bound the queue that feeds it*,
+  which is `SYS_RIGHT_RECV` on the operation: a client that could set
+  the depth could set it to nothing and turn away every other client of
+  a service it merely holds a send handle to. A channel handle without
+  that right is refused with `SYS_ERR_PERM_DENIED`, asserted in the
+  check.
+- *The two outcomes are counted apart although the client is told the
+  same thing.* One arrived at a full queue and was turned away, one was
+  already waiting when somebody who outranked it arrived. The client
+  cannot usefully act differently on them and the boot should be able to
+  see which happened.
+- *Broken three ways.* Enforcing no depth at all panics with "0 clients
+  came back, not 1", because the client that should have been refused
+  queues instead. Taking the arriving sender rather than the tail panics
+  with "the displaced client came back 0, not WOULDBLOCK", which is
+  `depth-b` still sitting in a queue that should have given it up.
+  Making a depth of zero mean unbounded panics as above.
+- *It costs the archive 12288 bytes*, 253952 to 266240. Every program
+  links the same object of system call wrappers, so one more wrapper
+  grew each of them by about 1.6 KB of code and debug information, and
+  three members crossed a page boundary in an archive that pads them.
+  Nothing else the usage files compare moves: the same threads,
+  processes, kernel stacks and kills.
 - *And the corner case is the displaced client*, which is the one shape
   that did not exist before: a thread woken out of a queue by somebody
   else's arrival rather than by its own deadline or its own death. What
