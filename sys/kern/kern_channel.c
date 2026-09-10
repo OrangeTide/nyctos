@@ -12,6 +12,8 @@
 #include <sys/cpu.h>
 #include <sys/channel.h>
 #include <sys/intr.h>
+#include <sys/connection.h>
+#include <sys/handle.h>
 #include <sys/object.h>
 #include <sys/proc.h>
 #include <sys/sched.h>
@@ -2245,4 +2247,124 @@ channel_reap(struct channel *ch, bool enable, uint64_t *out)
     md_intr_restore(s);
 
     return SYS_ERR_NO_ENT;
+}
+
+/*
+ * How many channels in use nothing can reach, per M20 stage one.
+ *
+ * A scan rather than a count, because a count is the thing this
+ * milestone has not got yet. Everything that can name a channel is
+ * walked and what it names is marked, and what is left in use and
+ * unmarked is a slot that will be occupied until the machine stops.
+ *
+ * Four kinds of holder, which is the list stage two has to turn into a
+ * number the kernel maintains:
+ *
+ *   - A handle in some process's table. This is the authority of
+ *     section 7 and the only one a program has.
+ *   - A connection minted on it, per section 12.1. A pager is one of
+ *     these, so a channel a process faults to is held this way and not
+ *     only by whoever holds the handle.
+ *   - A thread inside a request on it, which is t_serve_ch and is how
+ *     section 12.3 gets from a queued sender to whoever is serving it.
+ *   - A thread queued on it, receiving on it, or serving from it. The
+ *     channel holds those lists rather than the other way round, but a
+ *     channel with anything on one of them is a channel somebody is
+ *     inside, and freeing it would take the floor out from under a
+ *     thread that is going to come back to it.
+ *
+ * What no scan can see is the kernel's own pointers. The boot holds
+ * channels in file-scope variables in init_main.c, and those are
+ * exactly the leak this milestone is about rather than an exception to
+ * it: a check made a channel, closed every handle to it, and nothing
+ * in the system will ever put the slot back. They are counted as
+ * unreachable because that is what they are.
+ */
+uint32_t
+channel_unreachable(void)
+{
+    const struct pool *chans = channel_pool();
+    const struct pool *procs = proc_pool();
+    const struct pool *threads = thread_pool();
+    const struct pool *conns = connection_pool();
+    bool seen[SYS_MAX_CHANNELS];
+    uint32_t i;
+    uint32_t left = 0;
+
+    for (i = 0; i < SYS_MAX_CHANNELS; i++) {
+        seen[i] = false;
+    }
+
+    for (i = 0; i < procs->count; i++) {
+        const struct proc *p;
+        uint32_t j;
+
+        if (!procs->slots[i].inuse) {
+            continue;
+        }
+        p = pool_lookup(procs, sys_id_make(i, procs->slots[i].gen));
+        if (p == NULL) {
+            continue;
+        }
+        for (j = 0; j < SYS_MAX_HANDLES_PER_PROC; j++) {
+            const struct handle_slot *h = &p->p_handles.ht_slots[j];
+            const struct channel *ch;
+
+            if (!h->h_inuse || h->h_type != SYS_OBJ_CHANNEL) {
+                continue;
+            }
+            ch = h->h_object;
+            if (ch != NULL) {
+                seen[sys_id_index(ch->c_id)] = true;
+            }
+        }
+    }
+
+    for (i = 0; i < conns->count; i++) {
+        const struct connection *cn;
+
+        if (!conns->slots[i].inuse) {
+            continue;
+        }
+        cn = pool_lookup(conns, sys_id_make(i, conns->slots[i].gen));
+        if (cn != NULL && cn->cn_channel != NULL) {
+            seen[sys_id_index(cn->cn_channel->c_id)] = true;
+        }
+    }
+
+    for (i = 0; i < threads->count; i++) {
+        const struct thread *t;
+
+        if (!threads->slots[i].inuse) {
+            continue;
+        }
+        t = pool_lookup(threads, sys_id_make(i, threads->slots[i].gen));
+        if (t != NULL && t->t_serve_ch != NULL) {
+            seen[sys_id_index(t->t_serve_ch->c_id)] = true;
+        }
+    }
+
+    for (i = 0; i < chans->count; i++) {
+        const struct channel *ch;
+
+        if (!chans->slots[i].inuse) {
+            continue;
+        }
+        ch = pool_lookup(chans, sys_id_make(i, chans->slots[i].gen));
+        if (ch == NULL) {
+            continue;
+        }
+        if (ch->c_senders != NULL || ch->c_receivers != NULL ||
+          ch->c_serving != NULL) {
+            seen[sys_id_index(ch->c_id)] = true;
+        }
+    }
+
+    for (i = 0; i < chans->count; i++) {
+        if (chans->slots[i].inuse && !seen[i]) {
+            left++;
+        }
+    }
+
+    return left;
 }

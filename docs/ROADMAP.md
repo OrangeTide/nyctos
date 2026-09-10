@@ -11986,7 +11986,7 @@ what a channel is or who owns it, which section 12.5 settled and M18
 confirmed. Not dynamic allocation: the pool stays a build-time bound,
 and what changes is whether a slot in it can be used twice.
 
-**1. What is spent, and what of it is reachable.** *Planned.*
+**1. What is spent, and what of it is reachable.** *Built.*
 
 - *Check.* The boot reports the channel pool the way it reports every
   other one, and adds the number nothing has ever printed: how many
@@ -11998,6 +11998,55 @@ and what changes is whether a slot in it can be used twice.
   statement of the same fact and the thing a later stage makes false.
   Both go in the compared report, at both tiers, since neither depends
   on when console input arrives.
+
+**What it settled.** The milestone has a subject and the number is
+worse than the pool size suggested. One line in the compared report at
+each tier:
+
+```
+  channels: 40 in use, 40 at once, of 48, and 17 unreachable
+  channels: 38 in use, 38 at once, of 48, and 16 unreachable
+```
+
+Tier 2 first, tier 0 second, and the same on both ports. **Nearly half
+of what a boot spends on channels is already unreachable when the boot
+ends.** Not held by a program that has stopped using them, not waiting
+on anything: no handle in any process names them, no connection was
+minted on them, no thread is inside or queued on them. Nothing in the
+system can name them again and the slots are gone until the machine
+stops.
+
+**Four kinds of holder, which is the list stage two has to turn into a
+count.** A handle in some process's table, which is the authority of
+section 7 and the only one a program has. A connection minted on the
+channel, per section 12.1, which is how a pager holds the channel a
+process faults to. A thread inside a request on it, `t_serve_ch`,
+which is section 12.3's link from a queued sender to whoever is
+serving it. And a thread queued on it, receiving on it, or serving
+from it, which the channel holds rather than the other way round but
+which is still somebody standing on the floor.
+
+**What the scan cannot see is the answer rather than a limitation of
+it.** The boot holds channels in file-scope variables in `init_main.c`,
+and those are counted as unreachable because that is exactly what they
+are: a check made a channel, closed every handle to it, and no path in
+this system will ever put the slot back. A scan that excused them
+would be excusing the leak.
+
+**Both numbers are asserted as well as compared**, which is unusual
+and is deliberate in two ways. The compared file covers the paced run
+and the burst run is only read for a panic, so a number this milestone
+turns on should fail in both. And both assertions assert that a defect
+is present: if nothing is ever unreachable the milestone has no
+subject, and stage three is what makes the second one false.
+
+**Falsified three ways.** Dropping the connection walk from the scan
+moved the compared line from 17 unreachable to 18 and the diff failed,
+which also says the pager's channel is held by nothing else. Making
+the scan mark every slot fired `channels: nothing is unreachable, so
+there is nothing here to give back`. Allocating and freeing one slot
+inside the report fired `channels: 40 in use against 41 at once, so
+something already gives one back`.
 
 **2. A channel knows what holds it.** *Planned.*
 

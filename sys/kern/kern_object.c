@@ -10,6 +10,7 @@
  */
 
 #include <sys/prepared.h>
+#include <sys/channel.h>
 #include <sys/config.h>
 #include <sys/object.h>
 #include <sys/page.h>
@@ -196,6 +197,57 @@ object_report_usage(void)
       threads->highwater, threads->count, procs->highwater, procs->count);
     cnprintf("  kernel stacks under those threads: %u bytes\n",
       (unsigned int)(threads->highwater * SYS_KSTACK_SIZE));
+
+    /*
+     * And the one pool nothing gives back, per M20 stage one.
+     *
+     * Reported the way the others are and with one number none of them
+     * needs: how many of the slots in use nothing in the system can
+     * reach. Every other pool here ends a boot below its own
+     * high-water mark, because a process, a thread, a connection, a
+     * prepared program and a timer all go back. A channel does not, so
+     * these two numbers are equal, and they will stay equal until
+     * stage three.
+     *
+     * In the compared part of the report because all three are counts.
+     * What a boot spends on channels is what its checks ask for and is
+     * the same in every run at a tier; how long it took to spend them
+     * is not here, because a duration is the host's.
+     */
+    {
+        const struct pool *chans = channel_pool();
+
+        uint32_t lost = channel_unreachable();
+
+        cnprintf("  channels: %u in use, %u at once, of %u, and %u "
+          "unreachable\n", (unsigned int)chans->used,
+          (unsigned int)chans->highwater, (unsigned int)chans->count,
+          (unsigned int)lost);
+
+        /*
+         * Asserted as well as compared, because the compared file
+         * covers the paced run and the burst run is only read for a
+         * panic. A number this milestone turns on should fail in both.
+         *
+         * Both of these are assertions that a defect is present, which
+         * is unusual and is deliberate. A pool where nothing is
+         * reachable but everything is still held is the subject of
+         * this milestone, and if the first of them ever passes on its
+         * own then the milestone has no subject and should be
+         * abandoned rather than built. Stage three makes the second
+         * one false on purpose and rewrites it.
+         */
+        if (lost == 0) {
+            panic("channels: nothing is unreachable, so there is "
+              "nothing here to give back");
+        }
+        if (chans->used != chans->highwater) {
+            panic("channels: %u in use against %u at once, so "
+              "something already gives one back",
+              (unsigned int)chans->used,
+              (unsigned int)chans->highwater);
+        }
+    }
 
     /*
      * And what remapping buffers between address spaces cost, per

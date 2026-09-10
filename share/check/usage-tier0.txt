@@ -1,5 +1,6 @@
 used at most: 22 of 32 threads, 13 of 24 processes
   kernel stacks under those threads: 90112 bytes
+  channels: 38 in use, 38 at once, of 48, and 16 unreachable
   buffer remapping: 0 pages in 0 halves, 0 entries, 0 tables, 0 invalidations, 0 flushes
   measured regions: 1024 entries and 2048, 4096 shared
   kills: 13 written, pokes 0, clients told 3

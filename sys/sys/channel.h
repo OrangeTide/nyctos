@@ -228,6 +228,14 @@ sys_err_t channel_reap(struct channel *ch, bool enable, uint64_t *out);
 /* How many senders this channel will hold, per M18 stage six. */
 void channel_listen(struct channel *ch, uint32_t depth);
 
+/*
+ * How many channels in use nothing can reach: no handle names them, no
+ * connection was minted on them, and no thread is inside or queued on
+ * them. Per M20 stage one. The scan is in kern_channel.c and says what
+ * it walks and what it cannot see.
+ */
+uint32_t channel_unreachable(void);
+
 /* Link and unlink a connection, which the connection code calls. */
 void channel_conn_add(struct channel *ch, struct connection *cn);
 void channel_conn_gone(struct channel *ch, struct connection *cn);
