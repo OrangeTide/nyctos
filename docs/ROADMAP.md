@@ -11751,7 +11751,7 @@ this milestone's.
   measured against, and it is reported rather than hidden.
 
 **7. What it cost, and sections 13.3, 15 and 18 written around it.**
-*Planned.*
+*Built.*
 
 - *Check.* The figures as counts: flushes removed, invalidations added,
   identifiers assigned and recycled in a boot, and the switch count that
@@ -11761,6 +11761,55 @@ this milestone's.
   rule for reuse. Section 18's case is restated against a measurement
   rather than against a mechanism nobody had built, which is what
   section 9.2 asked for and could not have.
+
+**What it settled.** Two lines in the compared part of the resource
+report, so the counts are a diff against a file rather than a claim in
+prose: `names: 2531 given out, 2499 again, 1 spaces without, 9 live`
+and `names given back: 2522, each throwing away what was filed under
+it`. Identical paced and burst on both ports, which is why they can be
+compared at all.
+
+**Two of the stage's four figures could not go below the line, and the
+reasons are different.** The switch count moves with the host, for the
+reason M6's review gave: it depends on when console input arrives, and
+the same session gives 5476 or 5482. The count of switches that flushed
+does not move, but it differs by port, ten on riscv64 and none on
+aarch64, and there is one compared file for both tiers rather than one
+per configuration. Both are already printed and asserted above the
+line, beside each other, where what is checked is the relation between
+them rather than either number. The other two counts the buffer path
+already reports, invalidations and flushes, are on its own line and are
+not repeated.
+
+**Falsified twice.** Raising `SYS_ASID_LIMIT` from 32 to 64 moved the
+compared line from 2531 given out to 2563 and the diff failed. Removing
+the `md_tlb_invalidate_asid()` call from the release path did not reach
+the report at all: stage 4's own assertion caught it first, with `panic:
+names: 0 identifiers thrown away when one space died`. That is the
+right order for the two checks to fire in.
+
+**And section 18 could not be restated against a saving.** Section 9.2
+said identifiers would remove all 37 of M6's whole-TLB flushes and that
+the case for a cohort therefore rests on forwarding rather than on
+mapping. The flushes are gone by count, 10 of 5476 on riscv64 and 0 on
+aarch64 against every one of them before. What is not available is the
+saving, because QEMU discards every translation whenever the root
+register is written, tagged or not. So section 18.5 says the case is
+where M6 left it, undecided on mapping, and records that the mechanism
+it was waiting on now exists. Section 18.5 also corrects M6's other
+prediction: two narrow invalidations do cost about twice one, 20625 ns
+against 10462 on riscv64, but the kernel makes one, and the reason it
+can is that neither call is narrow on this emulator rather than
+anything about the design.
+
+Section 13.3 gains what M12 could not see from inside the region: the
+switch is four to seven microseconds and the refetch after it, for a
+program touching 256 pages, is over a hundred. Section 15.7 is new and
+says what the name is, that it is global and why, that it is
+invalidated on release rather than on assignment, and that exhaustion
+costs performance and not correctness. Section 15.6's paragraph about a
+count of address spaces destroyed is corrected, because M19 stage two
+removed that count and the name replaces it.
 
 *Done when* a boot's address space switches keep their translations on
 both ports and at Tier 2, a space that reuses an identifier sees its own

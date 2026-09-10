@@ -14832,6 +14832,42 @@ kernel_main(void)
       (unsigned int)connection_pool()->used,
       (unsigned int)connection_pool()->highwater);
 
+    /*
+     * And what telling address spaces apart cost, per M19.
+     *
+     * Counts, so they belong below the line with the rest of them: a
+     * name given out, a name given out that somebody had already had,
+     * a space that got none because there were none left, the spaces
+     * holding a name when the boot finished, and the translations
+     * thrown away when a name went back. What none of these is is a
+     * duration, and what a switch or an invalidation costs on a
+     * particular host is above the line, where it belongs. The two
+     * counts the buffer path already reports, invalidations and
+     * flushes, are on its own line further up and are not repeated.
+     *
+     * Neither the count of switches nor the count of them that flushed
+     * is here. The first moves with the host, for the reason M6's
+     * review gave: it depends on when console input arrives. The
+     * second does not move, but it differs by port, ten on riscv64 and
+     * none on aarch64, and there is one compared file for both. Both
+     * are printed and asserted above the line, beside each other,
+     * where the relation between them is what is checked.
+     */
+#if SYS_TIER == 2
+    {
+        struct vm_cost all;
+        uint32_t given, reused, none, live;
+
+        vm_cost_read(&all);
+        vm_asid_counts(&given, &reused, &none, &live);
+
+        cnprintf("  names: %u given out, %u again, %u spaces without, "
+          "%u live\n", (unsigned int)given, (unsigned int)reused,
+          (unsigned int)none, (unsigned int)live);
+        cnprintf("  names given back: %lu, each throwing away what was "
+          "filed under it\n", (unsigned long)all.vc_asid_inval);
+    }
+#endif
 
     cnputs("stage 9 complete\n");
     machine_halt(0);

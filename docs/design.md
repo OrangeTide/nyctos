@@ -1484,6 +1484,18 @@ The means say the other half of it. A typical region is 5 to 16 microseconds and
 
 So the second bullet above is not merely unbuilt at Tier 2; the argument it rests on is aimed at the wrong region. Enabling interrupts inside the kernel and locking finely would leave the binding term exactly where it is.
 
+#### What a dispatch into another address space costs, at M19
+
+M12 measured the switch inside the region and found it a few per cent of it. That figure is the register write and the bookkeeping around it. It is not what changing address space costs, because most of that cost is paid after the region closes, by whoever runs next, one translation at a time. M19 measured the other half.
+
+**A walk of 256 pages costs about 144000 nanoseconds after a whole-TLB flush and about 8400 warm on riscv64, 143000 against 20300 on aarch64.** Taking the same walk over 64 of those pages separates the two terms: a flush costs about 12200 nanoseconds on riscv64 and 16300 on aarch64 before anything is refetched, and about 485 nanoseconds on riscv64 and 416 on aarch64 for each page the walk then wants back. So the price of a flush is not a number, it is a number plus a slope, and the slope is what a working set is billed at.
+
+Read against the region above, the two terms are the wrong way round from what the region suggests. The switch inside the interrupts-off region is four to seven microseconds. The refetch that follows it, for a program touching 256 pages, is over a hundred. The bounded part is small and the unbounded part is not in the region at all, so a latency figure taken from the region alone describes the cheap half.
+
+**The kernel now avoids the flush where it can, and on this host that buys nothing measurable.** Both ports carry 16 bits of address space identifier, and since M19 a switch into a named space writes the root register without a flush. The boot makes about 5476 switches, of which ten still throw everything away on riscv64 and none on aarch64. The ten are the cross-core case of section 15.7 rather than a failure to name a space.
+
+What cannot be read from this host is what that saves. QEMU 11.0.92 discards every translation whenever the root register is written, tagged or not, and loses a translation across a thread dispatch regardless of what the kernel does. So the walk-after-a-switch figure above is the same whether or not the space has a name, and the identifier's benefit here is structural rather than measured. The figures that do describe this kernel are the counts: how many switches flush, and how many of them used to.
+
 **Deviation, current at M8 stage two.** Tier 2 does not yet do what the
 second bullet says. There is one lock for the whole kernel, it is taken
 at every entry from the exception vectors, and it is held with
@@ -1727,7 +1739,7 @@ What goes back is what the loader took. At Tier 2 that is the pages the layout o
 
 **The join is not the reap**, and anything measuring this has to know it. Waiting on a completion timeline says the process has exited and closing its handles says nothing can ask about it any more, but its last thread is parked at that point rather than collected, and the collection happens at the top of whichever core's next context switch reaches it. A count of free memory read between those two moments has a whole process still in it.
 
-**A root is a frame like any other, and freeing one makes an address root ambiguous.** A context switch that decides whether to load the root register by comparing addresses is right only while roots are never freed; once they are, the same address can name a space that has been torn down and rebuilt, and skipping the load keeps a translation cache describing the space that used to be there. What resolves it is a count of address spaces destroyed, carried beside the cached root, so that any destruction anywhere makes every core reload once at its next switch.
+**A root is a frame like any other, and freeing one makes an address root ambiguous.** A context switch that decides whether to load the root register by comparing addresses is right only while roots are never freed; once they are, the same address can name a space that has been torn down and rebuilt, and skipping the load keeps a translation cache describing the space that used to be there. What resolved it until M19 was a count of address spaces destroyed, carried beside the cached root, so that any destruction anywhere made every core reload once at its next switch. The name of section 15.7 resolves it directly and the count is gone: a core caches the name alongside the root and reloads when either differs, and a destroyed space gives its name back with everything filed under it invalidated, so a rebuilt space at the same address either holds a different name or holds the same one with nothing behind it.
 
 #### What is deliberately not reclaimed
 
@@ -1742,6 +1754,20 @@ Each of these is a decision rather than an omission, and each has a reason that 
 #### The check is a ledger
 
 Every frame the machine has spent is one of the categories above or a number nothing has claimed, and the boot prints the arithmetic: what was spent before anything ran, what live processes hold, what cohort address spaces hold, what grants hold, what was orphaned, what the kernel's own space has grown by, and the remainder. **The remainder is asserted to be zero.** A ledger that balances is a weaker claim than "nothing leaks" and a much stronger one than a total: it says every frame has a name, and it fails when a new way of holding one appears without anybody writing it down.
+
+### 15.7 The Address Space Identifier
+
+**Every address space that has one carries a name the hardware knows, and translations are filed under it.** On riscv64 that is the ASID field of `satp`, on aarch64 the ASID field of `TTBR0_EL1` with every leaf marked non-global. Both ports report 16 bits under this emulator, so 65535 names, and a port that reports none is served by the same code taking the flush it always took.
+
+The name is a property of the address space and not of the core. It is assigned when the space is built and given back when the space is destroyed, and it does not change while the space lives. A core switching into a named space writes the root register and does not flush.
+
+**A name is global, and it has to be.** The same name means the same space on every core, because a translation one core learned is filed under a name the other core will also use, and two spaces sharing a name on two cores would let one read the other's mapping. So the free list is one list under one lock for the whole machine, not a per-core pool.
+
+**Reuse is what makes the rule necessary.** There are more spaces in the life of a system than there are names, so a name given back is given out again: a boot hands out 2531 of them, 2499 of which somebody had already had, gives 2522 back, and finishes with 9 live. The rule is that **the name is invalidated at the moment it is given back, not at the moment it is taken up again.** Invalidating on release means the free list only ever holds names nothing is filed under, so a space taking a name up inherits nothing, and no path has to remember whether the name it was handed is clean. Invalidating on assignment would be the same number of calls in the same run and would be wrong the first time a name was released on one core and taken on another.
+
+The pool is bounded by `SYS_ASID_LIMIT`, which is 32 and is a bound on the array rather than on reuse. **A space that asks when the pool is empty gets no name and is not refused.** It runs unnamed and every switch into it flushes, which is what every switch did before this existed, so exhaustion costs performance and not correctness. Measured: 27 spaces built at once empties the pool and the 28th goes without.
+
+**A fence does not always reach the other core.** On aarch64 the invalidations are inner-shareable and do reach it, so nothing further is needed. On riscv64 `sfence.vma` is local, and a core that invalidated something has to say so: the kernel keeps a count of local maintenance, each core records the value it last acted on, and a switch that finds the count has moved throws its translations away once. That is the ten flushes in the 5476 switches of section 13.3, and it is the one thing in this mechanism that this emulator will let fail, because a translation genuinely does survive on the other core until something acts.
 
 ---
 
@@ -1998,6 +2024,16 @@ Members allocate from a shared physical pool and pass `sys_sg_entry_t` arrays di
 Where a scatter-gather message *does* cross a protection boundary, its elements are made available in the receiver's address space on receive, but the contents are **mapped on demand as the receiver references them**. A server that forwards a message without inspecting its contents, such as a protocol layer prepending a header, never maps the payload at all. For a network stack this removes most of the mapping cost from the forwarding path. **This applies to Tier 2 only**, since it rests on the fault-driven mapping of section 15.3, which requires an MMU. On Tier 0 the elements are simply available, and there is nothing to defer.
 
 `sys_sg_build()` takes a grant handle rather than a raw virtual address, and takes the caller's array capacity along with an out-parameter for the required entry count. Both are required: without a capacity the kernel cannot bound its writes, and without the out-count the caller cannot discover how large an array it needed. `SYS_ERR_TRUNCATED` with a valid out-count lets the caller retry against a correct allocation.
+
+### 18.5 What the Trade Is Worth, Measured
+
+M6 measured what a cohort avoids and found three things: 37 whole-TLB flushes out of 395 address space switches, 60 of 84 page-table entry writes, and one copy per block. It then said that address space identifiers would remove all 37 of the flushes and keep the isolation, so that **the case for this section rests on forwarding rather than on mapping**, and it left the claim resting on a mechanism nobody had built. M19 built it, and two parts of that claim need correcting.
+
+**The flushes are gone, and the count says so rather than a saving does.** A switch into a named space no longer throws translations away. A boot makes about 5476 switches, of which ten flush on riscv64 and none on aarch64, and the ten are the cross-core case of section 15.7 rather than a space without a name. So the structural claim holds: what a cohort was avoiding on the mapping path is now avoided without sharing a fault domain.
+
+**M6 was wrong about what a page move costs a named space, and the direction of the error matters.** It expected that identifiers would force two invalidations per page moved, one naming each of the two spaces, where an untagged machine takes one broad call. Measured, two narrow calls do cost about twice one on both ports: 20625 nanoseconds against 10462 on riscv64, 6792 against 2916 on aarch64. But the kernel does not make two, because a single call naming the current space is enough here and costs what the broad one costs, 10362 against 10462 on riscv64 and 2864 against 2916 on aarch64. The reason is not that the kernel is clever: on this emulator neither call is narrow. Invalidating an address while naming one space drops the entry belonging to a different space as well, on both ports. So the measurement that appears to vindicate the choice is really a measurement of an emulator that over-invalidates, and it would have to be taken again on hardware before it meant anything about the design.
+
+**And what this section's trade is worth still cannot be priced on this host.** Section 18 trades fault isolation for not crossing a protection boundary, and the price of crossing one is a switch plus what the next program refetches. QEMU 11.0.92 discards every translation whenever the root register is written, tagged or not, and loses a translation across a thread dispatch regardless of the kernel, so a switch here costs a flush whether or not the space has a name. The one saving this milestone was built to produce is the one this machine will not show. **The case for section 18 is therefore where M6 left it: resting on forwarding, and undecided on mapping until something with a real TLB runs it.** What has changed is that the mechanism the case was waiting on now exists, so the remaining question is a measurement rather than a design.
 
 ---
 
