@@ -22,14 +22,75 @@ about.
 
 **Roughly half the kernel exists, and there is enough userland to talk
 to it.** `docs/design.md` describes the intended system and says which
-half that is. Four figures have been obtained and all four are
-footprints rather than speeds; nothing has been measured for time. The
-gap between what is described and what runs is deliberate rather than
-hidden, and it narrows one stage at a time.
+half that is. Footprints are asserted, because a count is a property of
+this kernel; durations are reported and not asserted, because every one
+of them was taken under an emulator and describes the host it ran on.
+The gap between what is described and what runs is deliberate rather
+than hidden, and it narrows one stage at a time.
 
 ## Status
 
-**Milestone 18 is done: a server can keep its own books when its clients
+**Milestone 19 is done: every address space has a name the hardware
+knows, and a dispatch into another one no longer discards what the
+machine had learned.** Both architectures have a field for it. riscv64
+was writing zero into an identifier it already carried, so every space
+this system ever had shared one. aarch64 was marking every leaf global,
+so an identifier would have been ignored. Both ports report 16 bits
+now.
+
+```
+                                   switches in a boot    of those, a flush
+  before, riscv64                                5476                 5476
+  after,  riscv64                                5472                   10
+  before, aarch64                                5478                 5478
+  after,  aarch64                                5472                    0
+```
+
+The ten are not spaces that failed to get a name. riscv64's fences
+reach only the core that issues them, so a core throws its translations
+away at its first switch after another core invalidates anything.
+aarch64's fences are inner-shareable and reach the other core
+themselves, which is why the same boot, building the same spaces, needs
+none.
+
+**A name is global and is invalidated when it is given back.** The same
+name means the same space on every core, because a translation one core
+learned is filed under a name the other will also use. There are far
+more spaces in the life of a system than there are names, so a name
+released is a name reissued: a boot hands out 2531 of them, 2499
+second-hand, and gives 2522 back. Throwing the old translations away at
+release rather than at reuse means the free list only ever holds names
+nothing is filed under, so a space taking one up inherits nothing. A
+space that asks when there are none left runs without a name and
+flushes on every switch, which is what every space did before this
+existed.
+
+**What none of this bought is a saving anyone can measure here**, and
+that is the milestone's result rather than a gap in it. QEMU discards
+every translation whenever the root register is written, tagged or not,
+so a 256-page walk after a switch costs 142800 to 146900 nanoseconds on
+riscv64 against 7200 to 7700 for the same walk warm, with or without a
+name. Six of the seven stages have checks this host will not let fail,
+which is known because each was broken on purpose to find out. The
+seventh is the one the emulator does get right: on riscv64 the other
+core really does keep a stale translation until something acts.
+
+The prices themselves are worth having even so. A whole-TLB flush costs
+11900 to 12600 nanoseconds on riscv64 and 14800 to 16300 on aarch64
+before anything is refetched, plus 478 to 498 and 415 to 440 for each
+page the next program wants back. Section 13.3 of the design measured
+the switch inside the interrupts-off region at four to seven
+microseconds; the refetch that follows it, outside the region, is over
+a hundred for a program touching 256 pages.
+
+Sections 13.3, 15 and 18 of the design have been written around the
+measurement. Section 18's case for driver cohorts is left where
+milestone 6 left it, resting on forwarding rather than on mapping,
+because the mechanism it was waiting on now exists and the machine
+still cannot price it.
+
+**Milestone 18 is done:
+ a server can keep its own books when its clients
 stop existing.** Section 12.5 specified a death notice and section 13.1
 reserved queue slots for it, both arguing from a server that would leak
 without one, and no server in this system had anything to leak. So the
@@ -1044,17 +1105,34 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   and has only been run with one, and every collection, notice and
   displacement measured here happens on the core the event happened on.
 - Both ports assign address space identifiers now, and a dispatch into
-  another address space no longer discards anything: 5480 switches in a
+  another address space no longer discards anything: 5472 switches in a
   boot, 10 of them a flush on riscv64 and none on aarch64. What that
   bought on the machine this runs on is nothing. Writing the root
   register makes the emulator throw every translation away whichever
-  port asks, so a walk after a switch still costs 131400 nanoseconds
-  against 8000 for the same walk without one. The kernel is correct and
-  the saving is not measurable here.
+  port asks, so a walk after a switch costs what it always did. The
+  kernel is correct and the saving is not measurable here.
+- Six of milestone 19's seven checks cannot fail on this host. Each was
+  broken on purpose to find that out, and the emulator flushes on a
+  root write regardless of what the kernel asks for. What those stages
+  do assert is counts, which an emulator cannot make right by accident.
+- The identifier is 16 bits on both ports and no other width has run.
+  aarch64 sets `TCR_AS` only when the hardware says 16, and the branch
+  that manages a 255-name space has never been taken. A port reporting
+  no identifiers at all is handled by the same code and is likewise
+  never exercised; the two names lines in the compared report assume
+  otherwise.
+- A name is never reused across cores under load. Release invalidates
+  before the name goes back on the free list, which is what makes reuse
+  safe, and the check that exercises the cross-core case exercises the
+  fence rather than the reuse.
+- The by-name invalidation both ports use is safe only because no
+  mapping is marked global. Two addresses are checked, one in a program
+  and one in the kernel's identity mapping, and the claim is about
+  every leaf.
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). Eighteen milestones are
+See [docs/ROADMAP.md](docs/ROADMAP.md). Nineteen milestones are
 finished. The plan as written ran to ten; each milestone since was
 chosen after the last one ended, out of what it left open: a question
 only half answered, or a limitation this file had been carrying. What
@@ -1066,6 +1144,14 @@ One thing is named in every retrospective, which is what this project
 treats as a signal: nothing has ever run on hardware, so every duration
 published here is the right shape and the wrong magnitude. That is why
 the milestones that could assert counts rather than durations did.
+
+Milestone 19 changed what that costs. Until it, running on an emulator
+meant the numbers were the wrong magnitude. There it meant six of seven
+checks could not fail at all, because the emulator throws every
+translation away whichever port asks, and a mechanism whose whole value
+is keeping translations has nothing to show on a machine that keeps
+none. The next thing this project needs is not another milestone.
+
 
 The other signals have been taken. The latency floor went to milestone
 12, which left something narrower and harder: the floor is the work a

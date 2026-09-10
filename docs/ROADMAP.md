@@ -556,6 +556,31 @@ limit. A send joins the queue and the queue gives up its lowest-priority
 sender, which is a refusal for the arriving client and a close after
 accept for one already waiting.
 
+**M19 gave every address space a name the hardware knows.** Both ports
+had a field for it and neither filled it in, so every dispatch into
+another address space wrote the root register and discarded everything
+the machine had learned. Both now report 16 bits of identifier, a
+switch into a named space keeps its translations, and a boot's 5472
+switches include ten flushes on riscv64 and none on aarch64. The ten
+are riscv64's fences not reaching the other core, which is a
+limitation this file already carried and which the identifier makes
+visible rather than worse.
+
+A name is global, so the same name means the same space on every core,
+and it is invalidated when it is given back rather than when it is
+taken up, so a space never inherits anything. A boot hands out 2531
+names, 2499 of them second-hand, and gives 2522 back. There are more
+spaces in the life of a system than names, and a space that asks when
+there are none runs without one and flushes on every switch, which is
+what every space did before this existed.
+
+What the milestone cannot show is what any of it saved. This emulator
+throws every translation away on any write of the root register,
+tagged or not, so a walk after a switch costs what it always did. The
+mechanism is correct by count and unmeasurable by duration, and
+section 18's case rests where M6 left it until something with a real
+TLB runs this.
+
 Nothing has run on hardware, so every duration this project has
 published is the right shape and the wrong magnitude. The counts are not
 durations, which is why these milestones assert counts.
@@ -11083,6 +11108,23 @@ what a full queue displaces.
 
 **Every switch throws away every translation, and neither port has to.**
 
+**Done.** All seven stages are built. Section 22 says what it answered,
+what it cost, what the building kept finding, and what it left
+untested. The gap it closed was in the ports and not in the
+specification: nothing in `design.md` was false, and three sections
+were silent about a cost that turned out to be most of what a dispatch
+into another address space is worth.
+
+The count says the mechanism works. Before, 5476 switches on riscv64
+and 5478 on aarch64, each one a whole-TLB flush. After, 5472 burst and
+5476 paced, of which ten flush on riscv64 and none on aarch64. What the
+count cannot say is what that saved, because this emulator throws every
+translation away whenever the root register is written whether the
+space has a name or not. Six of the seven stages have checks this host
+will not let fail, which was found by breaking each of them on purpose.
+Section 9.2's question is therefore answered as far as a host without a
+real TLB can answer it, and section 18's case is where M6 left it.
+
 The boot prints the number above the compared line, where M6's review
 put it: **5480 address space switches, each a whole-TLB flush, against
 46 buffer halves.** A dispatch into a different address space writes the
@@ -14390,7 +14432,225 @@ a supervisor restarting one. Nothing here restarts anything.
 
 ---
 
-## 22. Bring-Up Order Within M1
+## 22. Milestone 19, in Retrospect
+
+M19 set out to stop throwing every translation away on every dispatch.
+Both architectures have a field that prevents it and neither port filled
+it in: riscv64 wrote zero into an identifier it was already carrying,
+and aarch64 marked every leaf global so an identifier would have been
+ignored. M6 had said this milestone would have to happen and had said
+what it would find. It was right about the mechanism, wrong about two
+of the things it predicted the mechanism would do, and the host cannot
+settle the question either of them was asked for.
+
+### 22.1 The Questions
+
+**Do identifiers remove the flush?**
+
+Yes, and the count is the whole of the answer. Before: 5476 switches on
+riscv64 and 5478 on aarch64, each one a whole-TLB flush. After: 5472
+switches burst and 5476 paced, of which ten flush on riscv64 and none
+on aarch64. The ten are not spaces that failed to get a name. A switch
+also flushes into a nameless space and the boot deliberately builds
+nameless spaces, so the riscv64 figure alone does not separate the two
+causes; aarch64 builds the same spaces, dispatches into the same ones,
+and reports zero, and the only thing that differs between the ports is
+whether a fence reaches the other core.
+
+**Are they the cheaper way to buy what a cohort buys?**
+
+Not answerable on this host, and that is the milestone's central
+finding rather than a gap in it. The measurement named in the
+falsification clause was stage one's cost of a flush against stage
+six's cost of the maintenance that replaces it, in the same units on
+the same host. Both were taken, over four runs of each port:
+
+```
+                                     riscv64            aarch64
+  a whole-TLB flush, fixed      11900-12600 ns     14800-16300 ns
+  each page the walk refetches      478-498 ns        415-440 ns
+  one invalidation naming a space 10212-10325 ns    2890-3056 ns
+  one broad invalidation          10275-10462 ns    1484-2898 ns
+```
+
+Read literally, one invalidation costs about what a whole flush costs
+on riscv64 and about a fifth of one on aarch64, so the trade looks bad
+on one port and good on the other. Neither number is about hardware.
+QEMU 11.0.92 discards every translation whenever the root register is
+written, tagged or not, and it drops an entry belonging to another
+space when asked to invalidate one address in this space. So the left
+column is an emulator that over-flushes and the right column is the
+same emulator over-invalidating, and dividing one by the other
+describes nothing.
+
+**Was the falsification condition met?**
+
+No, and both of its limbs are answerable even though the comparison is
+not. The first limb was that the bookkeeping to be correct about reuse
+might cost more than the flushes it removes. It is a 32-entry array,
+one spinlock, one invalidation per space destroyed, and one comparison
+at each switch: 2522 invalidations in a boot against every one of 5476
+switches no longer flushing. The second limb was that a port's
+identifier space might be too small to be worth managing. Both ports
+report 16 bits, which is 65535 names, and the kernel manages 32 of them
+because that is a bound on an array rather than on reuse.
+
+So by the letter the mechanism survives, exactly as it did at M6. By
+the substance the question is where M6 left it and for the same reason:
+the number that would settle it is a hardware number and this project
+has never had one.
+
+**And section 9.2 is answered as far as it can be.** It said identifiers
+would remove all 37 of M6's whole-TLB flushes and that the case for
+section 18 therefore rests on forwarding rather than on mapping. The
+flushes are removed, by count. The saving is not observable. Section
+18.5 now says so in those words, and says what M6 got wrong: it
+expected identifiers to force two invalidations per page moved where an
+untagged machine takes one. Two named calls do cost about twice one,
+20262 to 20562 ns on riscv64 and 6714 to 6992 on aarch64, but the
+kernel makes one call, and the reason it can is that no call is narrow
+on this emulator rather than anything about the design.
+
+**What made the checks able to fail?**
+
+Almost nothing, and this is the honest headline. The plan's *Watch for*
+clause named the risk exactly: a system with stale translations mostly
+works, so a check that boots and prints has tested nothing. Every
+stage's check was built to read a page whose content says which space
+it came from, and it was not enough. Of the seven stages, one has a
+check this host will let fail: stage five's cross-core read, where the
+other core genuinely does keep a stale translation on riscv64 until
+something acts. The rest pass with the mechanism taken out, because the
+emulator flushes on a root write regardless. That was found by
+deliberately breaking each one, which is the only reason it is known.
+
+What the other six checks do assert is counts, and those do fail: 27
+spaces built to empty a pool of 32 with 6 in use, a name handed to a
+second space and read through, 2522 names given back, ten switches
+still flushing and not zero. A count is a property of this kernel and
+an emulator cannot make it right by accident. That is the seventh
+milestone in a row where a check that could not fail was the thing to
+watch for, and the first where it was most of them.
+
+### 22.2 What It Cost
+
+**Fifteen commits, thirteen files, 3323 lines added and 111 removed**,
+of which 2447 are code and 857 are documentation.
+
+**Two thirds of the code is the measurement.** `init_main.c` accounts
+for 1564 of those lines. The mechanism itself is 984 across the two
+`pmap.c` files, `subr_vm.c`, the dispatcher, the buffer path and three
+headers. That is the fourth milestone to cost more to measure than to
+build, and here the ratio is the worst it has been.
+
+**About 11 kilobytes of text**, 432690 to 443328 on riscv64 and 537828
+to 549860 on aarch64, almost all of it the checks.
+
+**About 420 bytes of bss**, 280560 to 280976 on riscv64 and 280505 to
+280937 on aarch64: the 32-entry free list, the per-core maintenance
+counts, and two fields on each `struct cpu`.
+
+**No frames, no threads, no processes, no kernel stacks and no
+archive.** The tier 0 resource report is byte for byte what it was.
+
+**Two lines in the compared report**, and they are identical paced and
+burst on both ports, which is why they can be compared at all.
+
+**About 100 to 200 milliseconds of boot**, 11.4-11.6 seconds to
+11.6-11.7 on riscv64 and 9.6-9.7 to 9.8 on aarch64, almost all of it
+the timing loops the checks run.
+
+### 22.3 What the Building Kept Finding
+
+**A measurement contaminated by the thing it was measuring.** Stage
+one's warm walk came out eight to eleven times slower in the burst
+session than the paced one. A console with input waiting gets
+dispatched between two samples taken in separate regions, and
+dispatching into another address space is itself a whole-TLB flush. The
+cost being measured arrived uninvited inside the measurement of it. The
+fix was both samples in one short interrupts-off region and a 256-page
+chain, and the same shape of error turned up twice more.
+
+**Checks that became the longest interrupts-off region in the boot.**
+Stage five's took core 0 from about 1.2 milliseconds to about 10, and
+stage six held interrupts off for 8. Both were the measurement's own
+doing and both were fixed by moving work out of the region rather than
+by accepting the figure. A milestone about latency's other half spent a
+fair amount of its time making its own instruments stop distorting it.
+
+**A probe that misled the person reading it.** Stage six's first
+attempt appeared to show that a call naming one space left another
+space's entry alone. It did not: the frames had no distinguishing bytes
+written into them, so the probe could not have told the difference, and
+the second reading of it was wrong as well. The assertion written next
+caught it. Both ports over-invalidate, and the design text that
+depended on the opposite had to be rewritten.
+
+**M6 wrong in both halves of what it predicted.** It said identifiers
+would remove all 395 flushes, which is right, and that they would cost
+two invalidations per page moved, which is not. The correction is in
+section 18.5 and an annotation on M6's own retrospective.
+
+**A review reintroducing what an earlier review had removed.** Stage
+one's review deleted an assertion that the frame count is exactly what
+it was, on M13's rule that the count is the whole machine's. Stage six
+put it back. Stage six's review removed it again.
+
+**Two ordering defects found by inspection while chasing something
+else.** The dispatcher read the maintenance count twice where it had to
+read it once, and riscv64 raised the count before its fence rather than
+after. Neither was the intermittent failure being chased, and both were
+reported as found by reading rather than by the check.
+
+**And four figures written from one sample each.** Stage seven's review
+took four runs of each port and found spreads the single numbers did
+not admit, one of which reversed a claim: a call naming a space does
+not cost what a broad call costs on aarch64, and the two are not
+separable there at all.
+
+### 22.4 What Is Still Untested
+
+**Hardware, and here it is not the usual disclaimer.** Every other
+milestone has published durations that are the right shape and the
+wrong magnitude. This one published a mechanism whose entire value is
+invisible on the machine it was built on. The first real TLB it meets
+either vindicates it or does not, and nothing before then will say.
+
+**A port that reports no identifiers.** The code path exists, is taken
+by the same call, and is never executed: both ports report 16 bits. The
+two compared report lines assume otherwise and would fail on such a
+port for a reason that is not a defect.
+
+**Eight-bit identifiers.** aarch64 reads `ID_AA64MMFR0_EL1.ASIDBits`
+and sets `TCR_AS` only when it says 16. QEMU says 16, so the branch
+that leaves `TCR_AS` clear and manages a 255-name space has never run.
+
+**A name released on one core and taken on another** while the first
+core is still running in the space that had it. The rule that makes
+this safe is that release invalidates before the name goes on the free
+list, and the cross-core check exercises the fence rather than the
+reuse.
+
+**Exhaustion under anything but a loop.** 27 spaces are built in one
+place to empty a pool of 32, and the 27th runs unnamed and reads its
+own page. What a system does when it is short of names while doing
+work, rather than while proving it can run out, is not answered.
+
+**Wrap.** `asid_next` counts to `SYS_ASID_LIMIT` and stops; the free
+list carries every name after that. A 16-bit space is never filled and
+no name is ever issued twice at once, which is what the free list is
+for and not what anything here demonstrates.
+
+**Every leaf being non-global.** Both ports' by-name invalidation is
+safe only because no mapping is marked global. Two addresses are
+checked, one in a program and one in the kernel's identity mapping, and
+the claim is about all of them.
+
+**More than two cores.** Every count here comes from `-smp 2`.
+
+---
+
+## 23. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -14434,7 +14694,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 23. Ordering: What Is Forced and What Is Chosen
+## 24. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -14465,7 +14725,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 24. What Would Change This Plan
+## 25. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -14512,7 +14772,7 @@ else.
 
 ---
 
-## 25. Deliberately Not Scheduled
+## 26. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 
