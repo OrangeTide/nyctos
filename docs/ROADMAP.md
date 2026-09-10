@@ -11924,6 +11924,178 @@ side of it is most of the work and the reason to do it in this order.
 
 ---
 
+### M20. The Pool Nothing Gives Back
+
+**A channel is allocated once and lives until the machine stops.**
+
+Every other pool in this system returns what it lends. A process goes
+back at its reap, a thread with it, a connection when its last
+reference goes, a prepared program when its handle closes, a timer when
+it is cancelled. `pool_free` is called for five object types. It is
+never called for a channel.
+
+The boot prints what that costs, and the shape of the number is the
+argument: **40 channels used and 40 at once, of 48.** Used equals
+high-water, which is true of no other pool here. Threads peak at 24 of
+32 and end at fewer, connections at 12 of 32 and end at 7. A pool where
+those two numbers are equal is not a pool being used carefully; it is a
+pool nothing has ever given anything back to.
+
+**This has already been paid for twice.** M17's review found the boot
+at the end of its channels: at 32 slots the cohort check panicked with
+"no channel" because checks earlier in the boot had spent them all, and
+a check failed for something an unrelated check further up had done.
+`SYS_MAX_CHANNELS` was raised to 48 and the reason was written where
+the number is, along with the sentence this milestone exists to act on:
+"the limit is not what is really short; what is short is that nothing
+gives a channel back."
+
+**And section 8 is the section it makes false.** Section 8 buys one
+property: kernel memory consumption is a property of the configuration
+rather than of the workload, so a system's footprint can be computed
+from its build settings and cannot be driven upward by application
+behaviour. For channels that is not true in the way that matters. The
+footprint depends on how many channels the system has *ever* had, not
+on how many it has, so a long-running system exhausts the pool at a
+rate set by its history. No configuration fixes that; it only moves the
+date. Section 8 also says a system that exhausts a pool must be
+reconfigured and rebuilt, which is a reasonable thing to ask of a
+concurrency bound and not of a counter.
+
+**The reason it was never done is worth stating, because it is not
+laziness.** A prepared program is its handle, so `prepared_free` at
+release is correct by inspection. A channel is named by many handles,
+by the connections opened over it, by every thread blocked sending on
+it, by the pulse queue's contents, and by whatever the kernel itself
+holds: a pager's channel, a cohort's, a namespace's. Freeing one means
+knowing that none of those exist, and this kernel has never had to
+know. What makes it tractable now is that M18 built connection
+reference counting and M13 built the reap, so the two hardest holders
+already say when they let go.
+
+*Needs.* Nothing missing. The handle table already calls into
+`kern_objref.c` on every retain and release, which is where four other
+object types already learn that a handle came or went, and the pool
+already has `pool_free` and generation counters that make a stale
+reference say so rather than reach a stranger.
+
+**What this is not.** Not a general garbage collector, and not a
+reference count on every object type: the four that need one have one,
+and this adds the fifth because it is measurably short. Not a change to
+what a channel is or who owns it, which section 12.5 settled and M18
+confirmed. Not dynamic allocation: the pool stays a build-time bound,
+and what changes is whether a slot in it can be used twice.
+
+**1. What is spent, and what of it is reachable.** *Planned.*
+
+- *Check.* The boot reports the channel pool the way it reports every
+  other one, and adds the number nothing has ever printed: how many
+  channels in use are named by no handle in any process's table and
+  held by nothing in the kernel. That count is asserted to be greater
+  than zero, because if it is zero the milestone has no subject and
+  should be abandoned rather than built.
+- Also asserted: used equals high-water, which is the mechanical
+  statement of the same fact and the thing a later stage makes false.
+  Both go in the compared report, at both tiers, since neither depends
+  on when console input arrives.
+
+**2. A channel knows what holds it.** *Planned.*
+
+- *Check.* A count on the channel, maintained where the other four
+  object types are, and a scan that walks every handle table in the
+  system and every kernel-side holder and arrives at the same number
+  for every channel. The scan is the check and it runs at several
+  points in the boot, not only at the end.
+- The scan is expected to disagree the first time it is run, and where
+  it disagrees is the deliverable of this stage: the holders nobody had
+  written down. Nothing is freed yet.
+
+**3. The last holder frees the slot.** *Planned.*
+
+- *Check.* A channel created and dropped leaves the pool with the same
+  number of slots in use it started with, and the slot that comes back
+  is the same slot, which the generation counter says. Used falls below
+  high-water for the first time in this system's life, so stage one's
+  second assertion has to be rewritten and the compared report changes.
+- Falsifiable by removing the free: used equals high-water again and
+  the diff fails.
+
+**4. What must not be freed under somebody.** *Planned.*
+
+- *Check.* Four constructions, each dropping every handle and asserting
+  the slot is still in use and the party still correct, then releasing
+  the party and asserting the slot comes back: a thread blocked sending
+  on it, an undelivered pulse in its queue, a live connection over it,
+  and a cohort member's outstanding rendezvous.
+- Each is falsifiable by freeing early rather than by an argument: the
+  check then reads a channel that has been handed to somebody else, and
+  the generation says stale where it should say the object.
+
+**5. A server that restarts under its clients.** *Planned.*
+
+- *Check.* The case sections 18.2 and 18.3 argue from and which nothing
+  in this system has ever done, and M18's retrospective named it as
+  untested. A supervisor kills a server, the channels the server owned
+  come back, and it launches a replacement that makes its own. After
+  more restarts than the pool has slots, the pool is where it started.
+- What this settles beyond the count is whether a client holding a send
+  handle across the restart is told the right thing, which is the
+  difference section 12.5 draws between `SYS_ERR_STALE` and
+  `SYS_ERR_OWNER_DEAD`, and which no client here has ever acted on.
+
+**6. More channels than the pool has.** *Planned.*
+
+- *Check.* M13's shape, which is the one that actually proves reuse: a
+  path that spends channels, run more times than there are slots, with
+  the total and the pool size printed beside each other. It completes,
+  and the high-water mark does not move after the first cycle.
+- Falsifiable by the pool running out, which is what happens today
+  after 48 of them.
+
+**7. What it cost, and sections 8 and 12 written around it.** *Planned.*
+
+- *Check.* The figures as counts: slots reclaimed in a boot, the
+  high-water mark against the number spent, and the restart count from
+  stage five.
+- Section 8's property is restated against what is now true of every
+  pool rather than of four of five. Section 12 gains what a channel's
+  lifetime is and what ends it, which the specification does not say
+  anywhere today. If stage two finds a holder that cannot be counted,
+  section 8 gains the exception instead, written as an exception.
+
+*Done when* a channel's slot comes back when nothing holds it, the boot
+spends more channels than the pool has and does not run out, a server
+can be restarted under its clients, and `SYS_MAX_CHANNELS` is a bound
+on how many channels exist at once rather than on how many may ever be
+made.
+
+*Would falsify.* That a channel can be given back at all for what the
+counting costs. If the holders cannot all be found, or if the count
+needs a branch on a path that cannot afford one, then the honest answer
+is that a channel lives as long as the system, `SYS_MAX_CHANNELS` is a
+configuration number like any other, and section 8 gains a written
+exception rather than a quiet one. The measurement that settles it is
+stage two's scan against the count: if the scan and the count cannot be
+made to agree, nothing after stage two is safe to build.
+
+*Watch for.* A check that cannot fail, which is now seven consecutive
+milestones. The shape here is specific and different from M19's: the
+pool is small and the checks run in a boot that is already spending it,
+so a check that makes a channel, drops it, and finds a free slot has
+found the slot somebody else was not using. Every check has to assert
+the identity of the slot it got back and not merely that there was one.
+And a count that moves on its own: the channel count depends on what
+the shell session opens, so what is compared has to be what the checks
+spend and give back, measured between two readings, rather than the
+pool's total.
+
+*Size.* Medium. One count, one free, and four holders to find. The
+holders are the part that is neither small nor known in advance, and
+stage two exists to find out how bad it is before anything depends on
+the answer.
+
+---
+
 
 ## 4. Milestone 1, in Retrospect
 
