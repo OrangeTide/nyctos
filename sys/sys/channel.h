@@ -229,12 +229,31 @@ sys_err_t channel_reap(struct channel *ch, bool enable, uint64_t *out);
 void channel_listen(struct channel *ch, uint32_t depth);
 
 /*
- * How many channels in use nothing can reach: no handle names them, no
- * connection was minted on them, and no thread is inside or queued on
- * them. Per M20 stage one. The scan is in kern_channel.c and says what
- * it walks and what it cannot see.
+ * One reading of the channel pool, per M20 stage one, taken under the
+ * kernel lock with interrupts off so that all of it describes one
+ * moment. cs_unreachable is how many slots in use nothing can reach:
+ * no handle names them, no connection was minted on them, and no
+ * thread is inside or queued on them. The scan is in kern_channel.c
+ * and says what it walks and what it cannot see.
+ *
+ * cs_ns is how long the walk held the lock. A duration, so it is
+ * printed above the compared line and never asserted.
  */
-uint32_t channel_unreachable(void);
+struct channel_scan {
+    uint32_t    cs_used;
+    uint32_t    cs_at_once;
+    uint32_t    cs_of;
+    uint32_t    cs_unreachable;
+
+    /* What the walk covered, so the duration beside it means something. */
+    uint32_t    cs_tables;
+    uint32_t    cs_conns;
+    uint32_t    cs_threads;
+
+    uint64_t    cs_ns;
+};
+
+void channel_scan(struct channel_scan *out);
 
 /* Link and unlink a connection, which the connection code calls. */
 void channel_conn_add(struct channel *ch, struct connection *cn);

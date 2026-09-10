@@ -8967,6 +8967,9 @@ static uint32_t frames_at_start;
 #if SYS_TIER == 2
 static uint32_t kernel_tables_at_start;
 #endif
+
+/* One reading of the channel pool, per M20 stage one. */
+static struct channel_scan channel_report;
 static uint8_t pager_prio_seen;
 static bool pager_served_over_spinner;
 
@@ -14782,6 +14785,29 @@ kernel_main(void)
     irq_dispatch_report();
     ipc_report();
 
+    /*
+     * The one pool nothing gives back, per M20 stage one, read once
+     * under the kernel lock so that all of it describes one moment.
+     *
+     * The walk's own duration goes here, above the compared line,
+     * where a duration belongs. It is also the only place it can go:
+     * the interrupts-off regions of section 13.3 are reported a few
+     * lines above this, so a region opened after that report is one
+     * the boot's own instrument cannot see, and printing how long it
+     * held the lock is what stands in for being measured.
+     */
+    {
+        struct channel_scan cs;
+
+        channel_scan(&cs);
+        cnprintf("channels: %u tables, %u connections, %u threads and "
+          "%u slots walked with the kernel held, about %lu us\n",
+          (unsigned int)cs.cs_tables, (unsigned int)cs.cs_conns,
+          (unsigned int)cs.cs_threads, (unsigned int)cs.cs_of,
+          (unsigned long)(cs.cs_ns / 1000));
+        channel_report = cs;
+    }
+
     object_report_usage();
 
     /*
@@ -14855,6 +14881,47 @@ kernel_main(void)
      * asserted above the line, beside each other, where the relation
      * between them is what is checked.
      */
+    /*
+     * And what a boot spends on channels, per M20 stage one.
+     *
+     * In the compared part of the report because all four are counts.
+     * What a boot spends is what its checks ask for and is the same in
+     * every run at a tier; how long the walk took is above the line.
+     *
+     * Every other pool here ends a boot below its own high-water mark,
+     * because a process, a thread, a connection, a prepared program
+     * and a timer all go back. A channel does not, so these two are
+     * equal, and they stay equal until stage three.
+     */
+    cnprintf("  channels: %u in use, %u at once, of %u, and %u "
+      "unreachable\n", (unsigned int)channel_report.cs_used,
+      (unsigned int)channel_report.cs_at_once,
+      (unsigned int)channel_report.cs_of,
+      (unsigned int)channel_report.cs_unreachable);
+
+    /*
+     * Asserted as well as compared, because the compared file covers
+     * the paced run and the burst run is only read for a panic. A
+     * number this milestone turns on should fail in both.
+     *
+     * Both of these assert that a defect is present, which is unusual
+     * and is deliberate. A pool where nothing is reachable and
+     * everything is still held is the subject of this milestone, and
+     * if the first of them ever passes on its own then there is
+     * nothing here to build. Stage three makes the second false on
+     * purpose and rewrites it.
+     */
+    if (channel_report.cs_unreachable == 0) {
+        panic("channels: nothing is unreachable, so there is nothing "
+          "here to give back");
+    }
+    if (channel_report.cs_used != channel_report.cs_at_once) {
+        panic("channels: %u in use against %u at once, so something "
+          "already gives one back",
+          (unsigned int)channel_report.cs_used,
+          (unsigned int)channel_report.cs_at_once);
+    }
+
 #if SYS_TIER == 2
     {
         struct vm_cost all;

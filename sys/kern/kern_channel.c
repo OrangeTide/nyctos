@@ -12,6 +12,7 @@
 #include <sys/cpu.h>
 #include <sys/channel.h>
 #include <sys/intr.h>
+#include <sys/lock.h>
 #include <sys/connection.h>
 #include <sys/handle.h>
 #include <sys/object.h>
@@ -2250,6 +2251,31 @@ channel_reap(struct channel *ch, bool enable, uint64_t *out)
 }
 
 /*
+ * Mark the slot a channel occupies, for the scan below.
+ *
+ * The bound is checked rather than assumed. Every pointer handed here
+ * comes out of a structure this walks, and a structure being changed
+ * under the walk could hand back something that is not a channel; an
+ * index off the end of the array would be a write past the end of the
+ * caller's stack, which is a much worse answer than a wrong count.
+ */
+static void
+mark_channel(bool *seen, const struct channel *ch)
+{
+    uint32_t idx;
+
+    if (ch == NULL) {
+        return;
+    }
+    idx = sys_id_index(ch->c_id);
+    if (idx >= SYS_MAX_CHANNELS) {
+        panic("channels: a holder named slot %u of %u",
+          (unsigned int)idx, (unsigned int)SYS_MAX_CHANNELS);
+    }
+    seen[idx] = true;
+}
+
+/*
  * How many channels in use nothing can reach, per M20 stage one.
  *
  * A scan rather than a count, because a count is the thing this
@@ -2280,24 +2306,55 @@ channel_reap(struct channel *ch, bool enable, uint64_t *out)
  * in the system will ever put the slot back. They are counted as
  * unreachable because that is what they are.
  */
-uint32_t
-channel_unreachable(void)
+void
+channel_scan(struct channel_scan *out)
 {
     const struct pool *chans = channel_pool();
     const struct pool *procs = proc_pool();
     const struct pool *threads = thread_pool();
     const struct pool *conns = connection_pool();
     bool seen[SYS_MAX_CHANNELS];
+    intr_state_t is;
+    intr_state_t ks;
+    uint64_t t0, t1, ta, tb, tc, td;
     uint32_t i;
     uint32_t left = 0;
+    uint32_t tables = 0;
 
     for (i = 0; i < SYS_MAX_CHANNELS; i++) {
         seen[i] = false;
     }
 
+    /*
+     * Under the kernel lock and with interrupts off, because the four
+     * things this walks are the four things a running program changes.
+     *
+     * The boot thread never entered the kernel and so does not hold
+     * the lock, which is what makes taking it here both necessary and
+     * possible. Ten processes are still running when this is called,
+     * and a handle table being edited on the other core while this
+     * walks it would give a count that no change caused, which is the
+     * one kind of number this project will not put in a compared file.
+     * Interrupts as well as the lock, because at Tier 0 the lock is
+     * nothing and one core is what makes interrupts off exclusion.
+     *
+     * Reading used and high-water in here too, so that all three
+     * numbers on the line come from one reading of the pool rather
+     * than from three.
+     *
+     * Timed from outside the region rather than inside it, so that
+     * what is reported is how long interrupts were actually off. Time
+     * spent spinning for the lock is part of that and would not be
+     * counted by a clock read after the lock was taken.
+     */
+    t0 = time_now();
+    is = md_intr_disable();
+    ks = klock_enter();
+
     for (i = 0; i < procs->count; i++) {
         const struct proc *p;
         uint32_t j;
+        uint32_t found = 0;
 
         if (!procs->slots[i].inuse) {
             continue;
@@ -2306,20 +2363,37 @@ channel_unreachable(void)
         if (p == NULL) {
             continue;
         }
+        /*
+         * Every slot, and then the table's own count checked against
+         * what was found. Stopping early once the count is accounted
+         * for is the obvious saving and it is not taken: it costs
+         * nothing measurable here, and it turns a table whose count
+         * has drifted from its slots into a scan that quietly stops
+         * short. A wrong count in a compared file is the failure this
+         * milestone is least able to afford.
+         */
         for (j = 0; j < SYS_MAX_HANDLES_PER_PROC; j++) {
             const struct handle_slot *h = &p->p_handles.ht_slots[j];
-            const struct channel *ch;
 
-            if (!h->h_inuse || h->h_type != SYS_OBJ_CHANNEL) {
+            if (!h->h_inuse) {
                 continue;
             }
-            ch = h->h_object;
-            if (ch != NULL) {
-                seen[sys_id_index(ch->c_id)] = true;
+            found++;
+            if (h->h_type != SYS_OBJ_CHANNEL) {
+                continue;
             }
+            mark_channel(seen, h->h_object);
         }
+
+        if (found != p->p_handles.ht_used) {
+            panic("channels: a table says %u handles and holds %u",
+              (unsigned int)p->p_handles.ht_used, (unsigned int)found);
+        }
+        tables++;
+
     }
 
+    ta = time_now();
     for (i = 0; i < conns->count; i++) {
         const struct connection *cn;
 
@@ -2327,11 +2401,12 @@ channel_unreachable(void)
             continue;
         }
         cn = pool_lookup(conns, sys_id_make(i, conns->slots[i].gen));
-        if (cn != NULL && cn->cn_channel != NULL) {
-            seen[sys_id_index(cn->cn_channel->c_id)] = true;
+        if (cn != NULL) {
+            mark_channel(seen, cn->cn_channel);
         }
     }
 
+    tb = time_now();
     for (i = 0; i < threads->count; i++) {
         const struct thread *t;
 
@@ -2339,11 +2414,12 @@ channel_unreachable(void)
             continue;
         }
         t = pool_lookup(threads, sys_id_make(i, threads->slots[i].gen));
-        if (t != NULL && t->t_serve_ch != NULL) {
-            seen[sys_id_index(t->t_serve_ch->c_id)] = true;
+        if (t != NULL) {
+            mark_channel(seen, t->t_serve_ch);
         }
     }
 
+    tc = time_now();
     for (i = 0; i < chans->count; i++) {
         const struct channel *ch;
 
@@ -2356,7 +2432,7 @@ channel_unreachable(void)
         }
         if (ch->c_senders != NULL || ch->c_receivers != NULL ||
           ch->c_serving != NULL) {
-            seen[sys_id_index(ch->c_id)] = true;
+            mark_channel(seen, ch);
         }
     }
 
@@ -2366,5 +2442,21 @@ channel_unreachable(void)
         }
     }
 
-    return left;
+    td = time_now();
+    out->cs_used = chans->used;
+    out->cs_at_once = chans->highwater;
+    out->cs_of = chans->count;
+    out->cs_unreachable = left;
+    out->cs_tables = tables;
+    out->cs_conns = conns->count;
+    out->cs_threads = threads->count;
+
+    klock_exit(ks);
+    md_intr_restore(is);
+    t1 = time_now();
+
+    out->cs_ns = (t1 - t0) * 1000000000ULL / time_hz();
+    cnprintf("SPLIT procs %lu conns %lu thr %lu chans %lu\n",
+      (unsigned long)(ta-t0), (unsigned long)(tb-ta),
+      (unsigned long)(tc-tb), (unsigned long)(td-tc));
 }

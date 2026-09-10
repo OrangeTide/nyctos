@@ -12040,13 +12040,66 @@ turns on should fail in both. And both assertions assert that a defect
 is present: if nothing is ever unreachable the milestone has no
 subject, and stage three is what makes the second one false.
 
-**Falsified three ways.** Dropping the connection walk from the scan
+
+**What the review found.** The scan read four structures that a
+running program changes, with nothing to stop it changing them. Ten
+processes are still running when the report is printed, and a handle
+table being edited on the other core while this walked it would give a
+count that no change caused, which is the one kind of number this
+project will not put in a compared file. The walk now takes the kernel
+lock and turns interrupts off, and reads the pool's own used and
+high-water inside the same region, so all four numbers on the line
+come from one moment rather than three.
+
+**And that region is 636 to 760 microseconds, which is the price and
+is worth stating.** Core 0's longest region in the same boot is about
+1030 microseconds and a console line is about the same, so the scan is
+the second longest thing in the boot that holds interrupts off. It is
+not the lock: taking it out changed the figure by less than the spread
+between runs, and Tier 0, where the lock does not exist and there is
+one core, measures the same. It is about 800 iterations at this
+emulator's speed, which is the usual right shape and wrong magnitude.
+
+**The region is not measured by the instrument that measures regions.**
+Section 13.3's report is printed a few lines above this, so a region
+opened afterwards cannot appear in it. Moving the scan earlier would
+make it visible and would then very likely replace the kernel's own
+longest region in a figure that is supposed to be about the kernel.
+Printing the duration is what stands in for being measured, and the
+number above says what it would have been.
+
+**An obvious saving was available and was not taken.** A handle table
+has room for 64 and a process holds a handful, so the walk could stop
+once the table's own count is accounted for. Measured, it saved
+nothing, and it would turn a table whose count had drifted from its
+slots into a scan that quietly stopped short. The full walk stays and
+the drift is now a panic instead: `a table says %u handles and holds
+%u`.
+
+**The index a holder names is checked rather than assumed.** Every
+pointer marked comes out of a structure the walk is reading, and one
+being changed underneath could hand back something that is not a
+channel. An index past the end of the array would have been a write
+past the end of the caller's stack.
+
+**Falsified four ways.** Dropping the connection walk from the scan
 moved the compared line from 17 unreachable to 18 and the diff failed,
 which also says the pager's channel is held by nothing else. Making
 the scan mark every slot fired `channels: nothing is unreachable, so
 there is nothing here to give back`. Allocating and freeing one slot
-inside the report fired `channels: 40 in use against 41 at once, so
-something already gives one back`.
+before the scan fired `channels: 40 in use against 41 at once, so
+something already gives one back`. Adding one to the count of handles
+found fired `channels: a table says 34 handles and holds 35`.
+
+**Found and not this stage's:** the `connections:` line in the tier 0
+compared report says 7 in use paced and 8 in use burst. `make check`
+diffs the paced run and only greps the burst one, so a number that
+moves between the two modes sits in a compared file unnoticed. It is
+M18's line rather than this milestone's, and it is exactly what M6's
+review ruled against. The channels line was checked against the same
+hazard in all eight combinations of port, tier and mode and does not
+move; the count of handle tables does, which is why it is above the
+line and not in the file.
 
 **2. A channel knows what holds it.** *Planned.*
 
