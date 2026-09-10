@@ -11772,14 +11772,14 @@ compared at all.
 **Two of the stage's four figures could not go below the line, and the
 reasons are different.** The switch count moves with the host, for the
 reason M6's review gave: it depends on when console input arrives, and
-the same session gives 5476 or 5482. The count of switches that flushed
-does not move, but it differs by port, ten on riscv64 and none on
-aarch64, and there is one compared file for both tiers rather than one
-per configuration. Both are already printed and asserted above the
-line, beside each other, where what is checked is the relation between
-them rather than either number. The other two counts the buffer path
-already reports, invalidations and flushes, are on its own line and are
-not repeated.
+the same kernel gives 5472 burst against 5476 paced. The count of
+switches that flushed does not move in either mode, but it differs by
+port, ten on riscv64 and none on aarch64, and there is one compared
+file for both tiers rather than one per configuration. Both are already
+printed and asserted above the line, beside each other, where what is
+checked is the relation between them rather than either number. The
+other two counts the buffer path already reports, invalidations and
+flushes, are on its own line and are not repeated.
 
 **Falsified twice.** Raising `SYS_ASID_LIMIT` from 32 to 64 moved the
 compared line from 2531 given out to 2563 and the diff failed. Removing
@@ -11791,16 +11791,16 @@ right order for the two checks to fire in.
 **And section 18 could not be restated against a saving.** Section 9.2
 said identifiers would remove all 37 of M6's whole-TLB flushes and that
 the case for a cohort therefore rests on forwarding rather than on
-mapping. The flushes are gone by count, 10 of 5476 on riscv64 and 0 on
-aarch64 against every one of them before. What is not available is the
-saving, because QEMU discards every translation whenever the root
+mapping. The flushes are gone by count, 10 of about 5470 on riscv64 and
+0 on aarch64 against every one of them before. What is not available is
+the saving, because QEMU discards every translation whenever the root
 register is written, tagged or not. So section 18.5 says the case is
 where M6 left it, undecided on mapping, and records that the mechanism
 it was waiting on now exists. Section 18.5 also corrects M6's other
-prediction: two narrow invalidations do cost about twice one, 20625 ns
-against 10462 on riscv64, but the kernel makes one, and the reason it
-can is that neither call is narrow on this emulator rather than
-anything about the design.
+prediction: two narrow invalidations do cost about twice one, 20262 to
+20562 ns against 10212 to 10325 on riscv64, but the kernel makes one,
+and the reason it can is that neither call is narrow on this emulator
+rather than anything about the design.
 
 Section 13.3 gains what M12 could not see from inside the region: the
 switch is four to seven microseconds and the refetch after it, for a
@@ -11810,6 +11810,49 @@ invalidated on release rather than on assignment, and that exhaustion
 costs performance and not correctness. Section 15.6's paragraph about a
 count of address spaces destroyed is corrected, because M19 stage two
 removed that count and the name replaces it.
+
+**What the review found.** Five things, four of them numbers written
+from one sample each.
+
+The switch count was quoted as 5476 or 5482, which was measured before
+this stage changed the kernel. It is now 5472 burst and 5476 paced,
+each stable across the runs taken. The count of switches that flushed
+was quoted correctly at ten, but the comment beside the assertion that
+checks it still said seven, from M19 stage five.
+
+Every duration in sections 13.3 and 18.5 was one sample. Four runs of
+each port give a spread the single numbers did not admit: a whole-TLB
+flush is 11900 to 12600 ns on riscv64 and 14800 to 16300 on aarch64, a
+page the walk wants back is 478 to 498 and 415 to 440, one broad
+invalidation is 10275 to 10462 and 1484 to 2898, and one naming a space
+is 10212 to 10325 and 2890 to 3056. All of them are now ranges with the
+number of runs stated.
+
+One of those ranges changed a claim. Section 18.5 said a call naming a
+space costs what a broad call costs. On riscv64 the two overlap. On
+aarch64 the named call is the dearer in all four runs, and the broad
+call's own spread is wider than the gap between them, so the honest
+statement is that the difference is not resolvable rather than that
+there is none.
+
+The exhaustion figure was read wrong. The check reports 27 built and 1
+without, and 27 counts the one that went without, so it is the 27th
+that runs unnamed and not the 28th: 6 names were in use of 32, 26 were
+left, and building 27 spaces takes them all.
+
+And the claim that the ten flushes are the cross-core case was true and
+unargued. A switch also flushes into a space with no name, and the boot
+builds such spaces, so the riscv64 count alone does not separate the
+two causes. aarch64 builds the same spaces and reports zero, and the
+only thing that differs between the ports is whether a fence reaches
+the other core. That argument is now in section 13.3.
+
+**Still untested.** The two compared lines assume a port with
+identifiers. On a port reporting none, every space would go without a
+name and the counts would be zero, zero, one per space, zero, and the
+diff would fail for a reason that is not a defect. Both ports report 16
+bits, so nothing here exercises it, and the shape of the compared file
+is one per tier rather than one per configuration.
 
 *Done when* a boot's address space switches keep their translations on
 both ports and at Tier 2, a space that reuses an identifier sees its own

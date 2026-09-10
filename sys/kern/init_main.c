@@ -14625,7 +14625,7 @@ kernel_main(void)
             /*
              * And not none of them either, where there is a second core
              * whose fences do not reach this one and it did some
-             * maintenance. riscv64 reports seven, which is small and is
+             * maintenance. riscv64 reports ten, which is small and is
              * not zero, and zero would mean the switch had stopped
              * noticing the other core rather than that there was
              * nothing to notice. aarch64's fences are inner-shareable
@@ -14847,11 +14847,13 @@ kernel_main(void)
      *
      * Neither the count of switches nor the count of them that flushed
      * is here. The first moves with the host, for the reason M6's
-     * review gave: it depends on when console input arrives. The
-     * second does not move, but it differs by port, ten on riscv64 and
-     * none on aarch64, and there is one compared file for both. Both
-     * are printed and asserted above the line, beside each other,
-     * where the relation between them is what is checked.
+     * review gave: it depends on when console input arrives, and the
+     * same kernel gives 5472 burst against 5476 paced. The second does
+     * not move in either mode, but it differs by port, ten on riscv64
+     * and none on aarch64, and there is one compared file for both
+     * tiers rather than one per configuration. Both are printed and
+     * asserted above the line, beside each other, where the relation
+     * between them is what is checked.
      */
 #if SYS_TIER == 2
     {
