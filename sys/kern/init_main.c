@@ -5878,7 +5878,167 @@ kill_reach_checks(void)
       (unsigned long)(killed - before));
 }
 /*
+ * What a kill does not reach, per M21 stage one.
+ *
+ * Section 10.5 says a kill unblocks every thread of its target
+ * exactly as if each had been cancelled. `proc_kill` does that and
+ * leaves the rest to the mark, on the assumption its own comment
+ * states: a thread that is ready "has already stopped somewhere in
+ * this kernel, and it finds the mark on the way back out". True of a
+ * thread that was preempted and true of one that was released, both
+ * of which return to user mode through a trap path that reads the
+ * mark. False of a thread that has never run, because there is no
+ * trap to return from and the trampoline into user mode does not
+ * look.
+ *
+ * So this spawns a server, kills it before the scheduler can dispatch
+ * it, and reports what happened, which is nothing. What is asserted
+ * is the wrong answer: if a kill at this moment worked, this
+ * milestone has no subject and should be abandoned rather than built.
+ * Stage two is what turns the assertion over.
+ *
+ * The wedged process is not left wedged. A second kill reaches it,
+ * because by then it is blocked in a receive and a blocked thread is
+ * what cancellation was built for. That is the shape of M20 stage
+ * five's workaround and it is written here as the recovery it is.
+ */
+static uint32_t kills_outlasted;
+static uint64_t marked_entries;
+
+static void
+kill_unrun_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_kill_args kargs;
+    struct channel *ch;
+    struct child c;
+    const struct thread *t;
+    sys_ns_spec_t ns[1];
+    sys_handle_t give, h;
+    uint64_t until, killed, waited;
+    void *obj;
+    int32_t code;
+
+    cnputs("a kill: what it reaches in a thread that never ran\n");
+
+    ch = channel_create("unrun", self);
+    if (ch == NULL) {
+        panic("unrun: no channel for the server");
+    }
+    if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
+        panic("unrun: no handle to give the server");
+    }
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = give;
+
+    /*
+     * Spawned and killed inside one deferral, which is what makes the
+     * moment exact rather than hoped for. Without it the server may
+     * reach its receive before the kill is written, and the check
+     * would be of a blocked thread, which is the case that works.
+     */
+    sched_defer();
+    if (proc_spawn_op(self, "echoes", PRIO_BOOT, ns, 1, NULL, 0,
+      &h) != SYS_OK) {
+        panic("unrun: no server");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("unrun: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+
+    t = proc_threads(c.c_proc);
+    if (t == NULL || t->t_state != THREAD_READY) {
+        panic("unrun: the server is not ready and waiting, state %u",
+          t == NULL ? 0u : (unsigned int)t->t_state);
+    }
+
+    memset(&kargs, 0, sizeof(kargs));
+    kargs.code = KILL_CODE;
+    if (run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)) != SYS_OK) {
+        panic("unrun: the server refused to be killed");
+    }
+    if (!c.c_proc->p_dying) {
+        panic("unrun: the kill left no mark");
+    }
+    killed = time_now();
+    sched_undefer();
+
+    /*
+     * And then it runs anyway. Waited for rather than sampled, because
+     * a thread that has not been dispatched yet is not evidence of
+     * anything: what is being shown is that it gets all the way to a
+     * receive and stays there.
+     */
+    until = time_now() + time_from_ms(JOIN_MS);
+    for (;;) {
+        t = proc_threads(c.c_proc);
+        if (t == NULL || c.c_proc->p_exited) {
+            break;
+        }
+        if (t->t_state == THREAD_BLOCKED &&
+          t->t_wait == THREAD_WAIT_RECV) {
+            break;
+        }
+        if (time_now() > until) {
+            panic("unrun: the server neither died nor blocked");
+        }
+        sched_yield();
+    }
+    waited = time_now();
+
+    if (c.c_proc->p_exited) {
+        panic("unrun: the kill worked, so there is nothing to fix");
+    }
+    t = proc_threads(c.c_proc);
+    if (t == NULL || t->t_state != THREAD_BLOCKED ||
+      t->t_wait != THREAD_WAIT_RECV) {
+        panic("unrun: the server is somewhere this did not expect");
+    }
+    kills_outlasted++;
+    marked_entries += c.c_proc->p_dying_entries;
+
+    cnprintf("    %-38s %s\n", "a server killed before it ran",
+      "blocked in a receive, not dead");
+    cnprintf("    %-38s %lu\n", "entries it started while marked",
+      (unsigned long)c.c_proc->p_dying_entries);
+    cnprintf("    %-38s about %lu us\n",
+      "how long it took to get there",
+      (unsigned long)((waited - killed) * 1000000ULL / time_hz()));
+
+    /*
+     * The second kill, which is the recovery and also the measurement
+     * that says where the difference is. Nothing about the process
+     * changed except that its thread is now blocked, and that is the
+     * whole of what the first kill was missing.
+     */
+    memset(&kargs, 0, sizeof(kargs));
+    kargs.code = KILL_CODE;
+    if (run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)) != SYS_OK) {
+        panic("unrun: the second kill was refused");
+    }
+    code = child_join(&c, JOIN_MS);
+    if (code != KILL_CODE) {
+        panic("unrun: it came back with %d, not %d", (int)code,
+          (int)KILL_CODE);
+    }
+    if (handle_close(ht, h) != SYS_OK) {
+        panic("unrun: the spawn handle was already gone");
+    }
+    cnprintf("    %-38s %s\n", "and a second kill, with it blocked",
+      "ended it");
+    cnprintf("    %-38s about %lu us\n",
+      "the second kill, end to end",
+      (unsigned long)((time_now() - waited) * 1000000ULL /
+      time_hz()));
+}
+
+/*
  * A kill that has to cause the entry, per M17 stage three.
+
  *
  * Stage two put the mark where a trap returns to user mode, and found
  * that on one core it is enough for a reason that is not the hook: a
@@ -15674,6 +15834,7 @@ kernel_main(void)
     clock_read_checks();
     clock_cost_checks();
     kill_reach_checks();
+    kill_unrun_checks();
     kill_other_core_checks();
 #if SYS_TIER == 2
     kill_faulting_checks();
@@ -16069,6 +16230,29 @@ kernel_main(void)
     cnprintf("  kills: %lu written, pokes %lu, clients told %lu\n",
       (unsigned long)proc_kills, (unsigned long)proc_kill_pokes,
       (unsigned long)channel_stale_clients);
+
+    /*
+     * And what a kill did not reach, per M21 stage one. Counts, so
+     * they belong here: a kill written against a thread that had
+     * never run and did not end it, and the entries such a thread
+     * went on to start with the mark already set. Both are what the
+     * checks ask for and neither moves with the host.
+     *
+     * Both are asserted above zero, which is the opposite of what
+     * they will be asserted at. If a kill at that moment worked there
+     * would be nothing here to build, and stage two is what turns
+     * these over.
+     */
+    cnprintf("  kills a thread outlasted: %u, entries started "
+      "while marked: %lu\n", (unsigned int)kills_outlasted,
+      (unsigned long)marked_entries);
+    if (kills_outlasted == 0) {
+        panic("kills: every kill reached its thread, so there is "
+          "nothing to fix");
+    }
+    if (marked_entries == 0) {
+        panic("kills: no entry was started by a marked thread");
+    }
 
     /*
      * And what a server outliving its clients cost, per M18. Counts

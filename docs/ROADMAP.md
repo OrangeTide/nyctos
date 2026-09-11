@@ -12897,7 +12897,8 @@ works. Not the reentrancy guard: a thread interrupted inside a kernel
 operation is still not ended there, for the reason that has not
 changed.
 
-**1. What a kill does not reach, counted.** *Planned.*
+**1. What a kill does not reach, counted.** *Built.*
+
 
 - *Check.* A process spawned and killed before its thread has run, and
   the boot reports what happened to it: whether the thread ended, what
@@ -12910,6 +12911,66 @@ changed.
   one the after-the-entry check cannot see.
 - Falsifiable by the case not reproducing, which would mean M20's
   measurement was of something else.
+
+**What it settled.** The milestone has a subject and the shape of it
+is exact. One line in the compared report at each tier:
+
+```
+  kills a thread outlasted: 1, entries started while marked: 1
+```
+
+A server is spawned and killed inside one deferral, so the kill is
+written while its thread is `THREAD_READY` and has not been
+dispatched. `sys_proc_kill()` returns `SYS_OK`, the mark is set, and
+about 800 to 1000 microseconds later the thread is blocked in a
+receive with the process not exited. It got there by being
+dispatched, entering user mode, and making one system call, which the
+kernel counted as an entry started by a marked thread and then ran to
+completion anyway.
+
+**The entry count is the second half of the defect and not a
+restatement of the first.** `p_dying_entries` is incremented at the
+top of `syscall_handler`, so it says the thread was in the kernel
+with the mark set. The check that would have acted on it sits at the
+end of the entry, and the entry blocks, so it is never reached. One
+entry started, none finished, and the thread is still there.
+
+**The wedged process is not left wedged, and the recovery is the
+measurement.** A second kill ends it in 1.8 to 2.6 milliseconds
+including the join. Nothing about the process changed between the two
+kills except that its thread is now blocked, and a blocked thread is
+what `thread_cancel` was built for. That difference is the whole of
+the defect, and M20 stage five's workaround is the same observation
+written as a way around it.
+
+**The assertion is the wrong answer on purpose.** Stage one asserts
+that the kill did *not* work, at the check and again in the report,
+which is stage one of M20's shape: if the number is zero the
+milestone has no subject and should be abandoned rather than built.
+Stage two is what turns both over.
+
+**The moment is constructed rather than hoped for.** Spawning and
+killing inside one `sched_defer` is what makes the thread certainly
+ready and certainly not yet run. Without it the server can reach its
+receive first, and the check would be of a blocked thread, which is
+the case that already works. The state is asserted at the kill rather
+than assumed.
+
+**Falsified two ways.** Reading the mark in `proc_user_start` before
+dropping into user mode, which is stage two, fired `unrun: the kill
+worked, so there is nothing to fix`. That also settles the question
+stage two's *Watch for* raises, since ending a thread from the
+trampoline neither faulted nor hung. Counting the entry on the way
+out of `syscall_handler` rather than on the way in fired `kills: no
+entry was started by a marked thread`, which is the difference
+between the two placements made visible.
+
+**And one falsification fired somewhere else.** Not counting entries
+at all panicked in M17's own check first, `join spin: it did not
+finish, or its exit advanced nothing`, because that check asserts the
+same counter at zero. The floor this stage puts under the counter is
+therefore not independently falsifiable, which is written here rather
+than left to look stronger than it is.
 
 **2. The mark on the way into user mode for the first time.**
 *Planned.*
