@@ -297,6 +297,14 @@ extern uint32_t channel_scans;
 extern uint32_t channel_freed;
 
 /*
+ * How many channels the machine has made since it started, which is
+ * the number `SYS_MAX_CHANNELS` used to bound and no longer does.
+ * Against it, the pool's high-water mark says what the bound is on
+ * now: how many exist at one time.
+ */
+extern uint32_t channel_created;
+
+/*
  * How many of those happened on a core that was already inside the
  * kernel's exclusion, which is every call arriving from a vector. The
  * rest came from a kernel thread, which holds nothing and has to take

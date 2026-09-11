@@ -12636,7 +12636,7 @@ true, because the assertion after every cycle makes it true, but a
 report line that prints an assumption rather than a reading says
 nothing. It reads the pool.
 
-**7. What it cost, and sections 8 and 12 written around it.** *Planned.*
+**7. What it cost, and sections 8 and 12 written around it.** *Built.*
 
 - *Check.* The figures as counts: slots reclaimed in a boot, the
   high-water mark against the number spent, and the restart count from
@@ -12646,6 +12646,72 @@ nothing. It reads the pool.
   lifetime is and what ends it, which the specification does not say
   anywhere today. If stage two finds a holder that cannot be counted,
   section 8 gains the exception instead, written as an exception.
+
+**What it settled.** The compared report, at Tier 2 and Tier 0:
+
+```
+  channels: 611 made, 588 given back, 23 live
+  channels at once: 24 of 48, and 52 restarts of a server on one slot
+  channels: 609 made, 587 given back, 22 live
+  channels at once: 23 of 48, and 52 restarts of a server on one slot
+```
+
+Four counts in place of the four this milestone started with. The
+first line is the milestone in one sentence: **611 channels made, 588
+given back, 23 still here.** The second puts the number spent against
+the bound, which is the claim being made. The pool is 48 and nothing
+ever held more than 24 of them.
+
+**The shape of the line changed and that is the point.** Stage one
+printed `40 in use, 40 at once, of 48`, which is what a pool is
+normally asked. The interesting question about a channel is no longer
+how many there are, it is how many have been and gone, so the number
+made leads and the pool's own figures follow it. M19's two lines about
+names are the precedent for the shape: given out, given out again,
+live.
+
+**One identity and two floors, asserted as well as compared.** Made
+has to equal given back plus live, which ties three counters kept in
+three different places to each other: a channel that was made either
+went back or is still here. The number made has to exceed the pool
+size, or the line is measuring nothing. And the restarts have to name
+a slot the pool actually has.
+
+**The count of creations is taken under a lock.** Two cores can be
+making channels at once, and a counter that loses an increment is a
+number in a compared file that moves on its own, which is the failure
+M6's review named. It goes under the same lock the holds are counted
+under.
+
+**Section 8 gains the half it was missing.** It bought one property,
+that kernel memory is a function of the configuration rather than of
+the workload, and that property is worth nothing on its own: a pool
+that never takes an object back has a fixed footprint and still stops
+at a date set by its history. So the section now says what the size
+of a pool bounds, which is how many objects exist at one time and not
+how many may ever be made, and says the rule that makes it true for
+every type. The channel is written in as the exception that was, with
+what it cost and what it costs now.
+
+**Section 12 gains 12.8, a channel's lifetime**, which the
+specification never stated. Six things hold a channel and they are
+listed. The slot goes back when the last of them lets go and nobody
+is standing in it. An uncollected pulse is not a holder, and why. A
+channel outliving its owner is normal, which is section 12.5 seen
+from the object's side. And what the identifier guarantees against
+what a raw pointer does not, which is the rule the kernel's own paths
+had to learn in stage four.
+
+**Falsified two ways, and the second is weaker than it looks.** Not
+counting one create in a hundred fired `channels: 605 made against
+588 back and 23 live`, which is the identity doing its job. Taking
+stage six's loop out of the boot changed the compared line to `99
+made, 76 given back, 23 live` and the diff failed, but the assertion
+that the boot makes more channels than the pool holds did not fire:
+99 is already more than 48. That assertion is a floor against the day
+the boot stops exercising this at all, and the compared report is
+what actually catches a check going missing. It is written here
+rather than left to look stronger than it is.
 
 *Done when* a channel's slot comes back when nothing holds it, the boot
 spends more channels than the pool has and does not run out, a server

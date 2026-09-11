@@ -3590,6 +3590,14 @@ channel_hold_checks(void)
  */
 #define RESTART_ROUNDS      (SYS_MAX_CHANNELS + 4u)
 
+/*
+ * What the loop did, kept for the report at the end of the boot. A
+ * count of servers and the one slot they all took, per M20 stage
+ * seven.
+ */
+static uint32_t restarts_done;
+static uint32_t restarts_slot;
+
 /* How long the client left holding a dead server's channel waits. */
 #define RESTART_WAIT_MS     20u
 
@@ -3784,6 +3792,8 @@ restart_checks(void)
         panic("restarts: %u of %u servers answered",
           (unsigned int)served, (unsigned int)RESTART_ROUNDS);
     }
+    restarts_done = served;
+    restarts_slot = fresh;
     cnprintf("    %-38s %u, all on slot %u\n",
       "servers started, served and ended", (unsigned int)served,
       (unsigned int)fresh);
@@ -10076,6 +10086,7 @@ static uint32_t kernel_tables_at_start;
 
 /* One reading of the channel pool, per M20 stage one. */
 static struct channel_scan channel_report;
+
 static uint8_t pager_prio_seen;
 static bool pager_served_over_spinner;
 
@@ -16024,11 +16035,14 @@ kernel_main(void)
      * does too, and the fourth number is what the free could not
      * take: slots nothing names with somebody still standing in them.
      */
-    cnprintf("  channels: %u in use, %u at once, of %u, %u given "
-      "back\n", (unsigned int)channel_report.cs_used,
+    cnprintf("  channels: %u made, %u given back, %u live\n",
+      (unsigned int)channel_created, (unsigned int)channel_freed,
+      (unsigned int)channel_report.cs_used);
+    cnprintf("  channels at once: %u of %u, and %u restarts of a "
+      "server on one slot\n",
       (unsigned int)channel_report.cs_at_once,
       (unsigned int)channel_report.cs_of,
-      (unsigned int)channel_freed);
+      (unsigned int)restarts_done);
     cnprintf("  pulses that went with a channel: %u, of which %u of "
       "the reserved kind\n",
       (unsigned int)channel_pulses_discarded,
@@ -16049,6 +16063,38 @@ kernel_main(void)
      */
     if (channel_freed == 0) {
         panic("channels: not one slot went back in the whole boot");
+    }
+
+    /*
+     * Made, given back and live have to meet, which is the one
+     * statement that ties the three counters together: a channel
+     * that was made either went back or is still here. The counters
+     * are kept in three different places, so a mistake in any of
+     * them shows up here rather than as a plausible number in the
+     * report.
+     */
+    if (channel_created != channel_freed + channel_report.cs_used) {
+        panic("channels: %u made against %u back and %u live",
+          (unsigned int)channel_created, (unsigned int)channel_freed,
+          (unsigned int)channel_report.cs_used);
+    }
+
+    /*
+     * And the figure the milestone exists for. `SYS_MAX_CHANNELS`
+     * bounded how many channels a machine could ever make; what it
+     * bounds now is how many exist at one time. The assertion is
+     * that the boot has passed the old bound, because on the day it
+     * stops doing that this line stops meaning anything.
+     */
+    if (channel_created <= channel_report.cs_of) {
+        panic("channels: %u made, which is no more than the %u the "
+          "pool has", (unsigned int)channel_created,
+          (unsigned int)channel_report.cs_of);
+    }
+    if (restarts_slot >= channel_report.cs_of) {
+        panic("channels: the restarts named slot %u of %u",
+          (unsigned int)restarts_slot,
+          (unsigned int)channel_report.cs_of);
     }
     if (channel_report.cs_unreachable != 0) {
         panic("channels: %u slots are free in every sense and still "

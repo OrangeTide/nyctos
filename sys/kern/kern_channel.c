@@ -35,6 +35,19 @@ channel_create(const char *name, struct proc *owner)
         return NULL;
     }
 
+    /*
+     * Counted under the same lock the holds are counted under,
+     * because two cores can be making channels at once and a lost
+     * increment here is a number in the compared report that moves
+     * on its own.
+     */
+    {
+        intr_state_t s = objref_enter();
+
+        channel_created++;
+        objref_leave(s);
+    }
+
     ch->c_id = pool_id_of(channel_pool(), ch);
     ch->c_name = name;
     ch->c_owner = owner;
@@ -2652,6 +2665,7 @@ mark_channel(uint32_t *held, const struct channel *ch)
  * unreachable because that is what they are.
  */
 uint32_t channel_scans;
+uint32_t channel_created;
 uint32_t channel_freed;
 uint32_t channel_freed_in_kernel;
 uint32_t channel_pulses_discarded;
