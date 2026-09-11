@@ -743,8 +743,8 @@ buf_may_deliver(struct proc *from, struct proc *to, uintptr_t va, size_t len)
     return from->p_cohort != NULL && from->p_cohort == to->p_cohort;
 }
 
-sys_err_t
-channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
+static sys_err_t
+send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
   struct sys_msg *reply, uint64_t deadline)
 {
     struct thread *self = thread_current();
@@ -1324,6 +1324,36 @@ recv_inner(struct channel *ch, struct sys_msg *out,
          */
         s = md_intr_disable();
     }
+}
+
+/*
+ * And a send is the third way out, per M20 stage seven.
+ *
+ * Stage four wrapped the receive and the reply and said there were
+ * three. The third is a send that leaves without being served: a
+ * deadline that expires, a cancellation, an owner that died. The
+ * thread comes off the sender queue on all of those, and if nothing
+ * names the channel by then it was the last thing keeping the slot.
+ * Without this a channel whose holders all went while somebody was
+ * queued on it is given back when the sender is served and leaked
+ * when the sender gives up, which is the case nothing was asking
+ * about.
+ *
+ * Asked on the served path as well as the abandoned one, because the
+ * question is the same and one wrapper is cheaper to read than a
+ * branch. By identifier for the reason the receive gives: a send
+ * blocks, and what it comes back to may not be the channel it left.
+ */
+sys_err_t
+channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
+  struct sys_msg *reply, uint64_t deadline)
+{
+    sys_id_t id = ch->c_id;
+    sys_err_t err = send_inner(ch, cookie, req, reply, deadline);
+
+    channel_maybe_free(pool_lookup(channel_pool(), id));
+
+    return err;
 }
 
 /*
@@ -2930,6 +2960,8 @@ channel_scan(struct channel_scan *out)
     }
 
     out->cs_used = chans->used;
+    out->cs_made = channel_created;
+    out->cs_given_back = channel_freed;
     out->cs_at_once = chans->highwater;
     out->cs_of = chans->count;
     out->cs_unreachable = left;

@@ -12713,6 +12713,60 @@ the boot stops exercising this at all, and the compared report is
 what actually catches a check going missing. It is written here
 rather than left to look stronger than it is.
 
+**What the review found: writing 12.8 found a leak.** The section had
+to say what ends a channel, and saying it meant listing the ways a
+thread leaves one. There are three, the code's own comment says three,
+and only two of them ask whether the slot can go. A receive asks and a
+reply asks. **A send does not.** So a channel whose holders all went
+while a thread was queued on it is given back when that thread is
+served, and leaked when it gives up. A deadline, a cancellation, an
+owner that died: on all of those the thread comes off the queue and
+leaves the channel just as empty, and nothing was asking.
+
+Stage four did not find it because its check released the sender by
+receiving, which is the path that works. The check now builds the
+other one: a sender queues, its only handle is closed under it, nobody
+ever receives, and what gets it back is its own twenty millisecond
+deadline. The slot has to be there while it waits and gone once it has
+given up.
+
+The send is wrapped the way the receive and the reply are, around the
+whole operation rather than at each of its seven returns, and by
+identifier rather than by pointer for the reason stage four's review
+settled. Falsified by taking the wrapper's question out again:
+`holds: the slot stayed after the sender gave up`.
+
+**And it costs nothing measurable.** The wrapper is on every send,
+which is the hottest path in the kernel. The best round trip in the
+boot was 888 ticks, about 88 microseconds, before this and 875 ticks,
+about 87 microseconds, after. That is a question worth asking of any
+change to that path and the answer here is no.
+
+**Section 12.8 said the wrong thing about who holds a channel.** It
+listed six holders, put connections among the things read from lists
+when they are counted, and named the kernel's own references as a
+sixth. That last one is false and it is false in the direction that
+matters: a bare `struct channel *` holds nothing, prevents nothing,
+and the pointers the boot keeps are exactly what stage three found
+dangling. What keeps a pager's channel alive is the handle the kernel
+holds, not the pointer it reaches it through. The section now says two
+holders and three things that stand in it, and says plainly that a
+kernel pointer is neither.
+
+**Three numbers read at three moments, asserted to be an identity.**
+Made, given back and live were read from three places at three
+different times and required to add up. The scan already takes the
+pool's own figures inside its locked region so that they describe one
+moment; the two counters go in there with them. The identity is now a
+statement about an instant.
+
+**And a report line that said nothing when its check did not run.**
+The restart count and slot were asserted only against the pool size,
+and both default to zero, which is a slot the pool has. The count is
+now required to be the number of rounds the loop runs. Falsified by
+dropping the line that records it: `channels: 0 restarts in the
+report, not 52`.
+
 *Done when* a channel's slot comes back when nothing holds it, the boot
 spends more channels than the pool has and does not run out, a server
 can be restarted under its clients, and `SYS_MAX_CHANNELS` is a bound

@@ -260,7 +260,15 @@ void channel_listen(struct channel *ch, uint32_t depth);
  * printed above the compared line and never asserted.
  */
 struct channel_scan {
+    /*
+     * Made, given back and live, read inside the same region as the
+     * pool's own figures so that the three of them describe one
+     * moment. Asserted against each other in the report, which is
+     * a statement about an instant and not about three of them.
+     */
     uint32_t    cs_used;
+    uint32_t    cs_made;
+    uint32_t    cs_given_back;
     uint32_t    cs_at_once;
     uint32_t    cs_of;
     uint32_t    cs_unreachable;

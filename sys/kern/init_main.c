@@ -960,14 +960,17 @@ child_watch(struct child *c, struct proc *p)
 
 /*
  * How many sends give up in a boot, and from which of section 12.1's
- * two states. Two queued sends time out with nobody receiving, one
- * with nobody ever having received and one, from M20 stage five, with
- * a server that has been killed and no replacement coming. One client
- * gives up while a server holds its message, and one program does the
- * same with a buffer lent. Asserted because they are counts of what
- * the checks ask for and not of how fast the host is.
+ * two states. Three queued sends time out with nobody receiving: one
+ * with nobody ever having received, one from M20 stage five with a
+ * server that has been killed and no replacement coming, and one
+ * from that milestone's stage seven whose channel has no handles
+ * left at all, which is the case that proves a sender coming off the
+ * queue gives the slot back. One client gives up while a server
+ * holds its message, and one program does the same with a buffer
+ * lent. Asserted because they are counts of what the checks ask for
+ * and not of how fast the host is.
  */
-#define DEADLINE_QUEUED_EXPECTED    2u
+#define DEADLINE_QUEUED_EXPECTED    3u
 #define DEADLINE_WORKING_EXPECTED   3u
 
 static int32_t
@@ -3303,7 +3306,44 @@ hold_sender(void *arg)
     thread_exit(0);
 }
 
+/* How long the sender that is never served waits before giving up. */
+#define HOLD_GIVE_UP_MS     20u
+
+static volatile bool hold_gave_up;
+
+/*
+ * A sender that nobody will ever serve, per M20 stage seven's review.
+ * It queues, its handle is closed under it, and what gets it back is
+ * its own deadline rather than a server.
+ */
+static void
+hold_quitter(void *arg)
+{
+    struct sys_op_send_args tx;
+    sys_op_t send;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = 4;
+    memcpy(tx.request.inline_data, "gone", 4);
+    tx.deadline = time_now() + time_from_ms(HOLD_GIVE_UP_MS);
+
+    memset(&send, 0, sizeof(send));
+    send.opcode = SYS_OP_IPC_SEND;
+    send.target = (sys_handle_t)(uintptr_t)arg;
+    send.flags = SYS_OP_DEADLINE;
+    send.arg_ptr = (uintptr_t)&tx;
+    send.arg_len = sizeof(tx);
+
+    if ((sys_err_t)run_batch(&send, 1) != SYS_ERR_TIMEOUT) {
+        panic("holds: the sender nobody served did not give up");
+    }
+    hold_gave_up = true;
+    thread_exit(0);
+}
+
 static volatile bool hold_received;
+
 
 static void
 hold_receiver(void *arg)
@@ -3437,9 +3477,63 @@ channel_hold_checks(void)
     }
 
     /*
+     * And the same sender, let out the other way, per stage seven's
+     * review. Stage four proved the slot comes back when the sender
+     * is served. A sender that gives up comes off the same queue and
+     * leaves the channel just as empty, and until this check there
+     * was nothing asking on that path: the slot stayed for ever.
+     *
+     * Nobody receives here. What gets the sender back is the
+     * deadline it set itself.
+     */
+    {
+        sys_handle_t h;
+        sys_id_t id;
+        struct thread *t;
+        uint64_t until;
+
+        hold_ch = channel_create("quit", self);
+        if (hold_ch == NULL) {
+            panic("holds: no channel for the sender that gives up");
+        }
+        id = hold_ch->c_id;
+        expect("a send handle for a thread nobody will serve",
+          handle_insert(&self->p_handles, hold_ch, SYS_OBJ_CHANNEL,
+          SYS_RIGHT_SEND, &h), SYS_OK);
+
+        hold_gave_up = false;
+        t = thread_create("quitter", 20, hold_quitter,
+          (void *)(uintptr_t)h);
+        sched_ready(t);
+
+        wait_until(&hold_ch->c_senders, "the sender queueing to quit");
+
+        expect("closing the only handle under that one too",
+          handle_close(&self->p_handles, h), SYS_OK);
+        if (!slot_alive(id)) {
+            panic("holds: the slot went with a sender still queued");
+        }
+
+        until = time_now() + time_from_ms(JOIN_MS);
+        while (!hold_gave_up) {
+            if (time_now() > until) {
+                panic("holds: the sender never gave up");
+            }
+            sched_yield();
+        }
+
+        if (slot_alive(id)) {
+            panic("holds: the slot stayed after the sender gave up");
+        }
+        cnprintf("    %-38s %s\n",
+          "and when the sender gives up instead", "given back");
+    }
+
+    /*
      * A thread blocked receiving. Let out with a pulse, because a
      * message would need a handle to send and there are none.
      */
+
     {
         sys_handle_t h;
         sys_id_t id;
@@ -16036,7 +16130,8 @@ kernel_main(void)
      * take: slots nothing names with somebody still standing in them.
      */
     cnprintf("  channels: %u made, %u given back, %u live\n",
-      (unsigned int)channel_created, (unsigned int)channel_freed,
+      (unsigned int)channel_report.cs_made,
+      (unsigned int)channel_report.cs_given_back,
       (unsigned int)channel_report.cs_used);
     cnprintf("  channels at once: %u of %u, and %u restarts of a "
       "server on one slot\n",
@@ -16073,9 +16168,11 @@ kernel_main(void)
      * them shows up here rather than as a plausible number in the
      * report.
      */
-    if (channel_created != channel_freed + channel_report.cs_used) {
+    if (channel_report.cs_made !=
+      channel_report.cs_given_back + channel_report.cs_used) {
         panic("channels: %u made against %u back and %u live",
-          (unsigned int)channel_created, (unsigned int)channel_freed,
+          (unsigned int)channel_report.cs_made,
+          (unsigned int)channel_report.cs_given_back,
           (unsigned int)channel_report.cs_used);
     }
 
@@ -16086,10 +16183,21 @@ kernel_main(void)
      * that the boot has passed the old bound, because on the day it
      * stops doing that this line stops meaning anything.
      */
-    if (channel_created <= channel_report.cs_of) {
+    if (channel_report.cs_made <= channel_report.cs_of) {
         panic("channels: %u made, which is no more than the %u the "
-          "pool has", (unsigned int)channel_created,
+          "pool has", (unsigned int)channel_report.cs_made,
           (unsigned int)channel_report.cs_of);
+    }
+
+    /*
+     * And the restarts really happened. Without this the line says
+     * nothing when the check that produces it stops running: the
+     * count would read zero and the slot would read zero, which is
+     * a slot the pool has.
+     */
+    if (restarts_done != RESTART_ROUNDS) {
+        panic("channels: %u restarts in the report, not %u",
+          (unsigned int)restarts_done, (unsigned int)RESTART_ROUNDS);
     }
     if (restarts_slot >= channel_report.cs_of) {
         panic("channels: the restarts named slot %u of %u",
