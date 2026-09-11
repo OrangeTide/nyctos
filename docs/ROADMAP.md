@@ -581,6 +581,29 @@ mechanism is correct by count and unmeasurable by duration, and
 section 18's case rests where M6 left it until something with a real
 TLB runs this.
 
+**M20 made a channel's slot come back.** Every other pool in this
+system returned what it lent and this one never had: a boot ended with
+40 channels in use of 48 and a high-water mark of 40, which is what a
+pool nothing gives back to looks like. A channel is now counted, and
+its slot goes back when the last thing holding it lets go and nobody
+is standing in it. A boot makes 612 channels on a pool of 48 and gives
+589 back, holds at most 24 at once, and restarts a server 52 times on
+the same slot.
+
+Two things hold a channel, a handle and a connection, and three things
+stand in it without holding it: a thread queued to send, a thread
+blocked receiving and a thread inside a request. The count is checked
+against a walk of every handle table, connection, thread and slot,
+four times in a boot. A pointer the kernel keeps holds nothing, which
+is the part of this that is easy to get wrong and was got wrong in
+three checks before it was got right.
+
+`SYS_MAX_CHANNELS` is now a bound on how many channels exist at once
+rather than on how many may ever be made, which is what section 8
+claims for every pool and could not claim for this one. Section 8
+gained the half it was missing and section 12 gained a channel's
+lifetime, which it had never stated.
+
 Nothing has run on hardware, so every duration this project has
 published is the right shape and the wrong magnitude. The counts are not
 durations, which is why these milestones assert counts.
@@ -11928,6 +11951,19 @@ side of it is most of the work and the reason to do it in this order.
 
 **A channel is allocated once and lives until the machine stops.**
 
+**Done.** All seven stages are built. Section 23 says what it
+answered, what it cost, what the building kept finding, and what it
+left untested. The gap it closed was in the kernel and half of one in
+the specification: section 8 was incomplete rather than wrong, and
+section 12 had never said what ends a channel.
+
+A boot now makes 612 channels on a pool of 48 and gives 589 of them
+back. The high-water mark fell from 40 to 24, used ends below it for
+the first time in this system's life, and a server is restarted 52
+times on one slot. The counting costs nothing measurable on the
+rendezvous path: 888 ticks for the best round trip before the last
+wrapper went in and 875 after.
+
 Every other pool in this system returns what it lends. A process goes
 back at its reap, a thread with it, a connection when its last
 reference goes, a prepared program when its handle closes, a timer when
@@ -15526,7 +15562,197 @@ the claim is about all of them.
 
 ---
 
-## 23. Bring-Up Order Within M1
+## 23. Milestone 20, in Retrospect
+
+M20 set out to make a channel's slot come back. Every other pool in
+this system returned what it lent and this one never had: a boot ended
+with 40 channels in use of 48 and a high-water mark of 40, which is
+what a pool nothing gives back to looks like. M17 had already paid for
+it once, running out of channels in an unrelated check, and had
+written the sentence this milestone acted on. The mechanism was
+smaller than expected and the checks around it were not, which is now
+the fifth milestone to cost more to measure than to build.
+
+### 23.1 The Questions
+
+**Can all the holders be found?**
+
+Yes, and the walk says so four times a boot. The count the kernel
+keeps is compared against a walk of every process handle table, every
+connection, every thread and every slot: 10 tables, 32 connections, 32
+threads and 48 slots, about 57 microseconds warm and 767 the first
+time, with the kernel held. The four walks have never disagreed, and
+the falsification clause said that if they could not be made to agree
+nothing after stage two was safe to build.
+
+Two holders are counted and three more stand in a channel without
+being counted. A handle and a connection hold it; a thread queued to
+send, a thread blocked receiving and a thread inside a request stand
+in it and are read from the channel's own lists. What does not hold a
+channel is a pointer the kernel keeps, which stage three found out by
+freeing channels the boot still had pointers to.
+
+**Does the slot come back?**
+
+612 channels are made in a boot and 589 go back, against 40 made and
+none going back before this. **The high-water mark fell from 40 to
+24**, which is what the pool would have to be sized for, and used ends
+below it for the first time in this system's life.
+
+**Is `SYS_MAX_CHANNELS` a bound on how many exist at once?**
+
+Yes. The boot makes 612 channels on a pool of 48, 512 of them in one
+check that holds eight at a time and runs sixty-four times, and the
+pool comes back to where it started after every cycle. A server is
+restarted 52 times, four more than the pool has slots, every one of
+them on the same slot.
+
+**What does the counting cost on the path that cannot afford one?**
+
+Nothing measurable. The count is a branch in the handle retain and
+release path, which four other types already take, and one question at
+the end of a receive, a reply and a send. The send is the hot one: the
+best round trip in the boot was 888 ticks before that wrapper and 875
+after, which is inside the run-to-run spread. What it cost in space is
+13 to 20 kilobytes of text, almost all of it the checks, and 512 bytes
+of bss.
+
+**Was section 8 wrong?**
+
+Not wrong, incomplete, and the gap was the whole milestone. It bought
+one property, that kernel memory is a function of the configuration
+and not of the workload, and that property is worth nothing on its
+own: a pool that never takes an object back has a fixed footprint and
+still stops at a date set by its history. Section 8 now states the
+half it was missing, that a pool's size bounds how many objects exist
+at one time and not how many may ever be made, and names the channel
+as the exception that was. Section 12 gained 12.8, which says what a
+channel's lifetime is and what ends it, and which the specification
+had never said anywhere.
+
+### 23.2 What It Cost
+
+**Fifteen commits, eleven files, 3521 lines added and 35 removed**,
+of which 2293 are code, 1218 are documentation and ten are the
+compared reports.
+
+**Three fifths of the code is the measurement.** `init_main.c`
+accounts for 1379 of those lines against 762 in `kern_channel.c` and
+152 across two headers, `kern_objref.c` and `kern_lock.c`. The
+mechanism is a count on the channel, two functions to move it, one to
+ask whether the slot can go, and three wrappers. The rest is the walk
+that checks the count and the seven stages of checks that exercise it.
+
+**13 to 20 kilobytes of text**, 415954 to 429220 on riscv64 at Tier 0
+and 549860 to 570068 on aarch64 at Tier 2, the larger figures being
+the tier that runs more of the checks.
+
+**About 512 bytes of bss** at every configuration: a hold count on
+each of 48 channels, six counters, and one reading of the pool kept
+for the report.
+
+**Two lines in the compared report** in place of one, and they are the
+same paced and burst at each tier.
+
+**About half a second of boot**, 11.4 to 11.6 seconds to 12.0 to 12.1
+on riscv64 measured on the burst session, most of it the 52 spawns and
+kills of the restart loop and 63 milliseconds of the 512-channel loop.
+The aarch64 burst session finishes inside the harness's fixed
+five-second tail at both revisions and says nothing about this.
+
+### 23.3 What the Building Kept Finding
+
+**Checks that read through a pointer the check is about.** Three
+separate times: both wrappers held a channel pointer across an
+operation that blocks, the restart loop read a hold count through the
+pointer it had kept, and the same pattern would have reported a pass
+in exactly the case each was built to detect. The rule this milestone
+leaves behind is that a path which frees objects must hold identifiers
+and not pointers across anything that can block, and that a check for
+a premature free is the last place to read through a raw pointer.
+
+**Assertions that could not fail.** Stage six asserted that the
+channels it had spent equalled the cycles times the number per cycle,
+which is arithmetic. Stage three's check that a recycled slot comes
+back empty could not be falsified at all, because taking the clear out
+of `pool_alloc` stops the boot thousands of lines earlier. Both are
+written down as what they are rather than counted as checks.
+
+**Checks that could not fail because an earlier one fires first.**
+Stage six's two obvious falsifications, removing the free and leaking
+one in sixteen, were both caught by stage four's four-channel check
+long before a five-hundred-channel loop saw them. To falsify stage six
+at all the defect had to be scoped to the channels it spends. That is
+the checks working, and it is worth knowing that a later stage's
+falsification may say more about an earlier stage than about itself.
+
+**A list that loops, found by bounding a walk.** The console channel's
+serving list pointed at itself, because a thread that takes a second
+request on a channel it is already serving is put on the list twice.
+The first version of the walk did not come back and printed nothing; a
+walk bounded by the number of threads in the machine panicked with
+which list it was on. A diagnostic that hangs is worse than one that
+says what it found.
+
+**A defect found by writing the specification.** Section 12.8 had to
+list the ways a thread leaves a channel. There are three, the code's
+own comment said three, and only two of them asked whether the slot
+could go. A channel whose holders all went while a thread was queued
+on it was given back when that thread was served and leaked when it
+gave up. Nothing in five stages of checks had looked, because stage
+four released its sender by receiving, which is the path that works.
+
+**Exclusion that interrupts-off does not buy.** Stage three's free
+tested three lists and a pulse count with interrupts off and nothing
+else, on a kernel thread that holds none of the kernel's exclusion, so
+the other core could have been putting a thread on one of the lists
+being tested. The test and the free now happen under the kernel lock,
+and so does the walk.
+
+### 23.4 What Is Still Untested
+
+**A channel freed on one core while another is inside it.** Every
+wrapper holds an identifier across the block precisely for this, and
+nothing in this boot exercises the window. The same is true of stage
+three's lock guard: it exists for a path that will exist.
+
+**Giving a slot back from inside a system call.** One of 589 frees in
+a boot happens on a core already holding the kernel lock, and that one
+arrived only with the send wrapper added in the last review. Before
+it, the count was zero, and the branch that does not take the lock was
+never taken.
+
+**The cross-channel form of the double-serving limitation.** A thread
+serving one channel that takes a request on another does not happen in
+this boot, and the count of serving entries left behind is zero in all
+eight combinations of port, tier and mode. If it did happen it would
+be worse than a stale name: `t_serve_next` is one field shared by
+every serving list, so the first list would run into the second.
+
+**A kill that is accepted and does nothing.** Killing a process whose
+thread is ready and has never run leaves it alive: the mark is set,
+nothing is blocked to cancel, and the thread then runs and blocks in a
+receive that never asks whether its process is dying. Measured, not
+fixed, and not this milestone's to fix.
+
+**A channel held by a connection kept for reaping.** A server that
+dies with uncollected connections leaves a channel those connections
+hold and nothing will ever collect. The end-of-boot assertions do not
+see it, because holds is above zero and the slot counts as reachable.
+It shows only as a slot still in use.
+
+**Pool exhaustion under work.** The boot proves it can spend 612
+channels on 48 slots. What a system does when it is short of channels
+while doing something other than proving it can run out is not
+answered, and the check that would answer it is the one M17 hit by
+accident.
+
+**More than two cores, and real hardware.** Every count here comes
+from `-smp 2` under an emulator.
+
+---
+
+## 24. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -15570,7 +15796,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 24. Ordering: What Is Forced and What Is Chosen
+## 25. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -15601,7 +15827,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 25. What Would Change This Plan
+## 26. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -15648,7 +15874,7 @@ else.
 
 ---
 
-## 26. Deliberately Not Scheduled
+## 27. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

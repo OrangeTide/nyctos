@@ -30,7 +30,60 @@ than hidden, and it narrows one stage at a time.
 
 ## Status
 
-**Milestone 19 is done: every address space has a name the hardware
+**Milestone 20 is done: a channel's slot comes back.** Every other
+pool in this system returned what it lent and this one never had. A
+boot ended with 40 channels in use of 48 and a high-water mark of 40,
+which is not a pool being used carefully, it is a pool nothing gives
+back to. `SYS_MAX_CHANNELS` bounded how many channels the machine
+could ever make, and a system that restarts a server once an hour for
+a week was a system that had run out.
+
+```
+                        made in a boot    at once, of 48    given back
+  before                            40                40             0
+  after                            612                24           589
+```
+
+**Two things hold a channel and three things stand in it.** A handle
+in any process's table and a connection opened over it hold it, and
+are counted. A thread queued to send, a thread blocked receiving and a
+thread inside a request stand in it, and are read from the channel's
+own lists. The slot goes back when the last holder lets go and nobody
+is standing in it, which means the question has to be asked again on
+the way out of a receive, a reply and a send, because any of the three
+can be what lets the last one out. A pointer the kernel keeps holds
+nothing at all.
+
+The count is not taken on trust. Four times in a boot it is compared
+against a walk of every process handle table, every connection, every
+thread and every slot, with the kernel held: 10 tables, 32
+connections, 32 threads and 48 slots, about 57 microseconds warm. The
+four walks have never disagreed.
+
+**The boot spends more channels than the pool has, on purpose.** One
+check holds eight at a time and runs sixty-four times, 512 channels on
+48 slots, taking the same eight slots every cycle on later
+generations. Another restarts a server 52 times, four more than the
+pool has, every one of them on the same slot, with a client sending
+and being answered across each restart. The pool is where it started
+after every cycle.
+
+**And it costs nothing measurable on the rendezvous path.** The last
+of the three questions went into the send, which is the hottest path
+in the kernel. The best round trip in the boot was 888 ticks before it
+and 875 after.
+
+Section 8 of the design bought one property, that kernel memory is a
+function of the configuration and not of the workload, and that is
+worth nothing on its own: a pool that never takes an object back has a
+fixed footprint and still stops at a date set by its history. It now
+says the half it was missing, that a pool's size bounds how many
+objects exist at one time and not how many may ever be made. Section
+12.8 is new and says what a channel's lifetime is and what ends it,
+which the specification had never stated.
+
+**Milestone 19 is done:
+ every address space has a name the hardware
 knows, and a dispatch into another one no longer discards what the
 machine had learned.** Both architectures have a field for it. riscv64
 was writing zero into an identifier it already carried, so every space
@@ -1121,6 +1174,23 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - Collecting departed peers is written for more than one draining thread
   and has only been run with one, and every collection, notice and
   displacement measured here happens on the core the event happened on.
+- A channel held by a connection kept for reaping is never collected.
+  A server that dies with uncollected connections on its channel
+  leaves those connections holding it, and nothing will ever collect
+  them. The end-of-boot checks do not see it, because the channel has
+  holders and counts as reachable; it shows only as a slot still in
+  use.
+- Nothing here frees a channel on one core while another core is
+  inside it. Every path that can block holds an identifier across the
+  block and looks it up again afterwards, precisely so that a slot
+  which went in the meantime reads as gone rather than as its
+  successor. That window is never entered in this boot, and neither is
+  the branch that takes the kernel lock when the free arrives from a
+  thread that does not hold it.
+- One of 589 channel frees in a boot happens on a core already inside
+  the kernel. Until the send learned to ask, the count was zero, so
+  the path a real system will use most is the one with a single
+  sample behind it.
 - Both ports assign address space identifiers now, and a dispatch into
   another address space no longer discards anything: 5472 switches in a
   boot, 10 of them a flush on riscv64 and none on aarch64. What that
@@ -1149,7 +1219,7 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). Nineteen milestones are
+See [docs/ROADMAP.md](docs/ROADMAP.md). Twenty milestones are
 finished. The plan as written ran to ten; each milestone since was
 chosen after the last one ended, out of what it left open: a question
 only half answered, or a limitation this file had been carrying. What
