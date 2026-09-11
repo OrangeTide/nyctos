@@ -13086,6 +13086,47 @@ because the contract says so and because a first dispatch from inside
 the kernel would need it, not because anything here demonstrates it,
 and it is written down as that rather than counted as a check.
 
+**What the review found: the mark was read outside the lock.** The
+check read `p_dying` first and took the kernel lock afterwards, only
+to end the thread. Every other reader of the mark reads it with the
+lock held, and the order matters here more than anywhere: `proc_kill`
+writes the mark and then reads the thread's state, declining to poke
+one it finds ready, while this reads the mark after the thread has
+been made running. Two cores each storing and then loading is the one
+shape that can leave both reading the old value. The kill sends no
+poke because it sees a ready thread, the trampoline sees no mark and
+goes to user mode, and the thread runs on with nothing left to stop
+it, which is the defect this milestone exists to remove arriving
+again by a different route.
+
+The lock is taken first and the mark read under it, which is an
+acquire against the release that put the lock down. Reasoned rather
+than observed: a store buffer losing a kill is not something a check
+can provoke on demand, and the fix is the ordering rather than a
+number.
+
+**What that pairing does not cover.** It orders this against a kill
+written inside the kernel, which is every kill a program makes.
+`proc_kill` can also be called straight from a kernel thread, which
+holds interrupts off and nothing else, and one check in M17 does
+exactly that. Against that caller the mark is ordered by nothing.
+Making `proc_kill` take the lock is not a safe change to make in
+passing, because it calls `sched_undefer`, which can switch, and what
+a thread holds when it is resumed is a convention this review is not
+going to extend on the way past. It is the same residue M20 stage
+three recorded and it is written down rather than closed.
+
+**What the lock costs on the first dispatch of every thread.** Every
+program start now takes it, 2557 times in a boot. Five burst runs
+either side put the boot at 12.17 to 12.32 seconds with it and 11.99
+to 12.37 without, so it is not separable from a spread of about four
+tenths of a second on this host. At Tier 0 the lock is nothing at
+all and the check compiles to the mark test.
+
+**And the call sites said `false` and `true`.** Which trampoline a
+thread is on is now said by passing the counter it belongs to, so the
+call reads as what it does.
+
 **3. The mark before an entry, and not only after it.** *Planned.*
 
 - *Check.* A marked thread does not begin an operation. Entries

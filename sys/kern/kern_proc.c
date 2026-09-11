@@ -568,29 +568,57 @@ proc_load(struct proc *p, const struct boot_member *m)
  * on, not a new one.
  */
 static void
-exit_before_user(bool made)
+exit_before_user(uint64_t *which)
 {
     const struct thread *t = thread_current();
     const struct proc *p = (t != NULL) ? t->t_proc : NULL;
+    intr_state_t s = 0;
+    bool held;
 
-    if (p == NULL || !p->p_dying) {
+    if (p == NULL) {
         return;
     }
 
-    if (klock_held()) {
-        proc_unrun_locked++;
-    } else {
-        (void)klock_enter();
+    /*
+     * The lock first and the mark second, which is the order every
+     * other reader of the mark uses and the order that makes this
+     * answer mean something.
+     *
+     * Reading it first is a store buffer away from losing a kill
+     * altogether. `proc_kill` writes the mark and then reads the
+     * thread's state, declining to poke one it finds ready; this
+     * reads the mark after the thread has been made running. Two
+     * cores each storing and then loading is the one shape that can
+     * leave both reading the old value: the kill sees a ready thread
+     * and sends no poke, this sees no mark and goes to user mode,
+     * and the thread runs on with nothing left to stop it. Taking
+     * the lock is an acquire against the release that put it down,
+     * so the two are ordered instead of racing.
+     *
+     * Which pairs with a kill that was written inside the kernel,
+     * and that is every kill a program makes. `proc_kill` can also
+     * be called from a kernel thread, which holds nothing but
+     * interrupts off, and against that caller this is ordered by
+     * nothing. That is the same residue M20 stage three recorded for
+     * the same reason and it is not closed here.
+     */
+    held = klock_held();
+    if (!held) {
+        s = klock_enter();
     }
 
-    if (made) {
-        proc_unrun_threads++;
-    } else {
-        proc_unrun_programs++;
+    if (p->p_dying) {
+        if (held) {
+            proc_unrun_locked++;
+        }
+        (*which)++;
+        proc_exit_if_dying();
+        panic("proc: a killed thread came back from its own exit");
     }
 
-    proc_exit_if_dying();
-    panic("proc: a killed thread came back from its own exit");
+    if (!held) {
+        klock_exit(s);
+    }
 }
 
 /*
@@ -607,7 +635,7 @@ proc_user_start(void *arg)
 
     (void)arg;
     intr_region_end((uintptr_t)__builtin_return_address(0));
-    exit_before_user(false);
+    exit_before_user(&proc_unrun_programs);
     enter_user(p->p_entry, (void *)p->p_startup_va, 0);
 }
 
@@ -1533,7 +1561,7 @@ proc_thread_start(void *arg)
 
     (void)arg;
     intr_region_end((uintptr_t)__builtin_return_address(0));
-    exit_before_user(true);
+    exit_before_user(&proc_unrun_threads);
     enter_user(t->t_uentry, (void *)t->t_uarg, t->t_ustack);
 }
 
