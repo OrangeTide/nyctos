@@ -3979,16 +3979,20 @@ restart_checks(void)
  * So this holds several at once and does it over and over. Eight
  * alive together, sixty-four times, which is more cycles than the
  * pool has slots and more than ten times as many channels as exist.
- * The assertion with teeth is the high-water mark: the first cycle
- * sets it, and no cycle after it may move it. A pool that handed out
- * a fresh slot each time while freeing the old ones would climb, and
- * so would one that leaked a fraction.
+ * What is asserted is the pool back where it started after every
+ * cycle, the same slots each time on later generations, the number
+ * the kernel counted out against the number counted back, and the
+ * high-water mark. The mark covers the one thing the others cannot:
+ * a peak reached inside a cycle and gone again by the end of it.
  *
  * Every channel here is closed down two different ways, because
  * there are two orders and they take different paths through the
  * free. Closing the receive handle first leaves the connection
  * holding the slot; closing the send handle first leaves the handle
  * holding it. Either way the last one out is what gives it back.
+ * Which order a channel gets turns on the cycle as well as on its
+ * place in it, so that every slot sees both and not only the one its
+ * position would always give it.
  */
 #define SPEND_CYCLES      (SYS_MAX_CHANNELS + 16u)
 #define SPEND_AT_ONCE     8u
@@ -4025,6 +4029,7 @@ channel_endurance_checks(void)
     uint32_t base = channel_pool()->used;
     uint32_t first[SPEND_AT_ONCE];
     uint64_t seen[SPEND_AT_ONCE];
+    uint32_t gave_back = channel_freed;
     uint32_t peak = 0;
     uint32_t spent = 0;
     uint32_t cycle, i;
@@ -4083,6 +4088,16 @@ channel_endurance_checks(void)
          */
         sort_slots(slot, gen, SPEND_AT_ONCE);
         for (i = 0; i < SPEND_AT_ONCE; i++) {
+            /*
+             * Distinct, which is the one failure the comparison
+             * below cannot see on the cycle it happens: a pool that
+             * handed the same slot to two live channels would give
+             * the first cycle a set the later ones matched.
+             */
+            if (i > 0 && slot[i] == slot[i - 1]) {
+                panic("spent: slot %u came out twice on cycle %u",
+                  (unsigned int)slot[i], (unsigned int)cycle);
+            }
             if (cycle == 0) {
                 first[i] = slot[i];
                 seen[i] = gen[i];
@@ -4102,8 +4117,9 @@ channel_endurance_checks(void)
         }
 
         for (i = 0; i < SPEND_AT_ONCE; i++) {
-            sys_handle_t a = (i & 1u) == 0 ? recv[i] : send[i];
-            sys_handle_t b = (i & 1u) == 0 ? send[i] : recv[i];
+            bool handle_last = ((i + cycle) & 1u) == 0;
+            sys_handle_t a = handle_last ? send[i] : recv[i];
+            sys_handle_t b = handle_last ? recv[i] : send[i];
 
             if (handle_close(ht, a) != SYS_OK) {
                 panic("spent: a handle was already gone on cycle %u",
@@ -4140,9 +4156,18 @@ channel_endurance_checks(void)
 
     took = time_now() - started;
 
-    if (spent != SPEND_CYCLES * SPEND_AT_ONCE) {
-        panic("spent: %u channels, not %u", (unsigned int)spent,
-          (unsigned int)(SPEND_CYCLES * SPEND_AT_ONCE));
+    /*
+     * Made against given back, which is the assertion the count of
+     * cycles cannot make: `spent` is incremented beside the create
+     * and can only ever be what the loop bounds say, so asserting it
+     * asserts arithmetic. What the kernel counted on the way out is
+     * a different number arrived at by a different path, and the two
+     * have to meet.
+     */
+    gave_back = channel_freed - gave_back;
+    if (gave_back != spent) {
+        panic("spent: %u channels made and %u slots given back",
+          (unsigned int)spent, (unsigned int)gave_back);
     }
 
     /*
@@ -4158,7 +4183,10 @@ channel_endurance_checks(void)
     cnprintf("    %-38s %u, from the first cycle on\n",
       "the high-water mark", (unsigned int)peak);
     cnprintf("    %-38s %u, where it started\n",
-      "slots in use after all of it", (unsigned int)base);
+      "slots in use after all of it",
+      (unsigned int)channel_pool()->used);
+    cnprintf("    %-38s %u, every one of them\n",
+      "slots the kernel counted back", (unsigned int)gave_back);
     cnprintf("    %-38s about %lu us, %lu us a channel\n",
       "what the whole of it took",
       (unsigned long)(took * 1000000ULL / time_hz()),

@@ -12594,6 +12594,48 @@ back to where it started after each cycle. The high-water assertion
 earns its place on the one thing that assertion cannot see: a peak
 reached inside a cycle and gone by the end of it.
 
+**What the review found: an assertion that was arithmetic.** The loop
+asserted that the number of channels it had spent equalled the number
+of cycles times the number per cycle. The counter is incremented on
+the line after the create, so it can only ever be what the loop bounds
+say, and the assertion was checking that multiplication works. It is
+replaced by the count the kernel keeps of slots given back, read
+before and after and required to equal the number made. That is a
+different number arrived at down a different path, and 512 out means
+512 back.
+
+Falsified by not counting one free in a hundred: `spent: 512 channels
+made and 507 slots given back`. Nothing else in the boot notices,
+because the slots really do come back; what is wrong is the number the
+compared report prints.
+
+**A duplicate the comparison could not see.** The eight slots a cycle
+takes are compared against the first cycle's eight, which catches a
+pool that hands out the wrong slots. It does not catch a pool that
+hands out the same slot twice, because a set with a duplicate in it on
+the first cycle is the set every later cycle is measured against. The
+sorted slots are now required to be distinct, which is the worst
+failure this pool could have and was the one thing the check assumed.
+
+Falsified by handing one channel slot out twice without taking it off
+the free list: `spent: slot 16 came out twice on cycle 2`. Doing the
+same to whichever pool happened to be next, which turned out to be the
+connection pool, fired `spent: the slot outlived both its handles on
+cycle 1` instead, from the hold that was then released once too few.
+
+**Every slot saw one order and only one.** The two close orders
+alternated on the position in the cycle, and the slots come back in a
+fixed order, so slot X closed handle-first on all sixty-four cycles
+and slot Y connection-first on all sixty-four. Half the coverage the
+comment claimed. The order now turns on the cycle as well as the
+position.
+
+**And the report printed the wrong variable.** The line reading slots
+in use after all of it printed the value read before the loop. It was
+true, because the assertion after every cycle makes it true, but a
+report line that prints an assumption rather than a reading says
+nothing. It reads the pool.
+
 **7. What it cost, and sections 8 and 12 written around it.** *Planned.*
 
 - *Check.* The figures as counts: slots reclaimed in a boot, the
