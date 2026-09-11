@@ -12255,6 +12255,43 @@ goes back, so a pointer somebody kept reads as an unnamed channel
 rather than as the one that used to be there. The generation is what
 makes a handle safe; nothing makes a raw pointer safe.
 
+**What the review found.** The free tested the three lists and the
+pulse count with interrupts off and nothing else, and then gave the
+slot back. Interrupts off says nothing about the other core. Every one
+of the eighteen frees in this boot happens on a kernel thread, which
+never entered the kernel and so holds none of its exclusion, so the
+other core could have been inside a rendezvous putting a thread on one
+of the lists being tested. The test and the free now happen under the
+kernel lock, and so does stage one's walk.
+
+**Taken only if this core does not already hold it.** A call arriving
+from a vector already has the lock and taking it twice is refused
+rather than deadlocked, so the question has to be asked; `klock_held`
+is no longer private to `kern_lock.c`. How often that matters is now
+printed, and the answer in this boot is never: **0 of 18 slots go back
+from inside a system call.** The branch exists for the path that will
+exist and nothing here exercises it.
+
+**A hazard was looked for and is not there.** Five fields of `struct
+channel` were never written at creation, and M18's own comment
+predicted that this would matter the day a slot came back, which is
+this stage. It does not. `pool_alloc` clears every object it hands
+out, every time and not only the first, so a recycled slot arrives as
+zero exactly as a fresh one does. The field that would have been felt
+is `c_pulse_lost`: a channel can be freed with it set, and the next
+occupant would have told its server it had missed something that
+happened before it existed.
+
+The five fields are written now anyway, so that a reader of
+`channel_create` can see what a channel starts as without knowing what
+the pool does with the memory first, and a check on the reused slot
+asserts it comes back with no pulses, no lost flag and no lists. That
+check could not be falsified: taking the clear out of `pool_alloc`
+stops the boot at the clock check, several thousand lines of output
+before this. It is a guard against a future change to the pool rather
+than a test of anything this stage built, and it is worth having on
+those terms.
+
 **4. What must not be freed under somebody.** *Planned.*
 
 - *Check.* Four constructions, each dropping every handle and asserting

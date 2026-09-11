@@ -121,7 +121,7 @@ spin_unlock(struct spinlock *l)
  */
 static struct spinlock kernel_lock = { 0, 0, "kernel" };
 
-static bool
+bool
 klock_held(void)
 {
     return spin_held(&kernel_lock);

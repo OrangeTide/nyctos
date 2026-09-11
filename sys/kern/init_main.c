@@ -3368,6 +3368,33 @@ channel_checks(void)
           "the slot a channel gave back", (unsigned int)index,
           (unsigned long)gen, (unsigned long)sys_id_gen(b->c_id));
 
+        /*
+         * And it comes back empty, which is `pool_alloc` clearing
+         * every object it hands out rather than anything this
+         * milestone does. The check is here because that is the load
+         * bearing part: the day a pool stops clearing a recycled
+         * slot, the field that would be felt first is the flag saying
+         * a pulse was lost, and a fresh channel would tell its server
+         * it had missed something that happened before it existed.
+         */
+        if (b->c_pulse_count != 0 || b->c_pulse_users != 0 ||
+          b->c_pulse_head != 0 || b->c_pulse_lost) {
+            panic("channels: a reused slot came back with %u pulses, "
+              "%u of them a user's, head %u, lost %s",
+              (unsigned int)b->c_pulse_count,
+              (unsigned int)b->c_pulse_users,
+              (unsigned int)b->c_pulse_head,
+              b->c_pulse_lost ? "yes" : "no");
+        }
+        if (b->c_serving != NULL || b->c_senders != NULL ||
+          b->c_receivers != NULL || b->c_conns != NULL ||
+          b->c_bounded || b->c_reaping) {
+            panic("channels: a reused slot came back with somebody "
+              "else's lists");
+        }
+        cnprintf("    %-38s %s\n", "the state it came back with",
+          "empty");
+
         expect("a handle on the one that took its place",
           handle_insert(&self->p_handles, b, SYS_OBJ_CHANNEL,
           SYS_RIGHT_RECV, &h), SYS_OK);
@@ -14972,6 +14999,10 @@ kernel_main(void)
           "slots nothing names and nothing frees",
           (unsigned int)cs.cs_stuck,
           cs.cs_stuck_name != NULL ? cs.cs_stuck_name : "none");
+        cnprintf("    %-38s %u of %u\n",
+          "slots given back from inside the kernel",
+          (unsigned int)channel_freed_in_kernel,
+          (unsigned int)channel_freed);
         channel_report = cs;
     }
 

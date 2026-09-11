@@ -38,21 +38,42 @@ channel_create(const char *name, struct proc *owner)
     ch->c_id = pool_id_of(channel_pool(), ch);
     ch->c_name = name;
     ch->c_owner = owner;
+    /*
+     * Every field, said rather than inherited, and none of it
+     * required.
+     *
+     * M18 wrote four of these with a note that nothing had ever
+     * needed writing, because a channel is never released and a pool
+     * slot starts as zero, and that this would stop being true the
+     * day a slot came back. M20 stage three is that day and the note
+     * turns out to be wrong about why: `pool_alloc` clears the object
+     * it hands out, every time and not only the first, so a recycled
+     * slot arrives as zero exactly as a fresh one does.
+     *
+     * The state that would have been felt if it did not is
+     * c_pulse_lost. A channel that had a pulse dropped and then
+     * evicted the last one it was holding can go with that flag set,
+     * and the next occupant would tell its server it had missed
+     * something that happened before it existed. That is what the
+     * check on a reused slot is for, and it passes because of the
+     * clear rather than because of these lines.
+     *
+     * They stay because a reader of this function should be able to
+     * see what a channel starts as without knowing what the pool does
+     * with the memory first.
+     */
     ch->c_senders = NULL;
     ch->c_receivers = NULL;
+    ch->c_serving = NULL;
     ch->c_holds = 0;
-
-    /*
-     * And what M18 added, said rather than inherited. Nothing here has
-     * ever needed writing, because a channel is never released and a
-     * pool slot starts as zero; that stops being true with section
-     * 18.2's teardown, and a field set at creation is one less thing
-     * for it to remember.
-     */
     ch->c_conns = NULL;
     ch->c_reaping = false;
     ch->c_depth = 0;
     ch->c_bounded = false;
+    ch->c_pulse_head = 0;
+    ch->c_pulse_count = 0;
+    ch->c_pulse_users = 0;
+    ch->c_pulse_lost = false;
 
     return ch;
 }
@@ -2332,15 +2353,42 @@ channel_hold(struct channel *ch)
 static void
 channel_free_if_idle(struct channel *ch)
 {
-    intr_state_t s = md_intr_disable();
-    bool idle = ch->c_senders == NULL && ch->c_receivers == NULL &&
-      ch->c_serving == NULL && ch->c_pulse_count == 0;
+    intr_state_t s;
+    intr_state_t ks = 0;
+    bool took = false;
+    bool under_lock;
+    bool idle;
 
+    /*
+     * Under the kernel's exclusion, and taken here only if this core
+     * does not already have it.
+     *
+     * Every call that arrives from a vector holds it, and a kernel
+     * thread closing a handle does not: the boot closes handles
+     * directly, and without this the test and the free would run on
+     * one core while the other was inside a rendezvous putting a
+     * thread on one of the lists being tested. Taking a lock this
+     * core already holds is refused rather than deadlocked, so the
+     * question has to be asked.
+     */
+    under_lock = klock_held();
+    if (!under_lock) {
+        ks = klock_enter();
+        took = true;
+    }
+
+    s = md_intr_disable();
+    idle = ch->c_senders == NULL && ch->c_receivers == NULL &&
+      ch->c_serving == NULL && ch->c_pulse_count == 0;
     md_intr_restore(s);
 
     if (!idle) {
+        if (took) {
+            klock_exit(ks);
+        }
         return;
     }
+
 
     /*
      * The name goes first so that a pointer somebody kept says "?"
@@ -2352,9 +2400,16 @@ channel_free_if_idle(struct channel *ch)
     ch->c_name = NULL;
     ch->c_owner = NULL;
     channel_freed++;
+    if (under_lock) {
+        channel_freed_in_kernel++;
+    }
 
     if (!pool_free(channel_pool(), ch->c_id)) {
         panic("channel: a slot refused to go back");
+    }
+
+    if (took) {
+        klock_exit(ks);
     }
 }
 
@@ -2462,6 +2517,7 @@ mark_channel(uint32_t *held, const struct channel *ch)
  */
 uint32_t channel_scans;
 uint32_t channel_freed;
+uint32_t channel_freed_in_kernel;
 uint64_t channel_scan_first_ns;
 
 void
@@ -2474,7 +2530,8 @@ channel_scan(struct channel_scan *out)
     uint32_t held[SYS_MAX_CHANNELS];
     uint32_t serving[SYS_MAX_CHANNELS];
     intr_state_t is;
-    intr_state_t ks;
+    intr_state_t ks = 0;
+    bool took = false;
     uint64_t t0, t1;
     uint32_t i;
     uint32_t left = 0;
@@ -2513,7 +2570,10 @@ channel_scan(struct channel_scan *out)
      */
     t0 = time_now();
     is = md_intr_disable();
-    ks = klock_enter();
+    if (!klock_held()) {
+        ks = klock_enter();
+        took = true;
+    }
 
     for (i = 0; i < procs->count; i++) {
         const struct proc *p;
@@ -2729,7 +2789,9 @@ channel_scan(struct channel_scan *out)
     out->cs_conns = conns->count;
     out->cs_threads = threads->count;
 
-    klock_exit(ks);
+    if (took) {
+        klock_exit(ks);
+    }
     md_intr_restore(is);
     t1 = time_now();
 

@@ -104,6 +104,17 @@ intr_state_t klock_enter(void);
 void klock_exit(intr_state_t saved);
 
 /*
+ * Whether this core is already inside the kernel's exclusion.
+ *
+ * For a caller that may arrive either way and has to hold it either
+ * way: taking a lock this core already holds is refused rather than
+ * deadlocked, so the caller has to ask. Everything that enters from a
+ * vector holds it and every kernel thread does not, which is the
+ * distinction that makes the question worth asking at all.
+ */
+bool klock_held(void);
+
+/*
  * Put down where this core stops running and picked up where it starts
  * again, at a context switch and around the idle wait.
  *
@@ -125,6 +136,7 @@ void klock_regain(bool had);
 #else
 
 #define klock_enter()           ((intr_state_t)0)
+#define klock_held()            (false)
 #define klock_exit(saved)       ((void)(saved))
 #define klock_drop()            (false)
 #define klock_regain(had)       ((void)(had))

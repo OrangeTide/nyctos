@@ -296,6 +296,15 @@ extern uint32_t channel_scans;
 /* How many slots have gone back to the pool, per M20 stage three. */
 extern uint32_t channel_freed;
 
+/*
+ * How many of those happened on a core that was already inside the
+ * kernel's exclusion, which is every call arriving from a vector. The
+ * rest came from a kernel thread, which holds nothing and has to take
+ * it. Counted because the two paths differ and only one of them is
+ * obvious from reading the callers.
+ */
+extern uint32_t channel_freed_in_kernel;
+
 /* What the first walk cost, which is the emulator and not the walk. */
 extern uint64_t channel_scan_first_ns;
 
