@@ -12836,6 +12836,185 @@ the answer.
 
 ---
 
+### M21. The Kill a Thread Can Outlast
+
+**A process killed before its first thread has run is not killed.**
+
+`sys_proc_kill()` marks the process and cancels every thread of it, and
+a thread that is not blocked has nothing to cancel. `proc_kill`'s own
+comment states the assumption that carries the rest: a thread that is
+ready "has already stopped somewhere in this kernel, and it finds the
+mark on the way back out". That is true of a thread that was preempted
+or released, because both return to user mode through a trap path that
+reads the mark. It is false of a thread that has never run. There is no
+trap to return from. `proc_user_start` and `proc_thread_start` drop
+into user mode without looking at anything.
+
+M20 stage five measured it. A server is spawned and killed at once: the
+thread goes from `THREAD_READY` to `THREAD_BLOCKED` on
+`THREAD_WAIT_RECV` with `p_exited` still false, the join waits out
+thirty seconds and then ten minutes, and the supervisor is told
+`SYS_OK` for a kill that did nothing. The check had to send the server
+a request and require a reply before killing it, which is a workaround
+written into a check to get past a defect in the kernel.
+
+**And the mark is read after an entry rather than before one.** The
+system call path checks `p_dying` at the end of each entry, which is
+where M17 put it, and the comment there is about not running fifteen
+more operations. The consequence nothing said is that an entry which
+blocks is never followed by the check at all: the thread is inside the
+operation, and the operation is a wait. So a marked thread that has
+not yet run does not merely reach user mode, it reaches the first
+blocking call it makes and stays there.
+
+**Section 10.5 claims promptness and the claim is currently false.**
+The section says process termination "promptly unblocks all threads of
+the target process exactly as if each had been cancelled
+individually". M17 wrote a subsection under it saying who a kill
+reaches and what it costs, and that subsection is where the correction
+belongs: it says a thread that is not blocked "has nothing to release,
+and the mark is left for it to find", which assumes every way back to
+user mode looks. Two do not.
+
+**What makes this worth a milestone rather than a fix.** The same
+sentence covers three different paths into user mode and only one of
+them was ever checked against it. A supervisor is the party that
+suffers, and supervision is what sections 18.2 and 18.3 are built on:
+a cohort restart that kills a member and starts a replacement is
+exactly the sequence that produces a never-run thread, and it is the
+sequence M20 could not write without a workaround. The fix is small.
+Finding out how many other ways into user mode exist, and proving
+there are no more, is not.
+
+*Needs.* Nothing missing. The mark, the kill code and
+`proc_exit_if_dying` all exist; M17 built them and M20 measured where
+they are not consulted.
+
+**What this is not.** Not a change to what a kill means or to what a
+supervisor is told, which section 10.5 settles. Not cancellation of a
+thread that is computing, which M17 built with the poke and which
+works. Not the reentrancy guard: a thread interrupted inside a kernel
+operation is still not ended there, for the reason that has not
+changed.
+
+**1. What a kill does not reach, counted.** *Planned.*
+
+- *Check.* A process spawned and killed before its thread has run, and
+  the boot reports what happened to it: whether the thread ended, what
+  it ended with, and how long the supervisor waited. Asserted to be
+  the wrong answer, because if it is the right one the milestone has
+  no subject. The count goes in the compared report at both tiers.
+- Also counted: entries a marked thread makes, which `p_dying_entries`
+  already records and which M17 reports for one program. The number
+  this stage adds is entries a marked thread *starts*, which is the
+  one the after-the-entry check cannot see.
+- Falsifiable by the case not reproducing, which would mean M20's
+  measurement was of something else.
+
+**2. The mark on the way into user mode for the first time.**
+*Planned.*
+
+- *Check.* `proc_user_start` and `proc_thread_start` read the mark
+  before dropping into user mode. A process killed between its spawn
+  and its first instruction ends with the kill code, and the join
+  returns inside a bound this check states rather than inside ten
+  minutes. Stage one's assertion turns over.
+- Both trampolines, and the check says which one it exercised: a
+  program's first thread and a thread the program made are different
+  paths and only the first is what M20 measured.
+- Falsifiable by removing either check: the join runs out its
+  deadline, which is the failure this stage exists to stop.
+
+**3. The mark before an entry, and not only after it.** *Planned.*
+
+- *Check.* A marked thread does not begin an operation. Entries
+  started while dying goes to zero and stays there, which is a count
+  and belongs in the compared report; today it cannot be zero, because
+  the check runs after the entry has already been executed.
+- What this buys beyond stage two is the thread that is marked while
+  it is in user mode and whose next call blocks. Stage two cannot
+  reach it: it has already run.
+- Falsifiable by moving the check back after the entry, which is the
+  code as it stands.
+
+**4. A kill that finds every state at once.** *Planned.*
+
+- *Check.* One process, four threads, one in each of the states a kill
+  has to reach: running on another core, ready and never run, blocked
+  in a receive, and inside a kernel operation. All four end, the
+  process is reaped, and the exit status is the kill code for each.
+  The count of pokes says which of them needed one.
+- Falsifiable per thread by removing the path that reaches that one:
+  each failure names the state it left behind.
+
+**5. A thread made by a process that is already dying.** *Planned.*
+
+- *Check.* What `sys_thread_create()` does for a process that has been
+  marked, which today is nothing special: the thread is created,
+  becomes ready, and is a fresh instance of stage one's case. Either
+  it is refused, or it is born and dies at stage two's check. The
+  stage settles which and writes it in section 10.2.
+- Falsifiable by the thread outliving the process, which is what makes
+  a reap wait for ever.
+
+**6. M20's workaround comes out.** *Planned.*
+
+- *Check.* M20 stage five's restart loop sends a request and requires
+  a reply before killing, and says in its own comment that this is
+  what makes the kill defect moot. The request goes. Fifty-two servers
+  are spawned and killed with no round trip in between, the channels
+  come back, and the pool is where it started.
+- This is the end-to-end statement of the milestone and the only stage
+  that proves the fix is worth having rather than merely correct.
+- Falsifiable by the loop hanging, which is what it did before the
+  workaround was written.
+
+**7. What it cost, and section 10.5 written to it.** *Planned.*
+
+- *Check.* The figures as counts: kills that reached a thread that had
+  never run, entries started while marked, and the pokes, against what
+  M17's three counts already report.
+- Section 10.5's subsection on who a kill reaches is rewritten. It
+  currently says the mark is read "where a trap returns to user mode"
+  and lists the two trap paths; there is a third way into user mode
+  and it did not look. Section 10.2 gains what happens to a thread
+  created by a dying process.
+
+*Done when* a kill reaches a thread that has never run, a marked
+thread starts no operation, a kill of a process with threads in every
+state ends all of them, and M20 stage five's restart loop kills its
+servers without first asking them for anything.
+
+*Would falsify.* That the trampoline is the right place to look. If
+reading the mark there is unsafe, because the thread is in kernel mode
+on its own stack outside the kernel's exclusion and `thread_exit` from
+there is not the same as `thread_exit` from a trap, then the answer is
+that the mark has to be read on the far side, at the first entry the
+thread makes, and a thread killed before it ever calls anything cannot
+be reached at all. That would be a smaller milestone and a worse
+system, and section 10.5 would have to say so.
+
+*Watch for.* A check that cannot fail, which is now eight consecutive
+milestones. The shape here is specific: every stage's check depends on
+winning a race with a thread that is about to run, and a check that
+kills too late measures nothing while looking exactly like one that
+passes. Every construction has to assert the state of the target at
+the moment the kill goes in, the way M20 stage five learned to, rather
+than assuming the scheduler did what the check wanted.
+
+And a fix that moves the problem. Ending a thread before it reaches
+user mode means ending it somewhere `thread_exit` has never been
+called from. What holds at that point, what the trampoline has on its
+stack, and whether the kernel lock is held are three separate
+questions, and stage two answers them before it writes anything.
+
+*Size.* Small. Two checks in two trampolines and one check moved from
+after an entry to before it. The measurement around them is most of
+the work, as it has been for five milestones, and stage four is the
+one that is neither small nor known in advance.
+
+---
+
 
 ## 4. Milestone 1, in Retrospect
 
