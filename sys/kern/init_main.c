@@ -3264,6 +3264,297 @@ lent_permission_checks(sys_handle_t root)
  * So this asserts the address against the archive, and that the page is
  * read-only, which is what the loader chose for it.
  */
+/*
+ * What must not be freed under somebody, per M20 stage four.
+ *
+ * Stage three frees a channel when the last thing naming it lets go.
+ * The question this answers is what "nothing names it" leaves out,
+ * and the answer is a thread that is already inside. Four things were
+ * proposed and three of them turned out to be parties: a thread
+ * queued to send, a thread blocked receiving, and a thread inside a
+ * request. The fourth, a pulse nobody has collected, is not.
+ *
+ * Each is built, the handles are all closed under it, and the slot is
+ * required to still be there. Then the party is let out and the slot
+ * is required to come back. Asserting only the second half would pass
+ * on a kernel that freed the channel immediately and got away with
+ * it, which is the shape of every check this project has had to throw
+ * away.
+ */
+static struct channel *hold_ch;
+static volatile bool hold_sent;
+
+static void
+hold_sender(void *arg)
+{
+    struct sys_op_send_args tx;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.inline_len = 4;
+    memcpy(tx.request.inline_data, "hold", 4);
+
+    if (run(SYS_OP_IPC_SEND, (sys_handle_t)(uintptr_t)arg, &tx,
+      sizeof(tx)) != SYS_OK) {
+        panic("holds: the sender's send failed");
+    }
+    hold_sent = true;
+    thread_exit(0);
+}
+
+static volatile bool hold_received;
+
+static void
+hold_receiver(void *arg)
+{
+    struct sys_op_recv_args rx;
+
+    memset(&rx, 0, sizeof(rx));
+    if (run(SYS_OP_IPC_RECV, (sys_handle_t)(uintptr_t)arg, &rx,
+      sizeof(rx)) != SYS_OK) {
+        panic("holds: the receiver's receive failed");
+    }
+    hold_received = true;
+    thread_exit(0);
+}
+
+/* Whether the pool still has this slot, by identifier and not pointer. */
+static bool
+slot_alive(sys_id_t id)
+{
+    return pool_lookup(channel_pool(), id) != NULL;
+}
+
+static void
+wait_for(const volatile bool *flag, const char *what)
+{
+    uint64_t until = time_now() + time_hz();
+
+    while (!*flag) {
+        if (time_now() > until) {
+            panic("holds: %s never happened", what);
+        }
+        sched_yield();
+    }
+}
+
+static void
+channel_hold_checks(void)
+{
+    struct proc *self = proc_current();
+    uint32_t base = channel_pool()->used;
+    uint32_t discarded = channel_pulses_discarded;
+
+    cnputs("holds: what a channel may not be freed under\n");
+
+    /*
+     * A thread queued to send, and then the same thread inside a
+     * request. Two obstacles from one construction, because they are
+     * the two halves of one rendezvous: the sender is on the queue
+     * until a server takes it, and the server is on the serving list
+     * until it replies.
+     *
+     * The boot thread does the receiving and replying without a
+     * handle, which is the only way to do it here: the handles are
+     * all closed by then, and that is the point.
+     */
+    {
+        sys_handle_t h;
+        sys_id_t id;
+        struct sys_msg msg;
+        sys_thread_id_t peer;
+        uint64_t cookie;
+        struct thread *t;
+
+        hold_ch = channel_create("held", self);
+        if (hold_ch == NULL) {
+            panic("holds: no channel");
+        }
+        id = hold_ch->c_id;
+        expect("a send handle for a thread that will queue",
+          handle_insert(&self->p_handles, hold_ch, SYS_OBJ_CHANNEL,
+          SYS_RIGHT_SEND, &h), SYS_OK);
+
+        hold_sent = false;
+        t = thread_create("holder", 20, hold_sender,
+          (void *)(uintptr_t)h);
+        sched_ready(t);
+
+        while (hold_ch->c_senders == NULL) {
+            sched_yield();
+        }
+
+        expect("closing the only handle under it",
+          handle_close(&self->p_handles, h), SYS_OK);
+
+        if (channel_holds(hold_ch) != 0) {
+            panic("holds: %u still name a channel with no handles",
+              (unsigned int)channel_holds(hold_ch));
+        }
+        if (!slot_alive(id)) {
+            panic("holds: the slot went with a sender queued on it");
+        }
+        cnprintf("    %-38s %s\n", "with a sender queued on it",
+          "kept");
+
+        expect("taking the sender's message without a handle",
+          channel_recv(hold_ch, &msg, &peer, &cookie), SYS_OK);
+        if (!slot_alive(id)) {
+            panic("holds: the slot went with a server inside it");
+        }
+        if (hold_ch->c_serving == NULL) {
+            panic("holds: nothing is serving after a receive");
+        }
+        cnprintf("    %-38s %s\n", "with a server inside a request",
+          "kept");
+
+        expect("replying, which lets the last of them out",
+          channel_reply(peer, &msg), SYS_OK);
+        wait_for(&hold_sent, "the sender returning");
+
+        if (slot_alive(id)) {
+            panic("holds: the slot stayed after everybody left");
+        }
+        cnprintf("    %-38s %s\n", "and when the last one leaves",
+          "given back");
+    }
+
+    /*
+     * A thread blocked receiving. Let out with a pulse, because a
+     * message would need a handle to send and there are none.
+     */
+    {
+        sys_handle_t h;
+        sys_id_t id;
+        struct thread *t;
+
+        hold_ch = channel_create("heard", self);
+        if (hold_ch == NULL) {
+            panic("holds: no channel to receive on");
+        }
+        id = hold_ch->c_id;
+        expect("a receive handle for a thread that will wait",
+          handle_insert(&self->p_handles, hold_ch, SYS_OBJ_CHANNEL,
+          SYS_RIGHT_RECV, &h), SYS_OK);
+
+        hold_received = false;
+        t = thread_create("hearer", 20, hold_receiver,
+          (void *)(uintptr_t)h);
+        sched_ready(t);
+
+        while (hold_ch->c_receivers == NULL) {
+            sched_yield();
+        }
+
+        expect("closing the only handle under that one",
+          handle_close(&self->p_handles, h), SYS_OK);
+        if (!slot_alive(id)) {
+            panic("holds: the slot went with a thread receiving");
+        }
+        cnprintf("    %-38s %s\n", "with a thread blocked receiving",
+          "kept");
+
+        channel_pulse(hold_ch, SYS_PULSE_USER_BASE, 1);
+        wait_for(&hold_received, "the receiver waking");
+
+        if (slot_alive(id)) {
+            panic("holds: the slot stayed after the receiver left");
+        }
+        cnprintf("    %-38s %s\n", "and when it wakes and leaves",
+          "given back");
+    }
+
+    /*
+     * A connection, which is not a thread and is a holder all the
+     * same: it names the channel and a pager is one of these.
+     */
+    {
+        sys_handle_t h;
+        sys_id_t id;
+        struct connection *cn;
+
+        hold_ch = channel_create("connected", self);
+        if (hold_ch == NULL) {
+            panic("holds: no channel to connect to");
+        }
+        id = hold_ch->c_id;
+        cn = connection_create(hold_ch, 0);
+        if (cn == NULL) {
+            panic("holds: no connection");
+        }
+        expect("a handle beside a connection",
+          handle_insert(&self->p_handles, hold_ch, SYS_OBJ_CHANNEL,
+          SYS_RIGHT_RECV, &h), SYS_OK);
+        expect("closing the handle and not the connection",
+          handle_close(&self->p_handles, h), SYS_OK);
+
+        if (channel_holds(hold_ch) != 1) {
+            panic("holds: %u name a channel one connection is on",
+              (unsigned int)channel_holds(hold_ch));
+        }
+        if (!slot_alive(id)) {
+            panic("holds: the slot went with a connection on it");
+        }
+        cnprintf("    %-38s %s\n", "with a connection over it",
+          "kept");
+
+        connection_destroy(cn);
+        if (slot_alive(id)) {
+            panic("holds: the slot stayed after the connection went");
+        }
+        cnprintf("    %-38s %s\n", "and when the connection goes",
+          "given back");
+    }
+
+    /*
+     * And a pulse, which is the one that turned out not to be a
+     * party. Nothing can collect it: collecting is receiving,
+     * receiving needs a handle, and the handle is what just went. A
+     * slot kept for a message with no possible reader is a slot kept
+     * for nobody, so the pulses go and the count of them is reported.
+     */
+    {
+        sys_handle_t h;
+        sys_id_t id;
+
+        hold_ch = channel_create("pulsed", self);
+        if (hold_ch == NULL) {
+            panic("holds: no channel to pulse");
+        }
+        id = hold_ch->c_id;
+        expect("a handle on a channel about to be pulsed",
+          handle_insert(&self->p_handles, hold_ch, SYS_OBJ_CHANNEL,
+          SYS_RIGHT_RECV, &h), SYS_OK);
+        channel_pulse(hold_ch, SYS_PULSE_USER_BASE, 2);
+        if (hold_ch->c_pulse_count != 1) {
+            panic("holds: %u pulses queued, not 1",
+              (unsigned int)hold_ch->c_pulse_count);
+        }
+        expect("closing the handle with a pulse waiting",
+          handle_close(&self->p_handles, h), SYS_OK);
+
+        if (slot_alive(id)) {
+            panic("holds: the slot stayed for a pulse nobody can "
+              "collect");
+        }
+        if (channel_pulses_discarded != discarded + 1) {
+            panic("holds: %u pulses discarded, not %u",
+              (unsigned int)channel_pulses_discarded,
+              (unsigned int)(discarded + 1));
+        }
+        cnprintf("    %-38s %s\n", "with a pulse nobody can collect",
+          "given back, and the pulse with it");
+    }
+
+    hold_ch = NULL;
+
+    if (channel_pool()->used != base) {
+        panic("holds: %u channels in use at the end, not %u",
+          (unsigned int)channel_pool()->used, (unsigned int)base);
+    }
+    cnprintf("    %-38s %u, where it started\n",
+      "slots in use after all of it", (unsigned int)base);
+}
+
 /* Walks made by the time channel_checks reports, including its own. */
 #define CHANNEL_SCANS_EXPECTED    4
 
@@ -14675,6 +14966,7 @@ kernel_main(void)
           (unsigned int)connection_pool()->used);
     }
 
+    channel_hold_checks();
     channel_checks();
 #if SYS_TIER == 2
     asid_checks();
@@ -15093,11 +15385,11 @@ kernel_main(void)
      * take: slots nothing names with somebody still standing in them.
      */
     cnprintf("  channels: %u in use, %u at once, of %u, %u given back, "
-      "%u nothing names\n", (unsigned int)channel_report.cs_used,
+      "%u pulses with them\n", (unsigned int)channel_report.cs_used,
       (unsigned int)channel_report.cs_at_once,
       (unsigned int)channel_report.cs_of,
       (unsigned int)channel_freed,
-      (unsigned int)channel_report.cs_stuck);
+      (unsigned int)channel_pulses_discarded);
 
     /*
      * Asserted as well as compared, because the compared file covers
@@ -15118,6 +15410,19 @@ kernel_main(void)
     if (channel_report.cs_unreachable != 0) {
         panic("channels: %u slots are free in every sense and still "
           "held", (unsigned int)channel_report.cs_unreachable);
+    }
+
+    /*
+     * And nothing is waiting for a departure that will not come.
+     * Stage three left one of these a boot, a channel holding a pulse
+     * nobody could collect, and stage four decided that a pulse is
+     * not somebody. What is left in this state now is a channel a
+     * thread is inside, and the thread leaving is what frees it, so
+     * at the end of a boot there should be none.
+     */
+    if (channel_report.cs_stuck != 0) {
+        panic("channels: %u slots nothing names with somebody still "
+          "inside", (unsigned int)channel_report.cs_stuck);
     }
     if (channel_report.cs_used >= channel_report.cs_at_once) {
         panic("channels: %u in use against %u at once, so nothing is "

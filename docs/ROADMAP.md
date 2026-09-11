@@ -12292,7 +12292,7 @@ before this. It is a guard against a future change to the pool rather
 than a test of anything this stage built, and it is worth having on
 those terms.
 
-**4. What must not be freed under somebody.** *Planned.*
+**4. What must not be freed under somebody.** *Built.*
 
 - *Check.* Four constructions, each dropping every handle and asserting
   the slot is still in use and the party still correct, then releasing
@@ -12302,6 +12302,60 @@ those terms.
 - Each is falsifiable by freeing early rather than by an argument: the
   check then reads a channel that has been handed to somebody else, and
   the generation says stale where it should say the object.
+
+**What it settled.** Of the four things proposed, three are parties
+and one is not.
+
+```
+  with a sender queued on it             kept
+  with a server inside a request         kept
+  with a thread blocked receiving        kept
+  with a connection over it              kept
+  with a pulse nobody can collect        given back, and the pulse with it
+```
+
+Each is built, every handle is closed under it, the slot is required
+to still be there, and then the party is let out and the slot is
+required to come back. Asserting only the second half would pass on a
+kernel that freed the channel at once and got away with it, which is
+the shape of every check this project has had to throw away.
+
+**A pulse is not somebody.** Stage three treated an uncollected pulse
+as a reason to keep the slot, and left one channel a boot in that
+state for it. A pulse is collected by receiving on the channel,
+receiving needs a handle, and by the time this question is asked there
+are none: nothing that exists or can come to exist will ever collect
+it. Keeping the slot was keeping it for a message with no possible
+reader. The pulses go with the channel and the count of them is in the
+compared report, eight in a boot.
+
+**And the free had to learn to try again.** Stage three freed a
+channel only at the moment the last holder let go, so a channel a
+thread was inside was never looked at again. The three operations
+that let a thread out of a channel now ask: a receive, which takes a
+sender off the queue and this thread off the receivers, and a reply,
+which takes this thread off the serving list. Both are wrapped rather
+than having the question asked at each of their returns, of which
+there are five and three. The channel a reply is on has to be read
+before the reply, because after it this thread is serving nothing.
+
+**The cohort member's rendezvous is the serving case and adds nothing
+to it.** What keeps the slot is an entry on the serving list, and a
+cohort member inside a request puts exactly that there. The check is
+built with a kernel thread instead, because the obstacle is what is
+being tested and a cohort would only make the construction longer.
+
+**The numbers moved again.** 23 in use against 24 at once at Tier 2,
+from 24 and 25, with 23 slots given back in a boot against 18. The
+high-water mark is 24, having been 40 three stages ago.
+
+**Falsified five ways**, one per obstacle and one for the retry.
+Ignoring the sender queue fired `the slot went with a sender queued on
+it`; ignoring the receivers, `the slot went with a thread receiving`;
+ignoring the serving list, `the slot went with a server inside it`;
+keeping the slot for a pulse again, `the slot stayed for a pulse
+nobody can collect`; and removing the retry, `the slot stayed after
+everybody left`.
 
 **5. A server that restarts under its clients.** *Planned.*
 

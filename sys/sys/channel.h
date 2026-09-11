@@ -317,6 +317,22 @@ extern uint64_t channel_scan_first_ns;
 void channel_hold(struct channel *ch);
 void channel_drop(struct channel *ch);
 
+/*
+ * A thread has left this channel, so the slot may now be free even
+ * though nothing let go of a reference. Per M20 stage four.
+ */
+void channel_maybe_free(struct channel *ch);
+
+/* How many things name this channel, for a check that needs to know. */
+uint32_t channel_holds(const struct channel *ch);
+
+/*
+ * Pulses that went with a channel nothing could reach. Not a loss: a
+ * pulse is collected by receiving, receiving needs a handle, and
+ * there were none.
+ */
+extern uint32_t channel_pulses_discarded;
+
 /* Link and unlink a connection, which the connection code calls. */
 void channel_conn_add(struct channel *ch, struct connection *cn);
 void channel_conn_gone(struct channel *ch, struct connection *cn);

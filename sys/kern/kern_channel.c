@@ -1074,6 +1074,9 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
  * receiver could do nothing with, and leaving the flag set would make
  * every later receive claim a loss that had already been reported.
  */
+static sys_err_t recv_inner(struct channel *ch, struct sys_msg *out,
+  sys_thread_id_t *out_peer, uint64_t *out_cookie);
+
 static bool
 pulse_take_lost(struct channel *ch)
 {
@@ -1124,8 +1127,8 @@ pulse_take(struct channel *ch, struct sys_msg *out)
     return true;
 }
 
-sys_err_t
-channel_recv(struct channel *ch, struct sys_msg *out,
+static sys_err_t
+recv_inner(struct channel *ch, struct sys_msg *out,
   sys_thread_id_t *out_peer, uint64_t *out_cookie)
 {
     struct thread *self = thread_current();
@@ -1311,14 +1314,39 @@ channel_recv(struct channel *ch, struct sys_msg *out,
 }
 
 /*
+ * And the channel may have nothing left in it, per M20 stage four.
+ *
+ * A receive is one of the three ways a thread leaves a channel: it
+ * takes a sender off the queue, and it takes this thread off the
+ * receivers. If nothing names the channel by then, the thread that
+ * just left was the last thing keeping the slot.
+ *
+ * Around the whole of it rather than at each of its returns, because
+ * there are five of those and the question is the same at all of
+ * them. The caller is finished with the channel either way: the
+ * operation layer reads the message and the error and never the
+ * channel.
+ */
+sys_err_t
+channel_recv(struct channel *ch, struct sys_msg *out,
+  sys_thread_id_t *out_peer, uint64_t *out_cookie)
+{
+    sys_err_t err = recv_inner(ch, out, out_peer, out_cookie);
+
+    channel_maybe_free(ch);
+
+    return err;
+}
+
+/*
  * Reply, and stop running at the client's priority.
  *
  * A reply to a client that has died is refused rather than delivered,
  * because the id carries a generation and the slot it names is no longer
  * the thread that sent the request.
  */
-sys_err_t
-channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
+static sys_err_t
+reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
 {
     struct thread *self = thread_current();
     struct thread *client;
@@ -1451,6 +1479,30 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
      * than at the top of this function.
      */
     sched_undefer();
+
+    return err;
+}
+
+/*
+ * And the channel this server was serving on may have nothing left in
+ * it, per M20 stage four.
+ *
+ * A reply is the second of the three ways a thread leaves a channel:
+ * it takes this thread off the serving list. The channel has to be
+ * read before the reply rather than after, because after it this
+ * thread is not serving anything and there is nothing left to ask.
+ *
+ * A reply that is refused still takes the thread off the list, which
+ * is the case the comment inside is about, so the question is asked
+ * whatever the answer was.
+ */
+sys_err_t
+channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
+{
+    struct channel *ch = thread_current()->t_serve_ch;
+    sys_err_t err = reply_inner(peer, reply);
+
+    channel_maybe_free(ch);
 
     return err;
 }
@@ -2338,18 +2390,25 @@ channel_hold(struct channel *ch)
  * slot goes back. Per M20 stage three, and the first thing in this
  * system's life to return one.
  *
- * Four things say no, and each of them is a party that would be left
- * holding a channel that had become somebody else's. A thread queued
- * to send on it, a thread blocked receiving on it, a thread inside a
- * request on it, and a pulse in its queue that nobody has collected.
- * Stage four is what constructs each of those and proves it.
+ * Three things say no, and each is a thread that is going to come
+ * back to this channel: one queued to send on it, one blocked
+ * receiving on it, and one inside a request on it. Freeing under any
+ * of them hands the slot to somebody else while a thread is still
+ * holding a pointer into it.
  *
- * A channel that reaches zero holds while one of them is true is not
- * freed and will not be looked at again, because nothing calls this
- * when the last thread leaves a list. That is a leak, and it is the
- * safe direction, and it is counted rather than argued about: the
- * walk reports how many slots are in that state.
+ * A pulse in the queue is not one of them, and stage four is where
+ * that was decided rather than assumed. A pulse is collected by
+ * receiving on the channel, receiving needs a handle, and there are
+ * no handles: nothing that exists can ever collect it. Keeping the
+ * slot for it would be keeping a slot for a message with no possible
+ * reader, so the pulses go with the channel and how many is counted.
+ *
+ * A channel that reaches zero holds while a thread is inside it is
+ * not freed here. It is freed when that thread leaves, which is what
+ * the calls to channel_maybe_free at the ends of the operations that
+ * let a thread out are for.
  */
+
 static void
 channel_free_if_idle(struct channel *ch)
 {
@@ -2379,7 +2438,10 @@ channel_free_if_idle(struct channel *ch)
 
     s = md_intr_disable();
     idle = ch->c_senders == NULL && ch->c_receivers == NULL &&
-      ch->c_serving == NULL && ch->c_pulse_count == 0;
+      ch->c_serving == NULL;
+    if (idle) {
+        channel_pulses_discarded += ch->c_pulse_count;
+    }
     md_intr_restore(s);
 
     if (!idle) {
@@ -2410,6 +2472,45 @@ channel_free_if_idle(struct channel *ch)
 
     if (took) {
         klock_exit(ks);
+    }
+}
+
+/*
+ * A thread has left this channel. If nothing names it any more, the
+ * thread that just left may have been the last thing keeping it.
+ *
+ * Called at the end of the operations that let a thread out, where
+ * the caller is finished with the channel. Cheap when there is
+ * nothing to do, which is every call but a handful in a boot: one
+ * read of a counter under the lock the counter is kept under.
+ */
+uint32_t
+channel_holds(const struct channel *ch)
+{
+    intr_state_t s = objref_enter();
+    uint32_t n = ch->c_holds;
+
+    objref_leave(s);
+
+    return n;
+}
+
+void
+channel_maybe_free(struct channel *ch)
+{
+    intr_state_t s;
+    bool none;
+
+    if (ch == NULL) {
+        return;
+    }
+
+    s = objref_enter();
+    none = ch->c_holds == 0;
+    objref_leave(s);
+
+    if (none) {
+        channel_free_if_idle(ch);
     }
 }
 
@@ -2518,6 +2619,7 @@ mark_channel(uint32_t *held, const struct channel *ch)
 uint32_t channel_scans;
 uint32_t channel_freed;
 uint32_t channel_freed_in_kernel;
+uint32_t channel_pulses_discarded;
 uint64_t channel_scan_first_ns;
 
 void
