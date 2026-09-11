@@ -5905,6 +5905,54 @@ kill_reach_checks(void)
 static uint32_t kills_outlasted;
 static uint64_t marked_entries;
 
+/*
+ * One reading of where a process's first thread is, taken under the
+ * kernel lock.
+ *
+ * Not because the fields tear, but because the thread can stop
+ * existing between reading the list head and reading the state. A
+ * thread that exits is taken off its process's list and its slot goes
+ * back to the pool, and the whole point of the check below is that it
+ * runs while a thread may be doing exactly that. Reading it any other
+ * way is reading a pointer in the one case the check is about, which
+ * is the mistake M20 made three times.
+ *
+ * A copy comes out and no pointer does, so nothing here is held once
+ * the lock is put down.
+ */
+static bool
+first_thread_state(const struct proc *p, uint32_t *state, uint32_t *wait,
+  uint64_t *points, bool *exited)
+{
+    const struct thread *t;
+    intr_state_t s;
+    intr_state_t ks = 0;
+    bool took = false;
+    bool have;
+
+    s = md_intr_disable();
+    if (!klock_held()) {
+        ks = klock_enter();
+        took = true;
+    }
+
+    *exited = p->p_exited;
+    t = proc_threads((struct proc *)p);
+    have = t != NULL;
+    if (have) {
+        *state = (uint32_t)t->t_state;
+        *wait = (uint32_t)t->t_wait;
+        *points = t->t_points;
+    }
+
+    if (took) {
+        klock_exit(ks);
+    }
+    md_intr_restore(s);
+
+    return have;
+}
+
 static void
 kill_unrun_checks(void)
 {
@@ -5913,10 +5961,13 @@ kill_unrun_checks(void)
     struct sys_op_kill_args kargs;
     struct channel *ch;
     struct child c;
-    const struct thread *t;
     sys_ns_spec_t ns[1];
     sys_handle_t give, h;
     uint64_t until, killed, waited;
+    uint32_t state = 0;
+    uint32_t wait = 0;
+    uint64_t points = 0;
+    bool exited = false;
     void *obj;
     int32_t code;
 
@@ -5950,10 +6001,23 @@ kill_unrun_checks(void)
     }
     child_watch(&c, obj);
 
-    t = proc_threads(c.c_proc);
-    if (t == NULL || t->t_state != THREAD_READY) {
+    if (!first_thread_state(c.c_proc, &state, &wait, &points,
+      &exited) || state != THREAD_READY) {
         panic("unrun: the server is not ready and waiting, state %u",
-          t == NULL ? 0u : (unsigned int)t->t_state);
+          (unsigned int)state);
+    }
+
+    /*
+     * And it has never been anywhere. Ready is not the same claim:
+     * a thread that ran and was preempted is ready too, and that one
+     * returns to user mode through a trap path which reads the mark,
+     * so it is not the case this stage is about. A preemption point
+     * is passed on the way into every entry, so a thread that has
+     * passed none has not been in the kernel on its own account.
+     */
+    if (points != 0) {
+        panic("unrun: the server has passed %lu preemption points, "
+          "so it has run", (unsigned long)points);
     }
 
     memset(&kargs, 0, sizeof(kargs));
@@ -5964,6 +6028,24 @@ kill_unrun_checks(void)
     if (!c.c_proc->p_dying) {
         panic("unrun: the kill left no mark");
     }
+
+    /*
+     * Read again, after the kill and before the core is let go.
+     *
+     * The reading above says what was true when the check looked; the
+     * kill is a separate operation and the thread could have been
+     * dispatched on the other core in between. That window is what
+     * this milestone's *Watch for* is about: a check that kills too
+     * late measures the case that already works and looks exactly
+     * like one that passes. It is asserted rather than hoped for, at
+     * the only moment where the answer means anything.
+     */
+    if (!first_thread_state(c.c_proc, &state, &wait, &points,
+      &exited) || exited || state != THREAD_READY || points != 0) {
+        panic("unrun: the kill landed on state %u with %lu points",
+          (unsigned int)state, (unsigned long)points);
+    }
+
     killed = time_now();
     sched_undefer();
 
@@ -5975,28 +6057,42 @@ kill_unrun_checks(void)
      */
     until = time_now() + time_from_ms(JOIN_MS);
     for (;;) {
-        t = proc_threads(c.c_proc);
-        if (t == NULL || c.c_proc->p_exited) {
+        if (!first_thread_state(c.c_proc, &state, &wait, &points,
+          &exited)) {
             break;
         }
-        if (t->t_state == THREAD_BLOCKED &&
-          t->t_wait == THREAD_WAIT_RECV) {
+        if (exited || (state == THREAD_BLOCKED &&
+          wait == THREAD_WAIT_RECV)) {
             break;
         }
         if (time_now() > until) {
-            panic("unrun: the server neither died nor blocked");
+            panic("unrun: the server neither died nor blocked, "
+              "state %u", (unsigned int)state);
         }
         sched_yield();
     }
     waited = time_now();
 
-    if (c.c_proc->p_exited) {
+    if (exited) {
         panic("unrun: the kill worked, so there is nothing to fix");
     }
-    t = proc_threads(c.c_proc);
-    if (t == NULL || t->t_state != THREAD_BLOCKED ||
-      t->t_wait != THREAD_WAIT_RECV) {
-        panic("unrun: the server is somewhere this did not expect");
+    if (state != THREAD_BLOCKED || wait != THREAD_WAIT_RECV) {
+        panic("unrun: the server is in state %u, waiting on %u",
+          (unsigned int)state, (unsigned int)wait);
+    }
+
+    /*
+     * And nothing was poked, because nothing of it was running.
+     * `proc_kill` pokes a thread that is running and leaves a ready
+     * one to find the mark on its way out, which is the assumption
+     * this whole stage is about. Asserted here so that a change which
+     * started poking ready threads would have to say so: it would not
+     * fix this, since a ready thread is on no core to be poked, and
+     * it would move a number in the compared report.
+     */
+    if (c.c_proc->p_kill_pokes != 0) {
+        panic("unrun: it poked %lu cores for a thread that had never "
+          "run", (unsigned long)c.c_proc->p_kill_pokes);
     }
     kills_outlasted++;
     marked_entries += c.c_proc->p_dying_entries;

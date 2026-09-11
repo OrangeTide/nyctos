@@ -12972,6 +12972,48 @@ same counter at zero. The floor this stage puts under the counter is
 therefore not independently falsifiable, which is written here rather
 than left to look stronger than it is.
 
+**What the review found: the check could have measured the case that
+works.** The state of the target was read before the kill and never
+after it. Between the two the thread can be dispatched on the other
+core, and a kill that lands on a thread which has reached its receive
+is a kill that succeeds, so the check would have passed while testing
+nothing. That is this milestone's *Watch for* clause exactly, and it
+was written in the plan and then not obeyed a page later.
+
+The state is now read again after the kill and before the core is let
+go, which is the only moment where the answer means anything.
+Falsified by letting the server run between the guard and the kill:
+`unrun: the kill landed on state 2 with 1 points`.
+
+**Ready is not the claim.** The check asserted the thread was
+`THREAD_READY`, and a thread that ran and was preempted is ready too.
+That one returns to user mode through a trap path which reads the
+mark, so it is not the case this stage is about. The falsification
+above proves the difference is real rather than theoretical: after two
+yields the thread was still reported as ready, and the assertion that
+caught it was the new one, that it has passed no preemption point. A
+point is passed on the way into every entry, so a thread with none has
+not been in the kernel on its own account.
+
+**A thread was read through a pointer while it could be exiting.** The
+poll walked to the process's first thread and read its state, from the
+boot thread, holding none of the kernel's exclusion. A thread that
+exits is taken off its process's list and its slot goes back to the
+pool, and the whole point of this loop is that it runs while a thread
+may be doing exactly that. It is the mistake M20 made three times and
+its review found three times. One reading now happens under the kernel
+lock with interrupts off, and what comes out is a copy: no pointer
+survives the lock being put down.
+
+**And a kill of a thread that never ran pokes nothing**, which is now
+asserted here as well as reported. Poking a ready thread would not fix
+anything, since a ready thread is on no core to be poked, and a change
+that started doing it would have to say so in the compared report.
+Making `proc_kill` poke every thread fires M17's own check first, `a
+kill: it poked 1 cores for a thread that was not running`, so this
+assertion is a restatement for a construction M17 does not cover
+rather than an independent one, and it is written here as that.
+
 **2. The mark on the way into user mode for the first time.**
 *Planned.*
 
