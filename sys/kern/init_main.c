@@ -3305,22 +3305,112 @@ channel_checks(void)
 
     cnputs("channels: what holds one, counted and walked\n");
 
+    /*
+     * The slot itself, per M20 stage three. A pool where used falls
+     * below high-water says slots come back; it does not say which
+     * one came back, and a pool that handed out a fresh slot every
+     * time while freeing old ones would say the same thing until it
+     * ran out.
+     *
+     * So the identity is checked and not just the count. One channel
+     * made, its slot noted, its only handle closed, and another made:
+     * the same index, a generation that has moved on, and the pool
+     * exactly where it started. The generation is what makes the
+     * first channel's identifier name nothing rather than name the
+     * second one, which is section 7.1's rule and the reason a slot
+     * can be reused at all.
+     */
+    {
+        struct proc *self = proc_current();
+        struct channel *a, *b;
+        sys_handle_t h;
+        uint32_t before = channel_pool()->used;
+        uint32_t index;
+        sys_id_t gen, id;
+
+        a = channel_create("slot", self);
+        if (a == NULL) {
+            panic("channels: no slot to check reuse with");
+        }
+        id = a->c_id;
+        index = sys_id_index(id);
+        gen = sys_id_gen(id);
+
+        expect("a handle on a channel made for this",
+          handle_insert(&self->p_handles, a, SYS_OBJ_CHANNEL,
+          SYS_RIGHT_RECV, &h), SYS_OK);
+        expect("closing it", handle_close(&self->p_handles, h), SYS_OK);
+
+        if (channel_pool()->used != before) {
+            panic("channels: %u in use after the one made here went, "
+              "not %u", (unsigned int)channel_pool()->used,
+              (unsigned int)before);
+        }
+        if (pool_lookup(channel_pool(), id) != NULL) {
+            panic("channels: the identifier of a freed channel still "
+              "finds one");
+        }
+
+        b = channel_create("slot again", self);
+        if (b == NULL) {
+            panic("channels: the slot did not come back");
+        }
+        if (sys_id_index(b->c_id) != index) {
+            panic("channels: slot %u went back and slot %u came out",
+              (unsigned int)index,
+              (unsigned int)sys_id_index(b->c_id));
+        }
+        if (sys_id_gen(b->c_id) == gen) {
+            panic("channels: the slot came back with the generation "
+              "it went in with");
+        }
+        cnprintf("    %-38s slot %u, generation %lu then %lu\n",
+          "the slot a channel gave back", (unsigned int)index,
+          (unsigned long)gen, (unsigned long)sys_id_gen(b->c_id));
+
+        expect("a handle on the one that took its place",
+          handle_insert(&self->p_handles, b, SYS_OBJ_CHANNEL,
+          SYS_RIGHT_RECV, &h), SYS_OK);
+        expect("closing that one too",
+          handle_close(&self->p_handles, h), SYS_OK);
+        if (channel_pool()->used != before) {
+            panic("channels: %u in use at the end of the check, not "
+              "%u", (unsigned int)channel_pool()->used,
+              (unsigned int)before);
+        }
+    }
+
     channel_scan(&cs);
 
     cnprintf("    %-38s %u times, all agreeing\n",
       "the kernel's count against a walk", (unsigned int)channel_scans);
-    cnprintf("    %-38s %u of %u, %u held by nothing\n",
+    cnprintf("    %-38s %u of %u, %u at once\n",
       "slots in use at this point", (unsigned int)cs.cs_used,
-      (unsigned int)cs.cs_of, (unsigned int)cs.cs_unreachable);
+      (unsigned int)cs.cs_of, (unsigned int)cs.cs_at_once);
+    cnprintf("    %-38s %u\n", "slots given back by here",
+      (unsigned int)channel_freed);
 
     if (channel_scans < CHANNEL_SCANS_EXPECTED) {
         panic("channels: %u walks, not %u",
           (unsigned int)channel_scans,
           (unsigned int)CHANNEL_SCANS_EXPECTED);
     }
-    if (cs.cs_unreachable == 0) {
-        panic("channels: nothing is held by nothing, at the point "
-          "where the checks have all run");
+
+    /*
+     * What stage one asserted here was that nothing was reachable and
+     * nothing was ever given back, which was the subject of the
+     * milestone. Stage three makes both false, so the assertion is
+     * the other way round now: slots come back, and the pool is
+     * holding fewer than it has handed out at once.
+     */
+    if (channel_freed == 0) {
+        panic("channels: not one slot has gone back, with all the "
+          "checks run");
+    }
+    if (cs.cs_used >= cs.cs_at_once) {
+        panic("channels: %u in use and %u at once, so nothing is "
+          "being reused", (unsigned int)cs.cs_used,
+          (unsigned int)cs.cs_at_once);
     }
 }
 
@@ -14878,6 +14968,10 @@ kernel_main(void)
         cnprintf("    %-38s %u\n",
           "serving entries left by a second request",
           (unsigned int)cs.cs_stale_serving);
+        cnprintf("    %-38s %u, first of them %s\n",
+          "slots nothing names and nothing frees",
+          (unsigned int)cs.cs_stuck,
+          cs.cs_stuck_name != NULL ? cs.cs_stuck_name : "none");
         channel_report = cs;
     }
 
@@ -14961,36 +15055,42 @@ kernel_main(void)
      * What a boot spends is what its checks ask for and is the same in
      * every run at a tier; how long the walk took is above the line.
      *
-     * Every other pool here ends a boot below its own high-water mark,
-     * because a process, a thread, a connection, a prepared program
-     * and a timer all go back. A channel does not, so these two are
-     * equal, and they stay equal until stage three.
+     * Every other pool here ends a boot below its own high-water
+     * mark, because a process, a thread, a connection, a prepared
+     * program and a timer all go back. Since stage three a channel
+     * does too, and the fourth number is what the free could not
+     * take: slots nothing names with somebody still standing in them.
      */
-    cnprintf("  channels: %u in use, %u at once, of %u, and %u "
-      "unreachable\n", (unsigned int)channel_report.cs_used,
+    cnprintf("  channels: %u in use, %u at once, of %u, %u given back, "
+      "%u nothing names\n", (unsigned int)channel_report.cs_used,
       (unsigned int)channel_report.cs_at_once,
       (unsigned int)channel_report.cs_of,
-      (unsigned int)channel_report.cs_unreachable);
+      (unsigned int)channel_freed,
+      (unsigned int)channel_report.cs_stuck);
 
     /*
      * Asserted as well as compared, because the compared file covers
      * the paced run and the burst run is only read for a panic. A
      * number this milestone turns on should fail in both.
      *
-     * Both of these assert that a defect is present, which is unusual
-     * and is deliberate. A pool where nothing is reachable and
-     * everything is still held is the subject of this milestone, and
-     * if the first of them ever passes on its own then there is
-     * nothing here to build. Stage three makes the second false on
-     * purpose and rewrites it.
+     * Stage one asserted the opposite of both of these, and said so:
+     * a pool where nothing was reachable and nothing was ever given
+     * back was the subject of the milestone, and stage three is what
+     * makes the assertions turn over. What is asserted now is that
+     * slots come back and that the pool holds fewer than it has had
+     * out at once, which is the sentence every other pool here could
+     * already say.
      */
-    if (channel_report.cs_unreachable == 0) {
-        panic("channels: nothing is unreachable, so there is nothing "
-          "here to give back");
+    if (channel_freed == 0) {
+        panic("channels: not one slot went back in the whole boot");
     }
-    if (channel_report.cs_used != channel_report.cs_at_once) {
-        panic("channels: %u in use against %u at once, so something "
-          "already gives one back",
+    if (channel_report.cs_unreachable != 0) {
+        panic("channels: %u slots are free in every sense and still "
+          "held", (unsigned int)channel_report.cs_unreachable);
+    }
+    if (channel_report.cs_used >= channel_report.cs_at_once) {
+        panic("channels: %u in use against %u at once, so nothing is "
+          "being reused",
           (unsigned int)channel_report.cs_used,
           (unsigned int)channel_report.cs_at_once);
     }

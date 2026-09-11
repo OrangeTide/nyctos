@@ -12185,7 +12185,7 @@ thread that moves to another channel's list overwrites the link that
 belonged to the first, and the first list runs into the second rather
 than merely holding a stale name.
 
-**3. The last holder frees the slot.** *Planned.*
+**3. The last holder frees the slot.** *Built.*
 
 - *Check.* A channel created and dropped leaves the pool with the same
   number of slots in use it started with, and the slot that comes back
@@ -12194,6 +12194,66 @@ than merely holding a stale name.
   second assertion has to be rewritten and the compared report changes.
 - Falsifiable by removing the free: used equals high-water again and
   the diff fails.
+
+**What it settled.** The compared line, at Tier 2 and Tier 0:
+
+```
+  channels: 24 in use, 25 at once, of 48, 18 given back, 1 nothing names
+  channels: 23 in use, 24 at once, of 48, 17 given back, 1 nothing names
+```
+
+Against `40 in use, 40 at once` two stages ago. **The high-water mark
+fell from 40 to 25**, which is the number that matters: it is what the
+pool would have to be sized for, and it went down by nearly half
+without anything in the boot doing less. Seventeen or eighteen slots
+come back in a boot, and used is below high-water for the first time
+in this system's life, which is the sentence every other pool here
+could already say.
+
+**The slot's identity is checked and not only the count.** A pool
+handing out a fresh slot every time while freeing old ones would
+report the same thing until it ran out. So one channel is made, its
+index and generation noted, its only handle closed, and another made:
+the same index, the generation moved from 5 to 6, and the pool exactly
+where it started. The freed channel's identifier finds nothing, which
+is section 7.1's rule and the reason a slot can be reused at all.
+
+**Stage one's two assertions are turned over rather than deleted.**
+They asserted that nothing was reachable and that nothing was ever
+given back, and said at the time that stage three was what would make
+them false. What is asserted now is that slots come back and that the
+pool holds fewer than it has had out at once. A third assertion is new
+and is the one with teeth: no slot may be sitting there with nothing
+naming it, nobody inside it and no pulse waiting. Since the free
+happens when the last holder lets go, a slot in that state got there
+afterwards, and the day that happens is the day something has to look
+again.
+
+**Four things stop a free, and one of them stops one every boot.** A
+thread queued to send, a thread blocked receiving, a thread inside a
+request, and a pulse nobody has collected. A channel that reaches zero
+holders while any of those is true is not freed, and nothing tries
+again, which is a leak in the safe direction. It is counted rather
+than argued about: one slot a boot, and the report names it. It is
+`hints`, which has an uncollected pulse, and it is stage four's to
+deal with.
+
+**Falsified three ways.** Removing the free fired `channels: 24 in use
+after the one made here went, not 23`, from the identity check rather
+than the report. Freeing without asking whether anyone was inside
+changed the compared line to `19 given back, 0 nothing names` and the
+diff failed; worth noting that nothing else caught it, so the pulse
+that was thrown away was thrown away silently, which is stage four's
+subject. Freeing only the even-numbered slots fired `channels: 5 slots
+are free in every sense and still held`.
+
+**What the boot's own pointers did.** Freeing a channel whose handles
+have all closed makes the boot's file-scope pointers to it dangle,
+which was the risk in doing this at all, and nothing in the boot
+touches one afterwards. The name and owner are cleared before the slot
+goes back, so a pointer somebody kept reads as an unnamed channel
+rather than as the one that used to be there. The generation is what
+makes a handle safe; nothing makes a raw pointer safe.
 
 **4. What must not be freed under somebody.** *Planned.*
 

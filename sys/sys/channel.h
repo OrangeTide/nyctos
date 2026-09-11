@@ -272,6 +272,14 @@ struct channel_scan {
      */
     uint32_t    cs_stale_serving;
 
+    /*
+     * Slots nothing names that the free could not take back, because
+     * somebody is standing in them or a pulse is waiting. Per M20
+     * stage three; stage four is what deals with them.
+     */
+    uint32_t    cs_stuck;
+    const char *cs_stuck_name;
+
     /* What the walk covered, so the duration beside it means something. */
     uint32_t    cs_tables;
     uint32_t    cs_conns;
@@ -284,6 +292,9 @@ void channel_scan(struct channel_scan *out);
 
 /* How many times the walk has been made and has agreed. */
 extern uint32_t channel_scans;
+
+/* How many slots have gone back to the pool, per M20 stage three. */
+extern uint32_t channel_freed;
 
 /* What the first walk cost, which is the emulator and not the walk. */
 extern uint64_t channel_scan_first_ns;

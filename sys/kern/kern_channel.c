@@ -2312,10 +2312,57 @@ channel_hold(struct channel *ch)
     objref_leave(s);
 }
 
+/*
+ * Nothing names this channel and nobody is standing in it, so the
+ * slot goes back. Per M20 stage three, and the first thing in this
+ * system's life to return one.
+ *
+ * Four things say no, and each of them is a party that would be left
+ * holding a channel that had become somebody else's. A thread queued
+ * to send on it, a thread blocked receiving on it, a thread inside a
+ * request on it, and a pulse in its queue that nobody has collected.
+ * Stage four is what constructs each of those and proves it.
+ *
+ * A channel that reaches zero holds while one of them is true is not
+ * freed and will not be looked at again, because nothing calls this
+ * when the last thread leaves a list. That is a leak, and it is the
+ * safe direction, and it is counted rather than argued about: the
+ * walk reports how many slots are in that state.
+ */
+static void
+channel_free_if_idle(struct channel *ch)
+{
+    intr_state_t s = md_intr_disable();
+    bool idle = ch->c_senders == NULL && ch->c_receivers == NULL &&
+      ch->c_serving == NULL && ch->c_pulse_count == 0;
+
+    md_intr_restore(s);
+
+    if (!idle) {
+        return;
+    }
+
+    /*
+     * The name goes first so that a pointer somebody kept says "?"
+     * rather than the name of a channel that is not there any more.
+     * The generation the pool advances is what makes a handle safe;
+     * nothing makes a raw pointer safe, and the boot holds a good
+     * many of those.
+     */
+    ch->c_name = NULL;
+    ch->c_owner = NULL;
+    channel_freed++;
+
+    if (!pool_free(channel_pool(), ch->c_id)) {
+        panic("channel: a slot refused to go back");
+    }
+}
+
 void
 channel_drop(struct channel *ch)
 {
     intr_state_t s;
+    bool last;
 
     if (ch == NULL) {
         return;
@@ -2327,8 +2374,12 @@ channel_drop(struct channel *ch)
         panic("channel %s: let go of more often than held",
           ch->c_name != NULL ? ch->c_name : "?");
     }
-    ch->c_holds--;
+    last = --ch->c_holds == 0;
     objref_leave(s);
+
+    if (last) {
+        channel_free_if_idle(ch);
+    }
 }
 
 /*
@@ -2410,6 +2461,7 @@ mark_channel(uint32_t *held, const struct channel *ch)
  * unreachable because that is what they are.
  */
 uint32_t channel_scans;
+uint32_t channel_freed;
 uint64_t channel_scan_first_ns;
 
 void
@@ -2423,11 +2475,14 @@ channel_scan(struct channel_scan *out)
     uint32_t serving[SYS_MAX_CHANNELS];
     intr_state_t is;
     intr_state_t ks;
-    uint64_t t0, t1, ta, tb, tc, td;
+    uint64_t t0, t1;
     uint32_t i;
     uint32_t left = 0;
+
+    out->cs_stuck_name = NULL;
     uint32_t tables = 0;
     uint32_t stale = 0;
+    uint32_t stuck = 0;
 
     for (i = 0; i < SYS_MAX_CHANNELS; i++) {
         held[i] = 0;
@@ -2502,7 +2557,6 @@ channel_scan(struct channel_scan *out)
 
     }
 
-    ta = time_now();
     for (i = 0; i < conns->count; i++) {
         const struct connection *cn;
 
@@ -2515,7 +2569,6 @@ channel_scan(struct channel_scan *out)
         }
     }
 
-    tb = time_now();
     /*
      * The threads inside a request, counted from the thread's side.
      *
@@ -2537,7 +2590,6 @@ channel_scan(struct channel_scan *out)
         }
     }
 
-    tc = time_now();
     /*
      * And the count the kernel keeps against the count just made.
      *
@@ -2635,17 +2687,36 @@ channel_scan(struct channel_scan *out)
           threads->count);
 
         /*
-         * Free means nothing names it and nobody is inside it. The
-         * lists are counted rather than being given a field of their
-         * own, per the note on c_holds: a thread on one of them is a
-         * fact the channel already holds.
+         * Nothing names it, nobody is standing in it and no pulse is
+         * waiting, and yet here it is. Since stage three that cannot
+         * happen at the moment the last holder lets go, so a slot in
+         * this state became free afterwards, when the last thread
+         * left a list or the last pulse was collected, and nothing
+         * looked again. Counted and asserted to be none, because the
+         * day it is not is the day something has to look again.
+         *
+         * The lists are counted rather than being given a field of
+         * their own, per the note on c_holds: a thread on one of them
+         * is a fact the channel already holds.
          */
-        if (held[i] == 0 && inside == 0) {
+        if (held[i] == 0 && inside == 0 && ch->c_pulse_count == 0) {
             left++;
+        }
+
+        /*
+         * And the ones the free could not take: nothing names them,
+         * and something is standing in them or a pulse is waiting.
+         * Named, because one number says how many and the name says
+         * which, and stage four needs to know which.
+         */
+        if (held[i] == 0 && (inside != 0 || ch->c_pulse_count != 0)) {
+            stuck++;
+            if (out->cs_stuck_name == NULL) {
+                out->cs_stuck_name = ch->c_name;
+            }
         }
     }
 
-    td = time_now();
     out->cs_used = chans->used;
     out->cs_at_once = chans->highwater;
     out->cs_of = chans->count;
@@ -2654,6 +2725,7 @@ channel_scan(struct channel_scan *out)
 
     out->cs_tables = tables;
     out->cs_stale_serving = stale;
+    out->cs_stuck = stuck;
     out->cs_conns = conns->count;
     out->cs_threads = threads->count;
 
@@ -2675,7 +2747,4 @@ channel_scan(struct channel_scan *out)
     if (channel_scan_first_ns == 0) {
         channel_scan_first_ns = out->cs_ns;
     }
-    cnprintf("SPLIT procs %lu conns %lu thr %lu chans %lu\n",
-      (unsigned long)(ta-t0), (unsigned long)(tb-ta),
-      (unsigned long)(tc-tb), (unsigned long)(td-tc));
 }
