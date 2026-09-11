@@ -1086,10 +1086,18 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   thread slots and their kernel stacks. A program that closes the handle
   is reaped normally.
 - A server thread that takes a second request while it still owes a
-  reply on the first is not refused. It loses the client it owed, and it
-  goes onto its channel's serving list a second time, which leaves that
-  list naming a thread that is serving nothing. Section 19.3 says a
-  server thread serves one request at a time; nothing enforces it.
+  reply on the first is not refused. It loses the client it owed, and
+  the record of what it is serving keeps only the second. Section 19.3
+  says a server thread serves one request at a time; nothing enforces
+  it. Until milestone 20 this also made the channel's serving list
+  point at itself when both requests arrived on the same channel,
+  which the console driver does in every session with a line typed at
+  it; nothing walked that list to the end, so nothing noticed. The
+  list is left alone now when the thread is already on it. The case
+  where the second request is on a different channel does not arise in
+  this boot and would be worse if it did: one link field is shared by
+  every serving list, so a thread that moves overwrites the link
+  belonging to the list it came from.
 - A client thread that dies beside a live sibling on the same connection
   is announced by a notice and by nothing else, because the connection
   is still in use. If that notice is lost, the record it named leaks.

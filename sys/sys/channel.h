@@ -43,6 +43,26 @@ struct channel {
     const char     *c_name;
     struct proc    *c_owner;
 
+    /*
+     * What holds this channel, per M20 stage two: one for every handle
+     * in any process's table that names it, and one for every
+     * connection minted on it.
+     *
+     * Two kinds and not four. A thread inside a request on this
+     * channel is on c_serving and has t_serve_ch pointing here, and
+     * serving_begin sets both together, so those are one fact and it
+     * is already on the channel. A thread queued to send or blocked
+     * receiving is on c_senders or c_receivers, which is likewise
+     * already here. A count is for what is somewhere else, and a list
+     * head is cheaper to test than to keep a number for.
+     *
+     * So nothing may take this slot back while c_holds is above zero
+     * or any of the three lists has anything on it. Stage two
+     * maintains the count and checks it; stage three is what acts on
+     * it.
+     */
+    uint32_t        c_holds;
+
     /* Blocked senders, highest priority first. */
     struct thread  *c_senders;
 
@@ -245,6 +265,13 @@ struct channel_scan {
     uint32_t    cs_of;
     uint32_t    cs_unreachable;
 
+    /*
+     * Entries on a serving list whose thread says it is serving
+     * something else, per section 19.3's unenforced rule. Moves with
+     * the session, so it is reported and never compared.
+     */
+    uint32_t    cs_stale_serving;
+
     /* What the walk covered, so the duration beside it means something. */
     uint32_t    cs_tables;
     uint32_t    cs_conns;
@@ -254,6 +281,21 @@ struct channel_scan {
 };
 
 void channel_scan(struct channel_scan *out);
+
+/* How many times the walk has been made and has agreed. */
+extern uint32_t channel_scans;
+
+/* What the first walk cost, which is the emulator and not the walk. */
+extern uint64_t channel_scan_first_ns;
+
+/*
+ * A reference naming this channel was taken, or let go. One per handle
+ * in a process's table and one per connection minted on it, per M20
+ * stage two. Nothing is freed by either: stage three is what acts on
+ * the count reaching zero.
+ */
+void channel_hold(struct channel *ch);
+void channel_drop(struct channel *ch);
 
 /* Link and unlink a connection, which the connection code calls. */
 void channel_conn_add(struct channel *ch, struct connection *cn);

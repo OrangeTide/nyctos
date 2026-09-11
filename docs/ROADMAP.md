@@ -12101,7 +12101,7 @@ hazard in all eight combinations of port, tier and mode and does not
 move; the count of handle tables does, which is why it is above the
 line and not in the file.
 
-**2. A channel knows what holds it.** *Planned.*
+**2. A channel knows what holds it.** *Built.*
 
 - *Check.* A count on the channel, maintained where the other four
   object types are, and a scan that walks every handle table in the
@@ -12111,6 +12111,79 @@ line and not in the file.
 - The scan is expected to disagree the first time it is run, and where
   it disagrees is the deliverable of this stage: the holders nobody had
   written down. Nothing is freed yet.
+
+**What it settled.** `c_holds` counts two things and not four: one for
+every handle in any process's table that names the channel, whatever
+its rights, and one for every connection minted on it. The walk agrees
+with it at four points in the boot, and the number of channels holding
+nothing that the count produces is the same 17 and 16 that stage one's
+independent definition produced.
+
+**Four holders turned out to be three.** Stage one listed a thread
+inside a request as a holder separately from the channel's own serving
+list. They are the same fact: `serving_begin` sets `t_serve_ch` and
+links the thread onto `c_serving` in one place, so counting both
+double-counts, which is what the walk said the first time it ran
+against the new count. The thread lists are therefore tested on the
+channel rather than counted into `c_holds`: a count is for what is
+somewhere else, and a list head is cheaper to test than to keep a
+number for. The two sides are still required to agree, which is the
+only check there has ever been that the pair stays a pair.
+
+**And the walk found something nobody was looking for: the console
+channel's serving list does not end.** Section 19.3 says a server
+thread serves one request at a time and nothing enforces it, which the
+README has listed as a limitation since M16, described as leaving a
+list "naming a thread that is serving nothing". What it actually does,
+when the second request arrives on the *same* channel the thread is
+already serving, is read the thread out of `c_serving` and write it
+back as its own successor. The list becomes a ring. The console driver
+does this in every paced session, when a line is typed at it, and
+nothing in this kernel had ever walked that list to the end, so
+nothing had noticed.
+
+The fix is that `serving_begin` does nothing when the thread is
+already serving that channel. The thread is already recorded as being
+inside a request there, which is what the list is for, and recording
+it twice was never going to tell a walker anything. Refusing the
+second request is section 19.3's business and is not done here.
+
+**The walks are bounded now, and that was learned the hard way.** The
+first version of this check walked the lists to their end, and on a
+paced session it did not come back: the boot printed everything up to
+the interrupt-to-a-program report and then stopped, and a run left for
+four hundred seconds printed nothing more. A diagnostic that hangs the
+machine is worse than one that says what it found, so a walk that
+passes more threads than the machine has now panics with which list it
+was on.
+
+**A correction to stage one's review.** That review reported the walk
+as costing 636 to 760 microseconds and attributed it to "about 800
+iterations at this emulator's speed". It is not. The walk now runs
+five times in a boot, and the first costs 700 to 1090 microseconds
+while every later one costs 43 to 71. The difference is QEMU
+translating the code before it can run it, paid once. The walk itself
+is about 50 microseconds, which also means the region it holds the
+kernel for is a twentieth of the longest region in the boot rather
+than two thirds of it. Both figures are printed.
+
+**Falsified four ways.** Dropping the count when a handle closes fired
+`channel half: the kernel says 2 hold it and 1 do`. Not counting a
+connection fired `channel fs: let go of more often than held`, from
+the other side and earlier than the walk. Putting the self-link back
+fired `channel console: its serving list passes 32 threads and does
+not end`. Removing one of the walk sites fired `channels: 3 walks, not
+4`.
+
+**What did not happen.** The cross-channel case of the same
+limitation, where a thread serving one channel takes a request on
+another, does not occur in this boot: the count of serving entries
+left behind is zero in all eight combinations of port, tier and mode.
+It is worth saying that it would be worse than the README describes if
+it did. `t_serve_next` is one field shared by every serving list, so a
+thread that moves to another channel's list overwrites the link that
+belonged to the first, and the first list runs into the second rather
+than merely holding a stale name.
 
 **3. The last holder frees the slot.** *Planned.*
 

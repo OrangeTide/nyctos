@@ -16,6 +16,7 @@
 #include <sys/connection.h>
 #include <sys/handle.h>
 #include <sys/object.h>
+#include <sys/objref.h>
 #include <sys/proc.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
@@ -39,6 +40,7 @@ channel_create(const char *name, struct proc *owner)
     ch->c_owner = owner;
     ch->c_senders = NULL;
     ch->c_receivers = NULL;
+    ch->c_holds = 0;
 
     /*
      * And what M18 added, said rather than inherited. Nothing here has
@@ -1995,10 +1997,33 @@ channel_owner(const struct channel *ch)
 static void
 serving_begin(struct channel *ch, struct thread *t)
 {
+    /*
+     * Already on this list, and putting it on again made the list
+     * point at itself.
+     *
+     * Section 19.3 says a server thread serves one request at a time
+     * and nothing enforces it, which was known. What was not known is
+     * what happens when the thread takes the second request on the
+     * same channel it is already serving: the line below would read
+     * this thread out of c_serving and write it back as its own
+     * successor, and the list stops ending. M20 stage two's walk found
+     * it in a paced session, where the console driver does exactly
+     * that when a line is typed at it.
+     *
+     * The thread is already recorded as being inside a request on this
+     * channel, which is what the list is for, so recording it twice
+     * was never going to say anything a walker could use. Refusing the
+     * second request is section 19.3's business and is not done here.
+     */
+    if (t->t_serve_ch == ch) {
+        return;
+    }
+
     t->t_serve_ch = ch;
     t->t_serve_next = ch->c_serving;
     ch->c_serving = t;
 }
+
 
 static void
 serving_end(struct thread *t)
@@ -2119,6 +2144,13 @@ channel_conn_add(struct channel *ch, struct connection *cn)
     ch->c_conns = cn;
 
     md_intr_restore(s);
+
+    /*
+     * Outside the region above, because the count is kept under the
+     * lock the other reference counts are kept under rather than
+     * under the one that guards this list.
+     */
+    channel_hold(ch);
 }
 
 void
@@ -2136,6 +2168,8 @@ channel_conn_remove(struct channel *ch, struct connection *cn)
     cn->cn_next = NULL;
 
     md_intr_restore(s);
+
+    channel_drop(ch);
 }
 
 /*
@@ -2251,6 +2285,75 @@ channel_reap(struct channel *ch, bool enable, uint64_t *out)
 }
 
 /*
+ * Something took a reference to this channel, or let one go, per M20
+ * stage two.
+ *
+ * Under the lock the other reference counts are kept under, because
+ * these are called from the same two places: a handle appearing in a
+ * table and a handle leaving one. A connection is the other caller
+ * and it arrives here through channel_conn_add and its pair.
+ *
+ * Nothing is freed here. Stage two exists to find out whether the
+ * count can be made to agree with a scan before anything depends on
+ * the answer, and a free written before that is a free written on
+ * trust.
+ */
+void
+channel_hold(struct channel *ch)
+{
+    intr_state_t s;
+
+    if (ch == NULL) {
+        return;
+    }
+
+    s = objref_enter();
+    ch->c_holds++;
+    objref_leave(s);
+}
+
+void
+channel_drop(struct channel *ch)
+{
+    intr_state_t s;
+
+    if (ch == NULL) {
+        return;
+    }
+
+    s = objref_enter();
+    if (ch->c_holds == 0) {
+        objref_leave(s);
+        panic("channel %s: let go of more often than held",
+          ch->c_name != NULL ? ch->c_name : "?");
+    }
+    ch->c_holds--;
+    objref_leave(s);
+}
+
+/*
+ * How long one of a channel's thread lists is, refusing to walk
+ * further than the machine has threads.
+ */
+static uint32_t
+list_length(const struct channel *ch, const struct thread *head,
+  const char *which, uint32_t limit)
+{
+    const struct thread *t;
+    uint32_t n = 0;
+
+    for (t = head; t != NULL; t = t->t_snext) {
+        if (++n > limit) {
+            panic("channel %s: its %s list passes %u threads and does "
+              "not end", ch->c_name != NULL ? ch->c_name : "?", which,
+              (unsigned int)limit);
+        }
+    }
+
+    return n;
+}
+
+/*
  * Mark the slot a channel occupies, for the scan below.
  *
  * The bound is checked rather than assumed. Every pointer handed here
@@ -2260,7 +2363,7 @@ channel_reap(struct channel *ch, bool enable, uint64_t *out)
  * caller's stack, which is a much worse answer than a wrong count.
  */
 static void
-mark_channel(bool *seen, const struct channel *ch)
+mark_channel(uint32_t *held, const struct channel *ch)
 {
     uint32_t idx;
 
@@ -2272,7 +2375,7 @@ mark_channel(bool *seen, const struct channel *ch)
         panic("channels: a holder named slot %u of %u",
           (unsigned int)idx, (unsigned int)SYS_MAX_CHANNELS);
     }
-    seen[idx] = true;
+    held[idx]++;
 }
 
 /*
@@ -2306,6 +2409,9 @@ mark_channel(bool *seen, const struct channel *ch)
  * in the system will ever put the slot back. They are counted as
  * unreachable because that is what they are.
  */
+uint32_t channel_scans;
+uint64_t channel_scan_first_ns;
+
 void
 channel_scan(struct channel_scan *out)
 {
@@ -2313,16 +2419,19 @@ channel_scan(struct channel_scan *out)
     const struct pool *procs = proc_pool();
     const struct pool *threads = thread_pool();
     const struct pool *conns = connection_pool();
-    bool seen[SYS_MAX_CHANNELS];
+    uint32_t held[SYS_MAX_CHANNELS];
+    uint32_t serving[SYS_MAX_CHANNELS];
     intr_state_t is;
     intr_state_t ks;
     uint64_t t0, t1, ta, tb, tc, td;
     uint32_t i;
     uint32_t left = 0;
     uint32_t tables = 0;
+    uint32_t stale = 0;
 
     for (i = 0; i < SYS_MAX_CHANNELS; i++) {
-        seen[i] = false;
+        held[i] = 0;
+        serving[i] = 0;
     }
 
     /*
@@ -2382,7 +2491,7 @@ channel_scan(struct channel_scan *out)
             if (h->h_type != SYS_OBJ_CHANNEL) {
                 continue;
             }
-            mark_channel(seen, h->h_object);
+            mark_channel(held, h->h_object);
         }
 
         if (found != p->p_handles.ht_used) {
@@ -2402,11 +2511,20 @@ channel_scan(struct channel_scan *out)
         }
         cn = pool_lookup(conns, sys_id_make(i, conns->slots[i].gen));
         if (cn != NULL) {
-            mark_channel(seen, cn->cn_channel);
+            mark_channel(held, cn->cn_channel);
         }
     }
 
     tb = time_now();
+    /*
+     * The threads inside a request, counted from the thread's side.
+     *
+     * Not added to held: serving_begin sets t_serve_ch and links the
+     * thread onto c_serving in one place, so this is the same fact as
+     * the channel's own list rather than a second holder. It is
+     * counted anyway so that the two sides can be required to agree,
+     * which is the only check there is that the pair stays a pair.
+     */
     for (i = 0; i < threads->count; i++) {
         const struct thread *t;
 
@@ -2415,29 +2533,114 @@ channel_scan(struct channel_scan *out)
         }
         t = pool_lookup(threads, sys_id_make(i, threads->slots[i].gen));
         if (t != NULL) {
-            mark_channel(seen, t->t_serve_ch);
+            mark_channel(serving, t->t_serve_ch);
         }
     }
 
     tc = time_now();
+    /*
+     * And the count the kernel keeps against the count just made.
+     *
+     * This is the whole of the stage. Everything above walks what can
+     * name a channel and arrives at a number per slot; c_holds is what
+     * the kernel believes without walking anything. A holder nobody
+     * wrote down shows up here as a slot the walk found and the kernel
+     * did not, and one let go of twice shows up the other way.
+     */
     for (i = 0; i < chans->count; i++) {
         const struct channel *ch;
+        const struct thread *t;
+        uint32_t inside = 0;
 
         if (!chans->slots[i].inuse) {
+            if (held[i] != 0 || serving[i] != 0) {
+                panic("channels: slot %u is free and %u things name it",
+                  (unsigned int)i,
+                  (unsigned int)(held[i] + serving[i]));
+            }
             continue;
         }
         ch = pool_lookup(chans, sys_id_make(i, chans->slots[i].gen));
         if (ch == NULL) {
             continue;
         }
-        if (ch->c_senders != NULL || ch->c_receivers != NULL ||
-          ch->c_serving != NULL) {
-            mark_channel(seen, ch);
-        }
-    }
 
-    for (i = 0; i < chans->count; i++) {
-        if (chans->slots[i].inuse && !seen[i]) {
+        if (ch->c_holds != held[i]) {
+            panic("channel %s: the kernel says %u hold it and %u do",
+              ch->c_name != NULL ? ch->c_name : "?",
+              (unsigned int)ch->c_holds, (unsigned int)held[i]);
+        }
+
+        /*
+         * The serving list against the threads that say they are on
+         * it, and the two do not have to be equal.
+         *
+         * Every thread whose t_serve_ch names this channel is on this
+         * list, because serving_begin does both in one place. The
+         * other direction does not hold, and the reason is the
+         * limitation section 19.3 states and nothing enforces: a
+         * server thread that takes a second request while it still
+         * owes a reply on the first is not refused, and it goes onto
+         * a second channel's list without leaving the first. Its
+         * t_serve_ch names the second, so the first list has an entry
+         * that says it is somewhere else, and when the thread finally
+         * ends its request it unlinks from the second list only.
+         *
+         * So what is asserted is the direction that holds. The other
+         * way round is counted and reported, because it is a real
+         * thing happening in a real session rather than a
+         * possibility: the console driver does it when a line is
+         * typed at it, and this walk is the first thing in this
+         * kernel that has ever noticed.
+         *
+         * It costs nothing to stage three, because a list with
+         * anything on it keeps the slot either way. A stale entry
+         * makes a channel unfreeable rather than freeable, which is
+         * the safe half of the mistake.
+         */
+        for (t = ch->c_serving; t != NULL; t = t->t_serve_next) {
+            uint32_t ti = sys_id_index(t->t_id);
+
+            if (ti >= threads->count || !threads->slots[ti].inuse) {
+                panic("channel %s: its serving list names thread slot "
+                  "%u, which is free",
+                  ch->c_name != NULL ? ch->c_name : "?",
+                  (unsigned int)ti);
+            }
+            if (++inside > threads->count) {
+                panic("channel %s: its serving list passes %u threads "
+                  "and does not end",
+                  ch->c_name != NULL ? ch->c_name : "?",
+                  (unsigned int)threads->count);
+            }
+        }
+        if (serving[i] > inside) {
+            panic("channel %s: %u threads say they serve it and %u "
+              "are on its list",
+              ch->c_name != NULL ? ch->c_name : "?",
+              (unsigned int)serving[i], (unsigned int)inside);
+        }
+        stale += inside - serving[i];
+
+        /*
+         * Bounded, because a walk of a list is a walk of whatever the
+         * list turns out to be. No channel can hold more threads than
+         * the machine has, so a walk that passes that many has found a
+         * loop, and a diagnostic that hangs the machine is worse than
+         * one that says what it found.
+         */
+        inside += list_length(ch, ch->c_senders, "senders",
+          threads->count);
+        inside += list_length(ch, ch->c_receivers, "receivers",
+          threads->count);
+
+        /*
+         * Free means nothing names it and nobody is inside it. The
+         * lists are counted rather than being given a field of their
+         * own, per the note on c_holds: a thread on one of them is a
+         * fact the channel already holds.
+         */
+        if (held[i] == 0 && inside == 0) {
             left++;
         }
     }
@@ -2447,7 +2650,10 @@ channel_scan(struct channel_scan *out)
     out->cs_at_once = chans->highwater;
     out->cs_of = chans->count;
     out->cs_unreachable = left;
+    channel_scans++;
+
     out->cs_tables = tables;
+    out->cs_stale_serving = stale;
     out->cs_conns = conns->count;
     out->cs_threads = threads->count;
 
@@ -2456,6 +2662,19 @@ channel_scan(struct channel_scan *out)
     t1 = time_now();
 
     out->cs_ns = (t1 - t0) * 1000000000ULL / time_hz();
+
+    /*
+     * The first walk kept, because it is ten times the others and the
+     * difference is the emulator rather than the kernel. A walk this
+     * code has not made before is a walk QEMU has to translate before
+     * it can run, and the translation is paid once: the first is about
+     * 700 microseconds and every later one is about 70. Anything read
+     * from the first figure is a statement about a just-in-time
+     * compiler.
+     */
+    if (channel_scan_first_ns == 0) {
+        channel_scan_first_ns = out->cs_ns;
+    }
     cnprintf("SPLIT procs %lu conns %lu thr %lu chans %lu\n",
       (unsigned long)(ta-t0), (unsigned long)(tb-ta),
       (unsigned long)(tc-tb), (unsigned long)(td-tc));

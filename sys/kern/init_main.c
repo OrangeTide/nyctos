@@ -3264,6 +3264,66 @@ lent_permission_checks(sys_handle_t root)
  * So this asserts the address against the archive, and that the page is
  * read-only, which is what the loader chose for it.
  */
+/* Walks made by the time channel_checks reports, including its own. */
+#define CHANNEL_SCANS_EXPECTED    4
+
+/*
+ * The count against a walk, per M20 stage two.
+ *
+ * Run at points through the boot rather than only at the end, because
+ * a count that is wrong and then right again is a count that cannot be
+ * trusted, and the end of a boot is the one moment when everything has
+ * finished letting go. The walk itself does the comparing and stops
+ * the machine on a disagreement; this is only where it is asked.
+ *
+ * What it costs is the reason there are five of these and not fifty.
+ * Each holds the kernel lock with interrupts off for about seven
+ * hundred microseconds, which is less than the longest region in this
+ * boot and not by much, so they are placed at the boundaries between
+ * groups of checks where nothing is part-way through.
+ */
+static void
+channel_count_check(void)
+{
+    struct channel_scan cs;
+
+    channel_scan(&cs);
+}
+
+/*
+ * And what the walks found, said once.
+ *
+ * The count of walks is asserted because a check that silently stopped
+ * running would leave this section printing a reassuring line about
+ * nothing. What the walks agreed about is not printed per walk: they
+ * either all agreed or the machine stopped inside one.
+ */
+static void
+channel_checks(void)
+{
+    struct channel_scan cs;
+
+    cnputs("channels: what holds one, counted and walked\n");
+
+    channel_scan(&cs);
+
+    cnprintf("    %-38s %u times, all agreeing\n",
+      "the kernel's count against a walk", (unsigned int)channel_scans);
+    cnprintf("    %-38s %u of %u, %u held by nothing\n",
+      "slots in use at this point", (unsigned int)cs.cs_used,
+      (unsigned int)cs.cs_of, (unsigned int)cs.cs_unreachable);
+
+    if (channel_scans < CHANNEL_SCANS_EXPECTED) {
+        panic("channels: %u walks, not %u",
+          (unsigned int)channel_scans,
+          (unsigned int)CHANNEL_SCANS_EXPECTED);
+    }
+    if (cs.cs_unreachable == 0) {
+        panic("channels: nothing is held by nothing, at the point "
+          "where the checks have all run");
+    }
+}
+
 static void
 startup_record_checks(void)
 {
@@ -14427,6 +14487,8 @@ kernel_main(void)
     pool_stress_checks();
 #endif
 
+    channel_count_check();
+
     cnputs("the slice: a file read from another process\n");
     slice_checks();
 
@@ -14440,6 +14502,8 @@ kernel_main(void)
     cnputs("spawn: a program that starts a program\n");
     spawn_checks();
 
+    channel_count_check();
+
     cnputs("faults: what the hardware raises, and who dies of it\n");
     fault_checks();
 
@@ -14448,6 +14512,8 @@ kernel_main(void)
 
     cnputs("threads: a program with more than one\n");
     thread_checks();
+
+    channel_count_check();
 
     cnputs("the console: a driver process, and a line typed at it\n");
     console_service();
@@ -14491,6 +14557,8 @@ kernel_main(void)
           "connections in use after all of it",
           (unsigned int)connection_pool()->used);
     }
+
+    channel_checks();
 #if SYS_TIER == 2
     asid_checks();
     asid_reuse_checks();
@@ -14801,10 +14869,15 @@ kernel_main(void)
 
         channel_scan(&cs);
         cnprintf("channels: %u tables, %u connections, %u threads and "
-          "%u slots walked with the kernel held, about %lu us\n",
+          "%u slots walked with the kernel held, about %lu us, and "
+          "%lu us the first time\n",
           (unsigned int)cs.cs_tables, (unsigned int)cs.cs_conns,
           (unsigned int)cs.cs_threads, (unsigned int)cs.cs_of,
-          (unsigned long)(cs.cs_ns / 1000));
+          (unsigned long)(cs.cs_ns / 1000),
+          (unsigned long)(channel_scan_first_ns / 1000));
+        cnprintf("    %-38s %u\n",
+          "serving entries left by a second request",
+          (unsigned int)cs.cs_stale_serving);
         channel_report = cs;
     }
 

@@ -95,6 +95,16 @@ handle_object_retain(const struct handle_table *ht, uint32_t type,
     if (type == SYS_OBJ_CHANNEL && (rights & SYS_RIGHT_RECV) != 0) {
         channel_set_owner(obj, ht->ht_proc);
     }
+
+    /*
+     * And the channel is held by the handle, per M20 stage two.
+     * Whatever the rights: a send handle is as good a reason not to
+     * take the slot back as a receive handle, and better, since it is
+     * the one a client holds.
+     */
+    if (type == SYS_OBJ_CHANNEL) {
+        channel_hold(obj);
+    }
 }
 
 void
@@ -175,6 +185,11 @@ handle_object_release(const struct handle_table *ht, uint32_t type,
     if (type == SYS_OBJ_CHANNEL && (rights & SYS_RIGHT_RECV) != 0 &&
       channel_owner(obj) == ht->ht_proc) {
         channel_set_owner(obj, NULL);
+    }
+
+    /* And the handle that held it is gone, per M20 stage two. */
+    if (type == SYS_OBJ_CHANNEL) {
+        channel_drop(obj);
     }
 }
 
