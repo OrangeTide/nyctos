@@ -3967,6 +3967,204 @@ restart_checks(void)
     }
 }
 
+/*
+ * More channels than the pool has, per M20 stage six.
+ *
+ * M13's shape, which is the one that actually proves reuse. Stage
+ * five spends a channel at a time, fifty-two of them, and that says
+ * a slot comes back. It does not say the pool can carry a load: one
+ * slot going round is the easiest case there is, and a kernel that
+ * leaked a slot for every two it freed would pass it.
+ *
+ * So this holds several at once and does it over and over. Eight
+ * alive together, sixty-four times, which is more cycles than the
+ * pool has slots and more than ten times as many channels as exist.
+ * The assertion with teeth is the high-water mark: the first cycle
+ * sets it, and no cycle after it may move it. A pool that handed out
+ * a fresh slot each time while freeing the old ones would climb, and
+ * so would one that leaked a fraction.
+ *
+ * Every channel here is closed down two different ways, because
+ * there are two orders and they take different paths through the
+ * free. Closing the receive handle first leaves the connection
+ * holding the slot; closing the send handle first leaves the handle
+ * holding it. Either way the last one out is what gives it back.
+ */
+#define SPEND_CYCLES      (SYS_MAX_CHANNELS + 16u)
+#define SPEND_AT_ONCE     8u
+
+/*
+ * Order a cycle's slots so two cycles can be compared. Eight of them,
+ * so the sort is the obvious one, and the generation travels with the
+ * slot because what is being compared is both.
+ */
+static void
+sort_slots(uint32_t *slot, uint64_t *gen, uint32_t n)
+{
+    uint32_t i, j;
+
+    for (i = 1; i < n; i++) {
+        uint32_t s = slot[i];
+        uint64_t g = gen[i];
+
+        for (j = i; j > 0 && slot[j - 1] > s; j--) {
+            slot[j] = slot[j - 1];
+            gen[j] = gen[j - 1];
+        }
+        slot[j] = s;
+        gen[j] = g;
+    }
+}
+
+static void
+channel_endurance_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_connect_args cargs;
+    uint32_t base = channel_pool()->used;
+    uint32_t first[SPEND_AT_ONCE];
+    uint64_t seen[SPEND_AT_ONCE];
+    uint32_t peak = 0;
+    uint32_t spent = 0;
+    uint32_t cycle, i;
+    uint64_t started, took;
+
+    cnputs("channels spent: more of them than the pool has slots\n");
+
+    if (base + SPEND_AT_ONCE > SYS_MAX_CHANNELS) {
+        panic("spent: %u slots in use, so %u more will not fit",
+          (unsigned int)base, (unsigned int)SPEND_AT_ONCE);
+    }
+
+    started = time_now();
+
+    for (cycle = 0; cycle < SPEND_CYCLES; cycle++) {
+        sys_handle_t recv[SPEND_AT_ONCE], send[SPEND_AT_ONCE];
+        sys_id_t id[SPEND_AT_ONCE];
+        uint32_t slot[SPEND_AT_ONCE];
+        uint64_t gen[SPEND_AT_ONCE];
+
+        for (i = 0; i < SPEND_AT_ONCE; i++) {
+            struct channel *ch = channel_create("spent", self);
+
+            if (ch == NULL) {
+                panic("spent: no channel on cycle %u, %u in",
+                  (unsigned int)cycle, (unsigned int)i);
+            }
+            id[i] = ch->c_id;
+            slot[i] = sys_id_index(id[i]);
+            gen[i] = sys_id_gen(id[i]);
+
+            if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+              SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER,
+              &recv[i]) != SYS_OK) {
+                panic("spent: no handle on cycle %u",
+                  (unsigned int)cycle);
+            }
+            memset(&cargs, 0, sizeof(cargs));
+            cargs.rights = SYS_RIGHT_SEND;
+            if (run(SYS_OP_CHAN_CONNECT, recv[i], &cargs,
+              sizeof(cargs)) != SYS_OK) {
+                panic("spent: no connection on cycle %u",
+                  (unsigned int)cycle);
+            }
+            send[i] = cargs.out_handle;
+            spent++;
+        }
+
+        /*
+         * The same slots as the first cycle and not merely the same
+         * number of them, which is stage three's rule applied to a
+         * load rather than to one channel. The generation has to
+         * have moved on for every one of them as well: a slot that
+         * came back with the generation it went in with would mean
+         * an identifier somebody kept still names it.
+         */
+        sort_slots(slot, gen, SPEND_AT_ONCE);
+        for (i = 0; i < SPEND_AT_ONCE; i++) {
+            if (cycle == 0) {
+                first[i] = slot[i];
+                seen[i] = gen[i];
+                continue;
+            }
+            if (slot[i] != first[i]) {
+                panic("spent: cycle %u took slot %u where the first "
+                  "took %u", (unsigned int)cycle,
+                  (unsigned int)slot[i], (unsigned int)first[i]);
+            }
+            if (gen[i] <= seen[i]) {
+                panic("spent: slot %u came back on generation %lu, "
+                  "having gone in on %lu", (unsigned int)slot[i],
+                  (unsigned long)gen[i], (unsigned long)seen[i]);
+            }
+            seen[i] = gen[i];
+        }
+
+        for (i = 0; i < SPEND_AT_ONCE; i++) {
+            sys_handle_t a = (i & 1u) == 0 ? recv[i] : send[i];
+            sys_handle_t b = (i & 1u) == 0 ? send[i] : recv[i];
+
+            if (handle_close(ht, a) != SYS_OK) {
+                panic("spent: a handle was already gone on cycle %u",
+                  (unsigned int)cycle);
+            }
+            if (!slot_alive(id[i])) {
+                panic("spent: the slot went with one holder left on "
+                  "cycle %u", (unsigned int)cycle);
+            }
+            if (handle_close(ht, b) != SYS_OK) {
+                panic("spent: the other handle was already gone on "
+                  "cycle %u", (unsigned int)cycle);
+            }
+            if (slot_alive(id[i])) {
+                panic("spent: the slot outlived both its handles on "
+                  "cycle %u", (unsigned int)cycle);
+            }
+        }
+
+        if (channel_pool()->used != base) {
+            panic("spent: %u in use after cycle %u, not %u",
+              (unsigned int)channel_pool()->used,
+              (unsigned int)cycle, (unsigned int)base);
+        }
+        if (cycle == 0) {
+            peak = channel_pool()->highwater;
+        } else if (channel_pool()->highwater != peak) {
+            panic("spent: the mark went from %u to %u on cycle %u",
+              (unsigned int)peak,
+              (unsigned int)channel_pool()->highwater,
+              (unsigned int)cycle);
+        }
+    }
+
+    took = time_now() - started;
+
+    if (spent != SPEND_CYCLES * SPEND_AT_ONCE) {
+        panic("spent: %u channels, not %u", (unsigned int)spent,
+          (unsigned int)(SPEND_CYCLES * SPEND_AT_ONCE));
+    }
+
+    /*
+     * The two numbers the stage exists to print beside each other,
+     * and what the count of them cost. How long it took is the
+     * host's and is reported rather than asserted, per M9's rule.
+     */
+    cnprintf("    %-38s %u, of %u slots\n", "channels made and ended",
+      (unsigned int)spent, (unsigned int)SYS_MAX_CHANNELS);
+    cnprintf("    %-38s %u cycles, %u alive at a time\n",
+      "spent in", (unsigned int)SPEND_CYCLES,
+      (unsigned int)SPEND_AT_ONCE);
+    cnprintf("    %-38s %u, from the first cycle on\n",
+      "the high-water mark", (unsigned int)peak);
+    cnprintf("    %-38s %u, where it started\n",
+      "slots in use after all of it", (unsigned int)base);
+    cnprintf("    %-38s about %lu us, %lu us a channel\n",
+      "what the whole of it took",
+      (unsigned long)(took * 1000000ULL / time_hz()),
+      (unsigned long)(took * 1000000ULL / time_hz() / spent));
+}
+
 /* Walks made by the time channel_checks reports, including its own. */
 #define CHANNEL_SCANS_EXPECTED    4
 
@@ -15380,6 +15578,7 @@ kernel_main(void)
 
     channel_hold_checks();
     restart_checks();
+    channel_endurance_checks();
     channel_checks();
 #if SYS_TIER == 2
     asid_checks();

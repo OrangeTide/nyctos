@@ -12503,7 +12503,7 @@ kill fired `restarts: 2 hold a channel the server owns`, which is the
 new assertion catching from the client's side what the earlier
 falsification caught from the kernel's.
 
-**6. More channels than the pool has.** *Planned.*
+**6. More channels than the pool has.** *Built.*
 
 - *Check.* M13's shape, which is the one that actually proves reuse: a
   path that spends channels, run more times than there are slots, with
@@ -12511,6 +12511,88 @@ falsification caught from the kernel's.
   and the high-water mark does not move after the first cycle.
 - Falsifiable by the pool running out, which is what happens today
   after 48 of them.
+
+**What it settled.** **Five hundred and twelve channels were made and
+ended on a pool of forty-eight**, sixty-four cycles of eight alive
+together, and the pool came back to where it started after every one
+of them.
+
+```
+    channels made and ended                512, of 48 slots
+    spent in                               64 cycles, 8 alive at a time
+    the high-water mark                    21, from the first cycle on
+    slots in use after all of it           13, where it started
+    what the whole of it took              about 51086 us, 99 us a channel
+```
+
+Stage five already spent fifty-two, one at a time, which says a slot
+comes back. It does not say the pool can carry a load. One slot going
+round is the easiest case there is, and a kernel that leaked a slot
+for every two it freed would pass it. Eight at once and sixty-four
+times is the case that separates them.
+
+**The mark is set by the first cycle and nothing after it moves it.**
+Twenty at Tier 0 and twenty-one at Tier 2, from a pool sitting at
+twelve or thirteen when the check starts. That is the assertion M13's
+loop is built around, and it fails for a kernel that hands out a fresh
+slot each time while freeing the old ones as surely as for one that
+leaks.
+
+**And it cost the boot's own figure nothing.** The compared line still
+says `23 in use, 24 at once` at Tier 2, unchanged by five hundred and
+twelve channels, because the check's peak of twenty-one is below what
+the shell reaches later anyway. What moved is the count given back, 76
+to 588, which is the whole of what this stage adds to the report.
+
+**The same slots every cycle, and never the same generation.** The
+eight slots a cycle takes are sorted and compared against the eight
+the first cycle took: the same set, sixty-three times over. Each one's
+generation has to be strictly greater than the last time that slot was
+seen, which is what says the slot was genuinely handed back rather
+than never given up. Stage three checks this for one channel; this is
+the same rule under load, where a pool with an off-by-one in its free
+list would show it.
+
+**Both orders out.** A channel here is held by a handle and by a
+connection, and which one lets go last decides which path through the
+free runs. Half the channels in a cycle close the receive handle
+first, leaving the connection holding the slot, and half close the
+send handle first, leaving the handle holding it. After the first
+close the slot is required to still be there, and after the second to
+be gone. Asserting only the second half would pass on a kernel that
+freed the channel at the first close and got away with it.
+
+**What a channel costs, reported and not asserted.** Between 72 and
+105 microseconds for a create, a handle, a connection and two closes,
+across both ports, both tiers and both modes; 37 to 63 milliseconds
+for the whole check. That is the host's figure and it is above no
+compared line, per M9's rule. It is also why this check sits where it
+does: sixty milliseconds does not move the shell, and M13's loop had
+to be moved to the end of the boot for costing two seconds.
+
+**Falsified five ways, and two of them never got here.** Removing the
+free entirely fired stage four first, `holds: the slot stayed after
+everybody left`, and refusing one free in sixteen fired stage four as
+well, `holds: the slot stayed after the connection went`. That is the
+right order and it is worth writing down: a leak big enough to matter
+is caught by a check that makes four channels, long before a check
+that makes five hundred sees it. To reach this stage at all, the
+defect had to be scoped to the channels it spends.
+
+Scoped that way, never freeing them fired `spent: the slot outlived
+both its handles on cycle 0`; leaking one in sixteen of them fired the
+same assertion on cycle 1. Putting a freed slot on the back of the
+free list rather than the front, so that a fresh slot comes out each
+time, fired `spent: cycle 1 took slot 21 where the first took 13`.
+Taking two extra slots and giving them straight back at the peak of a
+later cycle, which no per-slot assertion can see, fired `spent: the
+mark went from 21 to 23 on cycle 2`.
+
+**What the last of those says about the mark.** Every leak this stage
+can see shows first in the count of slots in use, which is asserted
+back to where it started after each cycle. The high-water assertion
+earns its place on the one thing that assertion cannot see: a peak
+reached inside a cycle and gone by the end of it.
 
 **7. What it cost, and sections 8 and 12 written around it.** *Planned.*
 
