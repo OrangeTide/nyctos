@@ -12466,6 +12466,43 @@ fifty-three servers and leaves one client to time out. Both are in the
 compared report and both were updated with the reason written where
 the number is.
 
+**What the review found: the stage had no clients.** The title says a
+server that restarts under its clients, and the fifty-two rounds did
+not have one. Each round made the channel, gave it to a server, killed
+the server and waited for the slot. Nothing ever sent on it, so what
+was being measured was a server that restarts, which M16 already
+built. Each round now keeps a send handle of its own across the kill,
+sends a request and requires a reply before killing, and asserts that
+exactly one thing holds the channel at the moment the kill goes in.
+Fifty-two requests are served, which is asserted rather than reported,
+and a round where the server never ran would now be caught by the
+missing reply rather than by the count of slots at the end.
+
+That also removes the wait for the server to reach its receive point,
+which was working around the kill defect above by guessing at timing.
+A reply is proof the server ran, and it is a fact rather than a guess.
+
+**A read through a pointer that the check is about.** The loop that
+held a client across the restart read `channel_holds` through the
+channel pointer it had kept. If the slot had gone and been reused,
+that reads the new occupant's count and says the check passed. It is
+exactly the case the stage exists to detect, read in the way that
+cannot detect it. The loop keeps the identifier and looks it up each
+round; a lookup that returns nothing panics with `restarts: the
+channel went under a live client`.
+
+**Two spin loops with no bound.** Stage four waited for a sender to
+queue and for a receiver to arrive by yielding until the list was
+non-empty, which on a kernel that never puts them there is a paced
+session that stops printing, the same failure stage two spent a boot
+diagnosing. Both wait a second and then panic with what never
+happened.
+
+**Falsified once more.** Leaving the client's handle open across the
+kill fired `restarts: 2 hold a channel the server owns`, which is the
+new assertion catching from the client's side what the earlier
+falsification caught from the kernel's.
+
 **6. More channels than the pool has.** *Planned.*
 
 - *Check.* M13's shape, which is the one that actually proves reuse: a
