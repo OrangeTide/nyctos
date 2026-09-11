@@ -348,6 +348,25 @@ extern uint64_t proc_kills;
 extern uint64_t proc_kill_pokes;
 
 /*
+ * Threads ended on the way into user mode for the first time, per M21
+ * stage two, split by which trampoline they were on: a program's own
+ * first thread, and a thread the program made. Both paths run the
+ * same check and only the first is reached by anything before M21
+ * stage five, which is why the two are counted apart rather than
+ * together.
+ */
+extern uint64_t proc_unrun_programs;
+extern uint64_t proc_unrun_threads;
+
+/*
+ * And how many of those found this core already holding the kernel
+ * lock, which is a thread first dispatched by a core that was inside
+ * the kernel. The branch exists because nothing forbids it; the count
+ * says whether anything does it.
+ */
+extern uint64_t proc_unrun_locked;
+
+/*
  * Whether a range of addresses is memory this process owns, per section
  * 23.2. A buffer descriptor a program passes is checked against this
  * before anything reads it: a number is not a right, and the kernel

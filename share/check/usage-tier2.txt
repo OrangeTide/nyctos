@@ -2,8 +2,9 @@ used at most: 24 of 32 threads, 13 of 24 processes
   kernel stacks under those threads: 98304 bytes
   buffer remapping: 46 pages in 46 halves, 92 entries, 7 tables, 46 invalidations, 0 flushes
   measured regions: 1024 entries and 2048, 8192 shared
-  kills: 70 written, pokes 1, clients told 3
-  kills a thread outlasted: 1, entries started while marked: 1
+  kills: 69 written, pokes 1, clients told 3
+  killed before ever running: 1, 1 a program and 0 a thread it made, 0 entries
+  of those, found inside the kernel: 0
   peers: 8 collected, pulses 1 dropped and 11 evicted
   senders: 2 refused, 2 displaced
   connections: 7 in use, 12 at once

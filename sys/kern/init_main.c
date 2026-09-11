@@ -5902,7 +5902,7 @@ kill_reach_checks(void)
  * what cancellation was built for. That is the shape of M20 stage
  * five's workaround and it is written here as the recovery it is.
  */
-static uint32_t kills_outlasted;
+static uint32_t kills_reached;
 static uint64_t marked_entries;
 
 /*
@@ -5963,7 +5963,7 @@ kill_unrun_checks(void)
     struct child c;
     sys_ns_spec_t ns[1];
     sys_handle_t give, h;
-    uint64_t until, killed, waited;
+    uint64_t killed, waited;
     uint32_t state = 0;
     uint32_t wait = 0;
     uint64_t points = 0;
@@ -6055,30 +6055,18 @@ kill_unrun_checks(void)
      * anything: what is being shown is that it gets all the way to a
      * receive and stays there.
      */
-    until = time_now() + time_from_ms(JOIN_MS);
-    for (;;) {
-        if (!first_thread_state(c.c_proc, &state, &wait, &points,
-          &exited)) {
-            break;
-        }
-        if (exited || (state == THREAD_BLOCKED &&
-          wait == THREAD_WAIT_RECV)) {
-            break;
-        }
-        if (time_now() > until) {
-            panic("unrun: the server neither died nor blocked, "
-              "state %u", (unsigned int)state);
-        }
-        sched_yield();
-    }
+    /*
+     * And now it ends without ever having run, which is what stage
+     * two built and what stage one asserted the opposite of. The join
+     * is the statement: a supervisor that asked for this process to
+     * stop is told it has, inside a deadline this check names rather
+     * than inside however long the program felt like waiting.
+     */
+    code = child_join(&c, JOIN_MS);
     waited = time_now();
-
-    if (exited) {
-        panic("unrun: the kill worked, so there is nothing to fix");
-    }
-    if (state != THREAD_BLOCKED || wait != THREAD_WAIT_RECV) {
-        panic("unrun: the server is in state %u, waiting on %u",
-          (unsigned int)state, (unsigned int)wait);
+    if (code != KILL_CODE) {
+        panic("unrun: it came back with %d, not %d", (int)code,
+          (int)KILL_CODE);
     }
 
     /*
@@ -6094,47 +6082,36 @@ kill_unrun_checks(void)
         panic("unrun: it poked %lu cores for a thread that had never "
           "run", (unsigned long)c.c_proc->p_kill_pokes);
     }
-    kills_outlasted++;
-    marked_entries += c.c_proc->p_dying_entries;
-
-    cnprintf("    %-38s %s\n", "a server killed before it ran",
-      "blocked in a receive, not dead");
-    cnprintf("    %-38s %lu\n", "entries it started while marked",
-      (unsigned long)c.c_proc->p_dying_entries);
-    cnprintf("    %-38s about %lu us\n",
-      "how long it took to get there",
-      (unsigned long)((waited - killed) * 1000000ULL / time_hz()));
-
     /*
-     * The second kill, which is the recovery and also the measurement
-     * that says where the difference is. Nothing about the process
-     * changed except that its thread is now blocked, and that is the
-     * whole of what the first kill was missing.
+     * It made no entry, which is the second half of stage one's
+     * finding gone. The count is of entries a marked thread started,
+     * and a thread stopped before user mode starts none.
      */
-    memset(&kargs, 0, sizeof(kargs));
-    kargs.code = KILL_CODE;
-    if (run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)) != SYS_OK) {
-        panic("unrun: the second kill was refused");
+    marked_entries += c.c_proc->p_dying_entries;
+    if (c.c_proc->p_dying_entries != 0) {
+        panic("unrun: it started %lu entries on its way out",
+          (unsigned long)c.c_proc->p_dying_entries);
     }
-    code = child_join(&c, JOIN_MS);
-    if (code != KILL_CODE) {
-        panic("unrun: it came back with %d, not %d", (int)code,
-          (int)KILL_CODE);
+    if (proc_unrun_programs == 0) {
+        panic("unrun: it ended somewhere other than the trampoline");
     }
+    kills_reached++;
+
     if (handle_close(ht, h) != SYS_OK) {
         panic("unrun: the spawn handle was already gone");
     }
-    cnprintf("    %-38s %s\n", "and a second kill, with it blocked",
-      "ended it");
+
+    cnprintf("    %-38s %s\n", "a server killed before it ran",
+      "ended, and never reached user mode");
+    cnprintf("    %-38s %lu\n", "entries it started while marked",
+      (unsigned long)0);
     cnprintf("    %-38s about %lu us\n",
-      "the second kill, end to end",
-      (unsigned long)((time_now() - waited) * 1000000ULL /
-      time_hz()));
+      "from the kill to the join returning",
+      (unsigned long)((waited - killed) * 1000000ULL / time_hz()));
 }
 
 /*
  * A kill that has to cause the entry, per M17 stage three.
-
  *
  * Stage two put the mark where a trap returns to user mode, and found
  * that on one core it is enough for a reason that is not the hook: a
@@ -16334,20 +16311,29 @@ kernel_main(void)
      * went on to start with the mark already set. Both are what the
      * checks ask for and neither moves with the host.
      *
-     * Both are asserted above zero, which is the opposite of what
-     * they will be asserted at. If a kill at that moment worked there
-     * would be nothing here to build, and stage two is what turns
-     * these over.
+     * Stage one asserted the opposite of all of this, and said so:
+     * a kill that reached nothing and an entry started after it were
+     * the subject of the milestone. Stage two turns them over. The
+     * two trampolines are counted apart because only one of them is
+     * reached by anything before stage five, and a check that added
+     * them together would not notice the other going missing.
      */
-    cnprintf("  kills a thread outlasted: %u, entries started "
-      "while marked: %lu\n", (unsigned int)kills_outlasted,
+    cnprintf("  killed before ever running: %u, %lu a program and "
+      "%lu a thread it made, %lu entries\n",
+      (unsigned int)kills_reached, (unsigned long)proc_unrun_programs,
+      (unsigned long)proc_unrun_threads,
       (unsigned long)marked_entries);
-    if (kills_outlasted == 0) {
-        panic("kills: every kill reached its thread, so there is "
-          "nothing to fix");
+    cnprintf("  of those, found inside the kernel: %lu\n",
+      (unsigned long)proc_unrun_locked);
+    if (kills_reached == 0) {
+        panic("kills: no kill reached a thread that had never run");
     }
-    if (marked_entries == 0) {
-        panic("kills: no entry was started by a marked thread");
+    if (proc_unrun_programs == 0) {
+        panic("kills: nothing ended at a program's own trampoline");
+    }
+    if (marked_entries != 0) {
+        panic("kills: %lu entries were started after the mark",
+          (unsigned long)marked_entries);
     }
 
     /*

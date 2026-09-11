@@ -13028,6 +13028,64 @@ rather than an independent one, and it is written here as that.
 - Falsifiable by removing either check: the join runs out its
   deadline, which is the failure this stage exists to stop.
 
+**What it settled.** Both trampolines read the mark. The compared
+report, at both tiers:
+
+```
+  killed before ever running: 1, 1 a program and 0 a thread it made, 0 entries
+  of those, found inside the kernel: 0
+```
+
+Stage one's two assertions are turned over rather than deleted. It
+asserted that a kill at that moment reached nothing and that the
+thread went on to start an entry anyway; what is asserted now is that
+the kill reaches it, that it ends at a trampoline rather than
+somewhere else, and that it starts no entry at all. A supervisor is
+told the process has stopped 365 to 509 microseconds after asking,
+against never.
+
+**The third way into user mode.** The interrupt path, the fault path
+and the system call path all call `proc_exit_if_dying`, and section
+10.5's subsection lists the first two as where the mark is read. The
+third is not a way back out of anything: `proc_user_start` and
+`proc_thread_start` run in kernel mode on the new thread's own stack
+and drop into user mode, and a thread that has never run has no trap
+to return from. That is the whole defect, and the fix is one call in
+each.
+
+**The lock was the question the plan said to answer first, and the
+answer is that it is not held.** `proc_exit_if_dying` is documented
+as being called with the kernel lock held, because `thread_exit`
+switches away and hands the lock to whichever thread runs next.
+Measured over a boot, all 2557 arrivals at these trampolines found it
+free: a dispatch is made with interrupts off and not with the lock.
+So the check takes it when this core does not already hold it, which
+is M20 stage three's arrangement for the same reason, and the other
+branch is counted. It is zero in this boot, because nothing here
+first-dispatches a thread from inside the kernel, and the count is in
+the report so that the day something does, the line says so.
+
+What is not restored is the interrupt state `klock_enter` returns.
+Nothing comes back from there: the thread ends, and the thread that
+runs next puts the lock down and the state back on its own way out,
+which is the contract the trap paths already rely on.
+
+**Both trampolines, counted apart.** Only a program's own first
+thread is reached by anything in this boot, so the two counts are
+separate and a check that added them together would not notice one
+going missing. The second is stage five's construction, and until
+then the line reads a zero that is honest rather than absent.
+
+**Falsified, and one guard could not be.** Taking the check out of
+the program's trampoline fired `join echoes: it did not finish, or
+its exit advanced nothing`, which is the deadline running out and is
+the failure the stage exists to stop. Taking out the lock
+acquisition changed nothing this host can see: the boot completed
+with the exit made from an unlocked trampoline. That guard is there
+because the contract says so and because a first dispatch from inside
+the kernel would need it, not because anything here demonstrates it,
+and it is written down as that rather than counted as a check.
+
 **3. The mark before an entry, and not only after it.** *Planned.*
 
 - *Check.* A marked thread does not begin an operation. Entries

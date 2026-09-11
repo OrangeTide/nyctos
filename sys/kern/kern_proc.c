@@ -12,6 +12,7 @@
 #include <sys/cpu.h>
 #include <sys/handle.h>
 #include <sys/intr.h>
+#include <sys/lock.h>
 #include <sys/object.h>
 #include <sys/objref.h>
 #include <sys/sched.h>
@@ -535,8 +536,67 @@ proc_load(struct proc *p, const struct boot_member *m)
 #endif /* SYS_TIER == 2 */
 
 /*
+ * The mark, read on the way into user mode for the first time, per
+ * M21 stage two.
+ *
+ * Section 10.5 says a kill unblocks every thread of its target, and
+ * leaves a thread that is not blocked to find the mark on its way
+ * back out. Every way back out reads it: the interrupt path, the
+ * fault path and the system call path all call
+ * `proc_exit_if_dying`. There is a third way into user mode that is
+ * not a way back out of anything, and it is this one. A thread that
+ * has never run has no trap to return from, so nothing looked, and a
+ * process killed between its spawn and its first instruction ran
+ * anyway. M21 stage one measured it: the thread reached user mode,
+ * made one system call and blocked in it for ever.
+ *
+ * The lock is the part that is not obvious. `proc_exit_if_dying` is
+ * documented as being called with the kernel lock held, because
+ * `thread_exit` switches away and hands the lock to whichever thread
+ * runs next. Here it is not held: measured over a boot, every one of
+ * 2557 arrivals at these trampolines found it free, because a
+ * dispatch is made with interrupts off and not with the lock. That
+ * is not something to rely on, since a thread can be first dispatched
+ * by a core that is inside the kernel, so the lock is taken when this
+ * core does not already hold it, which is the arrangement M20 stage
+ * three used for the same reason.
+ *
+ * What is not restored is the interrupt state `klock_enter` returns.
+ * Nothing comes back from here to restore it: the thread ends, and
+ * the thread that runs next puts the lock down and the state back on
+ * its own way out. That is the contract the trap paths already rely
+ * on, not a new one.
+ */
+static void
+exit_before_user(bool made)
+{
+    const struct thread *t = thread_current();
+    const struct proc *p = (t != NULL) ? t->t_proc : NULL;
+
+    if (p == NULL || !p->p_dying) {
+        return;
+    }
+
+    if (klock_held()) {
+        proc_unrun_locked++;
+    } else {
+        (void)klock_enter();
+    }
+
+    if (made) {
+        proc_unrun_threads++;
+    } else {
+        proc_unrun_programs++;
+    }
+
+    proc_exit_if_dying();
+    panic("proc: a killed thread came back from its own exit");
+}
+
+/*
  * The first thing a loaded program's thread runs, in kernel mode, on the
- * thread's own kernel stack. It drops to user mode and does not come back;
+ * thread's own kernel stack.
+ It drops to user mode and does not come back;
  * the stack it leaves behind is where the trap path will build its frame
  * on the next system call, which is why the trampoline must not return.
  */
@@ -547,6 +607,7 @@ proc_user_start(void *arg)
 
     (void)arg;
     intr_region_end((uintptr_t)__builtin_return_address(0));
+    exit_before_user(false);
     enter_user(p->p_entry, (void *)p->p_startup_va, 0);
 }
 
@@ -1472,6 +1533,7 @@ proc_thread_start(void *arg)
 
     (void)arg;
     intr_region_end((uintptr_t)__builtin_return_address(0));
+    exit_before_user(true);
     enter_user(t->t_uentry, (void *)t->t_uarg, t->t_ustack);
 }
 
@@ -1817,6 +1879,10 @@ proc_threads(struct proc *p)
  * them took is the host's and is reported above the compared line.
  */
 uint64_t proc_kills;
+
+uint64_t proc_unrun_programs;
+uint64_t proc_unrun_threads;
+uint64_t proc_unrun_locked;
 uint64_t proc_kill_pokes;
 
 sys_err_t
