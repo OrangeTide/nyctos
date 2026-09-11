@@ -12390,7 +12390,7 @@ stayed for a pulse nobody can collect`; removing the retry, `the slot
 stayed after everybody left`; and counting every discarded pulse as
 reserved moved the compared line from 1 to 8.
 
-**5. A server that restarts under its clients.** *Planned.*
+**5. A server that restarts under its clients.** *Built.*
 
 - *Check.* The case sections 18.2 and 18.3 argue from and which nothing
   in this system has ever done, and M18's retrospective named it as
@@ -12401,6 +12401,70 @@ reserved moved the compared line from 1 to 8.
   handle across the restart is told the right thing, which is the
   difference section 12.5 draws between `SYS_ERR_STALE` and
   `SYS_ERR_OWNER_DEAD`, and which no client here has ever acted on.
+
+**What it settled.** Fifty-two servers started and ended, four more
+than the pool has slots, **every one of them on the same slot**, and
+the pool exactly where it began with its high-water mark unmoved. M16
+built the other half of this: a server killed and replaced with the
+kernel holding the channel across the gap and handing a duplicate to
+each one, which is a restart where the channel never goes. Here the
+server is given the only handle there is, so the channel is its own in
+the sense section 12.5 means, and it goes when the server does.
+
+**The channel comes back at the reap and not at the exit.** A join
+says the process has ended; its handle table closes when the last
+thing that can ask about it lets go, and the collection happens at the
+top of some core's next switch. That is section 15.6's own
+distinction, and the check waits rather than assuming.
+
+**And a client holding a connection across the end is told nothing.**
+That is not the answer the stage went looking for and it is the right
+one. The channel is kept, because a connection is a holder and a
+client with something to send on is a reason for the object to exist.
+The send then queues, and what gets the client back is its own
+deadline: twenty milliseconds later, `SYS_ERR_TIMEOUT`, with the clock
+saying it waited the whole of it.
+
+Section 12.5's two errors say what a client is told when the server it
+was **already talking to** went. A client that starts talking
+afterwards is a different question and the kernel cannot answer it: a
+channel whose owner is gone is exactly what a channel looks like
+between a server being killed and its replacement taking the receive
+right, which is the restart M16 built and made invisible to clients on
+purpose. Refusing the send would make every restart visible to every
+client. So the two cases differ and neither is the kernel knowing
+which happened.
+
+**A kill that is accepted and does nothing.** Killing a server whose
+thread is ready and has never run leaves it alive. The mark is set,
+`thread_cancel` finds nothing blocked to release, and the thread then
+runs, enters user mode and blocks in a receive that never asks whether
+its process is dying. Measured: the thread goes from `THREAD_READY` to
+`THREAD_BLOCKED` on `THREAD_WAIT_RECV` with `p_exited` still false,
+and the join waits out thirty seconds and then six hundred. The
+comment in `proc_kill` states the assumption that fails, that a ready
+thread "has already stopped somewhere in this kernel, and it finds the
+mark on the way back out". A thread that has never run has not
+stopped anywhere, and nothing on the path to blocking looks at the
+mark.
+
+This is section 10.5's promptness not being kept, it is not this
+milestone's to fix, and the check waits for the server to reach its
+receive point rather than working around it silently. A supervisor
+would wait for the same thing.
+
+**Falsified three ways.** Keeping a handle in the kernel across the
+restart fired `restarts: 2 hold a channel the server owns`. Making a
+connection stop holding its channel fired stage two's walk first,
+`channel fs: the kernel says 1 hold it and 2 do`, which is the right
+order for those two checks. Freeing a channel one connection still
+holds fired `channels: slot 3 is free and 1 things name it`.
+
+**And two counts elsewhere moved.** `kills` went from 15 to 68 and the
+queued half of `deadlines` from 1 to 2, both because this stage kills
+fifty-three servers and leaves one client to time out. Both are in the
+compared report and both were updated with the reason written where
+the number is.
 
 **6. More channels than the pool has.** *Planned.*
 

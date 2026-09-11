@@ -1065,6 +1065,15 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - A receive carries no deadline, deliberately: a server waiting for work
   is not waiting for a party that can fail it. What a server does about
   a client that never comes is not answered.
+- A process killed before its first thread has run is not killed. The
+  mark is set, nothing is blocked to be released, and the thread then
+  runs, enters user mode and blocks in a receive that never asks
+  whether its process is dying. Measured at milestone 20: the thread
+  goes from ready to blocked on a receive with the process still not
+  exited, and a join waits out ten minutes. `proc_kill` assumes a
+  ready thread has already stopped somewhere in the kernel and will
+  find the mark on its way out, which a thread that has never run has
+  not done.
 - A thread interrupted inside a kernel operation and then killed is not
   ended there, because it holds state nothing could unwind. The guard
   that refuses is unexercised: nothing here constructs that thread, and

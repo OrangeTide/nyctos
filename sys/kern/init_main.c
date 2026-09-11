@@ -960,12 +960,14 @@ child_watch(struct child *c, struct proc *p)
 
 /*
  * How many sends give up in a boot, and from which of section 12.1's
- * two states. One queued send times out with nobody receiving; one
- * client gives up while a server holds its message, and one program
- * does the same with a buffer lent. Asserted because they are counts of
- * what the checks ask for and not of how fast the host is.
+ * two states. Two queued sends time out with nobody receiving, one
+ * with nobody ever having received and one, from M20 stage five, with
+ * a server that has been killed and no replacement coming. One client
+ * gives up while a server holds its message, and one program does the
+ * same with a buffer lent. Asserted because they are counts of what
+ * the checks ask for and not of how fast the host is.
  */
-#define DEADLINE_QUEUED_EXPECTED    1u
+#define DEADLINE_QUEUED_EXPECTED    2u
 #define DEADLINE_WORKING_EXPECTED   3u
 
 static int32_t
@@ -3553,6 +3555,351 @@ channel_hold_checks(void)
     }
     cnprintf("    %-38s %u, where it started\n",
       "slots in use after all of it", (unsigned int)base);
+}
+
+/*
+ * A server restarted under its clients, per M20 stage five.
+ *
+ * Sections 18.2 and 18.3 argue from a supervisor that ends a server
+ * and starts another, and M18's retrospective listed it as untested.
+ * M16 built half of it: a server is killed and a replacement takes
+ * its place, with the kernel holding the channel across the gap and
+ * handing a duplicate to each one. That is a restart where the
+ * channel never goes.
+ *
+ * This is the other half. The server is given the only handle there
+ * is, so the channel belongs to it in the sense section 12.5 means,
+ * and when it dies the channel goes with it. The replacement makes
+ * its own. Done more times than the pool has slots, which is the
+ * whole point: a system that restarts a server once an hour for a
+ * week must not be a system that has run out of channels.
+ */
+#define RESTART_ROUNDS      (SYS_MAX_CHANNELS + 4u)
+
+/* How long the client left holding a dead server's channel waits. */
+#define RESTART_WAIT_MS     20u
+
+static void
+restart_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    uint32_t base = channel_pool()->used;
+    uint32_t peak = channel_pool()->highwater;
+    struct sys_op_kill_args kargs;
+    sys_ns_spec_t ns[1];
+    uint32_t round;
+    uint32_t fresh = 0;
+
+    cnputs("restarts: a server ended, and its channel with it\n");
+
+    for (round = 0; round < RESTART_ROUNDS; round++) {
+        struct child sc;
+        struct channel *ch;
+        sys_id_t id;
+        sys_handle_t give, h;
+        void *obj;
+        int32_t code;
+
+        ch = channel_create("restarted", self);
+        if (ch == NULL) {
+            panic("restarts: no channel on round %u",
+              (unsigned int)round);
+        }
+        id = ch->c_id;
+
+        if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+          SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
+            panic("restarts: no handle on round %u",
+              (unsigned int)round);
+        }
+
+        memset(ns, 0, sizeof(ns));
+        ns[0].id = SYS_NS_SERVICE;
+        ns[0].handle = give;
+
+        sched_defer();
+        if (proc_spawn_op(self, "echoes", PRIO_BOOT, ns, 1, NULL, 0,
+          &h) != SYS_OK) {
+            panic("restarts: no server on round %u",
+              (unsigned int)round);
+        }
+        if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+            panic("restarts: the spawn returned no process");
+        }
+        child_watch(&sc, obj);
+        sched_undefer();
+
+        /*
+         * The handle moved rather than being copied, so this table
+         * has nothing on the channel and the server has all of it.
+         * If that stopped being true the channel would never go and
+         * the loop below would run the pool out, which is a slower
+         * way of finding out the same thing.
+         */
+        if (channel_holds(ch) != 1) {
+            panic("restarts: %u hold a channel the server owns",
+              (unsigned int)channel_holds(ch));
+        }
+        if (round == 0) {
+            fresh = sys_id_index(id);
+        } else if (sys_id_index(id) != fresh) {
+            panic("restarts: round %u took slot %u, not %u",
+              (unsigned int)round, (unsigned int)sys_id_index(id),
+              (unsigned int)fresh);
+        }
+
+        /*
+         * Waited for, and not out of tidiness. A kill of a process
+         * whose thread is ready and has never run is accepted and
+         * does nothing: the mark is set, there is nothing blocked to
+         * cancel, and the thread then runs, enters user mode and
+         * blocks in a receive that never asks whether its process is
+         * dying. Measured here, killing at that moment leaves the
+         * server in THREAD_BLOCKED on THREAD_WAIT_RECV with p_exited
+         * still false, and the join waits out its thirty seconds.
+         *
+         * That is section 10.5's promptness not being kept, and it
+         * is written down rather than worked around quietly. What
+         * this check wants is a server that is up, which is what a
+         * supervisor would wait for too, so waiting for the receive
+         * point is the right construction as well as the one that
+         * works.
+         */
+        {
+            struct thread *st = proc_threads(sc.c_proc);
+            uint64_t until = time_now() + time_from_ms(JOIN_MS);
+
+            while (st->t_wait != THREAD_WAIT_RECV) {
+                if (time_now() > until) {
+                    panic("restarts: the server never reached its "
+                      "receive point on round %u",
+                      (unsigned int)round);
+                }
+                sched_yield();
+            }
+        }
+
+        memset(&kargs, 0, sizeof(kargs));
+        kargs.code = 7;
+        if (run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)) != SYS_OK) {
+            panic("restarts: the server refused to be killed");
+        }
+        code = child_join(&sc, JOIN_MS);
+        if (code != 7) {
+            panic("restarts: the server exited %d on round %u",
+              (int)code, (unsigned int)round);
+        }
+        if (handle_close(ht, h) != SYS_OK) {
+            panic("restarts: the spawn handle was already gone");
+        }
+
+        /*
+         * And the channel comes back at the reap rather than at the
+         * exit, which is section 15.6's distinction and not a
+         * looseness in this check. A join says the process has
+         * ended; its handle table is closed when the last thing that
+         * could ask about it lets go, and the collection happens at
+         * the top of whichever core's next switch reaches it. So
+         * this waits, and says how long it was willing to.
+         */
+        {
+            uint64_t until = time_now() + time_from_ms(JOIN_MS);
+
+            while (slot_alive(id)) {
+                if (time_now() > until) {
+                    panic("restarts: the channel outlived its server "
+                      "on round %u", (unsigned int)round);
+                }
+                sched_yield();
+            }
+        }
+    }
+
+    /*
+     * The pool where it started, after more restarts than it has
+     * slots. The high-water mark is the assertion with teeth: a
+     * kernel that freed nothing would have reached it long ago, and
+     * one that freed everything but handed out a fresh slot each time
+     * would have too.
+     */
+    if (channel_pool()->used != base) {
+        panic("restarts: %u channels in use, not %u",
+          (unsigned int)channel_pool()->used, (unsigned int)base);
+    }
+    if (channel_pool()->highwater != peak) {
+        panic("restarts: the high-water mark went from %u to %u",
+          (unsigned int)peak,
+          (unsigned int)channel_pool()->highwater);
+    }
+    cnprintf("    %-38s %u, all on slot %u\n",
+      "servers started and ended", (unsigned int)RESTART_ROUNDS,
+      (unsigned int)fresh);
+    cnprintf("    %-38s %u in use, %u at once\n",
+      "and the pool where it started", (unsigned int)base,
+      (unsigned int)peak);
+
+    /*
+     * And a client that was holding a connection when the server
+     * went. Two questions, and the second is the one section 12.5
+     * draws a distinction for.
+     *
+     * The channel does not go with the server here, because the
+     * connection names it and a connection is a holder. That is the
+     * right answer rather than a limitation: a client still holding
+     * something it can send on is a reason for the object to exist.
+     *
+     * What the client is told when it sends afterwards is nothing.
+     * It queues, and what gets it back is its own deadline.
+     *
+     * That is not the answer this stage went looking for and it is
+     * the right one. Section 12.5's two errors say what a client is
+     * told when the server it was already talking to went:
+     * `SYS_ERR_STALE` if the server is still there to be asked
+     * again, `SYS_ERR_OWNER_DEAD` if it is not. A client that starts
+     * talking afterwards is a different question, and the kernel
+     * cannot answer it: a channel whose owner is gone is exactly
+     * what a channel looks like between a server being killed and
+     * its replacement taking the receive right, which is the restart
+     * M16 built and made invisible to clients on purpose. Refusing
+     * the send would make every restart visible to every client.
+     *
+     * So the two cases differ and the difference is worth saying.
+     * The client in flight when the owner died is released with
+     * `SYS_ERR_OWNER_DEAD`, because leaving it there across a gap of
+     * unknown length is worse. The client that arrives afterwards
+     * waits, because it might be about to be served. Neither is the
+     * kernel knowing which happened.
+     */
+    {
+        struct child sc;
+        struct channel *ch;
+        struct sys_op_connect_args cargs;
+        struct sys_op_send_args tx;
+        sys_id_t id;
+        sys_handle_t h_recv, give, h_send, h;
+        void *obj;
+
+        ch = channel_create("outlived", self);
+        if (ch == NULL) {
+            panic("restarts: no channel for the held case");
+        }
+        id = ch->c_id;
+
+        expect("a channel a client will hold on to",
+          handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+          SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_recv), SYS_OK);
+        memset(&cargs, 0, sizeof(cargs));
+        cargs.rights = SYS_RIGHT_SEND;
+        expect("a connection for the client",
+          run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)),
+          SYS_OK);
+        h_send = cargs.out_handle;
+
+        if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+          SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
+            panic("restarts: cannot hand the channel over");
+        }
+        memset(ns, 0, sizeof(ns));
+        ns[0].id = SYS_NS_SERVICE;
+        ns[0].handle = give;
+
+        sched_defer();
+        if (proc_spawn_op(self, "echoes", PRIO_BOOT, ns, 1, NULL, 0,
+          &h) != SYS_OK) {
+            panic("restarts: no server for the held case");
+        }
+        if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+            panic("restarts: the spawn returned no process");
+        }
+        child_watch(&sc, obj);
+        sched_undefer();
+
+        {
+            struct thread *st = proc_threads(sc.c_proc);
+            uint64_t until = time_now() + time_from_ms(JOIN_MS);
+
+            while (st->t_wait != THREAD_WAIT_RECV) {
+                if (time_now() > until) {
+                    panic("restarts: the held case's server never "
+                      "reached its receive point");
+                }
+                sched_yield();
+            }
+        }
+
+        expect("and the kernel letting go of its own",
+          handle_close(ht, h_recv), SYS_OK);
+
+        memset(&kargs, 0, sizeof(kargs));
+        kargs.code = 7;
+        expect("ending the server under its client",
+          run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)), SYS_OK);
+        if (child_join(&sc, JOIN_MS) != 7) {
+            panic("restarts: the held case's server exited wrong");
+        }
+        (void)handle_close(ht, h);
+
+        {
+            uint64_t until = time_now() + time_from_ms(JOIN_MS);
+
+            while (channel_holds(ch) != 1) {
+                if (time_now() > until) {
+                    panic("restarts: %u hold a channel one client is "
+                      "on", (unsigned int)channel_holds(ch));
+                }
+                sched_yield();
+            }
+        }
+        if (!slot_alive(id)) {
+            panic("restarts: the channel went under a live client");
+        }
+        cnprintf("    %-38s %s\n", "a client holding it across the end",
+          "kept");
+
+        {
+            sys_op_t send;
+            uint64_t deadline;
+
+            memset(&tx, 0, sizeof(tx));
+            tx.request.handle = SYS_HANDLE_INVALID;
+            tx.request.inline_len = 1;
+            deadline = time_now() + time_from_ms(RESTART_WAIT_MS);
+            tx.deadline = deadline;
+
+            memset(&send, 0, sizeof(send));
+            send.opcode = SYS_OP_IPC_SEND;
+            send.target = h_send;
+            send.flags = SYS_OP_DEADLINE;
+            send.arg_ptr = (uintptr_t)&tx;
+            send.arg_len = sizeof(tx);
+
+            expect("what that client is told when it sends",
+              (sys_err_t)run_batch(&send, 1), SYS_ERR_TIMEOUT);
+            if (time_now() < deadline) {
+                panic("restarts: the send came back before its "
+                  "deadline, so it was told something");
+            }
+            cnprintf("    %-38s %s\n",
+              "and it waited out its own deadline",
+              "nothing else told it");
+        }
+
+
+        expect("and the client letting go",
+          handle_close(ht, h_send), SYS_OK);
+        if (slot_alive(id)) {
+            panic("restarts: the channel stayed after its last "
+              "client went");
+        }
+        cnprintf("    %-38s %s\n", "and when that client lets go",
+          "given back");
+    }
+
+    if (channel_pool()->used != base) {
+        panic("restarts: %u channels in use at the end, not %u",
+          (unsigned int)channel_pool()->used, (unsigned int)base);
+    }
 }
 
 /* Walks made by the time channel_checks reports, including its own. */
@@ -14967,6 +15314,7 @@ kernel_main(void)
     }
 
     channel_hold_checks();
+    restart_checks();
     channel_checks();
 #if SYS_TIER == 2
     asid_checks();
