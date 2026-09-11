@@ -12349,13 +12349,46 @@ being tested and a cohort would only make the construction longer.
 from 24 and 25, with 23 slots given back in a boot against 18. The
 high-water mark is 24, having been 40 three stages ago.
 
-**Falsified five ways**, one per obstacle and one for the retry.
-Ignoring the sender queue fired `the slot went with a sender queued on
-it`; ignoring the receivers, `the slot went with a thread receiving`;
-ignoring the serving list, `the slot went with a server inside it`;
-keeping the slot for a pulse again, `the slot stayed for a pulse
-nobody can collect`; and removing the retry, `the slot stayed after
-everybody left`.
+
+**What the review found.** Both wrappers kept the channel as a
+pointer across an operation that blocks. A receive puts the lock down
+across a switch, and a reply hands the core to the client it woke, so
+by the time either comes back something else can have taken the last
+hold and freed the slot. Reading `c_holds` through the old pointer
+would then read whatever occupies the slot now, and finding zero
+there would free a channel somebody is using. Both keep the
+identifier instead and look it up again: the generation says the slot
+has moved on, and the lookup returns nothing rather than the wrong
+thing. Nothing in this boot exercises the window, in the same way
+nothing exercises stage three's lock guard.
+
+**And the pulses that go are not all the same kind.** Eight go with a
+channel in a boot and one of them is reserved: section 13.1's kind,
+and specifically `SYS_PULSE_PEER_GONE` on `hints`. That is the one
+M18 built and then deliberately made losable, because the fact it
+carries moved onto the connection and the pulse became a hint. So
+discarding it costs a server a prompt wakeup it was never going to
+get, since the server is what has gone. The compared report says both
+numbers rather than the total, because a reserved pulse quietly
+becoming common is the thing worth noticing.
+
+**A residue the assertion does not cover.** A connection kept for
+reaping, per M18 stage four, holds its channel, so a channel whose
+server has died with uncollected connections on it is held by them
+and nothing will ever collect. The end-of-boot assertions do not see
+it: holds is above zero, so it is reachable by the walk's definition
+and counts as neither free nor stuck. It shows only as a slot still
+in use, which the compared line pins. Stage five is the case that
+would produce it on purpose.
+
+**Falsified six ways**, one per obstacle, one for the retry, one for
+the kinds. Ignoring the sender queue fired `the slot went with a
+sender queued on it`; ignoring the receivers, `the slot went with a
+thread receiving`; ignoring the serving list, `the slot went with a
+server inside it`; keeping the slot for a pulse again, `the slot
+stayed for a pulse nobody can collect`; removing the retry, `the slot
+stayed after everybody left`; and counting every discarded pulse as
+reserved moved the compared line from 1 to 8.
 
 **5. A server that restarts under its clients.** *Planned.*
 

@@ -6,7 +6,8 @@ used at most: 24 of 32 threads, 13 of 24 processes
   peers: 8 collected, pulses 1 dropped and 11 evicted
   senders: 2 refused, 2 displaced
   connections: 7 in use, 12 at once
-  channels: 23 in use, 24 at once, of 48, 23 given back, 8 pulses with them
+  channels: 23 in use, 24 at once, of 48, 23 given back
+  pulses that went with a channel: 8, of which 1 of the reserved kind
   names: 2531 given out, 2499 again, 1 spaces without, 9 live
   names given back: 2522, each throwing away what was filed under it
 stage 9 complete

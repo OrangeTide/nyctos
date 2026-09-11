@@ -333,6 +333,9 @@ uint32_t channel_holds(const struct channel *ch);
  */
 extern uint32_t channel_pulses_discarded;
 
+/* And how many of those were section 13.1's reserved kind. */
+extern uint32_t channel_notices_discarded;
+
 /* Link and unlink a connection, which the connection code calls. */
 void channel_conn_add(struct channel *ch, struct connection *cn);
 void channel_conn_gone(struct channel *ch, struct connection *cn);

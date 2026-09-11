@@ -1326,14 +1326,25 @@ recv_inner(struct channel *ch, struct sys_msg *out,
  * them. The caller is finished with the channel either way: the
  * operation layer reads the message and the error and never the
  * channel.
+ *
+ * By identifier and not by pointer, which is not caution about the
+ * common case. A receive blocks, the lock is put down across the
+ * switch, and something else can take the last hold and free this
+ * channel while this thread is away. Coming back and reading
+ * c_holds through the old pointer would read whatever occupies the
+ * slot now, and finding zero there would free a channel somebody is
+ * using. The generation the pool keeps is what answers this: it says
+ * the slot has moved on, and a lookup returns nothing rather than
+ * returning the wrong thing.
  */
 sys_err_t
 channel_recv(struct channel *ch, struct sys_msg *out,
   sys_thread_id_t *out_peer, uint64_t *out_cookie)
 {
+    sys_id_t id = ch->c_id;
     sys_err_t err = recv_inner(ch, out, out_peer, out_cookie);
 
-    channel_maybe_free(ch);
+    channel_maybe_free(pool_lookup(channel_pool(), id));
 
     return err;
 }
@@ -1491,6 +1502,9 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
  * it takes this thread off the serving list. The channel has to be
  * read before the reply rather than after, because after it this
  * thread is not serving anything and there is nothing left to ask.
+ * Its identifier is what is kept, for the reason the receive above
+ * gives: a reply hands the core to the client it woke, and the slot
+ * can be gone and taken by the time this thread runs again.
  *
  * A reply that is refused still takes the thread off the list, which
  * is the case the comment inside is about, so the question is asked
@@ -1499,10 +1513,11 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
 sys_err_t
 channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
 {
-    struct channel *ch = thread_current()->t_serve_ch;
+    const struct channel *was = thread_current()->t_serve_ch;
+    sys_id_t id = was != NULL ? was->c_id : SYS_ID_INVALID;
     sys_err_t err = reply_inner(peer, reply);
 
-    channel_maybe_free(ch);
+    channel_maybe_free(pool_lookup(channel_pool(), id));
 
     return err;
 }
@@ -2440,6 +2455,26 @@ channel_free_if_idle(struct channel *ch)
     idle = ch->c_senders == NULL && ch->c_receivers == NULL &&
       ch->c_serving == NULL;
     if (idle) {
+        uint32_t i;
+
+        /*
+         * Counted by kind, because the two mean different things.
+         * A user pulse nobody can collect is a message to a server
+         * that no longer exists. A system pulse is section 13.1's
+         * reserved kind, and the only one that reaches here is a
+         * death notice for a client of a channel whose server has
+         * already gone, which is a notice with nobody to act on it.
+         * M18 moved the fact a notice carries onto the connection
+         * for exactly this reason, so losing one costs latency and
+         * not a record.
+         */
+        for (i = 0; i < ch->c_pulse_count; i++) {
+            uint32_t k = (ch->c_pulse_head + i) % SYS_PULSE_SLOTS;
+
+            if (ch->c_pulses[k].code < SYS_PULSE_USER_BASE) {
+                channel_notices_discarded++;
+            }
+        }
         channel_pulses_discarded += ch->c_pulse_count;
     }
     md_intr_restore(s);
@@ -2620,6 +2655,7 @@ uint32_t channel_scans;
 uint32_t channel_freed;
 uint32_t channel_freed_in_kernel;
 uint32_t channel_pulses_discarded;
+uint32_t channel_notices_discarded;
 uint64_t channel_scan_first_ns;
 
 void

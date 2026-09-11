@@ -15384,12 +15384,15 @@ kernel_main(void)
      * does too, and the fourth number is what the free could not
      * take: slots nothing names with somebody still standing in them.
      */
-    cnprintf("  channels: %u in use, %u at once, of %u, %u given back, "
-      "%u pulses with them\n", (unsigned int)channel_report.cs_used,
+    cnprintf("  channels: %u in use, %u at once, of %u, %u given "
+      "back\n", (unsigned int)channel_report.cs_used,
       (unsigned int)channel_report.cs_at_once,
       (unsigned int)channel_report.cs_of,
-      (unsigned int)channel_freed,
-      (unsigned int)channel_pulses_discarded);
+      (unsigned int)channel_freed);
+    cnprintf("  pulses that went with a channel: %u, of which %u of "
+      "the reserved kind\n",
+      (unsigned int)channel_pulses_discarded,
+      (unsigned int)channel_notices_discarded);
 
     /*
      * Asserted as well as compared, because the compared file covers
