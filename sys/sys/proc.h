@@ -367,6 +367,14 @@ extern uint64_t proc_unrun_threads;
 extern uint64_t proc_unrun_locked;
 
 /*
+ * Threads asked for in a process that had already been killed, per
+ * M21 stage five, and refused. A count of the times the set of
+ * threads a kill has to reach was stopped from growing after the
+ * kill was written.
+ */
+extern uint64_t proc_creates_refused;
+
+/*
  * Threads stopped at an entry boundary because their process had
  * been killed, per M21 stage three, split by which boundary.
  *

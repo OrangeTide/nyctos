@@ -13384,7 +13384,7 @@ seconds. It has not happened again in forty-nine runs since, thirty
 of them the burst alone, so what it was is not known and is written
 here rather than left out.
 
-**5. A thread made by a process that is already dying.** *Planned.*
+**5. A thread made by a process that is already dying.** *Built.*
 
 - *Check.* What `sys_thread_create()` does for a process that has been
   marked, which today is nothing special: the thread is created,
@@ -13393,6 +13393,75 @@ here rather than left out.
   stage settles which and writes it in section 10.2.
 - Falsifiable by the thread outliving the process, which is what makes
   a reap wait for ever.
+
+**What it settled: it is refused.** A thread asked for in a process
+that has been killed is refused with `SYS_ERR_OWNER_DEAD` and nothing
+is built. The compared line at both tiers:
+
+```
+  threads refused to a dying process: 1
+```
+
+Born and dying at stage two's reading was the other candidate and it
+works, in the sense that the thread does end. What decides against it
+is that it leaves the set of threads a kill has to reach open after
+the kill is written. The kill's walk has been and gone, so the new
+thread is not one the kill reached; it is one that reaches the same
+end by another route, and a supervisor waiting for the process to be
+over is waiting on something the process can still add to.
+
+**And the measured case is worse than an argument about sets.** With
+the refusal taken out, the create succeeds on a process whose last
+thread had already gone, the thread runs, reads the mark in its
+trampoline and exits, and the exit advances a completion that has
+already been advanced: `panic: proc lastborn: completion advanced
+twice`. The process had reported its exit and reported it again. That
+is the falsification the stage's own plan asked for, in a sharper
+form than the plan expected.
+
+**The same call, twice, with the same arguments.** A refusal means
+nothing unless the call works a moment earlier, which is stage one's
+review applied here. The supervisor cannot invent the call: a thread
+needs an entry point and a stack inside the target's own image, and
+only the target knows where those are. So `lastborn` sends them. The
+check builds a thread out of what it was sent, that thread runs and
+says so on the same channel, and the only difference between that
+answer and the refusal that follows the kill is the mark.
+
+```
+a kill: the thread a dying process asks for
+    a thread built from what it sent       ran and asked on the same channel
+    and the same call after the kill       refused, with nothing made
+```
+
+**What the construction found: the process argument was not used.**
+`proc_thread_create(p, ...)` took a process and put the thread in the
+caller's. `thread_alloc` attaches a new thread to the process of
+whoever called, which is right for a kernel thread and right for this
+call made from a thread of `p`, the only way it had ever been made.
+Made from outside, it put the thread in the supervisor's own process
+and the handle to it in `p`'s table. Section 10.2 has always said a
+process with the right authority may create threads in another one,
+so the signature was not wrong, the body was. It now puts the thread
+where it was told. Falsifiable by putting it back, which leaves the
+thread that was made unable to be found: `newborn: the thread that
+was made: nothing was queued on lastborn recv`.
+
+**A receive that blocks has no deadline.** Three checks in M21 waited
+for a program's request in a loop with a deadline in it, around a
+receive that blocks when there is nothing there. The deadline could
+never fire: the loop does not come back to look at the clock. What
+the machine did instead was stop, and the session script's three
+minutes was the only thing that noticed. The wait is now for a sender
+on the queue, which is a thing that can be given up on, and the
+receive that follows has nothing to wait for.
+
+**What it cost.** One more program in the boot, two more threads, one
+more kill and one more channel. Nothing in user mode reaches the
+refusal, and that is the reading before an entry from stage three
+doing its job rather than an absence of the case: a marked thread
+does not begin the operation. The count stands on the check, which
+asks from outside the process.
 
 **6. M20's workaround comes out.** *Planned.*
 

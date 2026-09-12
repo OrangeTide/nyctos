@@ -1593,9 +1593,64 @@ proc_thread_create(struct proc *p, uintptr_t entry, uintptr_t uarg,
         return SYS_ERR_PERM_DENIED;
     }
 
+    /*
+     * And not into a process that has been killed, per M21 stage
+     * five. A kill is the statement that this process is over, and
+     * the set of threads it has to reach is the set that existed
+     * when the mark was written. Letting a thread be made after
+     * that leaves the set open: the kill's walk has been and gone,
+     * so the new thread is reached by the reading in its trampoline
+     * rather than by the kill, and whoever asked for the kill has
+     * nothing it can wait on that is bounded.
+     *
+     * Read under the kernel lock with the mark, for the reason
+     * stage two's review gives. Asked after the arguments are
+     * checked and before anything is allocated: a caller that got
+     * the arguments wrong is told so whether or not it is being
+     * killed, and a caller that did not gets nothing built for it.
+     *
+     * The error is SYS_ERR_OWNER_DEAD because that is what it is.
+     * The thread would belong to a process that is going, and the
+     * only caller that can see this is a thread of that process,
+     * which is on its way out at its own next boundary.
+     */
+    {
+        intr_state_t s = 0;
+        bool held = klock_held();
+        bool dying;
+
+        if (!held) {
+            s = klock_enter();
+        }
+        dying = p->p_dying;
+        if (dying) {
+            proc_creates_refused++;
+        }
+        if (!held) {
+            klock_exit(s);
+        }
+        if (dying) {
+            return SYS_ERR_OWNER_DEAD;
+        }
+    }
+
     t = thread_alloc(p->p_name, prio, proc_thread_start, NULL);
     if (t == NULL) {
         return SYS_ERR_NO_MEMORY;
+    }
+
+    /*
+     * Into the process this was asked about, which is not where a
+     * fresh thread starts. thread_alloc puts one in the process of
+     * whoever called, and that is right for a kernel thread and for
+     * this call made from a thread of p, which is the only way it
+     * was ever made. It is not what the signature says, and a
+     * caller that is not a thread of p got a thread in its own
+     * process with a handle to it in p's table. Found by M21 stage
+     * five, whose supervisor makes the thread its target asked for.
+     */
+    if (t->t_proc != p) {
+        thread_set_proc(t, p);
     }
     t->t_uentry = entry;
     t->t_uarg = uarg;
@@ -1917,6 +1972,7 @@ uint64_t proc_stopped_before_first;
 uint64_t proc_stopped_before_later;
 uint64_t proc_stopped_after_batch;
 uint64_t proc_kill_pokes;
+uint64_t proc_creates_refused;
 
 sys_err_t
 proc_kill(struct proc *p, int32_t code)

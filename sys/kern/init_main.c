@@ -6138,6 +6138,57 @@ kill_unrun_checks(void)
  * interrupt lands, which was hit once in sixteen attempts while this
  * was being built and is not something to hold a boot to.
  */
+/*
+ * Wait until something is queued to send on this channel.
+ *
+ * Before a receive rather than instead of one, because a receive
+ * with nothing there blocks, and a check that blocks has no
+ * deadline: the loop around it never comes back to look at the
+ * clock, and a program that never sends stops the machine with no
+ * cause attached. Asking first turns the wait into one this can
+ * give up on, and leaves the receive with nothing to wait for.
+ *
+ * Read under the kernel lock, because the queue is a list the other
+ * core puts threads on.
+ */
+static void
+wait_queued(struct channel *ch, const char *what)
+{
+    uint64_t until = time_now() + time_from_ms(JOIN_MS);
+
+    for (;;) {
+        bool queued;
+        intr_state_t is;
+        intr_state_t ks = 0;
+        bool took = false;
+
+        is = md_intr_disable();
+        if (!klock_held()) {
+            ks = klock_enter();
+            took = true;
+        }
+        queued = ch->c_senders != NULL;
+        if (took) {
+            klock_exit(ks);
+        }
+        md_intr_restore(is);
+
+        if (queued) {
+            return;
+        }
+        if (time_now() > until) {
+            panic("%s: nothing was queued on %s", what, ch->c_name);
+        }
+        /*
+         * Slept on rather than yielded to. A program runs below
+         * this thread, so yielding here re-dispatches this one and
+         * the program never gets the core at all.
+         */
+        (void)timeline_wait(&kill_tl, 1,
+          time_now() + time_from_ms(2));
+    }
+}
+
 static void
 kill_boundary_checks(void)
 {
@@ -6149,7 +6200,6 @@ kill_boundary_checks(void)
     sys_ns_spec_t ns[1];
     sys_handle_t give, keep, h;
     uint64_t before = proc_stopped_before_later;
-    uint64_t until;
     void *obj;
     int32_t code;
 
@@ -6199,43 +6249,7 @@ kill_boundary_checks(void)
      * shows: nothing receives here, so a sender on it is a thread
      * waiting inside a send.
      */
-    until = time_now() + time_from_ms(JOIN_MS);
-    for (;;) {
-        bool queued;
-        intr_state_t is;
-        intr_state_t ks = 0;
-        bool took = false;
-
-        /*
-         * Read under the kernel lock, because the queue this asks
-         * about is a list the other core puts threads on and the
-         * answer decides when the kill is written.
-         */
-        is = md_intr_disable();
-        if (!klock_held()) {
-            ks = klock_enter();
-            took = true;
-        }
-        queued = ch->c_senders != NULL;
-        if (took) {
-            klock_exit(ks);
-        }
-        md_intr_restore(is);
-
-        if (queued) {
-            break;
-        }
-        if (time_now() > until) {
-            panic("boundary: the program never queued");
-        }
-        /*
-         * Slept on rather than yielded to. The program runs below
-         * this thread, so yielding here re-dispatches this one and
-         * the program never gets the core at all.
-         */
-        (void)timeline_wait(&kill_tl, 1,
-          time_now() + time_from_ms(2));
-    }
+    wait_queued(ch, "boundary");
 
     memset(&kargs, 0, sizeof(kargs));
     kargs.code = KILL_CODE;
@@ -6565,14 +6579,9 @@ kill_states_checks(void)
      * leaves one thread inside a rendezvous. Taking it is also what
      * says the program has got that far.
      */
-    until = time_now() + time_from_ms(JOIN_MS);
-    for (;;) {
-        if (channel_recv(store, &msg, &peer, &cookie) == SYS_OK) {
-            break;
-        }
-        if (time_now() > until) {
-            panic("states: the asker never asked");
-        }
+    wait_queued(store, "states");
+    if (channel_recv(store, &msg, &peer, &cookie) != SYS_OK) {
+        panic("states: the queued request would not come");
     }
 
     /*
@@ -6726,6 +6735,204 @@ kill_states_checks(void)
     while (slot_alive(id_s) || slot_alive(id_t)) {
         if (time_now() > until) {
             panic("states: the channels outlived the process");
+        }
+        (void)timeline_wait(&kill_tl, 1, time_now() + time_from_ms(2));
+    }
+}
+
+/*
+ * A thread asked for in a process that is already dying, per M21
+ * stage five.
+ *
+ * Everything before this stage is about threads that existed when
+ * the kill was written. This is about one that does not. Nothing
+ * stopped a thread being made in a marked process: the kill's walk
+ * had been and gone, so the new thread was not cancelled by it, and
+ * what ended the thread was stage two's reading in the trampoline
+ * it arrived on. That works, and it is not enough. It leaves the
+ * set of threads a kill has to reach open after the kill, so a
+ * supervisor waiting for a process to be over is waiting on
+ * something the process can add to.
+ *
+ * So the create is refused, and this measures the same call twice,
+ * once on each side of the mark. `lastborn` sends the makings of a
+ * thread, an entry point in its own image and a stack for it, and
+ * waits inside that request. The supervisor builds the thread from
+ * what it was sent and the thread runs, which is the working case.
+ * Then the kill, and the same call again, which is refused.
+ *
+ * Asking twice is the point. The arguments are the same both times
+ * and they came from the program, so the only thing that differs
+ * between the answers is the mark.
+ */
+static void
+kill_newborn_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_kill_args kargs;
+    struct channel *serve;
+    struct child c;
+    struct sys_msg first, second;
+    sys_thread_id_t peer_main, peer_kid;
+    sys_ns_spec_t ns[1];
+    sys_handle_t keep, give, h, kid;
+    sys_id_t id;
+    uint64_t cookie, until, refused;
+    uintptr_t entry, stack;
+    void *obj;
+    sys_err_t err;
+    int32_t code;
+
+    cnputs("a kill: the thread a dying process asks for\n");
+
+    serve = channel_create("lastborn recv", self);
+    if (serve == NULL) {
+        panic("newborn: no channel");
+    }
+    id = serve->c_id;
+    if (handle_insert(ht, serve, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
+      &keep) != SYS_OK) {
+        panic("newborn: no handle to keep");
+    }
+    if (handle_insert(ht, serve, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
+        panic("newborn: no handle to give");
+    }
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = give;
+
+    sched_defer();
+    if (proc_spawn_op(self, "lastborn", PRIO_BOOT - 1, ns, 1, NULL, 0,
+      &h) != SYS_OK) {
+        panic("newborn: no program");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("newborn: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    /*
+     * The makings, taken and not answered, which is also what
+     * leaves the program's own thread inside a rendezvous.
+     */
+    wait_queued(serve, "newborn");
+    if (channel_recv(serve, &first, &peer_main, &cookie) != SYS_OK) {
+        panic("newborn: the makings would not come");
+    }
+    if (first.inline_len != 2 * sizeof(uint64_t)) {
+        panic("newborn: the makings were %u bytes",
+          (unsigned int)first.inline_len);
+    }
+    {
+        uint64_t got[2];
+
+        memcpy(got, first.inline_data, sizeof(got));
+        entry = (uintptr_t)got[0];
+        stack = (uintptr_t)got[1];
+    }
+    if (entry == 0 || stack == 0) {
+        panic("newborn: the makings were empty");
+    }
+
+    /*
+     * The working case first, because the refusal below means
+     * nothing unless the same call works on the same process a
+     * moment earlier.
+     */
+    err = proc_thread_create(c.c_proc, entry, 0, stack, PRIO_BOOT - 1,
+      &kid);
+    if (err != SYS_OK) {
+        panic("newborn: a live process refused a thread, %d",
+          (int)err);
+    }
+
+    wait_queued(serve, "newborn: the thread that was made");
+    if (channel_recv(serve, &second, &peer_kid, &cookie) != SYS_OK) {
+        panic("newborn: the thread's request would not come");
+    }
+    if (second.inline_len != 1) {
+        panic("newborn: the second message was %u bytes",
+          (unsigned int)second.inline_len);
+    }
+
+    /*
+     * And the handle to it goes back, into the table it was put in,
+     * which is the program's own. A handle to a thread holds the
+     * thread, a thread holds its process, and a process that names
+     * itself is never collected.
+     */
+    if (handle_close(&c.c_proc->p_handles, kid) != SYS_OK) {
+        panic("newborn: the thread handle was already gone");
+    }
+
+    cnprintf("    %-38s %s\n", "a thread built from what it sent",
+      "ran and asked on the same channel");
+
+    refused = proc_creates_refused;
+    memset(&kargs, 0, sizeof(kargs));
+    kargs.code = KILL_CODE;
+    if (run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)) != SYS_OK) {
+        panic("newborn: it refused to be killed");
+    }
+
+    code = child_join(&c, JOIN_MS);
+    if (code != KILL_CODE) {
+        panic("newborn: it came back with %d, not %d", (int)code,
+          (int)KILL_CODE);
+    }
+    if (c.c_proc->p_nthreads != 0) {
+        panic("newborn: %u threads outlived the process",
+          (unsigned int)c.c_proc->p_nthreads);
+    }
+
+    /*
+     * The same call, on the same process, with the same arguments.
+     * After the join rather than straight after the kill, so that
+     * what it is refused by is the mark and not a thread that has
+     * yet to notice one: this process has ended, and the only thing
+     * left of it is the memory.
+     */
+    err = proc_thread_create(c.c_proc, entry, 0, stack, PRIO_BOOT - 1,
+      &kid);
+    if (err != SYS_ERR_OWNER_DEAD) {
+        panic("newborn: a killed process answered %d, not %d",
+          (int)err, (int)SYS_ERR_OWNER_DEAD);
+    }
+    if (c.c_proc->p_nthreads != 0) {
+        panic("newborn: the refusal made %u threads anyway",
+          (unsigned int)c.c_proc->p_nthreads);
+    }
+    if (proc_creates_refused != refused + 1) {
+        panic("newborn: %lu refusals, not one",
+          (unsigned long)(proc_creates_refused - refused));
+    }
+
+    cnprintf("    %-38s %s\n", "and the same call after the kill",
+      "refused, with nothing made");
+
+    /*
+     * Both requests are answered now, and both answers are refused,
+     * which is what takes this thread off the channel it has been
+     * serving twice over.
+     */
+    if (channel_reply(peer_main, &first) != SYS_ERR_STALE ||
+      channel_reply(peer_kid, &second) != SYS_ERR_STALE) {
+        panic("newborn: an answer to a dead client was delivered");
+    }
+
+    if (handle_close(ht, h) != SYS_OK ||
+      handle_close(ht, keep) != SYS_OK) {
+        panic("newborn: a handle was already gone");
+    }
+
+    until = time_now() + time_from_ms(JOIN_MS);
+    while (slot_alive(id)) {
+        if (time_now() > until) {
+            panic("newborn: the channel outlived the process");
         }
         (void)timeline_wait(&kill_tl, 1, time_now() + time_from_ms(2));
     }
@@ -16533,6 +16740,7 @@ kernel_main(void)
     kill_unrun_checks();
     kill_boundary_checks();
     kill_states_checks();
+    kill_newborn_checks();
     kill_other_core_checks();
 #if SYS_TIER == 2
     kill_faulting_checks();
@@ -16979,6 +17187,23 @@ kernel_main(void)
     cnprintf("  stopped at an entry boundary: %lu\n",
       (unsigned long)(proc_stopped_before_first +
       proc_stopped_before_later + proc_stopped_after_batch));
+
+    /*
+     * And the threads a killed process asked for and did not get,
+     * per M21 stage five. A count, and the one that says the set of
+     * threads a kill has to reach is closed at the moment the mark
+     * is written rather than open afterwards.
+     *
+     * Nothing in user mode reaches this today and that is the point
+     * of the reading before an entry: a marked thread does not
+     * begin the operation. What the count stands on is the check,
+     * which asks for the thread from outside the process.
+     */
+    cnprintf("  threads refused to a dying process: %lu\n",
+      (unsigned long)proc_creates_refused);
+    if (proc_creates_refused == 0) {
+        panic("kills: a dying process was never asked for a thread");
+    }
     if (kills_reached == 0) {
         panic("kills: no kill reached a thread that had never run");
     }

@@ -105,7 +105,8 @@ $(OBJTOP)/bin/leap/leap.bin \
     $(OBJTOP)/bin/ledger/ledger.bin \
     $(OBJTOP)/bin/patron/patron.bin \
     $(OBJTOP)/bin/twostep/twostep.bin \
-    $(OBJTOP)/bin/fourways/fourways.bin
+    $(OBJTOP)/bin/fourways/fourways.bin \
+    $(OBJTOP)/bin/lastborn/lastborn.bin
 
 BOOT_LAYOUTS := $(BOOT_BINS:.bin=.bin.layout)
 
@@ -153,6 +154,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) $(BOOT_BINS) $(BOOT_LAYOUTS)
 	    ledger=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 34 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/ledger/ledger.bin \
 	    patron=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 35 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/patron/patron.bin \
 	    twostep=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 36 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/twostep/twostep.bin \
-	    fourways=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 37 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fourways/fourways.bin
+	    fourways=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 37 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fourways/fourways.bin \
+	    lastborn=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 38 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/lastborn/lastborn.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)

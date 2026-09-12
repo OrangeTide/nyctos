@@ -838,6 +838,12 @@ A thread carries a priority, a core affinity, a blocked-on pointer, a completion
 
 **Threads are drawn from the static pool.** Creation fails with `SYS_ERR_NO_RESOURCE` when the pool is exhausted, and there is no growth path. A design that creates threads dynamically in response to load must therefore state its bound, which is the intended effect: an unbounded thread pool is an unbounded kernel memory requirement, and section 8 does not allow one.
 
+**A thread is not made in a process that has been killed.** `sys_proc_kill()` marks the process and then walks the threads it has, so a thread made after the walk is not one the kill reached. Creation in a marked process is therefore refused with `SYS_ERR_OWNER_DEAD`, and the set of threads a kill has to reach is the set that existed when the mark was written. Without the refusal that set stays open, and a supervisor waiting for a process to be over is waiting on something the process can add to. It is worse than that in one case that has been measured: a process whose last thread has already gone has reported its exit, and a thread made after that reports it again, which is a completion advanced twice.
+
+The refusal is read where the other readings of the mark are, under the kernel lock, after the arguments have been checked and before anything is allocated. A caller that got the arguments wrong is told so whether or not it is being killed.
+
+This is not reachable from user mode as things stand, and that is the reading before an entry in section 10.5 doing its job rather than an absence of the case: a marked thread does not begin the operation. What can reach it is the supervisor of the paragraph above, making a thread in a process it is also entitled to kill.
+
 ### 10.3 Process Reentrancy Mode
 
 A process declares at spawn whether it is single-threaded, **serially reentrant** (multiple threads, but only one executing in the address space at a time), or fully parallel.
