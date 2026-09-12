@@ -13225,7 +13225,7 @@ the other core puts threads on, and the answer decides when the kill
 is written. It is read under the kernel lock with interrupts off, the
 same way stage one's reading of a thread's state was fixed.
 
-**4. A kill that finds every state at once.** *Planned.*
+**4. A kill that finds every state at once.** *Built.*
 
 - *Check.* One process, four threads, one in each of the states a kill
   has to reach: running on another core, ready and never run, blocked
@@ -13234,6 +13234,108 @@ same way stage one's reading of a thread's state was fixed.
   The count of pokes says which of them needed one.
 - Falsifiable per thread by removing the path that reaches that one:
   each failure names the state it left behind.
+
+**What it settled.** Four mechanisms end a thread and until now each
+was checked on a process that had one thread in one state. They work
+together. `fourways` holds all four at once and the kill ends all
+four:
+
+```
+a kill: four threads, one in each state it must reach
+    the four it was about to reach         1 computing, 1 never run, 1 receiving, 1 inside
+    threads the kill ended                 4 of 4, all with the kill's code
+    pokes it had to send                   1
+    from the kill to the join              about 4263 us
+```
+
+At Tier 0 the same lines read zero pokes. Nothing of the target is
+running when the killer is running, so the state the poke is for does
+not exist there and the mechanism is not tested. The time is the
+host's and is printed above the compared line.
+
+**The states, and what reaches each.** Blocked receiving, taken off
+the channel's list by `thread_cancel`. Inside a request, the same
+call, and the server it was talking to is told. Running on the other
+core, the poke, and the mark read on the way back from the interrupt
+it causes. Ready and never run, the mark read in the trampoline,
+which is stage two. The fourth is why this stage is in M21 and not in
+M17: before stage two a process arranged this way could not be killed
+at all, because the thread that had not run would go on to user mode
+and stay there.
+
+**The arrangement is waited for, not assumed.** The four states are
+counted in one walk under the kernel lock, and the check waits until
+the count is the arrangement it wants before writing the kill. A
+check that looked once would be checking the scheduler's timing. The
+census distinguishes a thread that has never reached user mode from
+one that has run and entered no system call, which needs a bit of
+its own: `t_user_entered`, set by both trampolines. Without it the
+thread that computes looks the same as the thread that has not
+started, because neither has a preemption point to show.
+
+**The reap needed a nudge, and that is not the kill's doing.** The
+first version waited thirty seconds for the process to be reaped and
+gave up. The threads had ended; one of them was parked on the second
+core waiting to be collected, it holds a reference to its process,
+and a core with nothing to run takes no dispatch, which is where
+collection happens. The check gives that core one kernel thread to
+dispatch. It is a property of how collection is scheduled rather than
+of the kill, and it is written down here because this is the first
+check in the system to end a process on a core that then has nothing
+left to do.
+
+**And the boot thread had to come off a channel.** The request that
+leaves one thread inside a rendezvous is taken by the boot thread and
+never answered. Left there, the boot thread would be serving that
+channel for the rest of the run, which is section 19.3's unenforced
+rule in its cross-channel form. The check answers after the join and
+asserts the answer is refused, `SYS_ERR_STALE`, because the client is
+gone. Refusing it is what takes the thread off the list.
+
+**Falsified per state, by the counts rather than by a hang.** Two of
+the four hang when their mechanism is removed. Skipping
+`thread_cancel` for a thread waiting in a receive, and again for one
+waiting for a reply, each leaves that one thread behind and the check
+names it: `states: the kill left 0 computing, 0 never run, 1
+receiving, 0 inside`, and the same with the last two counts swapped.
+That reporting is the reason the stage waits for the threads itself
+instead of leaving it to the join, which can say only that the
+process did not finish.
+
+The other two do not hang, and the compared report is what catches
+them. Take out the poke and the thread that computes is still reached
+by some later interrupt within the join's deadline, but a kill that
+sent no poke is one fewer poke and one more thread stopped at an
+entry boundary. Take out the trampoline reading and the thread that
+has not run reaches user mode, makes its first call, and is caught at
+the entry boundary instead: `killed before ever running` loses its
+thread and `stopped at an entry boundary` gains one. So this stage
+cannot falsify those two paths on its own, and says so. What it shows
+is that each is the first thing to reach its state, and the compared
+numbers say which reached which.
+
+The thread that never runs receives on a channel nothing sends to
+rather than computing, which is what makes the second of those
+readable. A computing body ends too, reached by whatever interrupt
+happens along, and the report then shows only that the thread was no
+longer killed before running, without saying where it was caught.
+Both were measured.
+
+**What it cost.** Two channels, four threads and one more process in
+the boot, and one more kill. The compared line at Tier 2:
+
+```
+  kills: 71 written, pokes 2, clients told 3
+  killed before ever running: 1, 1 a program and 1 a thread it made, 0 entries
+  stopped at an entry boundary: 72
+```
+
+The second line is the change worth naming. Stage two added a reading
+in each of the two trampolines and only the program's had ever fired;
+stage two guessed the other would come from stage five. It comes from
+here. The thread `fourways` makes last is killed before the scheduler
+reaches it, and it is the first thread in the system's history to be
+stopped by the reading in `proc_thread_start`.
 
 **5. A thread made by a process that is already dying.** *Planned.*
 

@@ -323,6 +323,16 @@ struct thread {
      * status rather than by one that knows what the program was doing.
      */
     uint32_t            t_fault;
+
+    /*
+     * Whether this thread has ever reached user mode, set by the
+     * trampoline that takes it there. A thread that has not is the
+     * one a kill could not reach before M21 stage two, and it is
+     * not the same as a thread that has not entered the kernel: a
+     * program that computes and calls nothing has run and has no
+     * preemption points to show for it.
+     */
+    bool                t_user_entered;
     uintptr_t           t_fault_addr;
     uintptr_t           t_fault_pc;
 

@@ -6267,7 +6267,390 @@ kill_boundary_checks(void)
 }
 
 /*
+ * A kill that finds every state at once, per M21 stage four.
+ *
+ * Section 10.5 says a kill unblocks every thread of its target
+ * exactly as if each had been cancelled. Four different mechanisms
+ * make that true and until now each was checked on a process with
+ * one thread in one state. A supervisor ending a driver cohort is
+ * not in that position: it ends a process whose threads are wherever
+ * they happened to be, and nothing had asked whether the four work
+ * together.
+ *
+ * `fourways` puts one thread in each. The states and what reaches
+ * them:
+ *
+ *   blocked receiving      thread_cancel, off the channel's list
+ *   inside a request       thread_cancel, and the server is told
+ *   running                the poke, and the mark read on the way
+ *                          back from the interrupt it causes
+ *   ready and never run    the mark read in the trampoline, per
+ *                          stage two
+ *
+ * The last of those is why this stage is here rather than in M17.
+ * Before stage two a process arranged like this could not be killed
+ * at all: three threads would end and the fourth would go on to user
+ * mode and run for ever, and the join would never return.
+ */
+#define FOURWAYS_THREADS    4u
+
+/*
+ * What the four threads are doing, counted in one walk.
+ *
+ * Counted twice: once before the kill, to say the arrangement the
+ * stage is about was actually reached, and once if the kill fails
+ * to end them, to say which state was left behind. The second is
+ * the reason this is a function. A join that times out can only
+ * report that the process did not finish, and the thing worth
+ * knowing is which of the four mechanisms did not run.
+ */
+struct fourways_states {
+    uint32_t n;
+    uint32_t running;
+    uint32_t unrun;
+    uint32_t receiving;
+    uint32_t inside;
+    uint32_t computing;
+    uint32_t dead;
+};
+
+static void
+count_states(struct proc *p, struct fourways_states *out)
+{
+    intr_state_t is;
+    intr_state_t ks = 0;
+    struct thread *t;
+    bool took = false;
+
+    memset(out, 0, sizeof(*out));
+
+    /*
+     * Under the kernel lock, because on two cores the list and the
+     * states on it belong to the other core.
+     */
+    is = md_intr_disable();
+    if (!klock_held()) {
+        ks = klock_enter();
+        took = true;
+    }
+    for (t = proc_threads(p); t != NULL; t = t->t_sibling) {
+        out->n++;
+        if (t->t_state == THREAD_DEAD) {
+            out->dead++;
+        } else if (!t->t_user_entered) {
+            /*
+             * Never reached user mode, which is the state in
+             * question and is not the same as never having entered
+             * the kernel: the thread that computes has run and has
+             * passed no preemption point either.
+             */
+            out->unrun++;
+        } else if (t->t_state == THREAD_BLOCKED &&
+          t->t_wait == THREAD_WAIT_RECV) {
+            out->receiving++;
+        } else if (t->t_state == THREAD_BLOCKED &&
+          t->t_wait == THREAD_WAIT_REPLY) {
+            out->inside++;
+        } else {
+            out->computing++;
+            if (t->t_state == THREAD_RUNNING) {
+                out->running++;
+            }
+        }
+    }
+    if (took) {
+        klock_exit(ks);
+    }
+    md_intr_restore(is);
+}
+
+#if SYS_TIER == 2
+static volatile bool nudge_ran;
+
+/*
+ * Something for the other core to dispatch, per M21 stage four.
+ *
+ * A thread that ends leaves itself parked for the next dispatch on
+ * the core it ran on to collect, and a core with nothing to run
+ * takes no dispatch. So a program moved to the second core and
+ * killed there leaves its last thread parked, that thread holds a
+ * reference to its process, and the process is never reaped: the
+ * check below waited thirty seconds for two channels that were
+ * never going to come back. Measured, and the thread was there in
+ * the pool, exited, with nothing holding it.
+ *
+ * This gives that core one thing to dispatch, which collects what
+ * was parked on the way in. It is a property of how collection is
+ * scheduled rather than of the kill, and it is written here because
+ * this is the first check in the system to end a process on a core
+ * that then has nothing to do.
+ */
+static void
+nudge(void *arg)
+{
+    (void)arg;
+    nudge_ran = true;
+    thread_exit(0);
+}
+
+static void
+nudge_other_core(void)
+{
+    struct thread *t;
+    uint64_t until;
+
+    nudge_ran = false;
+    t = thread_create("nudge", PRIO_BOOT, nudge, NULL);
+    sched_defer();
+    if (sched_migrate(t, 1) != SYS_OK) {
+        panic("states: the nudge would not move");
+    }
+    sched_ready(t);
+    sched_undefer();
+
+    until = time_now() + time_from_ms(JOIN_MS);
+    while (!nudge_ran) {
+        if (time_now() > until) {
+            panic("states: the other core never dispatched");
+        }
+        (void)timeline_wait(&kill_tl, 1, time_now() + time_from_ms(2));
+    }
+}
+#endif /* SYS_TIER == 2 */
+
+static void
+kill_states_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_kill_args kargs;
+    struct channel *serve, *store;
+    struct child c;
+    struct sys_msg msg;
+    struct fourways_states st;
+    sys_thread_id_t peer;
+    sys_ns_spec_t ns[2];
+    sys_handle_t keep_s, keep_t, give_s, give_t, h;
+    sys_id_t id_s, id_t;
+    uint64_t cookie, until, killed;
+    uint32_t was_running;
+    void *obj;
+    int32_t code;
+
+    cnputs("a kill: four threads, one in each state it must reach\n");
+
+    serve = channel_create("fourways recv", self);
+    store = channel_create("fourways send", self);
+    if (serve == NULL || store == NULL) {
+        panic("states: no channels");
+    }
+    id_s = serve->c_id;
+    id_t = store->c_id;
+
+    /*
+     * One handle of this check's own on each, so the objects stay
+     * under the pointers read below whatever the program does with
+     * the ones it was given.
+     */
+    if (handle_insert(ht, serve, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
+      &keep_s) != SYS_OK ||
+      handle_insert(ht, store, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
+      &keep_t) != SYS_OK) {
+        panic("states: no handles to keep");
+    }
+    if (handle_insert(ht, serve, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &give_s) != SYS_OK ||
+      handle_insert(ht, store, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER, &give_t) != SYS_OK) {
+        panic("states: no handles to give");
+    }
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = give_s;
+    ns[1].id = SYS_NS_STORE;
+    ns[1].handle = give_t;
+
+    sched_defer();
+    if (proc_spawn_op(self, "fourways", PRIO_BOOT - 1, ns, 2, NULL, 0,
+      &h) != SYS_OK) {
+        panic("states: no program");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("states: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+
+#if SYS_TIER == 2
+    /*
+     * The other core, before it has run, so that the thread which
+     * computes is running rather than merely runnable when the kill
+     * is written. Threads it makes go on the queue of the core it
+     * runs on, so moving the first moves all four.
+     */
+    if (sched_migrate(proc_threads(c.c_proc), 1) != SYS_OK) {
+        panic("states: the program would not move");
+    }
+#endif
+    sched_undefer();
+
+    /*
+     * The asker's request, taken and not answered, which is what
+     * leaves one thread inside a rendezvous. Taking it is also what
+     * says the program has got that far.
+     */
+    until = time_now() + time_from_ms(JOIN_MS);
+    for (;;) {
+        if (channel_recv(store, &msg, &peer, &cookie) == SYS_OK) {
+            break;
+        }
+        if (time_now() > until) {
+            panic("states: the asker never asked");
+        }
+    }
+
+    /*
+     * And then the four are counted. Waited for rather than
+     * sampled: the program reaches this arrangement in its own time
+     * and a check that looked once would be checking the
+     * scheduler's timing.
+     */
+    until = time_now() + time_from_ms(JOIN_MS);
+    for (;;) {
+        count_states(c.c_proc, &st);
+
+        /*
+         * On two cores the thread that computes has to be running
+         * and not merely runnable, because the state being tested
+         * is the one only a poke reaches. On one core the killer
+         * has the core by definition, so it is runnable and the
+         * poke is not what reaches it.
+         */
+        if (st.n == FOURWAYS_THREADS && st.unrun == 1 &&
+          st.receiving == 1 && st.inside == 1 && st.computing == 1 &&
+          st.running == (cpu_count() > 1 ? 1u : 0u)) {
+            break;
+        }
+        if (time_now() > until) {
+            panic("states: %u threads, %u computing of which %u "
+              "running, %u never run, %u receiving, %u inside",
+              (unsigned int)st.n, (unsigned int)st.computing,
+              (unsigned int)st.running, (unsigned int)st.unrun,
+              (unsigned int)st.receiving, (unsigned int)st.inside);
+        }
+        (void)timeline_wait(&kill_tl, 1, time_now() + time_from_ms(2));
+    }
+
+    cnprintf("    %-38s %u computing, %u never run, %u receiving, "
+      "%u inside\n", "the four it was about to reach",
+      (unsigned int)st.computing, (unsigned int)st.unrun,
+      (unsigned int)st.receiving, (unsigned int)st.inside);
+
+    was_running = st.running;
+    killed = time_now();
+    memset(&kargs, 0, sizeof(kargs));
+    kargs.code = KILL_CODE;
+    if (run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)) != SYS_OK) {
+        panic("states: it refused to be killed");
+    }
+
+    /*
+     * Waited for here and not only in the join, because what this
+     * stage has to say when it fails is which of the four states
+     * was left behind. The join can say only that the process did
+     * not finish.
+     */
+    until = time_now() + time_from_ms(JOIN_MS);
+    for (;;) {
+        count_states(c.c_proc, &st);
+        if (st.n == st.dead) {
+            break;
+        }
+        if (time_now() > until) {
+            panic("states: the kill left %u computing, %u never run, "
+              "%u receiving, %u inside", (unsigned int)st.computing,
+              (unsigned int)st.unrun, (unsigned int)st.receiving,
+              (unsigned int)st.inside);
+        }
+        (void)timeline_wait(&kill_tl, 1,
+          time_now() + time_from_ms(2));
+    }
+
+    code = child_join(&c, JOIN_MS);
+    if (code != KILL_CODE) {
+        panic("states: it came back with %d, not %d", (int)code,
+          (int)KILL_CODE);
+    }
+    if (c.c_proc->p_nthreads != 0) {
+        panic("states: %u threads outlived the process",
+          (unsigned int)c.c_proc->p_nthreads);
+    }
+
+    /*
+     * And this thread comes off the channel it was serving, which
+     * the asker's request put it on. The client is gone, so the
+     * answer is refused rather than delivered, and refusing it is
+     * what takes this thread off the list. Left there it would be a
+     * boot thread serving one channel for the rest of the run,
+     * which is the cross-channel case of section 19.3's unenforced
+     * rule and the one thing this boot has never done.
+     */
+    if (channel_reply(peer, &msg) != SYS_ERR_STALE) {
+        panic("states: the answer to a dead client was not refused");
+    }
+
+    /*
+     * One poke per thread that was running, which is the rule M17
+     * stated and the number that says the fourth mechanism was the
+     * one used. On one core nothing of the target is running when
+     * the killer is, so the count is zero and the state it stands
+     * for is not tested there.
+     */
+    if (c.c_proc->p_kill_pokes != (cpu_count() > 1 ? 1u : 0u)) {
+        panic("states: %lu pokes for %u running threads",
+          (unsigned long)c.c_proc->p_kill_pokes,
+          (unsigned int)was_running);
+    }
+
+    cnprintf("    %-38s %u of %u, all with the kill's code\n",
+      "threads the kill ended", (unsigned int)FOURWAYS_THREADS,
+      (unsigned int)FOURWAYS_THREADS);
+    cnprintf("    %-38s %lu\n", "pokes it had to send",
+      (unsigned long)c.c_proc->p_kill_pokes);
+    cnprintf("    %-38s about %lu us\n", "from the kill to the join",
+      (unsigned long)((time_now() - killed) * 1000000ULL /
+      time_hz()));
+
+    if (handle_close(ht, h) != SYS_OK ||
+      handle_close(ht, keep_s) != SYS_OK ||
+      handle_close(ht, keep_t) != SYS_OK) {
+        panic("states: a handle was already gone");
+    }
+
+#if SYS_TIER == 2
+    nudge_other_core();
+#endif
+
+    /*
+     * And the reap, waited for rather than assumed. A join says the
+     * threads have ended; the handle table they shared is closed
+     * when the last thing that can ask about the process lets go,
+     * and the collection happens at the top of some core's next
+     * switch. The two channels are what says it happened, because
+     * the only handles left on them are in that table.
+     */
+    until = time_now() + time_from_ms(JOIN_MS);
+    while (slot_alive(id_s) || slot_alive(id_t)) {
+        if (time_now() > until) {
+            panic("states: the channels outlived the process");
+        }
+        (void)timeline_wait(&kill_tl, 1, time_now() + time_from_ms(2));
+    }
+}
+
+/*
  * A kill that has to cause the entry, per M17 stage three.
+
 
  *
  * Stage two put the mark where a trap returns to user mode, and found
@@ -16066,6 +16449,7 @@ kernel_main(void)
     kill_reach_checks();
     kill_unrun_checks();
     kill_boundary_checks();
+    kill_states_checks();
     kill_other_core_checks();
 #if SYS_TIER == 2
     kill_faulting_checks();

@@ -2,16 +2,16 @@ used at most: 24 of 32 threads, 13 of 24 processes
   kernel stacks under those threads: 98304 bytes
   buffer remapping: 46 pages in 46 halves, 92 entries, 7 tables, 46 invalidations, 0 flushes
   measured regions: 1024 entries and 2048, 8192 shared
-  kills: 70 written, pokes 1, clients told 3
-  killed before ever running: 1, 1 a program and 0 a thread it made, 0 entries
+  kills: 71 written, pokes 2, clients told 3
+  killed before ever running: 1, 1 a program and 1 a thread it made, 0 entries
   of those, found inside the kernel: 0
-  stopped at an entry boundary: 70
+  stopped at an entry boundary: 72
   peers: 8 collected, pulses 1 dropped and 11 evicted
   senders: 2 refused, 2 displaced
   connections: 7 in use, 12 at once
-  channels: 614 made, 591 given back, 23 live
+  channels: 616 made, 593 given back, 23 live
   channels at once: 24 of 48, and 52 restarts of a server on one slot
-  pulses that went with a channel: 8, of which 1 of the reserved kind
-  names: 2586 given out, 2554 again, 1 spaces without, 9 live
-  names given back: 2577, each throwing away what was filed under it
+  pulses that went with a channel: 9, of which 2 of the reserved kind
+  names: 2587 given out, 2555 again, 1 spaces without, 9 live
+  names given back: 2578, each throwing away what was filed under it
 stage 9 complete

@@ -636,6 +636,7 @@ proc_user_start(void *arg)
     (void)arg;
     intr_region_end((uintptr_t)__builtin_return_address(0));
     exit_before_user(&proc_unrun_programs);
+    thread_current()->t_user_entered = true;
     enter_user(p->p_entry, (void *)p->p_startup_va, 0);
 }
 
@@ -1562,6 +1563,7 @@ proc_thread_start(void *arg)
     (void)arg;
     intr_region_end((uintptr_t)__builtin_return_address(0));
     exit_before_user(&proc_unrun_threads);
+    t->t_user_entered = true;
     enter_user(t->t_uentry, (void *)t->t_uarg, t->t_ustack);
 }
 
