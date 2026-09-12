@@ -838,9 +838,13 @@ A thread carries a priority, a core affinity, a blocked-on pointer, a completion
 
 **Threads are drawn from the static pool.** Creation fails with `SYS_ERR_NO_RESOURCE` when the pool is exhausted, and there is no growth path. A design that creates threads dynamically in response to load must therefore state its bound, which is the intended effect: an unbounded thread pool is an unbounded kernel memory requirement, and section 8 does not allow one.
 
-**A thread is not made in a process that has been killed.** `sys_proc_kill()` marks the process and then walks the threads it has, so a thread made after the walk is not one the kill reached. Creation in a marked process is therefore refused with `SYS_ERR_OWNER_DEAD`, and the set of threads a kill has to reach is the set that existed when the mark was written. Without the refusal that set stays open, and a supervisor waiting for a process to be over is waiting on something the process can add to. It is worse than that in one case that has been measured: a process whose last thread has already gone has reported its exit, and a thread made after that reports it again, which is a completion advanced twice.
+**A thread is not made in a process that is over.** A process is over in two ways: a kill has been written against it, or its last thread has left. Creation is refused with `SYS_ERR_OWNER_DEAD` in both.
 
-The refusal is read where the other readings of the mark are, under the kernel lock, after the arguments have been checked and before anything is allocated. A caller that got the arguments wrong is told so whether or not it is being killed.
+The first is about the kill. `sys_proc_kill()` marks the process and then walks the threads it has, so a thread made after the walk is not one the kill reached. With the refusal, the set of threads a kill has to reach is the set that existed when the mark was written; without it the set stays open, and a supervisor waiting for a process to be over is waiting on something the process can add to.
+
+The second is about the exit, and it does not need a kill at all. A process whose last thread has gone has reported its exit, and both of the things a thread made afterwards can do have been measured. If the process was marked, the new thread reads the mark and exits, and the exit advances a completion that has already been advanced. If it was not, the new thread simply runs, and a process that has already reported its exit is holding a thread, a slot and its memory for as long as that thread lives, which is a reap that never comes.
+
+The refusal is read where the other readings of the mark are, under the kernel lock, after the arguments have been checked and before anything is allocated. A caller that got the arguments wrong is told so whichever state the process is in.
 
 This is not reachable from user mode as things stand, and that is the reading before an entry in section 10.5 doing its job rather than an absence of the case: a marked thread does not begin the operation. What can reach it is the supervisor of the paragraph above, making a thread in a process it is also entitled to kill.
 

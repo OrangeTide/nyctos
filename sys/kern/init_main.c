@@ -6765,36 +6765,64 @@ kill_states_checks(void)
  * and they came from the program, so the only thing that differs
  * between the answers is the mark.
  */
+/*
+ * One `lastborn`, started and asked for the makings of a thread.
+ *
+ * Twice, because the stage asks the same question of a process that
+ * was killed and of one that ended on its own, and the second is
+ * not a variation on the first: nothing marked it, and what makes
+ * it over is that its last thread has gone.
+ */
+/*
+ * Receive a request, and not a pulse.
+ *
+ * A server that has outlived a client is told so on the channel it
+ * was serving, and the telling is delivered by the same call as a
+ * request. This check kills two clients and then waits for a third
+ * to ask, so what came back first was `SYS_PULSE_DEAD_OWNER` and
+ * the check read the makings of a thread out of it. Pulses are what
+ * they are and M18 measures them; here they are in the way, and are
+ * dropped. There is a sender queued by the time this is called, so
+ * the receive that follows a pulse has something waiting for it.
+ */
 static void
-kill_newborn_checks(void)
+recv_request(struct channel *ch, struct sys_msg *out,
+  sys_thread_id_t *peer, const char *what)
+{
+    uint64_t cookie;
+
+    for (;;) {
+        if (channel_recv(ch, out, peer, &cookie) != SYS_OK) {
+            panic("%s: the request would not come", what);
+        }
+        if ((out->flags & SYS_MSG_IS_PULSE) == 0) {
+            return;
+        }
+    }
+}
+
+/* What `lastborn` returns when its request was answered. */
+#define LASTBORN_RETURN 3
+
+struct newborn {
+    struct child        c;
+    struct sys_msg      msg;
+    sys_thread_id_t     peer;
+    sys_handle_t        h;
+    uintptr_t           entry;
+    uintptr_t           stack;
+};
+
+static void
+start_lastborn(struct channel *serve, struct newborn *n)
 {
     struct proc *self = proc_current();
     struct handle_table *ht = &self->p_handles;
-    struct sys_op_kill_args kargs;
-    struct channel *serve;
-    struct child c;
-    struct sys_msg first, second;
-    sys_thread_id_t peer_main, peer_kid;
     sys_ns_spec_t ns[1];
-    sys_handle_t keep, give, h, kid;
-    sys_id_t id;
-    uint64_t cookie, until, refused;
-    uintptr_t entry, stack;
+    sys_handle_t give;
+    uint64_t got[2];
     void *obj;
-    sys_err_t err;
-    int32_t code;
 
-    cnputs("a kill: the thread a dying process asks for\n");
-
-    serve = channel_create("lastborn recv", self);
-    if (serve == NULL) {
-        panic("newborn: no channel");
-    }
-    id = serve->c_id;
-    if (handle_insert(ht, serve, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
-      &keep) != SYS_OK) {
-        panic("newborn: no handle to keep");
-    }
     if (handle_insert(ht, serve, SYS_OBJ_CHANNEL,
       SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
         panic("newborn: no handle to give");
@@ -6806,54 +6834,77 @@ kill_newborn_checks(void)
 
     sched_defer();
     if (proc_spawn_op(self, "lastborn", PRIO_BOOT - 1, ns, 1, NULL, 0,
-      &h) != SYS_OK) {
+      &n->h) != SYS_OK) {
         panic("newborn: no program");
     }
-    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+    if (handle_lookup(ht, n->h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
         panic("newborn: the spawn returned no process");
     }
-    child_watch(&c, obj);
+    child_watch(&n->c, obj);
     sched_undefer();
 
-    /*
-     * The makings, taken and not answered, which is also what
-     * leaves the program's own thread inside a rendezvous.
-     */
     wait_queued(serve, "newborn");
-    if (channel_recv(serve, &first, &peer_main, &cookie) != SYS_OK) {
-        panic("newborn: the makings would not come");
-    }
-    if (first.inline_len != 2 * sizeof(uint64_t)) {
+    recv_request(serve, &n->msg, &n->peer, "newborn: the makings");
+    if (n->msg.inline_len != sizeof(got)) {
         panic("newborn: the makings were %u bytes",
-          (unsigned int)first.inline_len);
+          (unsigned int)n->msg.inline_len);
     }
-    {
-        uint64_t got[2];
 
-        memcpy(got, first.inline_data, sizeof(got));
-        entry = (uintptr_t)got[0];
-        stack = (uintptr_t)got[1];
-    }
-    if (entry == 0 || stack == 0) {
+    memcpy(got, n->msg.inline_data, sizeof(got));
+    n->entry = (uintptr_t)got[0];
+    n->stack = (uintptr_t)got[1];
+    if (n->entry == 0 || n->stack == 0) {
         panic("newborn: the makings were empty");
     }
+}
+
+static void
+kill_newborn_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_kill_args kargs;
+    struct channel *serve;
+    struct newborn killed, ended;
+    struct sys_msg second, answer;
+    sys_thread_id_t peer_kid;
+    sys_handle_t keep, kid;
+    sys_id_t id;
+    uint64_t until, refused;
+    sys_err_t err;
+    int32_t code;
+
+    cnputs("a kill: the thread a process that is over asks for\n");
+
+    serve = channel_create("lastborn recv", self);
+    if (serve == NULL) {
+        panic("newborn: no channel");
+    }
+    id = serve->c_id;
+    if (handle_insert(ht, serve, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
+      &keep) != SYS_OK) {
+        panic("newborn: no handle to keep");
+    }
+
+    refused = proc_creates_refused;
+
+    start_lastborn(serve, &killed);
 
     /*
-     * The working case first, because the refusal below means
+     * The working case first, because the refusals below mean
      * nothing unless the same call works on the same process a
      * moment earlier.
      */
-    err = proc_thread_create(c.c_proc, entry, 0, stack, PRIO_BOOT - 1,
-      &kid);
+    err = proc_thread_create(killed.c.c_proc, killed.entry, 0,
+      killed.stack, PRIO_BOOT - 1, &kid);
     if (err != SYS_OK) {
         panic("newborn: a live process refused a thread, %d",
           (int)err);
     }
 
     wait_queued(serve, "newborn: the thread that was made");
-    if (channel_recv(serve, &second, &peer_kid, &cookie) != SYS_OK) {
-        panic("newborn: the thread's request would not come");
-    }
+    recv_request(serve, &second, &peer_kid,
+      "newborn: the thread that was made");
     if (second.inline_len != 1) {
         panic("newborn: the second message was %u bytes",
           (unsigned int)second.inline_len);
@@ -6865,28 +6916,28 @@ kill_newborn_checks(void)
      * thread, a thread holds its process, and a process that names
      * itself is never collected.
      */
-    if (handle_close(&c.c_proc->p_handles, kid) != SYS_OK) {
+    if (handle_close(&killed.c.c_proc->p_handles, kid) != SYS_OK) {
         panic("newborn: the thread handle was already gone");
     }
 
     cnprintf("    %-38s %s\n", "a thread built from what it sent",
       "ran and asked on the same channel");
 
-    refused = proc_creates_refused;
     memset(&kargs, 0, sizeof(kargs));
     kargs.code = KILL_CODE;
-    if (run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)) != SYS_OK) {
+    if (run(SYS_OP_PROC_KILL, killed.h, &kargs, sizeof(kargs)) !=
+      SYS_OK) {
         panic("newborn: it refused to be killed");
     }
 
-    code = child_join(&c, JOIN_MS);
+    code = child_join(&killed.c, JOIN_MS);
     if (code != KILL_CODE) {
         panic("newborn: it came back with %d, not %d", (int)code,
           (int)KILL_CODE);
     }
-    if (c.c_proc->p_nthreads != 0) {
+    if (killed.c.c_proc->p_nthreads != 0) {
         panic("newborn: %u threads outlived the process",
-          (unsigned int)c.c_proc->p_nthreads);
+          (unsigned int)killed.c.c_proc->p_nthreads);
     }
 
     /*
@@ -6896,19 +6947,15 @@ kill_newborn_checks(void)
      * yet to notice one: this process has ended, and the only thing
      * left of it is the memory.
      */
-    err = proc_thread_create(c.c_proc, entry, 0, stack, PRIO_BOOT - 1,
-      &kid);
+    err = proc_thread_create(killed.c.c_proc, killed.entry, 0,
+      killed.stack, PRIO_BOOT - 1, &kid);
     if (err != SYS_ERR_OWNER_DEAD) {
         panic("newborn: a killed process answered %d, not %d",
           (int)err, (int)SYS_ERR_OWNER_DEAD);
     }
-    if (c.c_proc->p_nthreads != 0) {
+    if (killed.c.c_proc->p_nthreads != 0) {
         panic("newborn: the refusal made %u threads anyway",
-          (unsigned int)c.c_proc->p_nthreads);
-    }
-    if (proc_creates_refused != refused + 1) {
-        panic("newborn: %lu refusals, not one",
-          (unsigned long)(proc_creates_refused - refused));
+          (unsigned int)killed.c.c_proc->p_nthreads);
     }
 
     cnprintf("    %-38s %s\n", "and the same call after the kill",
@@ -6919,12 +6966,63 @@ kill_newborn_checks(void)
      * which is what takes this thread off the channel it has been
      * serving twice over.
      */
-    if (channel_reply(peer_main, &first) != SYS_ERR_STALE ||
+    if (channel_reply(killed.peer, &killed.msg) != SYS_ERR_STALE ||
       channel_reply(peer_kid, &second) != SYS_ERR_STALE) {
         panic("newborn: an answer to a dead client was delivered");
     }
 
-    if (handle_close(ht, h) != SYS_OK ||
+    if (handle_close(ht, killed.h) != SYS_OK) {
+        panic("newborn: the spawn handle was already gone");
+    }
+
+    /*
+     * And one that nothing killed, per the review of this stage. A
+     * process is over when its last thread has gone, whether that
+     * was a kill's doing or its own, and both leave a completion
+     * that has been advanced. The mark is only one of the two ways
+     * to get there, and the reading that was written first saw only
+     * that one.
+     *
+     * This one is answered rather than killed: the reply lets its
+     * thread return from the send and fall off the end of main.
+     */
+    start_lastborn(serve, &ended);
+
+    memset(&answer, 0, sizeof(answer));
+    answer.handle = SYS_HANDLE_INVALID;
+    if (channel_reply(ended.peer, &answer) != SYS_OK) {
+        panic("newborn: the answer was not delivered");
+    }
+
+    code = child_join(&ended.c, JOIN_MS);
+    if (code != LASTBORN_RETURN) {
+        panic("newborn: it ended with %d, not %d", (int)code,
+          (int)LASTBORN_RETURN);
+    }
+    if (!ended.c.c_proc->p_exited || ended.c.c_proc->p_dying) {
+        panic("newborn: it ended without having exited");
+    }
+
+    err = proc_thread_create(ended.c.c_proc, ended.entry, 0,
+      ended.stack, PRIO_BOOT - 1, &kid);
+    if (err != SYS_ERR_OWNER_DEAD) {
+        panic("newborn: a process that ended answered %d, not %d",
+          (int)err, (int)SYS_ERR_OWNER_DEAD);
+    }
+    if (ended.c.c_proc->p_nthreads != 0) {
+        panic("newborn: the refusal made %u threads anyway",
+          (unsigned int)ended.c.c_proc->p_nthreads);
+    }
+
+    if (proc_creates_refused != refused + 2) {
+        panic("newborn: %lu refusals, not two",
+          (unsigned long)(proc_creates_refused - refused));
+    }
+
+    cnprintf("    %-38s %s\n", "and one that nothing killed",
+      "refused the same, having ended itself");
+
+    if (handle_close(ht, ended.h) != SYS_OK ||
       handle_close(ht, keep) != SYS_OK) {
         panic("newborn: a handle was already gone");
     }
@@ -6932,7 +7030,7 @@ kill_newborn_checks(void)
     until = time_now() + time_from_ms(JOIN_MS);
     while (slot_alive(id)) {
         if (time_now() > until) {
-            panic("newborn: the channel outlived the process");
+            panic("newborn: the channel outlived the processes");
         }
         (void)timeline_wait(&kill_tl, 1, time_now() + time_from_ms(2));
     }
@@ -17189,20 +17287,30 @@ kernel_main(void)
       proc_stopped_before_later + proc_stopped_after_batch));
 
     /*
-     * And the threads a killed process asked for and did not get,
-     * per M21 stage five. A count, and the one that says the set of
-     * threads a kill has to reach is closed at the moment the mark
-     * is written rather than open afterwards.
+     * And the threads a process that was over asked for and did not
+     * get, per M21 stage five. A count, and the one that says the
+     * set of threads a kill has to reach is closed at the moment
+     * the mark is written rather than open afterwards.
      *
-     * Nothing in user mode reaches this today and that is the point
-     * of the reading before an entry: a marked thread does not
-     * begin the operation. What the count stands on is the check,
-     * which asks for the thread from outside the process.
+     * The two are apart because a process is over in two ways and
+     * the reading was written for one of them. A boot with nothing
+     * in the second is a boot where a process that ended on its own
+     * was never asked.
+     *
+     * Nothing in user mode reaches either today, and that is the
+     * point of the reading before an entry: a marked thread does
+     * not begin the operation. What the counts stand on is the
+     * check, which asks from outside the process.
      */
-    cnprintf("  threads refused to a dying process: %lu\n",
-      (unsigned long)proc_creates_refused);
+    cnprintf("  threads refused to a process that is over: %lu, "
+      "%lu of them never marked\n",
+      (unsigned long)proc_creates_refused,
+      (unsigned long)proc_creates_unmarked);
     if (proc_creates_refused == 0) {
         panic("kills: a dying process was never asked for a thread");
+    }
+    if (proc_creates_unmarked == 0) {
+        panic("kills: a process that ended was never asked for one");
     }
     if (kills_reached == 0) {
         panic("kills: no kill reached a thread that had never run");

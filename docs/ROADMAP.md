@@ -13396,10 +13396,11 @@ here rather than left out.
 
 **What it settled: it is refused.** A thread asked for in a process
 that has been killed is refused with `SYS_ERR_OWNER_DEAD` and nothing
-is built. The compared line at both tiers:
+is built. The compared line at both tiers, in the form the review of
+this stage left it:
 
 ```
-  threads refused to a dying process: 1
+  threads refused to a process that is over: 2, 1 of them never marked
 ```
 
 Born and dying at stage two's reading was the other candidate and it
@@ -13429,9 +13430,11 @@ says so on the same channel, and the only difference between that
 answer and the refusal that follows the kill is the mark.
 
 ```
-a kill: the thread a dying process asks for
+a kill: the thread a process that is over asks for
     a thread built from what it sent       ran and asked on the same channel
     and the same call after the kill       refused, with nothing made
+    lastborn exited with status 3
+    and one that nothing killed            refused the same, having ended itself
 ```
 
 **What the construction found: the process argument was not used.**
@@ -13456,12 +13459,56 @@ minutes was the only thing that noticed. The wait is now for a sender
 on the queue, which is a thing that can be given up on, and the
 receive that follows has nothing to wait for.
 
-**What it cost.** One more program in the boot, two more threads, one
-more kill and one more channel. Nothing in user mode reaches the
-refusal, and that is the reading before an entry from stage three
-doing its job rather than an absence of the case: a marked thread
-does not begin the operation. The count stands on the check, which
-asks from outside the process.
+**What it cost.** One more program in the boot, started twice, three
+more threads between them, one more kill and one more channel.
+Nothing in user mode reaches the refusal, and that is the reading
+before an entry from stage three doing its job rather than an absence
+of the case: a marked thread does not begin the operation. The count
+stands on the check, which asks from outside the process.
+
+**What the review found: a kill is only one of the two ways a
+process ends.** The refusal read the mark, and a process that ends
+on its own is never marked. So a supervisor could make a thread in a
+process that had already exited and been joined, and the stage's own
+argument about the set a kill has to reach says nothing about that
+case at all.
+
+Both halves of it were measured. The create succeeds, the thread is
+added to a process whose exit has already been reported, and what
+happens next depends only on whether anything had killed it. Marked,
+the thread reads the mark in its trampoline, exits, and advances a
+completion that has been advanced: `completion advanced twice`.
+Unmarked, the thread simply runs, and the process it belongs to is
+never reaped. Two seconds after the create, with the check watching:
+one thread, in a process that had exited, and the channels still out.
+That second one is exactly the falsification the stage's plan named,
+"the thread outliving the process, which is what makes a reap wait
+for ever", and the stage as built had not reached it.
+
+The reading is now `p_dying || p_exited`, and the check asks a second
+`lastborn` the same question. That one is answered rather than
+killed, so it returns from its send, falls off the end of main, and
+ends with nothing having been written against it. The same call is
+refused the same way. Falsifiable by taking the second term out:
+`newborn: a process that ended answered 0, not -10`.
+
+The two are counted apart, because the reading was written for the
+mark and did not see the exit:
+
+```
+  threads refused to a process that is over: 2, 1 of them never marked
+```
+
+**And the receive took a pulse for a request.** A server that
+outlives a client is told so on the channel it was serving, and the
+telling arrives through the same call as a request. This check kills
+two clients and then waits for a third program to ask, so what came
+back was `SYS_PULSE_DEAD_OWNER`, and the check read the makings of a
+thread out of sixteen bytes that were eight: `newborn: the makings
+were 8 bytes`. The receive drops pulses now and takes the request
+behind them. It is also why the pulse line in the compared report
+went back down by two: those two were being thrown away with the
+channel at the end of the boot, and now they are delivered.
 
 **6. M20's workaround comes out.** *Planned.*
 

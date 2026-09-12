@@ -1594,42 +1594,51 @@ proc_thread_create(struct proc *p, uintptr_t entry, uintptr_t uarg,
     }
 
     /*
-     * And not into a process that has been killed, per M21 stage
-     * five. A kill is the statement that this process is over, and
-     * the set of threads it has to reach is the set that existed
-     * when the mark was written. Letting a thread be made after
-     * that leaves the set open: the kill's walk has been and gone,
-     * so the new thread is reached by the reading in its trampoline
-     * rather than by the kill, and whoever asked for the kill has
-     * nothing it can wait on that is bounded.
+     * And not into a process that is over, per M21 stage five.
+     *
+     * Over is two things. A kill has been written, which is the
+     * statement that this process is finished: the set of threads
+     * the kill has to reach is the set that existed when the mark
+     * went down, and letting one be made afterwards leaves that set
+     * open, because the kill's walk has been and gone. Or the last
+     * thread has already left, which is the end of the process
+     * whether anything asked for it or not.
+     *
+     * The second was missed when the first was written, and it is
+     * the worse of the two. A process whose last thread has gone
+     * has reported its exit. A thread made after that either
+     * reports it again, which is a completion advanced twice, or
+     * carries on living in a process that has already ended, which
+     * is a reap that never comes. Both have been measured.
      *
      * Read under the kernel lock with the mark, for the reason
      * stage two's review gives. Asked after the arguments are
      * checked and before anything is allocated: a caller that got
-     * the arguments wrong is told so whether or not it is being
-     * killed, and a caller that did not gets nothing built for it.
+     * the arguments wrong is told so whichever state the process is
+     * in, and a caller that did not gets nothing built for it.
      *
      * The error is SYS_ERR_OWNER_DEAD because that is what it is.
-     * The thread would belong to a process that is going, and the
-     * only caller that can see this is a thread of that process,
-     * which is on its way out at its own next boundary.
+     * The thread would belong to a process that is gone or going.
      */
     {
         intr_state_t s = 0;
         bool held = klock_held();
-        bool dying;
+        bool over;
 
         if (!held) {
             s = klock_enter();
         }
-        dying = p->p_dying;
-        if (dying) {
+        over = p->p_dying || p->p_exited;
+        if (over) {
             proc_creates_refused++;
+            if (!p->p_dying) {
+                proc_creates_unmarked++;
+            }
         }
         if (!held) {
             klock_exit(s);
         }
-        if (dying) {
+        if (over) {
             return SYS_ERR_OWNER_DEAD;
         }
     }
@@ -1973,6 +1982,7 @@ uint64_t proc_stopped_before_later;
 uint64_t proc_stopped_after_batch;
 uint64_t proc_kill_pokes;
 uint64_t proc_creates_refused;
+uint64_t proc_creates_unmarked;
 
 sys_err_t
 proc_kill(struct proc *p, int32_t code)

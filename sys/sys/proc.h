@@ -367,12 +367,18 @@ extern uint64_t proc_unrun_threads;
 extern uint64_t proc_unrun_locked;
 
 /*
- * Threads asked for in a process that had already been killed, per
- * M21 stage five, and refused. A count of the times the set of
- * threads a kill has to reach was stopped from growing after the
- * kill was written.
+ * Threads asked for in a process that was already over, per M21
+ * stage five, and refused. A count of the times the set of threads
+ * a kill has to reach was stopped from growing after the kill was
+ * written, and of the times a process that had ended on its own was
+ * stopped from gaining a thread it could not report.
+ *
+ * The second is counted apart because the reading was written for
+ * the first and did not see it. A boot with nothing in it is a boot
+ * where only half the rule is exercised.
  */
 extern uint64_t proc_creates_refused;
+extern uint64_t proc_creates_unmarked;
 
 /*
  * Threads stopped at an entry boundary because their process had

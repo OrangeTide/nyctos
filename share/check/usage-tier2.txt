@@ -6,13 +6,13 @@ used at most: 24 of 32 threads, 13 of 24 processes
   killed before ever running: 1, 1 a program and 1 a thread it made, 0 entries
   of those, found inside the kernel: 0
   stopped at an entry boundary: 74
-  threads refused to a dying process: 1
+  threads refused to a process that is over: 2, 1 of them never marked
   peers: 8 collected, pulses 1 dropped and 11 evicted
   senders: 2 refused, 2 displaced
   connections: 7 in use, 12 at once
   channels: 617 made, 594 given back, 23 live
   channels at once: 24 of 48, and 52 restarts of a server on one slot
-  pulses that went with a channel: 11, of which 4 of the reserved kind
-  names: 2588 given out, 2556 again, 1 spaces without, 9 live
-  names given back: 2579, each throwing away what was filed under it
+  pulses that went with a channel: 9, of which 2 of the reserved kind
+  names: 2589 given out, 2557 again, 1 spaces without, 9 live
+  names given back: 2580, each throwing away what was filed under it
 stage 9 complete
