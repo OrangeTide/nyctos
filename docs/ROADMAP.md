@@ -13337,6 +13337,53 @@ here. The thread `fourways` makes last is killed before the scheduler
 reaches it, and it is the first thread in the system's history to be
 stopped by the reading in `proc_thread_start`.
 
+**What the review found: the line that said four was a constant.**
+`threads the kill ended  4 of 4, all with the kill's code` was
+printed from the constant, twice. Nothing read a thread's exit code,
+and nothing counted the threads that ended: the process's status was
+checked, and the process carries one code for all of them. The walk
+that would have counted them finds an empty list, because a thread is
+collected as soon as it ends and nothing holds it.
+
+The check takes a reference on each of the four while all four are
+still there, waits for each to reach dead, and compares its exit code
+with the kill's. The line reports what that loop counted. It is also
+what makes the per-state failure message reliable: the wait is per
+thread rather than on a walk that can come up empty.
+
+**And holding them found a race that frees a thread under a core.**
+With the four held, the run faulted: `unhandled trap in nudge: page,
+cause=0xc pc=0x0`. A thread writes `THREAD_DEAD` and then blocks for
+the last time, and between the two it is dead and still running on
+its own kernel stack. Dropping the last reference from another core
+in that window collected it there and then, handed the slot back, and
+the next thread built out of that slot was built over a stack a core
+was still on.
+
+The test for whether a dead thread may be collected was that it is
+not the running thread and not the one this core has parked. Both of
+those are about this core. `current` and the park slot are per core,
+so a thread on the far side of its own dead write, or one parked on
+the other core, passed both. The switch now says when it has finished
+with a thread's stack, every dead thread is parked whether or not
+something holds it, and nothing is collected before that word. The
+last reference to go collects it, or the switch does, whichever is
+later. Section 10.4 says so now.
+
+Reachable without this check: any core closing the last handle to a
+thread of another core while that thread is exiting. Nothing in the
+boot did it, because nothing held a handle to a thread that was being
+killed elsewhere. Falsifiable by putting the old test back, which
+faults in the same place.
+
+**One burst run in fifty did not come back.** It happened once, on
+the run right after the collection fix went in, and it was the
+machine failing to finish inside the session script's three minutes
+rather than a panic or a mismatch. A burst run takes about thirteen
+seconds. It has not happened again in forty-nine runs since, thirty
+of them the burst alone, so what it was is not known and is written
+here rather than left out.
+
 **5. A thread made by a process that is already dying.** *Planned.*
 
 - *Check.* What `sys_thread_create()` does for a process that has been

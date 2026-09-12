@@ -860,6 +860,10 @@ This is not the same as keeping the object alive, and it costs nothing to arrang
 
 **What is built is weaker than this, and knowingly.** Finding a reaped object's holders means a list from the object back to every handle table naming it, and there is none: a handle table belongs to a process and points one way. So a handle to an embedded completion timeline holds its thread or process, and the object is reaped when the last handle of either kind goes. The same holders learn the same exit. What it costs is the object's memory held until they let go, and what it gives up is the claim that a reaped object is entirely gone.
 
+**And the slot goes back only once the switch has left the thread.** A thread writes its exit code, advances its completion, marks itself dead and then blocks for the last time, and between the mark and the block it is a dead thread running on its own kernel stack. Nothing may reclaim it in that window. What says the window has closed is the switch itself: it parks whatever it left for the next scheduling decision on that core to collect, and collection happens there, on a stack that is not the dead one. A reference dropped from another core before that point leaves the thread alone, and the collection falls to whichever of the two happens last.
+
+One consequence is worth stating because it is not a bug and looks like one. A core with nothing to run takes no scheduling decision, so a process whose last thread ends on an otherwise idle core is not collected until something gives that core a reason to switch. The threads have ended and the exit has been reported; what is outstanding is the memory.
+
 ### 10.5 Cancellation
 
 `sys_thread_cancel()` unblocks a thread, causing its pending blocking call to return `SYS_ERR_INTERRUPTED`. Without it, `SYS_ERR_INTERRUPTED` would be a code nothing generates, and cohort restart would be unable to break children out of pending rendezvous.

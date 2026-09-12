@@ -244,6 +244,18 @@ struct thread {
      */
     uint32_t            t_refs;
 
+    /*
+     * Whether the switch has finished with this thread's stack.
+     *
+     * A thread writes THREAD_DEAD and then calls sched_block, and
+     * between the two it is dead and still running on its own
+     * kernel stack. A reference dropped from another core in that
+     * window used to collect it there and then, which hands the
+     * slot back while a core is still on it. The switch sets this
+     * when it leaves the thread, and nothing is collected before.
+     */
+    bool                t_left_stack;
+
     /* The next thread of the same process, per proc.p_threads. */
     struct thread      *t_sibling;
 

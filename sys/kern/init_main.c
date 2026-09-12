@@ -6364,6 +6364,71 @@ count_states(struct proc *p, struct fourways_states *out)
     md_intr_restore(is);
 }
 
+/*
+ * A reference on each of the four, per M21 stage four's review.
+ *
+ * Taken while all four are still there, because what each one exits
+ * with can only be read from the thread, and a thread is collected
+ * as soon as it ends and nothing holds it. Without this the walk
+ * after the kill finds an empty list, and the report's "all with
+ * the kill's code" is a sentence rather than a measurement.
+ */
+static void
+hold_states(struct proc *p, struct thread **held)
+{
+    intr_state_t is;
+    intr_state_t ks = 0;
+    struct thread *t;
+    bool took = false;
+    uint32_t i = 0;
+
+    is = md_intr_disable();
+    if (!klock_held()) {
+        ks = klock_enter();
+        took = true;
+    }
+    for (t = proc_threads(p); t != NULL; t = t->t_sibling) {
+        if (i < FOURWAYS_THREADS) {
+            thread_ref(t);
+            held[i] = t;
+        }
+        i++;
+    }
+    if (took) {
+        klock_exit(ks);
+    }
+    md_intr_restore(is);
+
+    if (i != FOURWAYS_THREADS) {
+        panic("states: %u threads to hold, not %u", (unsigned int)i,
+          (unsigned int)FOURWAYS_THREADS);
+    }
+}
+
+/* Whether one held thread has ended, and with what. */
+static bool
+thread_ended(struct thread *t, int32_t *code)
+{
+    intr_state_t is;
+    intr_state_t ks = 0;
+    bool took = false;
+    bool dead;
+
+    is = md_intr_disable();
+    if (!klock_held()) {
+        ks = klock_enter();
+        took = true;
+    }
+    dead = t->t_state == THREAD_DEAD;
+    *code = t->t_exit_code;
+    if (took) {
+        klock_exit(ks);
+    }
+    md_intr_restore(is);
+
+    return dead;
+}
+
 #if SYS_TIER == 2
 static volatile bool nudge_ran;
 
@@ -6428,14 +6493,15 @@ kill_states_checks(void)
     struct child c;
     struct sys_msg msg;
     struct fourways_states st;
+    struct thread *held[FOURWAYS_THREADS];
     sys_thread_id_t peer;
     sys_ns_spec_t ns[2];
     sys_handle_t keep_s, keep_t, give_s, give_t, h;
     sys_id_t id_s, id_t;
     uint64_t cookie, until, killed;
-    uint32_t was_running;
+    uint32_t was_running, ended = 0, i;
     void *obj;
-    int32_t code;
+    int32_t code, tcode;
 
     cnputs("a kill: four threads, one in each state it must reach\n");
 
@@ -6546,6 +6612,8 @@ kill_states_checks(void)
       (unsigned int)st.computing, (unsigned int)st.unrun,
       (unsigned int)st.receiving, (unsigned int)st.inside);
 
+    hold_states(c.c_proc, held);
+
     was_running = st.running;
     killed = time_now();
     memset(&kargs, 0, sizeof(kargs));
@@ -6555,25 +6623,40 @@ kill_states_checks(void)
     }
 
     /*
-     * Waited for here and not only in the join, because what this
-     * stage has to say when it fails is which of the four states
-     * was left behind. The join can say only that the process did
-     * not finish.
+     * Each of the four, waited for and read here rather than left
+     * to the join, because what this stage has to say when it fails
+     * is which of the four states was left behind, and what it has
+     * to say when it passes is what each thread exited with. The
+     * join can say only that the process did not finish, and only
+     * about the process.
      */
     until = time_now() + time_from_ms(JOIN_MS);
-    for (;;) {
-        count_states(c.c_proc, &st);
-        if (st.n == st.dead) {
-            break;
+    for (i = 0; i < FOURWAYS_THREADS; i++) {
+        while (!thread_ended(held[i], &tcode)) {
+            if (time_now() > until) {
+                count_states(c.c_proc, &st);
+                panic("states: the kill left %u computing, %u never "
+                  "run, %u receiving, %u inside, and ended %u",
+                  (unsigned int)st.computing, (unsigned int)st.unrun,
+                  (unsigned int)st.receiving, (unsigned int)st.inside,
+                  (unsigned int)st.dead);
+            }
+            (void)timeline_wait(&kill_tl, 1,
+              time_now() + time_from_ms(2));
         }
-        if (time_now() > until) {
-            panic("states: the kill left %u computing, %u never run, "
-              "%u receiving, %u inside", (unsigned int)st.computing,
-              (unsigned int)st.unrun, (unsigned int)st.receiving,
-              (unsigned int)st.inside);
+        if (tcode != KILL_CODE) {
+            panic("states: a thread exited with %d, not %d",
+              (int)tcode, (int)KILL_CODE);
         }
-        (void)timeline_wait(&kill_tl, 1,
-          time_now() + time_from_ms(2));
+        ended++;
+    }
+
+    /*
+     * And let go, which is also what collects them: a thread whose
+     * last reference goes while it is dead is reaped there and then.
+     */
+    for (i = 0; i < FOURWAYS_THREADS; i++) {
+        thread_unref(held[i]);
     }
 
     code = child_join(&c, JOIN_MS);
@@ -6613,7 +6696,7 @@ kill_states_checks(void)
     }
 
     cnprintf("    %-38s %u of %u, all with the kill's code\n",
-      "threads the kill ended", (unsigned int)FOURWAYS_THREADS,
+      "threads the kill ended", (unsigned int)ended,
       (unsigned int)FOURWAYS_THREADS);
     cnprintf("    %-38s %lu\n", "pokes it had to send",
       (unsigned long)c.c_proc->p_kill_pokes);

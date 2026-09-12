@@ -557,18 +557,6 @@ thread_reap(struct thread *t)
  * Collect whatever the last switch left, on a stack that is not it.
  * Called at the top of the switch and nowhere else.
  */
-void
-thread_reap_parked(void)
-{
-    struct thread *t = reap_parked;
-
-    if (t == NULL) {
-        return;
-    }
-    reap_parked = NULL;
-    thread_reap(t);
-}
-
 /*
  * Whether this thread is finished with and nothing can ask about it. A
  * dead thread with handles outstanding stays: section 10.4 keeps its
@@ -577,7 +565,37 @@ thread_reap_parked(void)
 static bool
 thread_reapable(const struct thread *t)
 {
-    return t->t_state == THREAD_DEAD && t->t_refs == 0;
+    return t->t_state == THREAD_DEAD && t->t_refs == 0 &&
+      t->t_left_stack;
+}
+
+void
+thread_reap_parked(void)
+{
+    struct thread *t = reap_parked;
+    intr_state_t s;
+    bool doomed;
+
+    if (t == NULL) {
+        return;
+    }
+    reap_parked = NULL;
+
+    /*
+     * The switch has finished with its stack, which is what this
+     * says and what makes it collectable at all. Whether it is
+     * collected here depends on the references: a dead thread with
+     * handles outstanding is left, and the last of those to go
+     * collects it instead.
+     */
+    s = objref_enter();
+    t->t_left_stack = true;
+    doomed = thread_reapable(t);
+    objref_leave(s);
+
+    if (doomed) {
+        thread_reap(t);
+    }
 }
 
 void
@@ -604,17 +622,20 @@ thread_unref(struct thread *t)
     t->t_refs--;
 
     /*
-     * Not the running thread, and not a thread the switch has parked:
-     * either way it is not on a stack anything is using, because a
-     * thread reaches THREAD_DEAD only after it has switched away for
-     * the last time and been parked or passed over.
+     * Only once the switch has said it is off the thread's stack.
+     * The test used to be that this is not the running thread and
+     * not the one this core has parked, and both of those are about
+     * this core: a thread on the far side of a dead write, or one
+     * parked on the other core, passed them and was collected while
+     * a core was still running on it. Measured, once a check held a
+     * reference on four threads of a process it then killed.
      *
      * Decided under the exclusion of sys/objref.h with the count, and
      * acted on outside it. Two cores letting the last two references
      * go together would otherwise both find the count at zero, or
      * neither would.
      */
-    doomed = thread_reapable(t) && t != current && t != reap_parked;
+    doomed = thread_reapable(t);
 
     objref_leave(s);
 
@@ -627,7 +648,12 @@ thread_unref(struct thread *t)
 void
 thread_park_if_dead(struct thread *t)
 {
-    if (!thread_reapable(t)) {
+    /*
+     * Every dead thread, and not only one nothing holds. A thread
+     * with references left still has to be told that the switch is
+     * done with its stack, and the park is where that is said.
+     */
+    if (t->t_state != THREAD_DEAD) {
         return;
     }
     if (reap_parked != NULL) {
