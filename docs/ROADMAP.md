@@ -13127,7 +13127,7 @@ all and the check compiles to the mark test.
 thread is on is now said by passing the counter it belongs to, so the
 call reads as what it does.
 
-**3. The mark before an entry, and not only after it.** *Planned.*
+**3. The mark before an entry, and not only after it.** *Built.*
 
 - *Check.* A marked thread does not begin an operation. Entries
   started while dying goes to zero and stays there, which is a count
@@ -13138,6 +13138,66 @@ call reads as what it does.
   reach it: it has already run.
 - Falsifiable by moving the check back after the entry, which is the
   code as it stands.
+
+**What it settled.** The mark is read before an entry runs and once
+after a batch, in place of once after every entry. The compared line
+at both tiers:
+
+```
+  stopped at an entry boundary: 70
+```
+
+Sixty-nine of those are the kills the rest of the boot writes, each
+one reaching a thread that was inside an entry. The seventieth is
+this stage's, and where each of them was stopped is printed above the
+line:
+
+```
+  where a kill stopped a thread: 0 before a first entry, 1 before a
+  later one, 69 after a batch
+```
+
+**The construction.** `twostep` sends two requests in one submission
+to a channel nothing answers, so it blocks inside the first. The kill
+cancels that wait, the first entry comes back interrupted, and the
+second entry is the one that must never begin. Waited for rather than
+timed: the check kills when the channel has a sender queued on it,
+which is what says the program is inside the entry before the
+boundary.
+
+**Falsified by taking the boundary reading out.** With only the
+reading after the batch, the second entry begins, sends to a channel
+nobody receives on, and waits for ever: `join twostep: it did not
+finish, or its exit advanced nothing`. That is the shape of stage
+one's defect reached from inside a submission rather than from a
+first dispatch.
+
+**What the change buys and what this check does not reach.** Moving
+the reading from after an entry to before the next one is the same
+point for every entry but the first, so the boundary this check
+exercises is one the old placement covered from the other side. What
+is new is the reading before the *first* entry of a submission, and
+it needs a thread that arrived at the kernel already marked.
+
+Nothing in this boot produces one, and it is worth saying why rather
+than leaving a zero. It takes a mark written while the thread is in
+user mode, which takes another core, and then a trap of the thread's
+own within the few microseconds before the kill's interrupt lands. A
+program was written to make that likely, computing a stretch and then
+making one request, killed from the other core over and over. It was
+hit once in eight attempts, once in sixteen, and once in sixty-four,
+which is a rate that reports the host rather than the kernel. The
+program is kept in the shape that suits the deterministic
+construction and the racing one is not in the boot.
+
+**And the reading is what makes a kill orderable.** With the question
+asked before the entry, a kill written under the kernel lock and an
+entry taken under the same lock have two outcomes and no third: the
+entry ran first and the thread is blocked where the cancel finds it,
+or the mark is there to be read. Asked afterwards there is a third,
+where the thread passes the mark's place, blocks, and the cancel has
+already been and gone. That is the argument the change rests on, and
+the boundary count is the part of it a check can hold.
 
 **4. A kill that finds every state at once.** *Planned.*
 

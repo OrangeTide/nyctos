@@ -382,6 +382,44 @@ batch_run(sys_op_t *op, unsigned long count)
              */
             preempt_point();
 
+            /*
+             * And out here if this process has been killed, before
+             * the entry rather than after it, per M21 stage three.
+             *
+             * M17 put this check at the end of an entry and gave the
+             * reason for checking at all: a killed thread must not
+             * run fifteen more operations. What the placement missed
+             * is that an entry which blocks is never followed by
+             * anything. A thread that arrives already marked runs its
+             * first operation, and if that operation is a wait it
+             * waits for ever, which is what M21 stage one measured.
+             *
+             * Asking first also makes the kill and the entry
+             * orderable. `proc_kill` writes the mark and then cancels
+             * what is blocked, and both happen with the kernel lock
+             * held, which is the same lock this entry holds. So
+             * either the whole of this entry happened before the
+             * kill, in which case the thread is blocked and the
+             * cancel reaches it, or the mark is here to be read. With
+             * the question asked afterwards there is a third case:
+             * the thread passed the mark's place, blocked, and the
+             * cancel had already been and gone.
+             *
+             * An entry boundary is still the one place a thread is
+             * certainly in the kernel with nothing of its own left on
+             * the stack, which is why it is here and not inside an
+             * operation.
+             */
+            p = proc_current();
+            if (p != NULL && p->p_dying) {
+                if (i == 0) {
+                    proc_stopped_before_first++;
+                } else {
+                    proc_stopped_before_later++;
+                }
+                thread_exit(p->p_kill_code);
+            }
+
             if (cancelling) {
                 /*
                  * An earlier entry of this chain failed, so this one
@@ -415,25 +453,6 @@ batch_run(sys_op_t *op, unsigned long count)
             }
 
             /*
-             * And out here if this process has been killed, which is
-             * the entry boundary section 17.6 makes the batch
-             * preemptible at. Checking only after the whole array
-             * would let a killed thread run up to fifteen more
-             * operations first, and section 10.5 asks for the
-             * unblocking to be prompt rather than eventual.
-             *
-             * An entry boundary is also the one place a thread is
-             * certainly in the kernel with nothing of its own left on
-             * the stack. Unwinding from wherever it happened to be
-             * would mean knowing what every kernel path holds, and
-             * this knows that it holds nothing.
-             */
-            p = proc_current();
-            if (p != NULL && p->p_dying) {
-                thread_exit(p->p_kill_code);
-            }
-
-            /*
              * The call reports the first entry that failed, and every
              * entry reports its own status in the array. With one
              * entry the two are the same thing, which is what every
@@ -442,6 +461,20 @@ batch_run(sys_op_t *op, unsigned long count)
             if (one != SYS_OK && r == SYS_OK) {
                 r = one;
             }
+        }
+
+        /*
+         * And once more before this returns to user mode, which is
+         * where the per-entry question above stops covering: a mark
+         * written while the last entry was running has nothing after
+         * it to ask. One check here rather than one after every
+         * entry, because the two are the same point for every entry
+         * but the last.
+         */
+        p = proc_current();
+        if (p != NULL && p->p_dying) {
+            proc_stopped_after_batch++;
+            thread_exit(p->p_kill_code);
         }
 
         return r;

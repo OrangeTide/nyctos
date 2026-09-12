@@ -367,6 +367,22 @@ extern uint64_t proc_unrun_threads;
 extern uint64_t proc_unrun_locked;
 
 /*
+ * Threads stopped at an entry boundary because their process had
+ * been killed, per M21 stage three, split by which boundary.
+ *
+ * Before the first entry of a submission is the point M17's
+ * placement did not have: a thread that arrived at the kernel
+ * already marked, which is a mark written while it was in user mode
+ * on another core. Before a later entry is the same point M17 read
+ * after the entry before it, and after a batch the same point it
+ * read after the last entry, so those two are the old coverage
+ * under new names.
+ */
+extern uint64_t proc_stopped_before_first;
+extern uint64_t proc_stopped_before_later;
+extern uint64_t proc_stopped_after_batch;
+
+/*
  * Whether a range of addresses is memory this process owns, per section
  * 23.2. A buffer descriptor a program passes is checked against this
  * before anything reads it: a number is not a right, and the kernel

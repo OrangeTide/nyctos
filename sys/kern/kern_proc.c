@@ -1911,6 +1911,9 @@ uint64_t proc_kills;
 uint64_t proc_unrun_programs;
 uint64_t proc_unrun_threads;
 uint64_t proc_unrun_locked;
+uint64_t proc_stopped_before_first;
+uint64_t proc_stopped_before_later;
+uint64_t proc_stopped_after_batch;
 uint64_t proc_kill_pokes;
 
 sys_err_t

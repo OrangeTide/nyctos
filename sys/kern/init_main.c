@@ -6111,7 +6111,123 @@ kill_unrun_checks(void)
 }
 
 /*
+ * A kill read before an entry rather than after one, per M21 stage
+ * three.
+ *
+ * M17 read the mark at the end of an entry and gave the reason for
+ * reading it at all: a killed thread must not run fifteen more
+ * operations. What that placement cannot do is stop an entry which
+ * blocks, because nothing follows it, and it cannot be ordered
+ * against a kill: a thread that passes the mark's place and then
+ * blocks has gone past the only question that would have stopped it,
+ * and the cancel may already have been and gone.
+ *
+ * `twostep` is what shows the reading in place. It sends two
+ * requests in one submission to a channel nothing answers, so it
+ * blocks inside the first. The kill cancels that wait, the first
+ * entry comes back interrupted, and the second entry is the one that
+ * must never begin.
+ *
+ * That boundary is one the old placement also covered, from the
+ * other side, and the count is what tells them apart. What the new
+ * placement adds and this cannot reach is the boundary before the
+ * first entry of a submission, which needs a thread that arrived
+ * already marked. Nothing in this boot produces one: it takes a mark
+ * written while the thread is in user mode on another core and a
+ * trap of its own within the few microseconds before the kill's
+ * interrupt lands, which was hit once in sixteen attempts while this
+ * was being built and is not something to hold a boot to.
+ */
+static void
+kill_boundary_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct sys_op_kill_args kargs;
+    struct channel *ch;
+    struct child c;
+    sys_ns_spec_t ns[1];
+    sys_handle_t give, h;
+    uint64_t before = proc_stopped_before_later;
+    uint64_t until;
+    void *obj;
+    int32_t code;
+
+    cnputs("a kill: what it reaches between two entries\n");
+
+    ch = channel_create("twostep", self);
+    if (ch == NULL) {
+        panic("boundary: no channel");
+    }
+    if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
+        panic("boundary: no handle to give");
+    }
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = give;
+
+    sched_defer();
+    if (proc_spawn_op(self, "twostep", PRIO_BOOT - 1, ns, 1, NULL, 0,
+      &h) != SYS_OK) {
+        panic("boundary: no program");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("boundary: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    /*
+     * Waited for rather than timed. What has to be true when the
+     * kill is written is that the program is inside its first entry
+     * and blocked there, and the queue on the channel is where that
+     * shows: nothing receives here, so a sender on it is a thread
+     * waiting inside a send.
+     */
+    until = time_now() + time_from_ms(JOIN_MS);
+    while (ch->c_senders == NULL) {
+        if (time_now() > until) {
+            panic("boundary: the program never queued");
+        }
+        /*
+         * Slept on rather than yielded to. The program runs below
+         * this thread, so yielding here re-dispatches this one and
+         * the program never gets the core at all.
+         */
+        (void)timeline_wait(&kill_tl, 1,
+          time_now() + time_from_ms(2));
+    }
+
+    memset(&kargs, 0, sizeof(kargs));
+    kargs.code = KILL_CODE;
+    if (run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)) != SYS_OK) {
+        panic("boundary: it refused to be killed");
+    }
+
+    code = child_join(&c, JOIN_MS);
+    if (code != KILL_CODE) {
+        panic("boundary: it came back with %d, not %d", (int)code,
+          (int)KILL_CODE);
+    }
+    if (handle_close(ht, h) != SYS_OK) {
+        panic("boundary: the spawn handle was already gone");
+    }
+
+    if (proc_stopped_before_later == before) {
+        panic("boundary: nothing was stopped before the second "
+          "entry");
+    }
+
+    cnprintf("    %-38s %s\n", "a kill that released a waiting entry",
+      "stopped the next one from starting");
+    cnprintf("    %-38s %lu\n", "stopped before an entry by here",
+      (unsigned long)proc_stopped_before_later);
+}
+
+/*
  * A kill that has to cause the entry, per M17 stage three.
+
  *
  * Stage two put the mark where a trap returns to user mode, and found
  * that on one core it is enough for a reason that is not the hook: a
@@ -15908,6 +16024,7 @@ kernel_main(void)
     clock_cost_checks();
     kill_reach_checks();
     kill_unrun_checks();
+    kill_boundary_checks();
     kill_other_core_checks();
 #if SYS_TIER == 2
     kill_faulting_checks();
@@ -16277,6 +16394,20 @@ kernel_main(void)
         channel_report = cs;
     }
 
+    /*
+     * Which boundary each marked thread was stopped at, per M21
+     * stage three. Above the line because the split moves: the one
+     * construction that reaches the first-entry boundary is a race
+     * against an inter-processor interrupt, run a fixed number of
+     * times, and how many of those land is the host's answer. Their
+     * total is not, and that is what is compared.
+     */
+    cnprintf("  where a kill stopped a thread: %lu before a first "
+      "entry, %lu before a later one, %lu after a batch\n",
+      (unsigned long)proc_stopped_before_first,
+      (unsigned long)proc_stopped_before_later,
+      (unsigned long)proc_stopped_after_batch);
+
     object_report_usage();
 
     /*
@@ -16325,6 +16456,21 @@ kernel_main(void)
       (unsigned long)marked_entries);
     cnprintf("  of those, found inside the kernel: %lu\n",
       (unsigned long)proc_unrun_locked);
+
+    /*
+     * And where a marked thread was stopped at an entry boundary,
+     * per M21 stage three. Before an entry is the point M17's
+     * placement did not have, and it is the one that keeps a marked
+     * thread from beginning an operation that would block. After a
+     * batch catches a mark written while the last entry ran.
+     *
+     * Counts, and the two are apart because they are different
+     * moments with different consequences. A boot with nothing in
+     * the first is a boot where the placement was never exercised.
+     */
+    cnprintf("  stopped at an entry boundary: %lu\n",
+      (unsigned long)(proc_stopped_before_first +
+      proc_stopped_before_later + proc_stopped_after_batch));
     if (kills_reached == 0) {
         panic("kills: no kill reached a thread that had never run");
     }

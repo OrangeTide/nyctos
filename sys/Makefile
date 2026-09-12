@@ -103,7 +103,8 @@ $(OBJTOP)/bin/leap/leap.bin \
     $(OBJTOP)/bin/tick/tick.bin \
     $(OBJTOP)/bin/clock/clock.bin \
     $(OBJTOP)/bin/ledger/ledger.bin \
-    $(OBJTOP)/bin/patron/patron.bin
+    $(OBJTOP)/bin/patron/patron.bin \
+    $(OBJTOP)/bin/twostep/twostep.bin
 
 BOOT_LAYOUTS := $(BOOT_BINS:.bin=.bin.layout)
 
@@ -149,6 +150,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) $(BOOT_BINS) $(BOOT_LAYOUTS)
 	    tick=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 32 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/tick/tick.bin \
 	    clock=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 33 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/clock/clock.bin \
 	    ledger=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 34 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/ledger/ledger.bin \
-	    patron=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 35 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/patron/patron.bin
+	    patron=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 35 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/patron/patron.bin \
+	    twostep=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 36 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/twostep/twostep.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)
