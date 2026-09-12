@@ -3681,6 +3681,18 @@ channel_hold_checks(void)
  * its own. Done more times than the pool has slots, which is the
  * whole point: a system that restarts a server once an hour for a
  * week must not be a system that has run out of channels.
+ *
+ * And the server is killed before it has ever run, per M21 stage
+ * six. This check used to send the server a request and wait for
+ * the answer first, because a kill written against a thread that
+ * was ready and had never run set the mark and ended nothing: the
+ * thread went on into user mode, blocked in a receive, and the
+ * join waited out thirty seconds and then ten minutes. The round
+ * trip was a workaround written into a check to get past a defect
+ * in the kernel, and it is gone. The kill is written inside the
+ * same deferred region as the spawn, so on every round the thread
+ * has not run, which is the case M21 stage two added a reading
+ * for and the one this loop could not survive before it.
  */
 #define RESTART_ROUNDS      (SYS_MAX_CHANNELS + 4u)
 
@@ -3691,6 +3703,15 @@ channel_hold_checks(void)
  */
 static uint32_t restarts_done;
 static uint32_t restarts_slot;
+
+/*
+ * Entries started by a thread whose process had been killed, summed
+ * over the checks that kill one, per M21 stages one and six. The
+ * number the milestone is about is zero, and it is a sum rather
+ * than one check's reading because more than one check now ends a
+ * process before its thread has run.
+ */
+static uint64_t marked_entries;
 
 /* How long the client left holding a dead server's channel waits. */
 #define RESTART_WAIT_MS     20u
@@ -3706,9 +3727,7 @@ restart_checks(void)
     sys_ns_spec_t ns[1];
     uint32_t round;
     uint32_t fresh = 0;
-    uint32_t served = 0;
-    struct sys_op_connect_args cargs;
-    struct sys_op_send_args tx;
+    uint32_t ended = 0;
 
     cnputs("restarts: a server ended, and its channel with it\n");
 
@@ -3716,7 +3735,7 @@ restart_checks(void)
         struct child sc;
         struct channel *ch;
         sys_id_t id;
-        sys_handle_t give, h, h_recv, h_send;
+        sys_handle_t give, h;
         void *obj;
         int32_t code;
 
@@ -3728,33 +3747,18 @@ restart_checks(void)
         id = ch->c_id;
 
         /*
-         * Two handles and a connection, and then the kernel's own
-         * handle goes. What is left is the server's handle and one
-         * client, which is the arrangement section 18.3 describes: a
+         * One handle, and it is the server's as soon as the spawn
+         * has it. That is the arrangement section 18.3 describes: a
          * supervisor that started a server and is not one of its
-         * clients.
+         * clients. The connection a client used to hold is gone
+         * with the round trip it was for, and the case of a client
+         * that outlives its server is the one below rather than
+         * this one.
          */
-        if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
-          SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_recv) != SYS_OK) {
-            panic("restarts: no handle on round %u",
-              (unsigned int)round);
-        }
-        memset(&cargs, 0, sizeof(cargs));
-        cargs.rights = SYS_RIGHT_SEND;
-        if (run(SYS_OP_CHAN_CONNECT, h_recv, &cargs,
-          sizeof(cargs)) != SYS_OK) {
-            panic("restarts: no connection on round %u",
-              (unsigned int)round);
-        }
-        h_send = cargs.out_handle;
-
         if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
           SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
             panic("restarts: no handle to give on round %u",
               (unsigned int)round);
-        }
-        if (handle_close(ht, h_recv) != SYS_OK) {
-            panic("restarts: the kernel's handle was already gone");
         }
 
         memset(ns, 0, sizeof(ns));
@@ -3771,34 +3775,17 @@ restart_checks(void)
             panic("restarts: the spawn returned no process");
         }
         child_watch(&sc, obj);
-        sched_undefer();
-
-        /*
-         * Served, which is what makes this a server being restarted
-         * rather than a process being started and stopped. It is
-         * also what says the server is up: a reply can only come
-         * from a program that reached its receive point, so nothing
-         * here has to watch for that separately.
-         */
-        memset(&tx, 0, sizeof(tx));
-        tx.request.handle = SYS_HANDLE_INVALID;
-        tx.request.inline_len = 1;
-        if (run(SYS_OP_IPC_SEND, h_send, &tx, sizeof(tx)) != SYS_OK) {
-            panic("restarts: the server did not answer on round %u",
-              (unsigned int)round);
-        }
-        served++;
-
-        if (handle_close(ht, h_send) != SYS_OK) {
-            panic("restarts: the client's handle was already gone");
-        }
 
         /*
          * The server's handle moved rather than being copied, so
-         * with the client gone the server has all of it. If that
-         * stopped being true the channel would never go and the loop
-         * would run the pool out, which is a slower way of finding
-         * out the same thing.
+         * the server has all of it. If that stopped being true the
+         * channel would never go and the loop would run the pool
+         * out, which is a slower way of finding out the same thing.
+         *
+         * Asked here, inside the deferred region, because after it
+         * the server can run, end and be collected, and a check
+         * that read the channel then would be reading a slot
+         * something else had taken.
          */
         if (channel_holds(ch) != 1) {
             panic("restarts: %u hold a channel the server owns",
@@ -3813,33 +3800,33 @@ restart_checks(void)
         }
 
         /*
-         * Killed after it has answered, which is not tidiness.
-         *
-         * A kill of a process whose thread is ready and has never
-         * run is accepted and does nothing: the mark is set, there
-         * is nothing blocked to cancel, and the thread then runs,
-         * enters user mode and blocks in a receive that never asks
-         * whether its process is dying. Measured while building
-         * this, killing at that moment leaves the server in
-         * THREAD_BLOCKED on THREAD_WAIT_RECV with p_exited still
-         * false, and the join waits out thirty seconds and then ten
-         * minutes. That is section 10.5's promptness not being kept
-         * and it is written down rather than worked around quietly.
-         *
-         * The reply above is what makes it moot here: a server that
-         * has answered has run, and a supervisor would be waiting
-         * for its service to work before calling it started anyway.
+         * And killed before it has run, in the region the spawn was
+         * made in, so that nothing dispatched it in between. This
+         * is the sequence M20 could not write. The mark is set on a
+         * process whose only thread is ready and has never been on
+         * a core, and what ends that thread is the reading in the
+         * trampoline it is about to arrive on.
          */
         memset(&kargs, 0, sizeof(kargs));
         kargs.code = 7;
         if (run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)) != SYS_OK) {
             panic("restarts: the server refused to be killed");
         }
+        sched_undefer();
+
+        ended++;
         code = child_join(&sc, JOIN_MS);
         if (code != 7) {
             panic("restarts: the server exited %d on round %u",
               (int)code, (unsigned int)round);
         }
+
+        /*
+         * And it started nothing on its way out, which is the same
+         * claim stage one's check makes and the reason this loop
+         * adds to that count rather than keeping one of its own.
+         */
+        marked_entries += sc.c_proc->p_dying_entries;
         if (handle_close(ht, h) != SYS_OK) {
             panic("restarts: the spawn handle was already gone");
         }
@@ -3882,14 +3869,14 @@ restart_checks(void)
           (unsigned int)peak,
           (unsigned int)channel_pool()->highwater);
     }
-    if (served != RESTART_ROUNDS) {
-        panic("restarts: %u of %u servers answered",
-          (unsigned int)served, (unsigned int)RESTART_ROUNDS);
+    if (ended != RESTART_ROUNDS) {
+        panic("restarts: %u of %u servers ended",
+          (unsigned int)ended, (unsigned int)RESTART_ROUNDS);
     }
-    restarts_done = served;
+    restarts_done = ended;
     restarts_slot = fresh;
     cnprintf("    %-38s %u, all on slot %u\n",
-      "servers started, served and ended", (unsigned int)served,
+      "servers started and ended unserved", (unsigned int)ended,
       (unsigned int)fresh);
     cnprintf("    %-38s %u in use, %u at once\n",
       "and the pool where it started", (unsigned int)base,
@@ -5902,9 +5889,6 @@ kill_reach_checks(void)
  * what cancellation was built for. That is the shape of M20 stage
  * five's workaround and it is written here as the recovery it is.
  */
-static uint32_t kills_reached;
-static uint64_t marked_entries;
-
 /*
  * One reading of where a process's first thread is, taken under the
  * kernel lock.
@@ -6095,8 +6079,6 @@ kill_unrun_checks(void)
     if (proc_unrun_programs == 0) {
         panic("unrun: it ended somewhere other than the trampoline");
     }
-    kills_reached++;
-
     if (handle_close(ht, h) != SYS_OK) {
         panic("unrun: the spawn handle was already gone");
     }
@@ -17263,9 +17245,9 @@ kernel_main(void)
      * reached by anything before stage five, and a check that added
      * them together would not notice the other going missing.
      */
-    cnprintf("  killed before ever running: %u, %lu a program and "
+    cnprintf("  killed before ever running: %lu a program and "
       "%lu a thread it made, %lu entries\n",
-      (unsigned int)kills_reached, (unsigned long)proc_unrun_programs,
+      (unsigned long)proc_unrun_programs,
       (unsigned long)proc_unrun_threads,
       (unsigned long)marked_entries);
     cnprintf("  of those, found inside the kernel: %lu\n",
@@ -17311,9 +17293,6 @@ kernel_main(void)
     }
     if (proc_creates_unmarked == 0) {
         panic("kills: a process that ended was never asked for one");
-    }
-    if (kills_reached == 0) {
-        panic("kills: no kill reached a thread that had never run");
     }
     if (proc_unrun_programs == 0) {
         panic("kills: nothing ended at a program's own trampoline");

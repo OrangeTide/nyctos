@@ -13510,7 +13510,7 @@ behind them. It is also why the pulse line in the compared report
 went back down by two: those two were being thrown away with the
 channel at the end of the boot, and now they are delivered.
 
-**6. M20's workaround comes out.** *Planned.*
+**6. M20's workaround comes out.** *Built.*
 
 - *Check.* M20 stage five's restart loop sends a request and requires
   a reply before killing, and says in its own comment that this is
@@ -13521,6 +13521,74 @@ channel at the end of the boot, and now they are delivered.
   that proves the fix is worth having rather than merely correct.
 - Falsifiable by the loop hanging, which is what it did before the
   workaround was written.
+
+**What it settled.** The round trip is gone and the loop runs. Fifty
+two servers are started and killed, each one before it has ever been
+on a core, and each channel comes back:
+
+```
+restarts: a server ended, and its channel with it
+    servers started and ended unserved     52, all on slot 11
+    and the pool where it started          12 in use, 14 at once
+```
+
+The kill is written inside the same deferred region as the spawn, so
+the thread cannot have run in between. That is not a convenience. It
+makes the case deterministic instead of leaving it to the scheduler,
+and a count that moves on its own is a count that cannot go in a
+compared file. The compared line at both tiers:
+
+```
+  killed before ever running: 53 a program and 1 a thread it made, 0 entries
+```
+
+Fifty two of those fifty three are this loop. The other is stage
+one's check, and the thread is stage four's idler.
+
+**And two other numbers moved, both downwards.** Threads stopped at
+an entry boundary went from seventy four to twenty two, because the
+fifty two servers used to be killed while blocked in a receive and
+now they never reach one. The first field of the same line used to
+be a count kept by stage one's check of the kills it had written
+against a thread that had never run. It is gone: the kernel counts
+that properly now, in two places, and a check keeping its own tally
+of a kernel property was a leftover from the stage where the kernel
+kept none.
+
+**What the loop no longer has.** The client connection went with the
+round trip it was for. What is left is the arrangement section 18.3
+describes with nothing else in it: a supervisor holds the only handle
+there is, gives it to the server, kills the server, and the channel
+goes with the process. The one holder is asserted inside the deferred
+region, before the server can run, end and be collected, because
+after that the pointer would name a slot something else had taken.
+
+**Falsified twice, and the first attempt was wrong about which
+reading matters.** Taking out stage two's reading in the trampoline
+does not hang the loop. The server goes on into user mode, calls
+`sys_msg_recv`, and stage three's reading before an entry stops it
+there instead, which the report says exactly:
+
+```
+  where a kill stopped a thread: 52 before a first entry, 1 before a
+  later one, 21 after a batch
+```
+
+That is the boundary stage three said it could not construct. Its
+entry records a racing program hit once in eight attempts, once in
+sixteen and once in sixty four, and says the case needs a thread that
+arrives at the kernel already marked. This loop makes fifty two of
+them, deterministically, and the only reason the number is zero in a
+working kernel is that the trampoline gets there first.
+
+So the two readings are a backstop for each other, and what the loop
+needs is that at least one of them is present. With both gone it
+hangs at round zero, which is what M20 saw: `join echoes: it did not
+finish, or its exit advanced nothing`.
+
+**What it cost.** Nothing added. The loop is shorter by a connection,
+a send and a handle, and the boot is shorter by fifty two round
+trips.
 
 **7. What it cost, and section 10.5 written to it.** *Planned.*
 

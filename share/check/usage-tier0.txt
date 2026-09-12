@@ -3,9 +3,9 @@ used at most: 22 of 32 threads, 13 of 24 processes
   buffer remapping: 0 pages in 0 halves, 0 entries, 0 tables, 0 invalidations, 0 flushes
   measured regions: 1024 entries and 2048, 4096 shared
   kills: 70 written, pokes 0, clients told 3
-  killed before ever running: 1, 1 a program and 1 a thread it made, 0 entries
+  killed before ever running: 53 a program and 1 a thread it made, 0 entries
   of those, found inside the kernel: 0
-  stopped at an entry boundary: 74
+  stopped at an entry boundary: 22
   threads refused to a process that is over: 2, 1 of them never marked
   peers: 8 collected, pulses 1 dropped and 11 evicted
   senders: 2 refused, 2 displaced
