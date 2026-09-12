@@ -136,6 +136,32 @@ syscall_handler(struct sys_op *op, unsigned long count)
     dying_entry_mark();
     long r = syscall_body(op, count);
 
+    /*
+     * And the mark once more before this returns to user mode, per
+     * M21 stage three.
+     *
+     * Here rather than at the end of the entry loop, because a
+     * system call has three ways out and the loop is only one of
+     * them: a count that is not a count and an array the caller
+     * cannot reach both return without executing anything. A thread
+     * that arrived marked and asked for one of those would go back
+     * to user mode with the mark unread.
+     *
+     * This is where the per-entry question above stops covering: a
+     * mark written while the last entry was running has nothing
+     * after it to ask. One reading here rather than one after every
+     * entry, because those two are the same point for every entry
+     * but the last.
+     */
+    {
+        struct proc *self = proc_current();
+
+        if (self != NULL && self->p_dying) {
+            proc_stopped_after_batch++;
+            thread_exit(self->p_kill_code);
+        }
+    }
+
     klock_exit(s);
 
     /*
@@ -461,20 +487,6 @@ batch_run(sys_op_t *op, unsigned long count)
             if (one != SYS_OK && r == SYS_OK) {
                 r = one;
             }
-        }
-
-        /*
-         * And once more before this returns to user mode, which is
-         * where the per-entry question above stops covering: a mark
-         * written while the last entry was running has nothing after
-         * it to ask. One check here rather than one after every
-         * entry, because the two are the same point for every entry
-         * but the last.
-         */
-        p = proc_current();
-        if (p != NULL && p->p_dying) {
-            proc_stopped_after_batch++;
-            thread_exit(p->p_kill_code);
         }
 
         return r;

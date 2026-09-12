@@ -6147,7 +6147,7 @@ kill_boundary_checks(void)
     struct channel *ch;
     struct child c;
     sys_ns_spec_t ns[1];
-    sys_handle_t give, h;
+    sys_handle_t give, keep, h;
     uint64_t before = proc_stopped_before_later;
     uint64_t until;
     void *obj;
@@ -6158,6 +6158,20 @@ kill_boundary_checks(void)
     ch = channel_create("twostep", self);
     if (ch == NULL) {
         panic("boundary: no channel");
+    }
+
+    /*
+     * A handle of this check's own, kept until the end.
+     *
+     * The other one is handed to the program, and since M20 that is
+     * the only thing holding the channel: a program that exits early
+     * takes the slot back with it, and the queue read below would be
+     * read out of a slot something else has taken. One handle here
+     * is what keeps the object under the pointer.
+     */
+    if (handle_insert(ht, ch, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV,
+      &keep) != SYS_OK) {
+        panic("boundary: no handle to keep");
     }
     if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
       SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
@@ -6186,7 +6200,31 @@ kill_boundary_checks(void)
      * waiting inside a send.
      */
     until = time_now() + time_from_ms(JOIN_MS);
-    while (ch->c_senders == NULL) {
+    for (;;) {
+        bool queued;
+        intr_state_t is;
+        intr_state_t ks = 0;
+        bool took = false;
+
+        /*
+         * Read under the kernel lock, because the queue this asks
+         * about is a list the other core puts threads on and the
+         * answer decides when the kill is written.
+         */
+        is = md_intr_disable();
+        if (!klock_held()) {
+            ks = klock_enter();
+            took = true;
+        }
+        queued = ch->c_senders != NULL;
+        if (took) {
+            klock_exit(ks);
+        }
+        md_intr_restore(is);
+
+        if (queued) {
+            break;
+        }
         if (time_now() > until) {
             panic("boundary: the program never queued");
         }
@@ -6212,6 +6250,9 @@ kill_boundary_checks(void)
     }
     if (handle_close(ht, h) != SYS_OK) {
         panic("boundary: the spawn handle was already gone");
+    }
+    if (handle_close(ht, keep) != SYS_OK) {
+        panic("boundary: the channel handle was already gone");
     }
 
     if (proc_stopped_before_later == before) {

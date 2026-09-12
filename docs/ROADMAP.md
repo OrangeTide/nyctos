@@ -13199,6 +13199,32 @@ where the thread passes the mark's place, blocks, and the cancel has
 already been and gone. That is the argument the change rests on, and
 the boundary count is the part of it a check can hold.
 
+**What the review found: the reading covered one of three ways out.**
+The reading after the batch was at the end of the entry loop, and a
+system call has three exits. A count that is not a count and an array
+the caller cannot reach both return before any entry runs, and a
+thread that arrived marked and asked for either would have gone back
+to user mode with the mark unread. It is one reading in
+`syscall_handler` now, after the body and before the return, which
+covers all three. Not observable here, for the same reason the
+first-entry boundary is not: reaching it needs a thread that arrived
+already marked. Moving it back into the loop changes nothing this
+boot can see, and that is written down rather than counted as a
+check.
+
+**A pointer to a channel the check no longer held.** The queue was
+read through the `struct channel *` the check made, and the only
+handle on it had been handed to the program. Since M20 that means a
+program which exits early, which this one does if its namespace
+lookup fails, takes the slot back with it, and the read would be out
+of a slot something else has taken. The check keeps a handle of its
+own now and closes it at the end.
+
+**And that read was not synchronised.** The sender queue is a list
+the other core puts threads on, and the answer decides when the kill
+is written. It is read under the kernel lock with interrupts off, the
+same way stage one's reading of a thread's state was fixed.
+
 **4. A kill that finds every state at once.** *Planned.*
 
 - *Check.* One process, four threads, one in each of the states a kill
