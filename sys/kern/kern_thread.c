@@ -171,6 +171,9 @@ thread_exit(int32_t code)
      */
     if (p != NULL && p->p_dying) {
         proc_exits_while_dying++;
+        if (!current->t_left_by_door) {
+            proc_exits_own_way++;
+        }
     }
 
     current->t_exit_code = code;

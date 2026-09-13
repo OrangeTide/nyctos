@@ -345,6 +345,19 @@ struct thread {
      * preemption points to show for it.
      */
     bool                t_user_entered;
+
+    /*
+     * Whether this thread is ending because it read the kill mark,
+     * set by each of the three places that read it and by nothing
+     * else, per M21 stage seven's review.
+     *
+     * It exists so that a thread which ended while its process was
+     * marked but for a reason of its own can be counted where that
+     * happens rather than worked out by subtraction. A number
+     * arrived at by taking the doors away from the total adds back
+     * up to the total whatever either of them is.
+     */
+    bool                t_left_by_door;
     uintptr_t           t_fault_addr;
     uintptr_t           t_fault_pc;
 

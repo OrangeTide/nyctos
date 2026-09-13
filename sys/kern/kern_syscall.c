@@ -158,6 +158,7 @@ syscall_handler(struct sys_op *op, unsigned long count)
 
         if (self != NULL && self->p_dying) {
             proc_stopped_after_batch++;
+            thread_current()->t_left_by_door = true;
             thread_exit(self->p_kill_code);
         }
     }
@@ -443,6 +444,7 @@ batch_run(sys_op_t *op, unsigned long count)
                 } else {
                     proc_stopped_before_later++;
                 }
+                thread_current()->t_left_by_door = true;
                 thread_exit(p->p_kill_code);
             }
 

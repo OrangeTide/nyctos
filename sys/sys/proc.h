@@ -394,6 +394,7 @@ extern uint64_t proc_creates_unmarked;
  */
 extern uint64_t proc_reached;
 extern uint64_t proc_exits_while_dying;
+extern uint64_t proc_exits_own_way;
 extern uint64_t proc_ended_at_trap;
 
 /*

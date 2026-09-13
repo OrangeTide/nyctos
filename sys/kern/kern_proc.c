@@ -570,7 +570,7 @@ proc_load(struct proc *p, const struct boot_member *m)
 static void
 exit_before_user(uint64_t *which)
 {
-    const struct thread *t = thread_current();
+    struct thread *t = thread_current();
     const struct proc *p = (t != NULL) ? t->t_proc : NULL;
     intr_state_t s = 0;
     bool held;
@@ -617,6 +617,7 @@ exit_before_user(uint64_t *which)
          * other door. The mark has been read under the lock just
          * above and nothing between the two can change it.
          */
+        t->t_left_by_door = true;
         thread_exit(p->p_kill_code);
         panic("proc: a killed thread came back from its own exit");
     }
@@ -1990,6 +1991,7 @@ uint64_t proc_creates_refused;
 uint64_t proc_creates_unmarked;
 uint64_t proc_reached;
 uint64_t proc_exits_while_dying;
+uint64_t proc_exits_own_way;
 uint64_t proc_ended_at_trap;
 
 sys_err_t
@@ -2052,9 +2054,19 @@ proc_kill(struct proc *p, int32_t code)
          * and the set is closed here: nothing can be added to it
          * afterwards, per M21 stage five. Every one of them leaves
          * by one of three doors, and M21 stage seven asks at the
-         * end of the boot whether the three add up to this.
+         * end of the boot whether those and the threads that were
+         * already leaving add up to this.
+         *
+         * Not one that has already ended. A thread stays on this
+         * list until it is collected, and one that is dead is not
+         * something a kill has to reach: there is nothing to cancel
+         * and no core to poke. Counting it would leave the sum
+         * short by exactly the threads that were never the kill's
+         * to end.
          */
-        proc_reached++;
+        if (t->t_state != THREAD_DEAD) {
+            proc_reached++;
+        }
 
         /*
          * Exactly as if each had been cancelled, which is the
@@ -2130,6 +2142,7 @@ proc_exit_if_dying(void)
      * the kill's own poke, a timer, or a fault of its own.
      */
     proc_ended_at_trap++;
+    t->t_left_by_door = true;
 
     /*
      * Section 10.5's promptness, for a thread that was never blocked.

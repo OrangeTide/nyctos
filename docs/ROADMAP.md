@@ -13795,7 +13795,47 @@ thread starts no operation, a kill of a process with threads in every
 state ends all of them, and M20 stage five's restart loop kills its
 servers without first asking them for anything.
 
-*Would falsify.* That the trampoline is the right place to look. If
+**What the review found: the fourth number was the remainder of the
+other three.** The line reads as four numbers that add up to a total,
+and one of them was the total minus the other three. A remainder adds
+back up whatever either side is, so the sum said nothing: it was the
+same shape as the count of servers this milestone's sixth stage had
+already been caught printing.
+
+A thread now carries whether it is ending because it read the mark,
+set by each of the three places that read it and by nothing else, and
+`thread_exit` counts a thread that ends while its process is marked
+without that flag. The five numbers come from five places and the
+line between them is arithmetic. The numbers did not move, which is
+what says the remainder had been right.
+
+**And the set the kill counts no longer includes threads that had
+already ended.** A thread stays on its process's list until it is
+collected, so the walk that counts what a kill has to reach was
+counting dead ones too. There is nothing there to cancel and no core
+to poke, and a kill that counted one would have been short by it for
+the rest of the boot. Nothing in this boot kills a process with a
+dead thread still on its list, so the number is the same either way;
+it is a correctness fix by reading rather than a measured one, and
+it is written down as that.
+
+**What the accounting catches, and what it does not.** The invariant
+with teeth is that every thread a kill had to reach ended, and
+anything that breaks it leaves a thread running, which a join
+notices first. What the split adds is the shape of a way out that
+nobody counted: a new path into user mode added without a reading
+would show up as a thread that ended its own way, and that number is
+in the compared file. It is a statement the boot makes about itself
+rather than a trap that springs first, and it is worth having for
+the same reason the channel accounting in M20 was.
+
+**A comment that described code that is not there.** Stage one's
+check said the process it wedges is recovered by a second kill,
+which was true when the first kill reached nothing. Stage two turned
+that over and the second kill went with it; the comment stayed.
+
+*Would falsify.* That the trampoline is the right place to look.
+ If
 reading the mark there is unsafe, because the thread is in kernel mode
 on its own stack outside the kernel's exclusion and `thread_exit` from
 there is not the same as `thread_exit` from a trap, then the answer is

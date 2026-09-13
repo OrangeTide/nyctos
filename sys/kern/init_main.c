@@ -5932,10 +5932,12 @@ kill_reach_checks(void)
  * milestone has no subject and should be abandoned rather than built.
  * Stage two is what turns the assertion over.
  *
- * The wedged process is not left wedged. A second kill reaches it,
- * because by then it is blocked in a receive and a blocked thread is
- * what cancellation was built for. That is the shape of M20 stage
- * five's workaround and it is written here as the recovery it is.
+ * The process was not left wedged either. A second kill reached it,
+ * because by then it was blocked in a receive and a blocked thread
+ * is what cancellation was built for, which is the shape of M20
+ * stage five's workaround. That recovery is gone with the defect:
+ * the first kill ends it now, and a second would be refused by a
+ * process that has already exited.
  */
 /*
  * One reading of where a process's first thread is, taken under the
@@ -17396,15 +17398,30 @@ kernel_main(void)
      * on its way out when the mark went down, which is what a thread
      * that faults and takes its cohort with it does to itself: the
      * halt kills the process it is a member of, and the kill counts
-     * a thread that is inside `thread_exit` already. It is reported
-     * rather than folded in, because folding it in would make the
-     * sum hold whatever happened.
+     * a thread that is inside `thread_exit` already.
+     *
+     * Counted where it happens rather than by taking the doors away
+     * from the total, which was how this read first and was no
+     * check at all: a remainder adds back up to the total whatever
+     * either of them is. The five numbers come from five places
+     * now, and the line above is the arithmetic between them.
      */
     {
         unsigned long doors = (unsigned long)(proc_unrun_programs +
           proc_unrun_threads + proc_stopped_before_first +
           proc_stopped_before_later + proc_stopped_after_batch +
           proc_ended_at_trap);
+
+        if (proc_exits_while_dying != proc_reached) {
+            panic("kills: %lu threads reached and %lu ended",
+              (unsigned long)proc_reached,
+              (unsigned long)proc_exits_while_dying);
+        }
+        if (doors + proc_exits_own_way != proc_reached) {
+            panic("kills: %lu reached, %lu by a door and %lu their "
+              "own way", (unsigned long)proc_reached, doors,
+              (unsigned long)proc_exits_own_way);
+        }
 
         cnprintf("  threads a kill had to reach: %lu, and all of "
           "them ended\n", (unsigned long)proc_reached);
@@ -17414,16 +17431,7 @@ kernel_main(void)
           (unsigned long)(proc_stopped_before_first +
           proc_stopped_before_later + proc_stopped_after_batch),
           (unsigned long)proc_ended_at_trap,
-          (unsigned long)(proc_exits_while_dying - doors));
-        if (proc_exits_while_dying != proc_reached) {
-            panic("kills: %lu threads reached and %lu ended",
-              (unsigned long)proc_reached,
-              (unsigned long)proc_exits_while_dying);
-        }
-        if (doors > proc_exits_while_dying) {
-            panic("kills: %lu left by a door of %lu that ended", doors,
-              (unsigned long)proc_exits_while_dying);
-        }
+          (unsigned long)proc_exits_own_way);
     }
 
     /*
