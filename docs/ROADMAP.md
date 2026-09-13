@@ -604,6 +604,37 @@ claims for every pool and could not claim for this one. Section 8
 gained the half it was missing and section 12 gained a channel's
 lifetime, which it had never stated.
 
+**M21 made a kill reach a thread that has never run.** A process killed
+before its first thread had run was not killed: the mark went down,
+nothing was blocked to cancel, and the thread then ran, entered user
+mode and blocked in a receive that never asked whether its process was
+dying. M20 measured that and wrote a workaround into a check to get
+past it.
+
+There are three ways into user mode, not two. The interrupt path and
+the fault path return through a trap and so does the system call path,
+and a thread that has just been made runs a trampoline in kernel mode
+and drops into user mode without having trapped. Section 10.5 named the
+first two. The mark is read on all three now, and before an entry
+rather than after one, which makes the set of threads a kill has to
+reach a closed set and the doors out of it countable:
+
+```
+  threads a kill had to reach: 81, and all of them ended
+  by one of three doors: 54 a trampoline, 22 an entry boundary, 4 a trap, 1 already leaving
+```
+
+A supervisor is told its process has stopped 365 to 509 microseconds
+after asking, against never. One kill ends four threads in the four
+states a kill has to reach, and a thread is refused to a process that
+is over whether it was killed or ended on its own.
+
+The milestone's most serious finding is in neither of those. `el0_irq`
+on aarch64 saved the return address and processor state of an
+interrupted user thread and never restored them, which nothing in five
+milestones of two-core checks had noticed, because until this one no
+check asserted what an interrupted user thread went on to do.
+
 Nothing has run on hardware, so every duration this project has
 published is the right shape and the wrong magnitude. The counts are not
 durations, which is why these milestones assert counts.
@@ -12840,6 +12871,32 @@ the answer.
 
 **A process killed before its first thread has run is not killed.**
 
+**Done.** All seven stages are built. Section 24 says what it answered,
+what it cost, what the building kept finding, and what it left
+untested. The gap it closed was one path into user mode that nothing
+checked the mark on, and it found that there are three such paths
+rather than two.
+
+A kill now reaches a thread that has never run: 54 threads a boot end
+at a trampoline, 53 of them a program's first thread and one a thread a
+program made, and a supervisor is told 365 to 509 microseconds after
+asking, against never. A marked thread starts no operation, because the
+mark is read before an entry rather than after it, which stops 22
+threads a boot. One kill ends four threads in the four states a kill
+has to reach. A thread is refused to a process that is over, whether it
+was killed or ended on its own. And M20 stage five's restart loop kills
+its servers without first asking them for anything.
+
+The compared report holds the whole set and the doors out of it:
+
+```
+  threads a kill had to reach: 81, and all of them ended
+  by one of three doors: 54 a trampoline, 22 an entry boundary, 4 a trap, 1 already leaving
+```
+
+Section 10.5 is written to it, and section 10.2 gained what happens to
+a thread created in a process that is over.
+
 `sys_proc_kill()` marks the process and cancels every thread of it, and
 a thread that is not blocked has nothing to cancel. `proc_kill`'s own
 comment states the assumption that carries the rest: a thread that is
@@ -16781,7 +16838,255 @@ from `-smp 2` under an emulator.
 
 ---
 
-## 24. Bring-Up Order Within M1
+## 24. Milestone 21, in Retrospect
+
+M21 set out to fix a kill that a thread could outlast. A process killed
+before its first thread had run was not killed: the mark went down,
+nothing was blocked to cancel, and the thread then ran, entered user
+mode and blocked in a receive that never asked whether its process was
+dying. M20 had measured it and written a workaround into a check to get
+past it. The fix was two calls, one in each trampoline, and one reading
+moved from after an entry to before the next. Finding out how many other
+ways into user mode there were, and proving the list closed, was the
+milestone.
+
+### 24.1 The Questions
+
+**Is the trampoline the right place to look?**
+
+Yes. The falsification clause said that if reading the mark there is
+unsafe, because the thread is in kernel mode on its own stack outside
+the kernel's exclusion, then the mark would have to be read on the far
+side at the first entry the thread makes, and a thread killed before it
+ever calls anything could not be reached at all. That would have been a
+smaller milestone and a worse system.
+
+Ending a thread from a trampoline neither faulted nor hung. What the
+measurement found instead is that the kernel lock is not held there: all
+2557 arrivals at the two trampolines in a boot found it free, because a
+dispatch is made with interrupts off and not with the lock. So the
+reading takes the lock when this core does not already hold it, which is
+also what orders it against the kill, and the other branch is counted so
+that the day something first-dispatches a thread from inside the kernel
+the line says so.
+
+**How many ways into user mode are there?**
+
+Three, and the third is not a return from anything. The interrupt path
+and the fault path return through a trap, the system call path returns
+through a trap, and a thread that has just been made runs a trampoline
+in kernel mode and drops into user mode without having trapped. Section
+10.5 named the two trap paths and said the mark is read "where a trap
+returns to user mode", which covered two of three.
+
+That makes the set of threads a kill has to reach a closed set and the
+doors out of it countable, which is what the compared report now says:
+
+```
+  threads a kill had to reach: 81, and all of them ended
+  by one of three doors: 54 a trampoline, 22 an entry boundary, 4 a trap, 1 already leaving
+```
+
+The four numbers come from four places and nothing is a remainder. The
+fourth is not a door: it is a thread already inside its own exit when
+the mark went down.
+
+**Does a kill reach a thread that has never run?**
+
+Yes, and the supervisor is told 365 to 509 microseconds after asking,
+against never. Stage one asserted the wrong answer on purpose, so that a
+milestone with no subject would be abandoned rather than built, and
+stage two turned both of its assertions over: the kill reaches the
+thread, it ends at a trampoline, and it starts no entry at all.
+
+Fifty-four threads in a boot are now ended that way, 53 of them a
+program's first thread and one a thread a program made.
+
+**Does a marked thread start an operation?**
+
+No. The reading moved from the end of an entry to before the next one,
+which is the same point for every entry but the first and a different
+one for the first. Twenty-two threads a boot are stopped there. The
+change is also what makes a kill orderable: with the question asked
+before the entry, a kill written under the kernel lock and an entry
+taken under the same lock have two outcomes and no third.
+
+**Does a kill reach every state at once?**
+
+Yes. Four mechanisms end a thread and each had only ever been checked on
+a process with one thread in one state. `fourways` holds all four at
+once, computing on the other core, ready and never run, blocked
+receiving, and inside a kernel operation, and one kill ends all four
+with the kill's code in about 4.3 milliseconds including the join. At
+Tier 0 the same lines read zero pokes, because nothing of the target is
+running when the killer is, and the poke is not tested there.
+
+**And is a thread made in a process that is over?**
+
+No, and the answer is wider than the milestone asked for. The refusal
+covers a process that was killed and a process that ended on its own,
+which is two ways to be over and only the first was in the plan. Two
+threads a boot are refused with `SYS_ERR_OWNER_DEAD`, one of them to a
+process that was never marked at all.
+
+**Does M20's workaround come out?**
+
+Yes. The restart loop no longer connects to its server and sends it a
+request before killing it. It kills a server whose thread is ready and
+has never run, 52 times, and each round asserts that the count of
+programs killed before ever running went up by exactly one, so the loop
+cannot quietly go back to measuring the case that already worked.
+
+### 24.2 What It Cost
+
+**Sixteen commits, twenty-one files, 3672 lines added and 282 removed**,
+of which 2599 are code, 1053 are documentation and twenty are the
+compared reports.
+
+**Two thirds of the code is the measurement.** `init_main.c` accounts
+for 1818 of those lines against 234 in `kern_proc.c`, 97 in
+`kern_thread.c`, 85 in `kern_syscall.c`, 67 in `kern_channel.c`, 33 in
+`kern_timeline.c` and 101 across two headers. Three programs were
+written for it: `fourways` at 188 lines, `lastborn` at 100 and `twostep`
+at 66. The mechanism is two calls in two trampolines, one reading moved,
+one flag on a thread, and a refusal in `proc_thread_create`.
+
+**About 25 kilobytes of text**, 429220 to 455090 on riscv64 at Tier 0
+and 570068 to 595260 on aarch64 at Tier 2, almost all of it the checks.
+
+**112 bytes of bss** at every configuration: six counters and the flags
+on a thread.
+
+**Five lines in the compared report** where there was one, and the one
+that was there moved from 68 kills written to 72.
+
+**No measurable boot time.** The burst session was 8.30 to 8.78 seconds
+on riscv64 at Tier 0 before and 8.26 to 8.51 after, and 10.04 to 10.21
+on aarch64 at Tier 2 before and 10.16 to 10.25 after. The lock taken at
+every one of 2557 first dispatches is inside that spread, measured
+separately at five runs either side and not separable from four tenths
+of a second of host noise.
+
+### 24.3 What the Building Kept Finding
+
+**A per-port trap path that saved state it did not restore.** The most
+serious defect this milestone found is not in anything it built.
+`el0_irq` on aarch64 saved `elr_el1` and `spsr_el1` on entry and never
+restored them, so a user thread interrupted while the kernel went on to
+take another exception returned to the wrong place. It was found from a
+symptom that made no sense, a thread whose body is `for(;;) n++`
+exiting with status 0, and chased with a ring buffer of exits keyed on
+the thread's stack. About five failures in 150 paced runs before, in
+three different shapes, and none in 70 after. `el1_irq` restored them
+and carried no warning saying why; it does now.
+
+Nothing found it in five milestones of two-core checks, because until
+this one no check asserted what a user thread that was interrupted went
+on to do.
+
+**Counts that were not measurements.** Three times, one per stage from
+four to seven. "4 of 4" was the constant four printed twice. "ended" was
+a count of what the walk found rather than of threads that ended.
+"already leaving" was the total minus the other three, which adds back
+up whatever either side is and therefore says nothing. Each was fixed by
+counting at the site, and in the third case that meant a flag set by the
+three places that read the mark and by nothing else. The numbers did not
+move, which is what says the remainder had been right.
+
+This is the same finding as M20's "assertions that could not fail" and
+it arrived three more times in one milestone. The rule it leaves behind
+is narrower than that one: a number printed beside other numbers must
+come from its own counter, because a sum whose last term is a
+subtraction is not a check.
+
+**Kernel entry points called without the lock.** A kernel thread holds
+none of the kernel's exclusion, and four calls that a kernel thread
+makes did not take it: `timeline_wait`, the three channel wrappers, and
+`thread_cancel`. The first cost a real lost wake. `timeline_wait` read
+the timeline, found it short, and joined the waiter list while the other
+core wrote the value and walked that list, which showed up as a join
+that waited thirty seconds for a program that had already exited, three
+times in forty runs. Taking the lock made it zero in forty.
+
+The sweep that followed found the rest. What it did not close is
+`proc_kill` called straight from a kernel thread, where the mark is
+ordered by nothing, because `proc_kill` calls `sched_undefer` and making
+it take the lock is not a change to make in passing.
+
+**Reading the state before the moment rather than at it.** Stage one
+read the target's state before the kill and never after it, so the
+thread could be dispatched on the other core in between and the check
+would have passed while measuring the case that works. Stage two read
+the mark and then took the lock, which is two cores each storing and
+then loading, the one shape that can leave both reading the old value.
+Stage three read a channel's sender queue with nothing held. This
+milestone's *Watch for* clause named exactly this and it still happened
+three times, which says that "assert the state at the moment of the
+kill" is a rule that has to be applied per reading rather than per
+check.
+
+**A thread's stack outliving the thread.** The slot went back before the
+switch had left the thread, so the other core could take the slot while
+this one was still running on the stack under it. It appeared as
+`unhandled trap in nudge: page, cause=0xc pc=0x0`. A thread now carries
+whether the switch has left it, and is parked when it dies rather than
+when it is reapable.
+
+**A thread created into the wrong process.** `thread_alloc` attaches the
+new thread to the caller's process, which is right for every caller that
+existed and wrong for a supervisor making a thread in someone else's
+process. It was found by the check that needed that construction and
+not by anything else.
+
+**Blocking calls inside a deadline loop, and pulses read as requests.**
+Two check-shaped defects that are worth recording because both made a
+check say the wrong thing rather than fail: a receive that blocks means
+the deadline around it can never fire, and a pulse arrives through the
+same `channel_recv` as a request, so a check that expected eight bytes
+got a pulse and said the makings were the wrong size.
+
+### 24.4 What Is Still Untested
+
+**A first dispatch from inside the kernel.** The trampoline takes the
+lock when this core does not already hold it, and the count of arrivals
+that found it held is zero in every boot. That branch exists because the
+contract says so, and removing it fails no check.
+
+**The reading before the first entry of a submission.** It needs a
+thread that arrived at the kernel already marked, which takes a mark
+written while the thread is in user mode and then a trap of the thread's
+own within the few microseconds before the kill's interrupt lands. A
+program written to make it likely was hit once in eight attempts, once
+in sixteen and once in sixty-four, which is a rate that reports the host
+rather than the kernel. It is not in the boot.
+
+**A kill written by a kernel thread, ordered against the mark.** Every
+kill a program makes is written under the kernel lock, and one check in
+M17 calls `proc_kill` from a kernel thread with interrupts off and
+nothing else. Against that caller the trampoline's acquire orders
+nothing. This is the same residue M20 stage three recorded.
+
+**The reentrancy guard.** A thread interrupted inside a kernel operation
+is still not ended there, and nothing constructs that thread. What ends
+in this milestone's fourth state is a thread blocked inside an
+operation, which is a different thing.
+
+**More than one poke, more than two cores, and real hardware.** A poke
+is one inter-processor interrupt per running thread of the target, and
+the boot has at most one running thread per target. Every count here
+comes from `-smp 2` under an emulator.
+
+**The door accounting is a statement, not a trap.** The invariant with
+teeth is that every thread a kill had to reach ended, and anything that
+breaks it leaves a thread running, which a join notices first. What the
+split of doors adds is that a new path into user mode added without a
+reading would show up as a thread that ended its own way. That is
+something the boot says about itself rather than something that fires
+before the damage.
+
+---
+
+## 25. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -16825,7 +17130,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 25. Ordering: What Is Forced and What Is Chosen
+## 26. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -16856,7 +17161,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 26. What Would Change This Plan
+## 27. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -16903,7 +17208,7 @@ else.
 
 ---
 
-## 27. Deliberately Not Scheduled
+## 28. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

@@ -30,6 +30,57 @@ than hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 21 is done: a kill reaches a thread that has never run.** A
+process killed before its first thread had run was not killed. The mark
+went down, nothing was blocked to be released, and the thread then ran,
+entered user mode and blocked in a receive that never asked whether its
+process was dying. Milestone 20 measured that and wrote a workaround
+into a check to get past it.
+
+**There are three ways into user mode, not two.** The interrupt path
+and the fault path return through a trap, and so does the system call
+path. A thread that has just been made runs a trampoline in kernel mode
+and drops into user mode without having trapped, so there is no trap to
+return from and nothing to read the mark on the way. The design said
+the mark is read "where a trap returns to user mode" and named the two
+trap paths, which covered two of three.
+
+The mark is read on all three now, and before an entry rather than
+after one. That makes the set of threads a kill has to reach a closed
+set, and the doors out of it countable:
+
+```
+  threads a kill had to reach: 81, and all of them ended
+  by one of three doors: 54 a trampoline, 22 an entry boundary, 4 a trap, 1 already leaving
+```
+
+Four numbers from four places, no remainder among them. The fourth is
+not a door: it is a thread already inside its own exit when the mark
+went down. A supervisor is told its process has stopped 365 to 509
+microseconds after asking, against never.
+
+**One kill, four threads, four states.** Four mechanisms end a thread
+and each had only ever been checked on a process with one thread in one
+state. A program now holds all four at once, one computing on the other
+core, one ready and never run, one blocked receiving and one inside a
+kernel operation, and a single kill ends all four with the kill's code
+in about four milliseconds including the join.
+
+**And nothing is made in a process that is over.** A thread asked for
+in a process that was killed, or that ended on its own, is refused with
+`SYS_ERR_OWNER_DEAD` rather than created into a process that will never
+run it.
+
+**The most serious thing this milestone found is not what it built.**
+On aarch64, the path taken when an interrupt arrives while a program is
+running saved the return address and processor state of the interrupted
+thread and never restored them. A user thread interrupted at the wrong
+moment resumed somewhere it had never been. It showed up as a thread
+whose body is `for(;;) n++` exiting with status 0, about five times in
+150 runs, in three different shapes. Nothing in five milestones of
+two-core checks had found it, because until this one no check asserted
+what an interrupted user thread went on to do.
+
 **Milestone 20 is done: a channel's slot comes back.** Every other
 pool in this system returned what it lent and this one never had. A
 boot ended with 40 channels in use of 48 and a high-water mark of 40,
@@ -1118,15 +1169,26 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - A receive carries no deadline, deliberately: a server waiting for work
   is not waiting for a party that can fail it. What a server does about
   a client that never comes is not answered.
-- A process killed before its first thread has run is not killed. The
-  mark is set, nothing is blocked to be released, and the thread then
-  runs, enters user mode and blocks in a receive that never asks
-  whether its process is dying. Measured at milestone 20: the thread
-  goes from ready to blocked on a receive with the process still not
-  exited, and a join waits out ten minutes. `proc_kill` assumes a
-  ready thread has already stopped somewhere in the kernel and will
-  find the mark on its way out, which a thread that has never run has
-  not done.
+- A thread that arrives at the kernel already marked is not constructed
+  by anything here. The mark is read before an entry, which covers every
+  entry but the first of a submission; reaching the first one needs a
+  kill written while the thread is in user mode and then a trap of the
+  thread's own within the few microseconds before the kill's interrupt
+  lands. A program written to make that likely hit it once in eight
+  attempts, once in sixteen and once in sixty-four, which reports the
+  host rather than the kernel, so it is not in the boot.
+- A kill written by a kernel thread is ordered against the mark by
+  nothing. Every kill a program makes is written under the kernel lock,
+  and the trampoline reads the mark under the same lock, which orders
+  the two. `proc_kill` can also be called straight from a kernel thread,
+  which holds interrupts off and nothing else, and one check does. Making
+  it take the lock is not a change to make in passing, because it calls
+  into the scheduler and can switch.
+- A thread first dispatched from inside the kernel is not constructed
+  either. The trampoline takes the kernel lock when the core does not
+  already hold it, and the count of arrivals that found it held is zero
+  in every boot, so that branch is there because the contract says so
+  and removing it fails no check.
 - A thread interrupted inside a kernel operation and then killed is not
   ended there, because it holds state nothing could unwind. The guard
   that refuses is unexercised: nothing here constructs that thread, and
@@ -1137,9 +1199,11 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - Nothing acts on the difference between the two errors a lost server
   produces. `SYS_ERR_STALE` says the server can be asked again and
   `SYS_ERR_OWNER_DEAD` says it cannot; no client here retries.
-- A channel is allocated and never released. Section 18.2's teardown is
-  not built, so the boot's channel use only grows, and the limit had to
-  be raised for a check to have one rather than the boot getting tidier.
+- A channel held by a connection kept for reaping is never collected. A
+  server that dies with uncollected connections leaves a channel those
+  connections hold, and nothing will ever let go of it. The end-of-boot
+  assertions do not see it, because the channel still has a holder and
+  its slot counts as reachable; it shows only as a slot still in use.
 - A process that creates a thread and keeps the handle can never be
   reaped. The handle references the thread, an unreaped thread
   references its process, and a process closes its own handle table only
@@ -1219,7 +1283,7 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 
 ## Next steps
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). Twenty milestones are
+See [docs/ROADMAP.md](docs/ROADMAP.md). Twenty-one milestones are
 finished. The plan as written ran to ten; each milestone since was
 chosen after the last one ended, out of what it left open: a question
 only half answered, or a limitation this file had been carrying. What
