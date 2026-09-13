@@ -381,6 +381,22 @@ extern uint64_t proc_creates_refused;
 extern uint64_t proc_creates_unmarked;
 
 /*
+ * The threads a kill had to reach, and the ones that left by the
+ * third of the three doors, per M21 stage seven.
+ *
+ * A kill closes the set of threads it has to reach at the moment it
+ * writes the mark, and every thread in that set leaves the system by
+ * exactly one of three places: the trampoline it had not yet been
+ * dispatched to, the boundary between two entries of a submission,
+ * or the return from a trap it was interrupted by. The first two are
+ * counted where they happen. This is the third, and the total is
+ * what says the three are all of them.
+ */
+extern uint64_t proc_reached;
+extern uint64_t proc_exits_while_dying;
+extern uint64_t proc_ended_at_trap;
+
+/*
  * Threads stopped at an entry boundary because their process had
  * been killed, per M21 stage three, split by which boundary.
  *

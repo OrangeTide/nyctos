@@ -161,6 +161,18 @@ thread_exit(int32_t code)
 {
     struct proc *p = current->t_proc;
 
+    /*
+     * Every thread that ends while its process is marked, per M21
+     * stage seven. The count a kill is answerable for is the set of
+     * threads it had to reach, and this is the other end of that
+     * arithmetic: what the kill had to reach against what actually
+     * left. Counted here because this is the one place a thread
+     * ends, whichever way it got here.
+     */
+    if (p != NULL && p->p_dying) {
+        proc_exits_while_dying++;
+    }
+
     current->t_exit_code = code;
 
     /*

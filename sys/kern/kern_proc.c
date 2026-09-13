@@ -611,7 +611,13 @@ exit_before_user(uint64_t *which)
             proc_unrun_locked++;
         }
         (*which)++;
-        proc_exit_if_dying();
+        /*
+         * Ended here rather than through `proc_exit_if_dying`,
+         * which is the same two lines and is now the count of the
+         * other door. The mark has been read under the lock just
+         * above and nothing between the two can change it.
+         */
+        thread_exit(p->p_kill_code);
         panic("proc: a killed thread came back from its own exit");
     }
 
@@ -1982,6 +1988,9 @@ uint64_t proc_stopped_after_batch;
 uint64_t proc_kill_pokes;
 uint64_t proc_creates_refused;
 uint64_t proc_creates_unmarked;
+uint64_t proc_reached;
+uint64_t proc_exits_while_dying;
+uint64_t proc_ended_at_trap;
 
 sys_err_t
 proc_kill(struct proc *p, int32_t code)
@@ -2038,6 +2047,15 @@ proc_kill(struct proc *p, int32_t code)
     sched_defer();
 
     for (t = p->p_threads; t != NULL; t = t->t_sibling) {
+        /*
+         * Counted, because this is the set the kill has to reach
+         * and the set is closed here: nothing can be added to it
+         * afterwards, per M21 stage five. Every one of them leaves
+         * by one of three doors, and M21 stage seven asks at the
+         * end of the boot whether the three add up to this.
+         */
+        proc_reached++;
+
         /*
          * Exactly as if each had been cancelled, which is the
          * section's phrase and also the implementation: a thread that
@@ -2103,6 +2121,15 @@ proc_exit_if_dying(void)
     if (p == NULL || !p->p_dying) {
         return;
     }
+
+    /*
+     * The third door, counted. The other two are the trampoline a
+     * thread that has never run arrives on and the boundary between
+     * two entries; this is the one a thread that was computing in
+     * user mode leaves by, whether the trap that brought it here was
+     * the kill's own poke, a timer, or a fault of its own.
+     */
+    proc_ended_at_trap++;
 
     /*
      * Section 10.5's promptness, for a thread that was never blocked.

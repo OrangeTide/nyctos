@@ -6,6 +6,8 @@ used at most: 24 of 32 threads, 13 of 24 processes
   killed before ever running: 53 a program and 1 a thread it made, 0 entries
   of those, found inside the kernel: 0
   stopped at an entry boundary: 22
+  threads a kill had to reach: 81, and all of them ended
+  by one of three doors: 54 a trampoline, 22 an entry boundary, 4 a trap, 1 already leaving
   threads refused to a process that is over: 2, 1 of them never marked
   peers: 8 collected, pulses 1 dropped and 11 evicted
   senders: 2 refused, 2 displaced

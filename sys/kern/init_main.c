@@ -17376,6 +17376,57 @@ kernel_main(void)
       proc_stopped_before_later + proc_stopped_after_batch));
 
     /*
+     * And the whole of it as one sum, per M21 stage seven.
+     *
+     * A kill closes the set of threads it has to reach at the moment
+     * it writes the mark. Every thread in that set leaves by one of
+     * three doors: the trampoline it had not been dispatched to, the
+     * boundary between two entries, or the return from a trap. The
+     * three counts above are the doors. This line is the claim that
+     * they are all of the doors there are, which is what section
+     * 10.5 says in words.
+     *
+     * The sum is the assertion with teeth. Each of the three can be
+     * right on its own with a thread having left some other way, and
+     * a fourth way out is exactly what the milestone was about: for
+     * M17 and M20 there was one door, and a thread that arrived at
+     * none of them was a thread a kill did not reach.
+     *
+     * The last number is not a door. It is a thread that was already
+     * on its way out when the mark went down, which is what a thread
+     * that faults and takes its cohort with it does to itself: the
+     * halt kills the process it is a member of, and the kill counts
+     * a thread that is inside `thread_exit` already. It is reported
+     * rather than folded in, because folding it in would make the
+     * sum hold whatever happened.
+     */
+    {
+        unsigned long doors = (unsigned long)(proc_unrun_programs +
+          proc_unrun_threads + proc_stopped_before_first +
+          proc_stopped_before_later + proc_stopped_after_batch +
+          proc_ended_at_trap);
+
+        cnprintf("  threads a kill had to reach: %lu, and all of "
+          "them ended\n", (unsigned long)proc_reached);
+        cnprintf("  by one of three doors: %lu a trampoline, %lu an "
+          "entry boundary, %lu a trap, %lu already leaving\n",
+          (unsigned long)(proc_unrun_programs + proc_unrun_threads),
+          (unsigned long)(proc_stopped_before_first +
+          proc_stopped_before_later + proc_stopped_after_batch),
+          (unsigned long)proc_ended_at_trap,
+          (unsigned long)(proc_exits_while_dying - doors));
+        if (proc_exits_while_dying != proc_reached) {
+            panic("kills: %lu threads reached and %lu ended",
+              (unsigned long)proc_reached,
+              (unsigned long)proc_exits_while_dying);
+        }
+        if (doors > proc_exits_while_dying) {
+            panic("kills: %lu left by a door of %lu that ended", doors,
+              (unsigned long)proc_exits_while_dying);
+        }
+    }
+
+    /*
      * And the threads a process that was over asked for and did not
      * get, per M21 stage five. A count, and the one that says the
      * set of threads a kill has to reach is closed at the moment

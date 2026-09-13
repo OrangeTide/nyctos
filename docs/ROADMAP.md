@@ -13703,7 +13703,7 @@ has, how many departures were made. The counters behind the rest are
 incremented where something was observed rather than once a round.
 The one that was not is the one this review started with.
 
-**7. What it cost, and section 10.5 written to it.** *Planned.*
+**7. What it cost, and section 10.5 written to it.** *Built.*
 
 - *Check.* The figures as counts: kills that reached a thread that had
   never run, entries started while marked, and the pokes, against what
@@ -13713,6 +13713,82 @@ The one that was not is the one this review started with.
   and lists the two trap paths; there is a third way into user mode
   and it did not look. Section 10.2 gains what happens to a thread
   created by a dying process.
+
+**What it settled: the doors are countable and they add up.** The
+milestone's claim is that a kill reaches every thread of its target.
+That is now an arithmetic statement the boot makes about itself. A
+kill closes the set of threads it has to reach at the moment it
+writes the mark, because nothing can be added to a process that is
+over. Every thread in that set ends, and the compared lines say
+where:
+
+```
+  threads a kill had to reach: 81, and all of them ended
+  by one of three doors: 54 a trampoline, 22 an entry boundary, 4 a trap, 1 already leaving
+```
+
+At Tier 0 the same lines read 79 reached and 2 at a trap. The
+difference is the two threads that were computing on the second core
+when they were killed, which is the state that exists only there.
+
+**The three doors are section 10.5's sentence turned into a sum.**
+The trampoline is the way into user mode that had no reading before
+stage two, and fifty four of the eighty one leave by it: fifty two
+are stage six's restart loop, one is stage one's check, and one is
+the thread stage four has never dispatched. The entry boundary is
+where a thread inside a submission stops, twenty two of them. The
+trap is the interrupt or fault a computing thread is reached by, and
+the poke is what makes that trap happen on another core.
+
+The last number is not a door and is reported rather than folded in.
+It is a thread that was already inside its own exit when the mark
+went down, which is what a thread that faults and halts its cohort
+does to itself: the halt kills the process the thread belongs to, and
+the kill counts a thread that is on its way out already. Folding it
+into the sum would make the sum hold whatever happened.
+
+**And what the accounting has that the three counts alone do not.**
+Each count can be right on its own while a thread leaves some other
+way, and a fourth way out is exactly what this milestone was about.
+For M17 and M20 there was one door: a thread that arrived at none of
+them was a thread a kill did not reach, and no number said so because
+nothing counted the set it belonged to.
+
+Two of the three readings have been taken out and measured. Without
+the one in the trampoline the split moves rather than breaking, which
+stage six's review records: the thread reaches user mode, makes its
+first call, and the boundary catches it there instead, one fewer at
+a trampoline and one more at a boundary. Without the one on the way
+back from an interrupt, stage four's check reports the kill leaving
+three threads computing and gives up. So the split is what the
+compared file holds, and the sum is what says no thread left by
+something that is not on the list.
+
+**What M17's three counts say now.** Kills written went from
+seventeen to seventy two, which is stage six's loop and nothing
+about the kernel. Pokes stayed at two: a poke is per running thread
+of a target, and the boot has two of those. Clients told their
+server had gone stayed at three. What is new beside them is the
+whole accounting above, and the two lines that say a marked thread
+starts no operation and that nothing is made in a process that is
+over.
+
+**Section 10.5 is written to it.** Its subsection said the mark is
+read "where a trap returns to user mode" and named the two trap
+paths. There are three ways into user mode and the third is not a
+return from anything: a thread that has just been made runs a
+trampoline in kernel mode and drops into user mode without having
+trapped. The section says so, says that the entry-boundary reading
+is before an entry rather than after it and why the order matters,
+and states the closed set and its three doors. The paragraph arguing
+that one core needs no poke is corrected as well: its reasoning was
+that a thread being killed is either where it was interrupted or
+where it blocked, and a thread that has never run is in neither
+place.
+
+Section 10.2 gained what happens to a thread created in a process
+that is over, which stage five settled and its review widened to
+cover a process that ended without being killed.
 
 *Done when* a kill reaches a thread that has never run, a marked
 thread starts no operation, a kill of a process with threads in every
