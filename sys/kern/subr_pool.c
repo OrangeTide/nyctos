@@ -243,6 +243,12 @@ pool_at(const struct pool *p, uint32_t index)
     return slot_object(p, index);
 }
 
+uint32_t
+pool_slots(const struct pool *p)
+{
+    return p->count;
+}
+
 sys_id_t
 pool_id_of(const struct pool *p, const void *obj)
 {

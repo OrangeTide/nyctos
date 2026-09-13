@@ -271,6 +271,24 @@ struct thread {
     struct sys_msg     *t_msg;          /* the request being carried */
     struct sys_msg     *t_reply;        /* where the reply is to be written */
     sys_thread_id_t     t_client;       /* the client this thread owes */
+
+    /*
+     * How many clients this thread owes a reply to, which `t_client`
+     * cannot say because it is one identifier.
+     *
+     * A receiving thread may hold a request and receive another:
+     * section 12.6 describes a server that hands the client id to a
+     * worker and keeps receiving, section 12.2 lets any thread of the
+     * server send the reply, and the console does it in every session
+     * with a line typed at it. Each of those clients is blocked with
+     * `t_donee` pointing here, so this is the count of threads in that
+     * state and is checked against a walk of them.
+     *
+     * Raised where a rendezvous makes this thread a server and lowered
+     * where a client stops being owed, which is the three places
+     * `t_donee` goes back to NULL.
+     */
+    uint32_t            t_owed;
     struct thread      *t_donor;        /* who raised this thread priority */
 
     /*

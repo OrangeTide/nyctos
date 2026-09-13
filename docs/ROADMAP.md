@@ -14002,7 +14002,7 @@ which section 12.2 settles. Not a new bound, since the thread pool is
 already one: a client appears on at most one of these lists and there
 are `SYS_MAX_THREADS` of them.
 
-**1. What a thread owes, counted.** *Planned.*
+**1. What a thread owes, counted.** *Built.*
 
 - *Check.* The boot reports the greatest number of clients any
   receiving thread owed at once, and what the kernel's record named at
@@ -14019,6 +14019,95 @@ are `SYS_MAX_THREADS` of them.
   changed.
 - Falsifiable by the case not reproducing, which would mean the console
   does not do what M20 found it doing.
+
+**What it settled.** The milestone has a subject. Two lines in the
+compared report at each tier:
+
+```
+  a server thread owed more than one reply: 1 time, at most 2 at once
+  a record that holds one: 1 written over, 2 off a serving list still owing
+```
+
+and four numbers above the line, because each of them moves with when
+console input arrives:
+
+```
+what a server thread owes, against what it records
+    held a request and went back to receive 19
+    replies its record did not name        16
+    left on a serving list by another reply 16
+    on a serving list at the end           5, 2 of them owing nobody
+```
+
+**The case is not the console's, which is what the plan assumed.** The
+console does hold a read with no line behind it and go back to receive,
+nineteen times in a paced session, and that is what the plan expected to
+produce a thread owing two. It does not. Nothing sends the console a
+second request while it is holding one, because the only client talking
+to it across a held read is the shell and the shell is the thread
+blocked on that read. The one thread in the boot that owed two replies
+at once is the boot thread inside M21 stage five's check, which receives
+from a program and then from a thread that program made. The plan's
+sentence about the console was about a different symptom of the same
+field, and this is written here rather than quietly replaced.
+
+**The record stops naming what is owed in two ways and both happen.**
+One rendezvous wrote `t_client` over an identifier the thread still
+owed. Nineteen receives cleared it on the way into the block, because
+after the block it is what tells a request from a pulse. The field has
+two jobs and the second takes it from the first, so the count of
+overwrites is not the whole of how often the record goes.
+
+**Sixteen replies were sent by a thread whose record did not name the
+client.** That is section 12.2 working exactly as specified: the
+identifier addresses the reply and any thread of the server may send
+one. It is also the reason nothing has noticed the record being wrong,
+and it is measured before anything is changed.
+
+**The serving list is wrong in both directions, and the second was not
+in the plan.** Two threads came off a channel's serving list while still
+owing a client on it, which is the hazard the plan named:
+`channel_free_if_idle` reads that list for whether anybody is standing
+in a channel. Sixteen times a thread was left *on* a list owing nobody,
+because `serving_end` runs on whichever thread replies and the console
+answers a held read from the thread that has the bytes. The boot ends
+with two threads standing in channels they are serving nothing on, and
+the second of them is there for a third reason again: `wedge`'s client
+was released without the server being taken off the list.
+
+**What could not be asserted, and why.** Three of the four numbers above
+the line are zero in the burst session. The line is always ready there,
+the request thread answers where it stands, and no reply comes from
+another thread of the server. Asserting them above zero passed the paced
+run and stopped the burst one, which is a check measuring the harness
+rather than the kernel. Only the count of threads that held a request
+and went back to receive is above zero in both, and it is the only one
+of the four that is asserted.
+
+**The count is checked against a walk, once.** Where the count passes
+one, every thread is walked and those pointing at this server are
+counted, and a disagreement panics. That happens once in a boot, so what
+the walk has established is that the count was right at the one moment
+it mattered, which is worth less than M20's four walks and is recorded
+as that.
+
+**Falsified six ways.** Not decrementing the count when a client stops
+being owed fired the walk, `a thread owes 2 and 1 threads say so`. Not
+letting the greatest pass one, not counting the overwrite, not counting
+a thread that leaves the serving list owing, not counting the walk, and
+not counting a thread left on a list owing nobody each fired their own
+assertion by name.
+
+**And one assertion that could not fail was written and removed.** That
+the threads owing nobody are no more than the threads standing, which is
+arithmetic: the first is counted inside the branch that counts the
+second.
+
+**What it costs on the rendezvous.** One increment and one branch, with
+the walk behind a test that is true once in a boot. The best round trip
+was 445 to 591 ticks over three runs before and 451 to 696 after, which
+is inside the spread of the host and says the store is not separable
+from it.
 
 **2. The set of clients a thread owes.** *Planned.*
 

@@ -143,6 +143,9 @@ void *pool_lookup(const struct pool *p, sys_id_t id);
  */
 void *pool_at(const struct pool *p, uint32_t index);
 
+/* How many slots a pool has, which is what a walk of it runs to. */
+uint32_t pool_slots(const struct pool *p);
+
 /* Identifier of a live object, given the pointer pool_alloc returned. */
 sys_id_t pool_id_of(const struct pool *p, const void *obj);
 

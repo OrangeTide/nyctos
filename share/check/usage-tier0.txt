@@ -15,4 +15,6 @@ used at most: 22 of 32 threads, 13 of 24 processes
   channels: 615 made, 593 given back, 22 live
   channels at once: 23 of 48, and 52 restarts of a server on one slot
   pulses that went with a channel: 9, of which 2 of the reserved kind
+  a server thread owed more than one reply: 1 time, at most 2 at once
+  a record that holds one: 1 written over, 2 off a serving list still owing
 stage 9 complete

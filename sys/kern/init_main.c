@@ -16715,6 +16715,98 @@ frame_ledger(void)
     }
 }
 
+/*
+ * What a server thread owes against what it records, per M22 stage one.
+ *
+ * `t_client` is one identifier and a receiving thread may owe several
+ * replies. Section 12.6 describes a server that hands the client id to
+ * a worker and keeps receiving, section 12.2 says any thread of the
+ * server may answer, and the console does both: it takes a read with no
+ * line behind it, holds the request, goes back to receive, and the
+ * thread that has the bytes replies.
+ *
+ * These four counts move with when console input arrives, the same way
+ * the count of address space switches does, so they are here rather
+ * than in the compared file. They are the evidence that the record
+ * stops naming what is owed, and the numbers that do not move are in
+ * the report below.
+ *
+ * The last of them is a walk of every thread at the end of the boot,
+ * not a running count: a thread on a serving list owing nobody is a
+ * channel that reads as having somebody standing in it, and the
+ * question is whether any are left that way when everything is over.
+ */
+static void
+owed_checks(void)
+{
+    struct pool *threads = thread_pool();
+    uint32_t standing = 0;
+    uint32_t phantom = 0;
+    uint32_t i;
+
+    for (i = 0; i < pool_slots(threads); i++) {
+        struct thread *t = pool_at(threads, i);
+
+        if (t != NULL && t->t_serve_ch != NULL) {
+            standing++;
+            if (t->t_owed == 0) {
+                phantom++;
+            }
+        }
+    }
+
+    cnputs("what a server thread owes, against what it records\n");
+    cnprintf("    %-38s %lu\n", "held a request and went back to receive",
+      (unsigned long)channel_owed_cleared);
+    cnprintf("    %-38s %lu\n", "replies its record did not name",
+      (unsigned long)channel_owed_reply_unnamed);
+    cnprintf("    %-38s %lu\n",
+      "left on a serving list by another reply",
+      (unsigned long)channel_owed_serving_stale);
+    cnprintf("    %-38s %u, %u of them owing nobody\n",
+      "on a serving list at the end", (unsigned int)standing,
+      (unsigned int)phantom);
+
+    /*
+     * Asserted above zero rather than at a value, because it counts
+     * something the recorded session does and the session is paced by
+     * the host. What the milestone needs from it is that it happens at
+     * all: a boot where no thread ever holds a request and goes back to
+     * receive is a boot this milestone has nothing to say about.
+     */
+    if (channel_owed_cleared == 0) {
+        panic("owed: no thread held a request and went back to receive");
+    }
+
+    /*
+     * The other two are reported and not asserted, which is written
+     * down rather than left to look stronger than it is. Both need a
+     * reply sent by a thread other than the one that received, and the
+     * only thing in this boot that does it is the console answering a
+     * read it had to wait for a line to fill. In the burst session the
+     * line is always there, the request thread answers where it
+     * stands, and both counts are zero. An assertion above zero would
+     * hold in the paced run and stop the burst one, which is a check
+     * that measures the harness.
+     */
+
+    /*
+     * A thread standing in a channel it is serving nothing on is one
+     * the boot ends with rather than one it merely passed through, and
+     * there are two of them for two different reasons. The console is
+     * left there by a reply from its other thread, and is in the paced
+     * run only. `wedge` is left there because its client was released
+     * without it, which is the release path taking the client off the
+     * server and leaving the server on the list, and that one is in
+     * both runs. So the assertion is that there is at least one, which
+     * is stage one's shape: this is the wrong answer, and the stage that
+     * makes the list say what is being served is what turns it over.
+     */
+    if (phantom == 0) {
+        panic("owed: every thread on a serving list owed somebody");
+    }
+}
+
 
 void
 kernel_main(void)
@@ -17223,6 +17315,8 @@ kernel_main(void)
           (unsigned int)DEADLINE_WORKING_EXPECTED);
     }
 
+    owed_checks();
+
 
     cnprintf("frames: %u of %u used at most, %u still held\n",
       (unsigned int)page_highwater(), (unsigned int)page_count(),
@@ -17540,6 +17634,49 @@ kernel_main(void)
       "the reserved kind\n",
       (unsigned int)channel_pulses_discarded,
       (unsigned int)channel_notices_discarded);
+    /*
+     * What a server thread owes against what it records, per M22 stage
+     * one. Counts, and the four here are the ones that do not move with
+     * when console input arrives: the others are above the line with
+     * the walk that reads them.
+     *
+     * The first says a receiving thread owed more replies than
+     * `t_client` can name, and the second and third are the two ways
+     * the record stops naming one of them. A rendezvous writes over an
+     * identifier still owed, and a receive that blocks clears it
+     * because after the block it is what tells a request from a pulse.
+     *
+     * The fourth is a channel that looked idle. `channel_free_if_idle`
+     * asks whether anybody is standing in a channel by reading its
+     * serving list, and a thread taken off that list while it still
+     * owes a client on it leaves a client blocked on a reply with
+     * nothing representing it.
+     *
+     * Stage one asserts the wrong answer on purpose. If a thread never
+     * owes more than the record holds, the milestone has no subject and
+     * should be abandoned rather than built.
+     */
+    cnprintf("  a server thread owed more than one reply: %lu time, "
+      "at most %u at once\n", (unsigned long)channel_owed_walks,
+      (unsigned int)channel_owed_most);
+    cnprintf("  a record that holds one: %lu written over, %lu off a "
+      "serving list still owing\n",
+      (unsigned long)channel_owed_overwrote,
+      (unsigned long)channel_owed_left_serving);
+
+    if (channel_owed_most <= 1) {
+        panic("owed: no thread ever owed more than one reply");
+    }
+    if (channel_owed_walks == 0) {
+        panic("owed: the count was never checked against a walk");
+    }
+    if (channel_owed_overwrote == 0) {
+        panic("owed: no record was ever written over while still owed");
+    }
+    if (channel_owed_left_serving == 0) {
+        panic("owed: no thread left a serving list still owing");
+    }
+
 
     /*
      * Asserted as well as compared, because the compared file covers

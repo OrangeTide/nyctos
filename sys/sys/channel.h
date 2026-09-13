@@ -159,6 +159,19 @@ extern uint64_t channel_senders_displaced;
 /* Departed peers a server collected, per M18 stage four. */
 extern uint64_t channel_peers_collected;
 
+/*
+ * What a receiving thread owes against what it records, per M22 stage
+ * one. `t_client` is one identifier and a thread may owe several
+ * replies, so these say how often the two differ and what that costs.
+ */
+extern uint32_t channel_owed_most;
+extern uint64_t channel_owed_overwrote;
+extern uint64_t channel_owed_cleared;
+extern uint64_t channel_owed_reply_unnamed;
+extern uint64_t channel_owed_left_serving;
+extern uint64_t channel_owed_walks;
+extern uint64_t channel_owed_serving_stale;
+
 
 /*
  * Whether any channel still names this process as its owner. A channel

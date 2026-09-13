@@ -316,6 +316,122 @@ undonate(struct thread *t)
     }
 }
 
+/*
+ * What a receiving thread owes, which is not what it records.
+ *
+ * `t_client` is one identifier and a thread may owe several replies:
+ * section 12.6 has a server hand the client id to a worker and keep
+ * receiving, section 12.2 lets any thread of the server answer, and the
+ * console holds a read with no line behind it and receives again. These
+ * count what that costs, and every one of them is taken at the place
+ * the thing happens rather than worked out from the others.
+ */
+
+/* The greatest number of clients any one thread owed at once. */
+uint32_t channel_owed_most;
+
+/*
+ * Rendezvous that wrote `t_client` over an identifier still naming a
+ * client this thread owed. The first client is not lost, because a
+ * reply is addressed by identifier and any thread of the server may
+ * send one, but nothing in the kernel names it any more.
+ */
+uint64_t channel_owed_overwrote;
+
+/*
+ * Receives that cleared `t_client` on the way into the block while the
+ * thread still owed somebody. That clear is how the wake tells a
+ * request from a pulse, so the record is not merely overwritten here,
+ * it is given to another purpose.
+ */
+uint64_t channel_owed_cleared;
+
+/*
+ * Replies this thread's record did not name. Section 12.2 says any
+ * thread of the server may send one and the identifier is what
+ * addresses it, so these are correct replies; they are the measure of
+ * how far the record is from the fact.
+ */
+uint64_t channel_owed_reply_unnamed;
+
+/*
+ * Threads taken off a channel's serving list while they still owed a
+ * client on it. `channel_free_if_idle` reads that list for whether
+ * anybody is standing in the channel, so each of these is a moment
+ * where a channel with a thread blocked on a reply looked idle.
+ */
+uint64_t channel_owed_left_serving;
+
+/*
+ * The count against a walk, the way M20 checked the channel holds. Done
+ * only where the count says more than one, which is rare, so the walk
+ * is not on the path every rendezvous takes.
+ */
+uint64_t channel_owed_walks;
+
+/*
+ * And the same list read the other way: a thread left on a channel's
+ * serving list owing nobody, because the reply came from another thread
+ * of the same server and `serving_end` runs on whoever replies. The
+ * channel then looks as though somebody is standing in it.
+ */
+uint64_t channel_owed_serving_stale;
+
+/*
+ * A client stops being owed. The three places `t_donee` goes back to
+ * NULL are the reply, a client giving up at its deadline, and a
+ * cancellation, and this is all three of them.
+ */
+static void
+owed_drop(struct thread *client)
+{
+    if (client->t_donee == NULL) {
+        return;
+    }
+    if (client->t_donee->t_owed > 0) {
+        client->t_donee->t_owed--;
+    }
+    client->t_donee = NULL;
+}
+
+/*
+ * And a client starts being owed, which is the rendezvous and nothing
+ * else.
+ *
+ * The walk is here rather than in a check because the state it reads is
+ * gone by the time any check of this boot could run: a thread owes two
+ * clients for as long as it takes to answer one of them.
+ */
+static void
+owed_take(struct thread *server, struct thread *client)
+{
+    client->t_donee = server;
+    server->t_owed++;
+
+    if (server->t_owed > channel_owed_most) {
+        channel_owed_most = server->t_owed;
+    }
+
+    if (server->t_owed > 1) {
+        struct pool *threads = thread_pool();
+        struct thread *t;
+        uint32_t seen = 0;
+        uint32_t i;
+
+        for (i = 0; i < pool_slots(threads); i++) {
+            t = pool_at(threads, i);
+            if (t != NULL && t->t_donee == server) {
+                seen++;
+            }
+        }
+        if (seen != server->t_owed) {
+            panic("channel: a thread owes %u and %u threads say so",
+              server->t_owed, seen);
+        }
+        channel_owed_walks++;
+    }
+}
+
 /* Whether a sender may describe this memory to this receiver. */
 static bool buf_may_deliver(struct proc *from, struct proc *to, uintptr_t va,
   size_t len);
@@ -822,10 +938,13 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
             md_intr_restore(s);
             return err;
         }
+        if (server->t_client != 0 && server->t_owed > 0) {
+            channel_owed_overwrote++;
+        }
         server->t_client = thread_id(self);
         server->t_cookie = cookie;
         server->t_donor = self;
-        self->t_donee = server;
+        owed_take(server, self);
         server->t_blocked_on = NULL;
         server->t_waitres = SYS_OK;
 
@@ -1004,7 +1123,7 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
             if (self->t_donee->t_donor == self) {
                 undonate(self->t_donee);
             }
-            self->t_donee = NULL;
+            owed_drop(self);
         }
 
         vm_charge_begin();
@@ -1210,10 +1329,13 @@ recv_inner(struct channel *ch, struct sys_msg *out,
         }
         if (client != NULL) {
             channel_rendezvous++;
+            if (self->t_client != 0 && self->t_owed > 0) {
+                channel_owed_overwrote++;
+            }
             self->t_client = thread_id(client);
             self->t_cookie = client->t_cookie;
             self->t_donor = client;
-            client->t_donee = self;
+            owed_take(self, client);
 
             serving_begin(ch, self);
             donate(self, client->t_prio);
@@ -1245,7 +1367,17 @@ recv_inner(struct channel *ch, struct sys_msg *out,
          * The client id is cleared first, because after the block it is
          * what says which kind of wake this was. A sender fills it in;
          * a pulse does not, and leaves it zero.
+         *
+         * Which is a second purpose for the field that already names
+         * the client this thread owes, and the two want different
+         * things of it: a thread holding a request and receiving again
+         * still owes that client, and the clear is counted so that the
+         * report says how often the record is given away rather than
+         * merely written over.
          */
+        if (self->t_owed > 0) {
+            channel_owed_cleared++;
+        }
         self->t_msg = &self->t_stage;
         self->t_client = 0;
         self->t_snext = ch->c_receivers;
@@ -1447,6 +1579,7 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
 {
     struct thread *self = thread_current();
     struct thread *client;
+    struct thread *received_by;
     intr_state_t s;
     sys_err_t err;
 
@@ -1476,6 +1609,17 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
 
         md_intr_restore(s);
         return SYS_ERR_STALE;
+    }
+
+    /*
+     * A reply this thread's record does not name, which section 12.2
+     * allows: the identifier addresses the reply and any thread of the
+     * server may send it. Counted because it is the measure of how far
+     * `t_client` is from what is actually owed, and every one of these
+     * is a reply that worked while the record pointed elsewhere.
+     */
+    if (self->t_client != peer) {
+        channel_owed_reply_unnamed++;
     }
 
     /*
@@ -1529,9 +1673,27 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
     if (self->t_donor == client) {
         undonate(self);
     }
-    client->t_donee = NULL;
+
+    /*
+     * Which thread received this request, before the record of it goes.
+     *
+     * `serving_end` takes this thread off a serving list, and this
+     * thread is not always the one that received: section 12.2 lets any
+     * thread of the server reply, and the console answers a held read
+     * from the thread that has the bytes. The thread that did receive
+     * is then left on the channel's list owing nobody, which is the
+     * same list read the other way round and is counted below.
+     */
+    received_by = client->t_donee;
+
+    owed_drop(client);
     serving_end(self);
     self->t_client = 0;
+
+    if (received_by != NULL && received_by != self &&
+      received_by->t_owed == 0 && received_by->t_serve_ch != NULL) {
+        channel_owed_serving_stale++;
+    }
 
     /*
      * The client is made runnable here and dispatched to below, which
@@ -1710,8 +1872,7 @@ channel_thread_release(struct thread *t, bool tell)
         if (t->t_donee->t_donor == t) {
             undonate(t->t_donee);
         }
-        t->t_donee = NULL;
-
+        owed_drop(t);
     }
 
     vm_charge_begin();
@@ -2221,6 +2382,19 @@ serving_end(struct thread *t)
 
     if (ch == NULL) {
         return;
+    }
+
+    /*
+     * Off the list while it still owes somebody on this channel.
+     *
+     * `channel_free_if_idle` reads this list for whether anybody is
+     * standing in the channel, and a thread that holds one request and
+     * replies to another leaves here with the held client still
+     * blocked on the reply and on none of the channel lists. Counted
+     * rather than fixed: what the list should hold is the next stage.
+     */
+    if (t->t_owed > 0) {
+        channel_owed_left_serving++;
     }
 
     for (link = &ch->c_serving; *link != NULL; link = &(*link)->t_serve_next) {
