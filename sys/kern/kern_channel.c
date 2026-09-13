@@ -1344,14 +1344,45 @@ recv_inner(struct channel *ch, struct sys_msg *out,
  * branch. By identifier for the reason the receive gives: a send
  * blocks, and what it comes back to may not be the channel it left.
  */
+/*
+ * The kernel lock around a call that came from a kernel thread.
+ *
+ * Every entry from user mode arrives on a vector that takes the lock
+ * on the way in and drops it on the way out, so the body below runs
+ * under it. A kernel thread calling the same thing holds nothing,
+ * and until M21 stage six's review that is how the boot's checks
+ * made these calls: the same operations with the exclusion missing.
+ *
+ * What it costs is a lost wake. A call that means to block reads the
+ * state, finds it not ready, and puts the thread on a list; the core
+ * that makes it ready writes the state and walks that list. The two
+ * interleave in one order that leaves a thread on a list nobody will
+ * look at again, and the deadline is the only thing that ends it.
+ *
+ * Taken here rather than at each call site, because the rule is
+ * about what a call is and not about who happened to make it.
+ */
+
 sys_err_t
 channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
   struct sys_msg *reply, uint64_t deadline)
 {
     sys_id_t id = ch->c_id;
-    sys_err_t err = send_inner(ch, cookie, req, reply, deadline);
+    intr_state_t s = 0;
+    bool held = klock_held();
+    sys_err_t err;
+
+    if (!held) {
+        s = klock_enter();
+    }
+
+    err = send_inner(ch, cookie, req, reply, deadline);
 
     channel_maybe_free(pool_lookup(channel_pool(), id));
+
+    if (!held) {
+        klock_exit(s);
+    }
 
     return err;
 }
@@ -1385,9 +1416,21 @@ channel_recv(struct channel *ch, struct sys_msg *out,
   sys_thread_id_t *out_peer, uint64_t *out_cookie)
 {
     sys_id_t id = ch->c_id;
-    sys_err_t err = recv_inner(ch, out, out_peer, out_cookie);
+    intr_state_t s = 0;
+    bool held = klock_held();
+    sys_err_t err;
+
+    if (!held) {
+        s = klock_enter();
+    }
+
+    err = recv_inner(ch, out, out_peer, out_cookie);
 
     channel_maybe_free(pool_lookup(channel_pool(), id));
+
+    if (!held) {
+        klock_exit(s);
+    }
 
     return err;
 }
@@ -1556,11 +1599,25 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
 sys_err_t
 channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
 {
-    const struct channel *was = thread_current()->t_serve_ch;
-    sys_id_t id = was != NULL ? was->c_id : SYS_ID_INVALID;
-    sys_err_t err = reply_inner(peer, reply);
+    const struct channel *was;
+    intr_state_t s = 0;
+    bool held = klock_held();
+    sys_id_t id;
+    sys_err_t err;
+
+    if (!held) {
+        s = klock_enter();
+    }
+
+    was = thread_current()->t_serve_ch;
+    id = was != NULL ? was->c_id : SYS_ID_INVALID;
+    err = reply_inner(peer, reply);
 
     channel_maybe_free(pool_lookup(channel_pool(), id));
+
+    if (!held) {
+        klock_exit(s);
+    }
 
     return err;
 }

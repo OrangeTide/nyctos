@@ -13660,6 +13660,49 @@ a hundred and fifty runs of the paced session on aarch64 at Tier 0,
 in three different shapes. With the three fixes in, seventy runs and
 none. The rate is the host's and the shapes are the kernel's.
 
+**And a sweep for more of the same three.** Each of the three had a
+shape rather than a location, so the rest of the system was read for
+the shape.
+
+*A trap path that saves what it does not put back.* One instance, the
+one that was found. The riscv64 port routes every `sret` through one
+restore and says why in a comment; the aarch64 port's other three
+handlers all restore, and one of them carries the same warning about
+a handler that switches. Neither port saves floating-point state and
+neither needs to: everything is built `-mgeneral-regs-only`. The
+per-core register is written once at boot on both ports and is not
+reachable from user mode.
+
+*An entry made without the kernel lock.* The harness was one caller;
+the calls under it were more. `channel_send`, `channel_recv`,
+`channel_reply`, `timeline_wait`, `thread_cancel` and `proc_kill`
+each read a state another core owns and then join or walk a list, and
+each was reached from the boot's kernel threads with interrupts off
+and nothing else. They take the lock themselves now when it is not
+already held, which costs an entry from user mode nothing and makes
+a kernel thread's call the same kind of thing as an entry.
+
+Only the first of those was measured failing, as the join that timed
+out. The others are the same read-then-join against the same
+writer, and that is written here as an argument rather than as a
+measurement. One of them closes something already written down: M21
+stage two's review recorded that a kill written by a kernel thread
+was ordered against the trampoline's reading by nothing, and left it
+open because only the reading side had been fixed. `proc_kill` takes
+the lock now, which is the writing side.
+
+The pools are not in this list and do not need to be: they have a
+lock of their own, which is why an allocation from a kernel thread
+was never the problem.
+
+*A number that is a constant wearing a measurement's clothes.* The
+boot prints a hundred and seventy four of these lines. The ones that
+print a constant print the experiment's own parameters, which is what
+they are for: how many cycles were spent, how many slots the pool
+has, how many departures were made. The counters behind the rest are
+incremented where something was observed rather than once a round.
+The one that was not is the one this review started with.
+
 **7. What it cost, and section 10.5 written to it.** *Planned.*
 
 - *Check.* The figures as counts: kills that reached a thread that had

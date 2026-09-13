@@ -595,12 +595,11 @@ exit_before_user(uint64_t *which)
      * the lock is an acquire against the release that put it down,
      * so the two are ordered instead of racing.
      *
-     * Which pairs with a kill that was written inside the kernel,
-     * and that is every kill a program makes. `proc_kill` can also
-     * be called from a kernel thread, which holds nothing but
-     * interrupts off, and against that caller this is ordered by
-     * nothing. That is the same residue M20 stage three recorded for
-     * the same reason and it is not closed here.
+     * Which pairs with every kill there is. A kill a program makes
+     * is written inside an entry, under this lock. A kill a kernel
+     * thread makes held nothing but interrupts off, and against that
+     * caller this reading was ordered by nothing; `proc_kill` takes
+     * the lock itself now, which is the other half of this.
      */
     held = klock_held();
     if (!held) {
@@ -1988,8 +1987,32 @@ sys_err_t
 proc_kill(struct proc *p, int32_t code)
 {
     struct thread *t;
+    bool held = klock_held();
+    intr_state_t s = 0;
+
+    /*
+     * Under the kernel lock, which an entry from user mode already
+     * holds and a kernel thread does not.
+     *
+     * Two things need it. The mark below is read by the trampolines
+     * and at every entry boundary, all of them under this lock, and
+     * a write outside it is ordered against those readings by
+     * nothing. And the walk decides, per thread, whether to poke the
+     * core it is running on, which is a question about a state
+     * another core owns.
+     *
+     * M21 stage two's review recorded this as the residue left for a
+     * caller that is a kernel thread and closed it for the reading
+     * side only. This is the writing side.
+     */
+    if (!held) {
+        s = klock_enter();
+    }
 
     if (p->p_exited || p->p_nthreads == 0) {
+        if (!held) {
+            klock_exit(s);
+        }
         return SYS_ERR_WOULDBLOCK;
     }
 
@@ -2063,6 +2086,10 @@ proc_kill(struct proc *p, int32_t code)
     }
 
     sched_undefer();
+
+    if (!held) {
+        klock_exit(s);
+    }
 
     return SYS_OK;
 }

@@ -666,10 +666,27 @@ thread_park_if_dead(struct thread *t)
 sys_err_t
 thread_cancel(struct thread *t)
 {
-    intr_state_t s = md_intr_disable();
+    bool held = klock_held();
+    intr_state_t k = 0;
+    intr_state_t s;
+
+    /*
+     * Under the kernel lock, which an entry from user mode already
+     * holds and a kernel thread does not. What this asks and then
+     * changes is a state another core owns and the lists that go
+     * with it, and interrupts off is exclusion against this core
+     * only.
+     */
+    if (!held) {
+        k = klock_enter();
+    }
+    s = md_intr_disable();
 
     if (t->t_state != THREAD_BLOCKED) {
         md_intr_restore(s);
+        if (!held) {
+            klock_exit(k);
+        }
         return SYS_ERR_WOULDBLOCK;
     }
 
@@ -720,6 +737,9 @@ thread_cancel(struct thread *t)
 
     sched_undefer();
     md_intr_restore(s);
+    if (!held) {
+        klock_exit(k);
+    }
 
     return SYS_OK;
 }

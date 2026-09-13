@@ -14,6 +14,7 @@
  */
 
 #include <sys/intr.h>
+#include <sys/lock.h>
 #include <sys/object.h>
 #include <sys/sched.h>
 #include <sys/systm.h>
@@ -124,7 +125,25 @@ sys_err_t
 timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
 {
     struct thread *self = thread_current();
-    intr_state_t s = md_intr_disable();
+    bool held = klock_held();
+    intr_state_t k = 0;
+    intr_state_t s;
+
+    /*
+     * Under the kernel lock, which an entry from user mode already
+     * holds and a kernel thread does not. Everything below reads the
+     * value, decides to wait on it, and joins the waiter list, and
+     * the advance on another core writes the value and walks that
+     * list. Without one exclusion over both halves the two interleave
+     * in the order that leaves this thread on a list nobody is going
+     * to look at again, and the deadline is the only thing that ends
+     * it. Measured in M21 stage six's review as a join that timed out
+     * on a process that had already exited.
+     */
+    if (!held) {
+        k = klock_enter();
+    }
+    s = md_intr_disable();
 
     /*
      * A value that was reached stays reached, so this is checked before the
@@ -135,10 +154,16 @@ timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
      */
     if (tl->tl_value >= value) {
         md_intr_restore(s);
+        if (!held) {
+            klock_exit(k);
+        }
         return SYS_OK;
     }
     if (tl->tl_error) {
         md_intr_restore(s);
+        if (!held) {
+            klock_exit(k);
+        }
         return SYS_ERR_OWNER_DEAD;
     }
 
@@ -148,6 +173,9 @@ timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
      */
     if (deadline <= time_now()) {
         md_intr_restore(s);
+        if (!held) {
+            klock_exit(k);
+        }
         return SYS_ERR_TIMEOUT;
     }
 
@@ -185,6 +213,9 @@ timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
     (void)timeline_unwait(tl, self);
 
     md_intr_restore(s);
+    if (!held) {
+        klock_exit(k);
+    }
 
     if (self->t_blocked_on != NULL) {
         panic("timeline %s: woke a thread still marked blocked", tl->tl_name);
