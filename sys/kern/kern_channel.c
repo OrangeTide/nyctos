@@ -388,10 +388,41 @@ owed_drop(struct thread *client)
     if (client->t_donee == NULL) {
         return;
     }
-    if (client->t_donee->t_owed > 0) {
-        client->t_donee->t_owed--;
+    /*
+     * Panics rather than refusing to go below zero. A guard there
+     * turns a count that has gone wrong into one that reads as though
+     * it had not, which is the failure the walk exists to catch: a
+     * thread owing fewer than the clients pointing at it would show up
+     * as a channel that is free to go with somebody still in it.
+     */
+    if (client->t_donee->t_owed == 0) {
+        panic("channel: %s stops being owed by %s, which owes nothing",
+          client->t_name, client->t_donee->t_name);
     }
+    client->t_donee->t_owed--;
     client->t_donee = NULL;
+}
+
+/*
+ * Whether the identifier a thread records still names a client it owes.
+ *
+ * Not the same as the thread owing somebody. A record can name a client
+ * that gave up at its deadline while the thread owes a different one,
+ * and counting that as an identifier written over a live debt would be
+ * a number in the compared report meaning something looser than it
+ * says. The lookup is a bounds check and a generation compare.
+ */
+static bool
+owed_record_live(const struct thread *server)
+{
+    struct thread *named;
+
+    if (server->t_client == 0) {
+        return false;
+    }
+    named = thread_by_id(server->t_client);
+
+    return named != NULL && named->t_donee == server;
 }
 
 /*
@@ -938,7 +969,7 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
             md_intr_restore(s);
             return err;
         }
-        if (server->t_client != 0 && server->t_owed > 0) {
+        if (owed_record_live(server)) {
             channel_owed_overwrote++;
         }
         server->t_client = thread_id(self);
@@ -1329,7 +1360,7 @@ recv_inner(struct channel *ch, struct sys_msg *out,
         }
         if (client != NULL) {
             channel_rendezvous++;
-            if (self->t_client != 0 && self->t_owed > 0) {
+            if (owed_record_live(self)) {
                 channel_owed_overwrote++;
             }
             self->t_client = thread_id(client);

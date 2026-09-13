@@ -14028,15 +14028,16 @@ compared report at each tier:
   a record that holds one: 1 written over, 2 off a serving list still owing
 ```
 
-and four numbers above the line, because each of them moves with when
-console input arrives:
+and a block above the line, where the first four move with when console
+input arrives and the last is the walk the review added:
 
 ```
 what a server thread owes, against what it records
-    held a request and went back to receive 19
+    held a request and blocked receiving   19
     replies its record did not name        16
-    left on a serving list by another reply 16
+    left on a serving list by a reply      16
     on a serving list at the end           5, 2 of them owing nobody
+    every count against a walk of clients  19 threads, all agreeing
 ```
 
 **The case is not the console's, which is what the plan assumed.** The
@@ -14084,12 +14085,11 @@ rather than the kernel. Only the count of threads that held a request
 and went back to receive is above zero in both, and it is the only one
 of the four that is asserted.
 
-**The count is checked against a walk, once.** Where the count passes
-one, every thread is walked and those pointing at this server are
-counted, and a disagreement panics. That happens once in a boot, so what
-the walk has established is that the count was right at the one moment
-it mattered, which is worth less than M20's four walks and is recorded
-as that.
+**The count is checked against a walk.** Where the count passes one,
+every thread is walked and those pointing at this server are counted,
+and a disagreement panics. That happens once in a boot, which is worth
+less than M20's four walks; the review is what widened it to every
+thread at the end of the boot as well.
 
 **Falsified six ways.** Not decrementing the count when a client stops
 being owed fired the walk, `a thread owes 2 and 1 threads say so`. Not
@@ -14108,6 +14108,60 @@ the walk behind a test that is true once in a boot. The best round trip
 was 445 to 591 ticks over three runs before and 451 to 696 after, which
 is inside the spread of the host and says the store is not separable
 from it.
+
+**What the review found: the walk read every thread with nothing
+held.** It runs on the boot thread after the session, and the session
+does not take everything with it. The console and `wedged` are still
+there, and at Tier 2 the other core can be inside a rendezvous writing
+the two fields being read. Confirmed rather than argued: an assertion
+that the kernel lock was held fired at Tier 2. That is M20 stage
+three's review finding arriving again about a different walk, and the
+fix is the same one, take the lock where this core does not already
+hold it and turn interrupts off inside it.
+
+**And the count was checked at one moment, for one thread.** The walk
+inside the rendezvous runs where the count passes one, which happens
+once in a boot. It says nothing about the other thirty-one slots and
+nothing about the nineteen times a thread owed exactly one. Every
+thread's count is now checked against the clients pointing at it at the
+end of the boot as well, 19 threads in a paced run and 20 in a burst
+one, all agreeing. Falsified by adding one to a single thread's tally,
+which fired `owed: console owes 0 and 1 threads say so`.
+
+**A guard that turned a wrong count into a plausible one.** The
+decrement refused to go below zero, which is exactly the failure the
+walk exists to catch, hidden at the site where it would first be
+visible: a thread owing fewer than the clients pointing at it is a
+channel that reads as free to go with somebody still standing in it. It
+panics now, and the panic fires in none of the eight runs. Falsified by
+dropping twice, which fired `channel: lastborn stops being owed by
+boot, which owes nothing`.
+
+**A number in the compared report that meant something looser than it
+said.** The overwrite test was that the record is not empty and the
+thread owes somebody, and those two being true does not make the
+recorded identifier one of the clients owed: a record can name a client
+that gave up at its deadline while the thread owes a different one. It
+is a lookup and a test of the named client's own record now.
+
+Reasoned rather than measured, and written down as that: the loose test
+gives the same 1 in this boot, because nothing here has two outstanding
+clients and one of them giving up. What it cost is nothing the host can
+separate, with the best round trip at 442 to 471 ticks over three runs
+against 445 to 591 before the stage.
+
+**And the interpretation of the two that left a serving list was
+checked rather than asserted.** Both of them left the list empty behind
+them, `stale-wait` on the `stale` channel and `echoes` on its own,
+which is what makes `channel_free_if_idle` able to answer its question
+with the wrong answer. Measured at the site rather than inferred from
+the count.
+
+*Left for stage six.* A server that exits owing more than one releases
+only the client its record names. The others keep `t_donee` pointing at
+a thread that is about to be freed, and the count on that thread is
+left standing. Nothing in this boot reaches it: a drop whose thread had
+already died or gone was counted and is zero in all eight runs.
 
 **2. The set of clients a thread owes.** *Planned.*
 

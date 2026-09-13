@@ -16742,30 +16742,89 @@ owed_checks(void)
     struct pool *threads = thread_pool();
     uint32_t standing = 0;
     uint32_t phantom = 0;
+    uint32_t checked = 0;
+    intr_state_t ks = 0;
+    intr_state_t s;
+    bool held;
     uint32_t i;
+    uint32_t j;
+
+    /*
+     * Under the kernel's exclusion, and with interrupts off inside it.
+     *
+     * This runs on the boot thread after the session, and the session
+     * does not take everything with it: the console and `wedged` are
+     * still there, and at Tier 2 the other core can be inside a
+     * rendezvous writing the two fields this reads. M20 stage three's
+     * review found the same thing about the walk that checks channel
+     * holds, and this is that finding arriving again rather than a new
+     * one.
+     */
+    held = klock_held();
+    if (!held) {
+        ks = klock_enter();
+    }
+    s = md_intr_disable();
 
     for (i = 0; i < pool_slots(threads); i++) {
         struct thread *t = pool_at(threads, i);
+        uint32_t seen = 0;
 
-        if (t != NULL && t->t_serve_ch != NULL) {
+        if (t == NULL) {
+            continue;
+        }
+
+        if (t->t_serve_ch != NULL) {
             standing++;
             if (t->t_owed == 0) {
                 phantom++;
             }
         }
+
+        /*
+         * And every thread's count against the clients pointing at it,
+         * not only the one that owed two.
+         *
+         * The walk inside the rendezvous runs where the count passes
+         * one, which is once in this boot and says nothing about the
+         * other thirty-one slots. This is the same question asked of
+         * all of them at a moment when the answer should be settled,
+         * and what it would catch is a count left behind: a thread that
+         * still owes somebody who has gone, or a client still pointing
+         * at a thread that has stopped counting it.
+         */
+        for (j = 0; j < pool_slots(threads); j++) {
+            struct thread *c = pool_at(threads, j);
+
+            if (c != NULL && c->t_donee == t) {
+                seen++;
+            }
+        }
+        if (seen != t->t_owed) {
+            panic("owed: %s owes %u and %u threads say so", t->t_name,
+              (unsigned int)t->t_owed, (unsigned int)seen);
+        }
+        checked++;
+    }
+
+    md_intr_restore(s);
+    if (!held) {
+        klock_exit(ks);
     }
 
     cnputs("what a server thread owes, against what it records\n");
-    cnprintf("    %-38s %lu\n", "held a request and went back to receive",
+    cnprintf("    %-38s %lu\n", "held a request and blocked receiving",
       (unsigned long)channel_owed_cleared);
     cnprintf("    %-38s %lu\n", "replies its record did not name",
       (unsigned long)channel_owed_reply_unnamed);
     cnprintf("    %-38s %lu\n",
-      "left on a serving list by another reply",
+      "left on a serving list by a reply",
       (unsigned long)channel_owed_serving_stale);
     cnprintf("    %-38s %u, %u of them owing nobody\n",
       "on a serving list at the end", (unsigned int)standing,
       (unsigned int)phantom);
+    cnprintf("    %-38s %u threads, all agreeing\n",
+      "every count against a walk of clients", (unsigned int)checked);
 
     /*
      * Asserted above zero rather than at a value, because it counts
@@ -16775,7 +16834,15 @@ owed_checks(void)
      * receive is a boot this milestone has nothing to say about.
      */
     if (channel_owed_cleared == 0) {
-        panic("owed: no thread held a request and went back to receive");
+        panic("owed: no thread held a request and blocked receiving");
+    }
+
+    /*
+     * And the walk ran over something. A pool that reported no live
+     * threads would agree with every count it did not make.
+     */
+    if (checked == 0) {
+        panic("owed: the walk found no threads to check");
     }
 
     /*
