@@ -1199,11 +1199,6 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
 - Nothing acts on the difference between the two errors a lost server
   produces. `SYS_ERR_STALE` says the server can be asked again and
   `SYS_ERR_OWNER_DEAD` says it cannot; no client here retries.
-- A channel held by a connection kept for reaping is never collected. A
-  server that dies with uncollected connections leaves a channel those
-  connections hold, and nothing will ever let go of it. The end-of-boot
-  assertions do not see it, because the channel still has a holder and
-  its slot counts as reachable; it shows only as a slot still in use.
 - A process that creates a thread and keeps the handle can never be
   reaped. The handle references the thread, an unreaped thread
   references its process, and a process closes its own handle table only
