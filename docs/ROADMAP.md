@@ -14163,7 +14163,7 @@ a thread that is about to be freed, and the count on that thread is
 left standing. Nothing in this boot reaches it: a drop whose thread had
 already died or gone was counted and is zero in all eight runs.
 
-**2. The set of clients a thread owes.** *Planned.*
+**2. The set of clients a thread owes.** *Built.*
 
 - *Check.* A server thread that owes two clients names both, and the
   count from stage one agrees with a walk. The set is a list threaded
@@ -14179,6 +14179,84 @@ already died or gone was counted and is zero in all eight runs.
 - *Watch for.* The rendezvous path is the hottest in the kernel and
   this adds a store to it. The cost is measured against M20's figure
   for the same path.
+
+**What it settled.** A thread names every client it owes. A third line
+in the compared report at each tier:
+
+```
+  and a set that holds them all: 1 the record lost and the set kept
+```
+
+and two more above it, where the walk is new and the count of blocks is
+the host's:
+
+```
+    count, list and walk at the end        19 threads, all agreeing
+    the set kept what a block gave away    19 of 19
+```
+
+**`t_client` did not become the head of the list, which is what the
+plan said it would.** The field has a second job the plan did not
+account for: after a receive that blocked, it is what says which kind
+of wake this was, a sender having filled it in and a pulse having left
+it zero. A thread that holds a request and blocks has a list that is
+not empty and may still be woken by a pulse, so "is the list empty" is
+not the question that field was answering. The two are separated
+instead. `t_client` is the client of the receive that has just
+completed, the list is what is owed, and the header says which is
+which.
+
+**The set needs no pool and no bound of its own.** A client waiting for
+a reply is blocked and is its own record, which is section 12's
+principle that the blocked sender is the queue slot. One link on each
+thread covers every server in the machine, because a thread is on at
+most one of these lists at a time, and the longest list is bounded by
+the thread pool.
+
+**Three records of the same fact, each able to catch the others.**
+`t_owed` is the count, the list is the members, and every thread's
+`t_donee` is the same claim made from the other side. The rendezvous
+checks all three where the count passes one. The walk at the end of the
+boot checks all three for every thread, 19 of them in a paced run and
+20 in a burst one, and has never disagreed.
+
+**The turn-over is measured rather than true by construction.** Stage
+one counted one identifier written over a debt the thread still had.
+The set is now searched for that client at that moment and finds it,
+and the two numbers are asserted equal. They are taken in different
+ways at the same place: one tests the record and finds it names a
+client this thread will not name again, the other walks the list of
+clients and finds that client on it.
+
+**And the other way the record goes is asserted as an equality.**
+Nineteen receives give the field away at a block, and the set still
+names every one of them. Above zero would hold in the paced run and
+fail in the burst one, where the number is three; the equality holds in
+both, which is what makes it the assertion worth writing.
+
+**A walk that did not come back, found by falsifying the drop.**
+Removing the unlink from the drop did not fail a check, it hung the
+boot at M21 stage five's check, because the list then contained a
+thread twice and the length walk followed it for ever. That is M20
+stage two's finding arriving in code written two milestones later, and
+what M20 wrote down is the fix: both walks are bounded by the thread
+pool now, and the same falsification says `the list of boot does not
+end`.
+
+**Falsified seven ways.** Not linking on the second take, `a thread
+owes 2 and its list holds 1`. Not searching the set at an overwrite, `1
+records written over and 0 of them kept`. Not asking the set at a
+block, `19 records given away at a block, 0 kept`. Taking a client that
+is already owed, `client-hi is taken by server and already owed by
+server`. A client on a list that does not point back, `inv-a is on the
+list of inv-b and owed by nobody`. Not counting the list at the end,
+`inv-b owes 1 and its list holds 0`. And the unlink above.
+
+**What it cost.** 902 bytes of text and 528 of bss, which is two
+pointers on each of thirty-two threads and the counters. The best round
+trip was 460 to 675 ticks over three runs against 442 to 471 before,
+inside a spread this host has shown from 442 to 696 across the
+milestone so far.
 
 **3. The donation is what a thread still owes, not what it last took.**
 *Planned.*

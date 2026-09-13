@@ -16768,6 +16768,8 @@ owed_checks(void)
 
     for (i = 0; i < pool_slots(threads); i++) {
         struct thread *t = pool_at(threads, i);
+        struct thread *c;
+        uint32_t listed;
         uint32_t seen = 0;
 
         if (t == NULL) {
@@ -16804,6 +16806,29 @@ owed_checks(void)
             panic("owed: %s owes %u and %u threads say so", t->t_name,
               (unsigned int)t->t_owed, (unsigned int)seen);
         }
+
+        /*
+         * And the list against both of them. A walk of every `t_donee`
+         * says how many clients point here; the list says which ones,
+         * and a set that agrees on the number while holding the wrong
+         * threads is the failure a count alone cannot see.
+         */
+        listed = 0;
+        for (c = t->t_owed_head; c != NULL; c = c->t_owed_next) {
+            if (c->t_donee != t) {
+                panic("owed: %s is on the list of %s and owed by %s",
+                  c->t_name, t->t_name,
+                  c->t_donee == NULL ? "nobody" : c->t_donee->t_name);
+            }
+            listed++;
+            if (listed > pool_slots(threads)) {
+                panic("owed: the list of %s does not end", t->t_name);
+            }
+        }
+        if (listed != t->t_owed) {
+            panic("owed: %s owes %u and its list holds %u", t->t_name,
+              (unsigned int)t->t_owed, (unsigned int)listed);
+        }
         checked++;
     }
 
@@ -16824,7 +16849,11 @@ owed_checks(void)
       "on a serving list at the end", (unsigned int)standing,
       (unsigned int)phantom);
     cnprintf("    %-38s %u threads, all agreeing\n",
-      "every count against a walk of clients", (unsigned int)checked);
+      "count, list and walk at the end", (unsigned int)checked);
+    cnprintf("    %-38s %lu of %lu\n",
+      "the set kept what a block gave away",
+      (unsigned long)channel_owed_cleared_kept,
+      (unsigned long)channel_owed_cleared);
 
     /*
      * Asserted above zero rather than at a value, because it counts
@@ -16843,6 +16872,20 @@ owed_checks(void)
      */
     if (checked == 0) {
         panic("owed: the walk found no threads to check");
+    }
+
+    /*
+     * And the other way the record goes. A receive that blocks gives
+     * the field to saying which kind of wake this was, and the client
+     * it named is still owed; the set is what still names it. Asserted
+     * as an equality rather than above zero, because the equality holds
+     * in both the paced run and the burst one while the count itself
+     * does not.
+     */
+    if (channel_owed_cleared_kept != channel_owed_cleared) {
+        panic("owed: %lu records given away at a block, %lu kept",
+          (unsigned long)channel_owed_cleared,
+          (unsigned long)channel_owed_cleared_kept);
     }
 
     /*
@@ -17730,6 +17773,8 @@ kernel_main(void)
       "serving list still owing\n",
       (unsigned long)channel_owed_overwrote,
       (unsigned long)channel_owed_left_serving);
+    cnprintf("  and a set that holds them all: %lu the record lost and "
+      "the set kept\n", (unsigned long)channel_owed_kept);
 
     if (channel_owed_most <= 1) {
         panic("owed: no thread ever owed more than one reply");
@@ -17742,6 +17787,22 @@ kernel_main(void)
     }
     if (channel_owed_left_serving == 0) {
         panic("owed: no thread left a serving list still owing");
+    }
+
+    /*
+     * And every identifier the record lost was still named by the set,
+     * which is stage one's assertion turned over.
+     *
+     * The two are counted in different ways at the same place. One
+     * tests the record and finds that it names a client this thread no
+     * longer will; the other searches the list of clients for that
+     * thread and finds it there. Equal says nothing went missing
+     * between the record being written over and the set being asked.
+     */
+    if (channel_owed_kept != channel_owed_overwrote) {
+        panic("owed: %lu records written over and %lu of them kept",
+          (unsigned long)channel_owed_overwrote,
+          (unsigned long)channel_owed_kept);
     }
 
 

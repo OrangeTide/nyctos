@@ -270,7 +270,17 @@ struct thread {
 
     struct sys_msg     *t_msg;          /* the request being carried */
     struct sys_msg     *t_reply;        /* where the reply is to be written */
-    sys_thread_id_t     t_client;       /* the client this thread owes */
+    /*
+     * The client of the receive that has just completed on this
+     * thread, and not the record of what it owes.
+     *
+     * The two were one field until M22 stage two. This one is read
+     * after a block to say which kind of wake it was, a sender having
+     * filled it in and a pulse having left it zero, and it is what a
+     * receive hands back as the peer. What is owed is the list below,
+     * because a thread can owe several and this names one.
+     */
+    sys_thread_id_t     t_client;
 
     /*
      * How many clients this thread owes a reply to, which `t_client`
@@ -289,6 +299,23 @@ struct thread {
      * `t_donee` goes back to NULL.
      */
     uint32_t            t_owed;
+
+    /*
+     * And the clients themselves, newest first.
+     *
+     * No pool and no bound of its own: a client waiting for a reply is
+     * blocked and is its own record, which is section 12's principle
+     * that the blocked sender is the queue slot. A thread is on at most
+     * one of these lists at a time, so one link per thread is enough
+     * for every server in the machine, and the length of the longest
+     * is bounded by the thread pool.
+     *
+     * `t_owed` is the length of this list and is kept beside it rather
+     * than derived from it, so that the two can be checked against each
+     * other and against a walk of every thread's `t_donee`.
+     */
+    struct thread      *t_owed_head;
+    struct thread      *t_owed_next;
     struct thread      *t_donor;        /* who raised this thread priority */
 
     /*

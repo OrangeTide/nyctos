@@ -378,16 +378,85 @@ uint64_t channel_owed_walks;
 uint64_t channel_owed_serving_stale;
 
 /*
+ * Clients the record stopped naming and the set still named, counted
+ * by searching the set for them at the moment the record went.
+ *
+ * Two ways the record goes and so two counts. One is a rendezvous
+ * writing `t_client` over an identifier still owed; the other is a
+ * receive clearing it on the way into the block, where what it becomes
+ * is the answer to which kind of wake this was. The second moves with
+ * when console input arrives and is reported above the line.
+ */
+uint64_t channel_owed_kept;
+uint64_t channel_owed_cleared_kept;
+
+/*
  * A client stops being owed. The three places `t_donee` goes back to
  * NULL are the reply, a client giving up at its deadline, and a
  * cancellation, and this is all three of them.
  */
+/*
+ * How long a server's list of clients is, bounded by the thread pool.
+ *
+ * Bounded because M20 stage two spent a boot on a list that pointed at
+ * itself and a walk that did not come back, and the lesson written down
+ * there is that a diagnostic which hangs is worse than one that says
+ * what it found. A client is on at most one of these lists, so a list
+ * longer than the pool has threads is a cycle.
+ */
+static uint32_t
+owed_list_len(const struct thread *server)
+{
+    const struct thread *t;
+    uint32_t cap = pool_slots(thread_pool());
+    uint32_t n = 0;
+
+    for (t = server->t_owed_head; t != NULL; t = t->t_owed_next) {
+        if (++n > cap) {
+            panic("channel: the list of %s does not end",
+              server->t_name);
+        }
+    }
+
+    return n;
+}
+
+/* Whether this client is on the list of the server it points at. */
+static bool
+owed_listed(const struct thread *client)
+{
+    const struct thread *t;
+    uint32_t cap = pool_slots(thread_pool());
+    uint32_t n = 0;
+
+    if (client->t_donee == NULL) {
+        return false;
+    }
+    for (t = client->t_donee->t_owed_head; t != NULL;
+      t = t->t_owed_next) {
+        if (t == client) {
+            return true;
+        }
+        if (++n > cap) {
+            panic("channel: the list of %s does not end",
+              client->t_donee->t_name);
+        }
+    }
+
+    return false;
+}
+
 static void
 owed_drop(struct thread *client)
 {
+    struct thread **link;
+    struct thread *server;
+    uint32_t steps;
+
     if (client->t_donee == NULL) {
         return;
     }
+    server = client->t_donee;
     /*
      * Panics rather than refusing to go below zero. A guard there
      * turns a count that has gone wrong into one that reads as though
@@ -395,34 +464,61 @@ owed_drop(struct thread *client)
      * thread owing fewer than the clients pointing at it would show up
      * as a channel that is free to go with somebody still in it.
      */
-    if (client->t_donee->t_owed == 0) {
+    if (server->t_owed == 0) {
         panic("channel: %s stops being owed by %s, which owes nothing",
-          client->t_name, client->t_donee->t_name);
+          client->t_name, server->t_name);
     }
-    client->t_donee->t_owed--;
+
+    /*
+     * Off the list, and it has to be on it. The count and the list are
+     * kept beside each other so that either can catch the other going
+     * wrong, and a client the list does not hold is a count that is
+     * right about a set that is not.
+     */
+    steps = pool_slots(thread_pool());
+    for (link = &server->t_owed_head; *link != client;
+      link = &(*link)->t_owed_next) {
+        if (*link == NULL) {
+            panic("channel: %s is owed by %s and not on its list",
+              client->t_name, server->t_name);
+        }
+        if (steps-- == 0) {
+            panic("channel: the list of %s does not end", server->t_name);
+        }
+    }
+    *link = client->t_owed_next;
+
+    server->t_owed--;
+    client->t_owed_next = NULL;
     client->t_donee = NULL;
 }
 
 /*
- * Whether the identifier a thread records still names a client it owes.
+ * The client a thread's record names, if that client is still one it
+ * owes, and NULL otherwise.
  *
- * Not the same as the thread owing somebody. A record can name a client
- * that gave up at its deadline while the thread owes a different one,
- * and counting that as an identifier written over a live debt would be
- * a number in the compared report meaning something looser than it
- * says. The lookup is a bounds check and a generation compare.
+ * Naming somebody is not the same as owing them. A record can name a
+ * client that gave up at its deadline while the thread owes a different
+ * one, and counting that as an identifier written over a live debt
+ * would be a number in the compared report meaning something looser
+ * than it says. The lookup is a bounds check and a generation compare,
+ * and it is done once so that what follows has the thread rather than
+ * the identifier.
  */
-static bool
-owed_record_live(const struct thread *server)
+static struct thread *
+owed_record_client(const struct thread *server)
 {
     struct thread *named;
 
     if (server->t_client == 0) {
-        return false;
+        return NULL;
     }
     named = thread_by_id(server->t_client);
+    if (named == NULL || named->t_donee != server) {
+        return NULL;
+    }
 
-    return named != NULL && named->t_donee == server;
+    return named;
 }
 
 /*
@@ -436,7 +532,14 @@ owed_record_live(const struct thread *server)
 static void
 owed_take(struct thread *server, struct thread *client)
 {
+    if (client->t_donee != NULL) {
+        panic("channel: %s is taken by %s and already owed by %s",
+          client->t_name, server->t_name, client->t_donee->t_name);
+    }
+
     client->t_donee = server;
+    client->t_owed_next = server->t_owed_head;
+    server->t_owed_head = client;
     server->t_owed++;
 
     if (server->t_owed > channel_owed_most) {
@@ -458,6 +561,10 @@ owed_take(struct thread *server, struct thread *client)
         if (seen != server->t_owed) {
             panic("channel: a thread owes %u and %u threads say so",
               server->t_owed, seen);
+        }
+        if (owed_list_len(server) != server->t_owed) {
+            panic("channel: a thread owes %u and its list holds %u",
+              server->t_owed, owed_list_len(server));
         }
         channel_owed_walks++;
     }
@@ -969,8 +1076,13 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
             md_intr_restore(s);
             return err;
         }
-        if (owed_record_live(server)) {
+        struct thread *lost = owed_record_client(server);
+
+        if (lost != NULL) {
             channel_owed_overwrote++;
+            if (owed_listed(lost)) {
+                channel_owed_kept++;
+            }
         }
         server->t_client = thread_id(self);
         server->t_cookie = cookie;
@@ -1360,8 +1472,13 @@ recv_inner(struct channel *ch, struct sys_msg *out,
         }
         if (client != NULL) {
             channel_rendezvous++;
-            if (owed_record_live(self)) {
+            struct thread *lost = owed_record_client(self);
+
+            if (lost != NULL) {
                 channel_owed_overwrote++;
+                if (owed_listed(lost)) {
+                    channel_owed_kept++;
+                }
             }
             self->t_client = thread_id(client);
             self->t_cookie = client->t_cookie;
@@ -1407,7 +1524,12 @@ recv_inner(struct channel *ch, struct sys_msg *out,
          * merely written over.
          */
         if (self->t_owed > 0) {
+            struct thread *given = owed_record_client(self);
+
             channel_owed_cleared++;
+            if (given != NULL && owed_listed(given)) {
+                channel_owed_cleared_kept++;
+            }
         }
         self->t_msg = &self->t_stage;
         self->t_client = 0;
