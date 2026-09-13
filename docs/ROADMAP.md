@@ -13590,6 +13590,76 @@ finish, or its exit advanced nothing`.
 a send and a handle, and the boot is shorter by fifty two round
 trips.
 
+**What the review found: the count of servers was the loop counter.**
+`ended` was incremented once a round, so the reported number said the
+loop had gone round fifty two times and nothing else. It now asks,
+once a round, that the count of programs killed before ever running
+went up by exactly one, and counts the rounds where it did. A total
+that came out right at the end of the boot with one round having
+taken another way out would not have shown.
+
+**And the checks were entries that did not take the kernel lock.**
+Every entry in this system arrives from a vector, which takes the
+kernel lock on the way in and drops it on the way out. The entries a
+check makes arrive from a kernel thread, which holds nothing, and
+they ran the same operations with the exclusion missing.
+
+What that cost was a join that hung. A wait on a completion reads the
+timeline, finds it short of the value, and puts itself on the waiter
+list; the advance on the other core writes the value and walks that
+list. Those two interleave in one order that loses the wake, and the
+waiter is left on a list nobody will look at again. Measured at about
+one burst run in twelve: a thirty second timeout on a process that
+had already exited, all four threads gone, the timeline sitting at
+the value being waited for. Three failures in forty runs before, none
+in forty after. This is also what the single unexplained burst
+failure in stage four's review was.
+
+**And the aarch64 interrupt return did not put back what it saved.**
+The vector a program's interrupt arrives on saves `elr_el1` and
+`spsr_el1` into its frame and never restored them. It ereted on
+whatever those registers held, which is right only while nothing has
+taken an exception in between. That handler is exactly where
+something does: waking a thread that outranks the interrupted one
+switches away from inside it, and whatever runs next takes traps of
+its own, each writing both registers. The program then came back from
+its interrupt at another thread's address, in another thread's mode.
+
+It was found from the far end. A thread whose whole body is
+`for (;;) { n++; }` exited with the code its library uses when an
+entry function returns, and a receive that nothing had sent to came
+back. The riscv64 port states the rule in its own trap path, that the
+return state goes in the frame and not left in the registers because
+a handler may switch; this port had written the saving half and not
+the restoring half. It leaves through the same tail as a system call
+now, which is where that restore already lived.
+
+**And a thread that was supposed never to run, ran.** `fourways`
+made the thread for the fourth state itself, last, behind a thread
+that never yields, and said that it therefore sits on the queue for
+the life of the process. It does not. A thread preempted by
+something that outranks it goes to the back of its own level, so the
+first time the supervisor woke to look, the one that computes landed
+behind the one that must not run, and the next time the supervisor
+slept it ran. Measured at about one run in twenty five, on top of the
+other two.
+
+A program at the lowest priority cannot arrange for anything below
+it, and everything this program has is at that priority. So the
+arrangement moved to the side that can arrange it: the fourth thread
+is made by the check, out of an entry point and a stack the program
+sends the way `lastborn` does, inside the deferred region that also
+carries the kill. That is this stage's own discipline applied to
+stage four, and it makes the state exact rather than likely: the
+thread is made, counted, and killed with nothing having had a chance
+to dispatch it.
+
+**What the three together were worth.** The check that found all of
+this is one program, on one port, at one tier: about five failures in
+a hundred and fifty runs of the paced session on aarch64 at Tier 0,
+in three different shapes. With the three fixes in, seventy runs and
+none. The rate is the host's and the shapes are the kernel's.
+
 **7. What it cost, and section 10.5 written to it.** *Planned.*
 
 - *Check.* The figures as counts: kills that reached a thread that had

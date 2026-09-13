@@ -21,15 +21,23 @@
  *   running                the spinner, which never enters the kernel
  *                          again and so can only be reached by being
  *                          made to
- *   ready and never run    the idler, created last and behind a
- *                          thread that never yields, so it sits on
- *                          the queue for the life of the process
+ *   ready and never run    not made here at all. This program sends
+ *                          the supervisor an entry point and a stack
+ *                          instead, and the supervisor makes that
+ *                          thread itself with dispatch deferred and
+ *                          the kill written in the same region.
  *
- * The order matters and is the whole construction. Threads run at
- * one priority and this kernel does not slice time, so a queue at
- * one priority runs in the order it was filled and each entry runs
- * until it blocks. The asker blocks, the spinner does not, and the
- * idler is behind the spinner.
+ * The last of those was made here once, created behind a thread that
+ * never yields, and the claim was that it therefore sits on the queue
+ * for the life of the process. It does not. A thread preempted by
+ * something that outranks it goes to the back of its own level, so
+ * the first time the supervisor wakes to look, the spinner lands
+ * behind the thread that was never supposed to run, and the next
+ * time the supervisor sleeps that thread runs. It was measured at
+ * about one run in twenty five. A program at the lowest priority
+ * cannot arrange for anything below it, so the arrangement moved to
+ * the side that can: the supervisor, which can hold off dispatch
+ * altogether.
  */
 
 #include <os/sys.h>
@@ -43,6 +51,12 @@
 static unsigned char stack_ask[STACK_BYTES] __attribute__((aligned(16)));
 static unsigned char stack_spin[STACK_BYTES] __attribute__((aligned(16)));
 static unsigned char stack_idle[STACK_BYTES] __attribute__((aligned(16)));
+
+/* What the makings of the fourth thread are sent as. */
+struct makings {
+    uint64_t    entry;
+    uint64_t    stack;
+};
 
 #define ERR_NS      1
 #define ERR_CREATE  2
@@ -86,19 +100,13 @@ spinner(void *arg)
 }
 
 /*
- * Never runs. Created last, and the kill is written before the
- * scheduler gets to it, which is the state stage two added a
- * reading for.
+ * The thread the supervisor makes, which never runs.
  *
- * It receives on a channel nothing sends to rather than computing,
- * so that a run where the trampoline's reading is taken out says
- * where the thread was caught instead. Measured both ways: with
- * the reading gone this thread still ends, because it makes an
- * entry and the reading at the entry boundary catches it there.
- * The report says as much, one fewer killed before ever running
- * and one more stopped at an entry boundary. A body that computed
- * would also still end, reached by whatever interrupt happened
- * along, and the report would show only the first of those two.
+ * Its body is here because the stack and the entry point have to be
+ * in this program's image, and only this program knows where those
+ * are. It receives on a channel nothing sends to, so that a run
+ * where it did reach user mode is a run that does not come back,
+ * rather than one that quietly passes.
  */
 static void
 idler(void *arg)
@@ -129,6 +137,30 @@ main(void)
     }
 
     /*
+     * The makings of the fourth thread go first, before there is
+     * anything else on this channel, and the answer to them is what
+     * says the supervisor has them. Only then are the other two
+     * made, so that the one request left unanswered on this channel
+     * afterwards is the asker's.
+     */
+    {
+        struct makings m;
+        sys_msg_t request, reply;
+
+        m.entry = (uint64_t)(uintptr_t)idler;
+        m.stack = (uint64_t)(uintptr_t)(stack_idle + STACK_BYTES);
+
+        memset(&request, 0, sizeof(request));
+        memset(&reply, 0, sizeof(reply));
+        request.handle = SYS_HANDLE_INVALID;
+        request.inline_len = sizeof(m);
+        memcpy(request.inline_data, &m, sizeof(m));
+        if (sys_msg_send(store, &request, &reply) != SYS_OK) {
+            return ERR_CREATE;
+        }
+    }
+
+    /*
      * Each handle is given back as soon as the thread exists,
      * because nothing here joins them. A handle to a thread holds
      * the thread, a thread holds its process, and the table these
@@ -144,12 +176,6 @@ main(void)
     (void)sys_handle_close(th);
 
     if (sys_thread_create(spinner, NULL, stack_spin, STACK_BYTES,
-      SYS_PRIO_INHERIT, &th) != SYS_OK) {
-        return ERR_CREATE;
-    }
-    (void)sys_handle_close(th);
-
-    if (sys_thread_create(idler, NULL, stack_idle, STACK_BYTES,
       SYS_PRIO_INHERIT, &th) != SYS_OK) {
         return ERR_CREATE;
     }

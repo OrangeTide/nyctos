@@ -275,21 +275,22 @@ el0_irq:
     mov     x0, #1
     bl      irq_dispatch
 
-    ldr     x9, [sp, #184]
-    msr     sp_el0, x9
-    ldp     x0, x1, [sp, #0]
-    ldp     x2, x3, [sp, #16]
-    ldp     x4, x5, [sp, #32]
-    ldp     x6, x7, [sp, #48]
-    ldp     x8, x9, [sp, #64]
-    ldp     x10, x11, [sp, #80]
-    ldp     x12, x13, [sp, #96]
-    ldp     x14, x15, [sp, #112]
-    ldp     x16, x17, [sp, #128]
-    ldp     x18, x29, [sp, #144]
-    ldr     x30, [sp, #160]
-    add     sp, sp, #192
-    eret
+    /*
+     * Out through the same tail as a system call, which puts elr_el1
+     * and spsr_el1 back from the frame.
+     *
+     * This used to restore the general registers and the user stack
+     * and eret on whatever elr_el1 held. That is right only when
+     * nothing has taken an exception in between, and this handler is
+     * exactly where something does: waking a thread that outranks
+     * this one switches away from inside it, and the thread that
+     * runs next takes traps of its own, each of which writes elr_el1
+     * and spsr_el1 and leaves the last of them there. The program
+     * then came back from its interrupt at somebody else's address.
+     * Measured as a computing thread that returned from a function
+     * with no return in it.
+     */
+    b       el0_return
 
 .section ".data"
 .balign 8

@@ -129,7 +129,9 @@ run_flagged(uint16_t opcode, sys_handle_t target, void *args,
 {
     struct sys_op op;
     struct batch_regs regs;
+    intr_state_t s = 0;
     sys_err_t err;
+    bool held;
 
     /*
      * One entry is an execution of one entry, so it gets a file like
@@ -148,7 +150,39 @@ run_flagged(uint16_t opcode, sys_handle_t target, void *args,
     op.flags = flags;
     op.status = SYS_ERR_INTERRUPTED;    /* so a missing write is visible */
 
+    /*
+     * Under the kernel lock, because this is an entry and an entry
+     * takes it. Every other entry in the system arrives from a
+     * vector, which takes the lock on the way in and drops it on the
+     * way out; these arrive from a kernel thread, which holds
+     * nothing, and until now they ran the same operations with the
+     * exclusion missing.
+     *
+     * What that cost was a join that hung. The wait on a completion
+     * reads the timeline, finds it short of the value, and puts
+     * itself on the waiter list, and the advance on the other core
+     * writes the value and walks that list. Those two interleave in
+     * one order that loses the wake: the reader has read, the writer
+     * has walked, and then the reader arrives on a list nobody is
+     * going to look at again. Measured at about one burst run in
+     * twelve, a thirty second timeout on a process that had already
+     * exited, with the timeline sitting at the value being waited
+     * for.
+     *
+     * Taken here rather than inside each blocking call, because the
+     * question is not which call blocks: it is that an entry runs
+     * under the lock, and these were entries that did not.
+     */
+    held = klock_held();
+    if (!held) {
+        s = klock_enter();
+    }
+
     err = sys_op_exec(&op, &regs);
+
+    if (!held) {
+        klock_exit(s);
+    }
 
     if (op.status != err) {
         panic("op %u: status field and return value disagree", opcode);
@@ -3666,7 +3700,7 @@ channel_hold_checks(void)
 }
 
 /*
- * A server restarted under its clients, per M20 stage five.
+ * A server ended, and its channel with it, per M20 stage five.
  *
  * Sections 18.2 and 18.3 argue from a supervisor that ends a server
  * and starts another, and M18's retrospective listed it as untested.
@@ -3736,6 +3770,7 @@ restart_checks(void)
         struct channel *ch;
         sys_id_t id;
         sys_handle_t give, h;
+        uint64_t unrun;
         void *obj;
         int32_t code;
 
@@ -3807,6 +3842,7 @@ restart_checks(void)
          * a core, and what ends that thread is the reading in the
          * trampoline it is about to arrive on.
          */
+        unrun = proc_unrun_programs;
         memset(&kargs, 0, sizeof(kargs));
         kargs.code = 7;
         if (run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)) != SYS_OK) {
@@ -3814,12 +3850,24 @@ restart_checks(void)
         }
         sched_undefer();
 
-        ended++;
         code = child_join(&sc, JOIN_MS);
         if (code != 7) {
             panic("restarts: the server exited %d on round %u",
               (int)code, (unsigned int)round);
         }
+
+        /*
+         * And it ended where a thread that has never run ends,
+         * asked once a round rather than once at the end. The
+         * total at the end of the boot would come out right with
+         * one round having taken another way out, and the way out
+         * this loop is about is the one in the trampoline.
+         */
+        if (proc_unrun_programs != unrun + 1) {
+            panic("restarts: round %u ended somewhere other than "
+              "its trampoline", (unsigned int)round);
+        }
+        ended++;
 
         /*
          * And it started nothing on its way out, which is the same
@@ -3876,7 +3924,7 @@ restart_checks(void)
     restarts_done = ended;
     restarts_slot = fresh;
     cnprintf("    %-38s %u, all on slot %u\n",
-      "servers started and ended unserved", (unsigned int)ended,
+      "killed before running, and ended", (unsigned int)ended,
       (unsigned int)fresh);
     cnprintf("    %-38s %u in use, %u at once\n",
       "and the pool where it started", (unsigned int)base,
@@ -6121,6 +6169,34 @@ kill_unrun_checks(void)
  * was being built and is not something to hold a boot to.
  */
 /*
+ * Receive a request, and not a pulse.
+ *
+ * A server that has outlived a client is told so on the channel it
+ * was serving, and the telling is delivered by the same call as a
+ * request. This check kills two clients and then waits for a third
+ * to ask, so what came back first was `SYS_PULSE_DEAD_OWNER` and
+ * the check read the makings of a thread out of it. Pulses are what
+ * they are and M18 measures them; here they are in the way, and are
+ * dropped. There is a sender queued by the time this is called, so
+ * the receive that follows a pulse has something waiting for it.
+ */
+static void
+recv_request(struct channel *ch, struct sys_msg *out,
+  sys_thread_id_t *peer, const char *what)
+{
+    uint64_t cookie;
+
+    for (;;) {
+        if (channel_recv(ch, out, peer, &cookie) != SYS_OK) {
+            panic("%s: the request would not come", what);
+        }
+        if ((out->flags & SYS_MSG_IS_PULSE) == 0) {
+            return;
+        }
+    }
+}
+
+/*
  * Wait until something is queued to send on this channel.
  *
  * Before a receive rather than instead of one, because a receive
@@ -6490,11 +6566,15 @@ kill_states_checks(void)
     struct sys_msg msg;
     struct fourways_states st;
     struct thread *held[FOURWAYS_THREADS];
+    struct sys_msg makings, answer;
+    sys_thread_id_t peer_mk;
+    uintptr_t entry, stack;
+    sys_handle_t fourth;
     sys_thread_id_t peer;
     sys_ns_spec_t ns[2];
     sys_handle_t keep_s, keep_t, give_s, give_t, h;
     sys_id_t id_s, id_t;
-    uint64_t cookie, until, killed;
+    uint64_t until, killed;
     uint32_t was_running, ended = 0, i;
     void *obj;
     int32_t code, tcode;
@@ -6557,14 +6637,39 @@ kill_states_checks(void)
     sched_undefer();
 
     /*
+     * The makings of the fourth thread, which the program sends
+     * before it makes anything else, and which are answered at once:
+     * the answer is what lets the program go on.
+     */
+    wait_queued(store, "states: the makings");
+    recv_request(store, &makings, &peer_mk, "states: the makings");
+    if (makings.inline_len != 2 * sizeof(uint64_t)) {
+        panic("states: the makings were %u bytes",
+          (unsigned int)makings.inline_len);
+    }
+    {
+        uint64_t got[2];
+
+        memcpy(got, makings.inline_data, sizeof(got));
+        entry = (uintptr_t)got[0];
+        stack = (uintptr_t)got[1];
+    }
+    if (entry == 0 || stack == 0) {
+        panic("states: the makings were empty");
+    }
+    memset(&answer, 0, sizeof(answer));
+    answer.handle = SYS_HANDLE_INVALID;
+    if (channel_reply(peer_mk, &answer) != SYS_OK) {
+        panic("states: the makings were not answered");
+    }
+
+    /*
      * The asker's request, taken and not answered, which is what
      * leaves one thread inside a rendezvous. Taking it is also what
      * says the program has got that far.
      */
     wait_queued(store, "states");
-    if (channel_recv(store, &msg, &peer, &cookie) != SYS_OK) {
-        panic("states: the queued request would not come");
-    }
+    recv_request(store, &msg, &peer, "states: the asker");
 
     /*
      * And then the four are counted. Waited for rather than
@@ -6583,7 +6688,7 @@ kill_states_checks(void)
          * has the core by definition, so it is runnable and the
          * poke is not what reaches it.
          */
-        if (st.n == FOURWAYS_THREADS && st.unrun == 1 &&
+        if (st.n == FOURWAYS_THREADS - 1 && st.unrun == 0 &&
           st.receiving == 1 && st.inside == 1 && st.computing == 1 &&
           st.running == (cpu_count() > 1 ? 1u : 0u)) {
             break;
@@ -6596,6 +6701,34 @@ kill_states_checks(void)
               (unsigned int)st.receiving, (unsigned int)st.inside);
         }
         (void)timeline_wait(&kill_tl, 1, time_now() + time_from_ms(2));
+    }
+
+    /*
+     * And the fourth, made here with dispatch held off and the kill
+     * written before it is let go again. That is the whole of what
+     * makes this thread one that has never run: a thread of the
+     * program cannot arrange it, because the program is at the
+     * lowest priority and anything it makes is at that priority
+     * too, so the first time this thread wakes to look it puts the
+     * one that computes behind the one that must not run.
+     */
+    sched_defer();
+
+    if (proc_thread_create(c.c_proc, entry, 0, stack, PRIO_BOOT - 1,
+      &fourth) != SYS_OK) {
+        panic("states: the fourth thread was refused");
+    }
+    if (handle_close(&c.c_proc->p_handles, fourth) != SYS_OK) {
+        panic("states: the fourth thread's handle was already gone");
+    }
+
+    count_states(c.c_proc, &st);
+    if (st.n != FOURWAYS_THREADS || st.unrun != 1 ||
+      st.receiving != 1 || st.inside != 1 || st.computing != 1) {
+        panic("states: %u threads with the fourth made, %u computing, "
+          "%u never run, %u receiving, %u inside", (unsigned int)st.n,
+          (unsigned int)st.computing, (unsigned int)st.unrun,
+          (unsigned int)st.receiving, (unsigned int)st.inside);
     }
 
     cnprintf("    %-38s %u computing, %u never run, %u receiving, "
@@ -6612,6 +6745,8 @@ kill_states_checks(void)
     if (run(SYS_OP_PROC_KILL, h, &kargs, sizeof(kargs)) != SYS_OK) {
         panic("states: it refused to be killed");
     }
+
+    sched_undefer();
 
     /*
      * Each of the four, waited for and read here rather than left
@@ -6755,34 +6890,6 @@ kill_states_checks(void)
  * not a variation on the first: nothing marked it, and what makes
  * it over is that its last thread has gone.
  */
-/*
- * Receive a request, and not a pulse.
- *
- * A server that has outlived a client is told so on the channel it
- * was serving, and the telling is delivered by the same call as a
- * request. This check kills two clients and then waits for a third
- * to ask, so what came back first was `SYS_PULSE_DEAD_OWNER` and
- * the check read the makings of a thread out of it. Pulses are what
- * they are and M18 measures them; here they are in the way, and are
- * dropped. There is a sender queued by the time this is called, so
- * the receive that follows a pulse has something waiting for it.
- */
-static void
-recv_request(struct channel *ch, struct sys_msg *out,
-  sys_thread_id_t *peer, const char *what)
-{
-    uint64_t cookie;
-
-    for (;;) {
-        if (channel_recv(ch, out, peer, &cookie) != SYS_OK) {
-            panic("%s: the request would not come", what);
-        }
-        if ((out->flags & SYS_MSG_IS_PULSE) == 0) {
-            return;
-        }
-    }
-}
-
 /* What `lastborn` returns when its request was answered. */
 #define LASTBORN_RETURN 3
 
