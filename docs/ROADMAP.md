@@ -13922,6 +13922,219 @@ one that is neither small nor known in advance.
 
 ---
 
+### M22. The Reply a Thread Still Owes
+
+**A server thread records one client and may owe several.**
+
+`t_client` is one identifier, `t_donor` is one pointer, and
+`t_serve_ch` and `t_serve_next` are one channel and one link. Between
+them they are the whole of what the kernel knows about a receiving
+thread being inside a request, and each of them counts to one. A second
+rendezvous on the same thread overwrites all four.
+
+**Section 12.6 describes the shape that needs more than one.** It says
+a server may "receive on one thread and hand the client id to a
+worker", and section 12.2 says any thread of a server may reply, which
+is what makes that legal. A dispatcher with one receiving thread and
+four workers has four outstanding requests and one `t_client`. The
+section says which structure to choose and what each costs, and nothing
+anywhere says the kernel can record only the first.
+
+**The tree already does it.** The console's request thread receives a
+read, finds no line to return, holds the request rather than answering
+it, and goes back to receive. The next request overwrites the held
+client's identifier. It survives because a reply is addressed by
+identifier and this one comes from the other thread, which is section
+12.2 working, and because M20 taught `serving_begin` to notice the
+channel it is already on. Both of those handle the symptom.
+
+**What the overwrite costs, in three places.**
+
+*The record names the wrong client.* `t_client` is what a reply from
+this thread checks itself against, what says whether a wake was a
+request or a pulse, and what M18's departure handling and M21's kill
+accounting read when they ask what a thread was doing.
+
+*The donation goes back at the first reply rather than the last.*
+`undonate` is documented as running "now that it owes nobody anything",
+and it runs when the thread replies to whoever it most recently
+received from. A thread holding a request from a high-priority client
+and answering a low-priority one drops to its base priority with the
+first client still waiting. Not visible in this boot, because every
+program the shell spawns inherits the shell's priority and a donation
+between equals raises nothing.
+
+*The serving list has one entry for a thread that may be inside two
+channels, and one link field for every list.* Holding on one channel
+and receiving on another writes `t_serve_ch` and `t_serve_next` while
+the thread is still linked into the first channel's list, so the first
+list runs into the second. `README.md` has carried that as worse if it
+happened since M20 found the same field pointing at itself.
+
+**And M20's free test reads that list.** A channel's slot goes back
+when nothing holds it and nobody is standing in it, and
+`c_serving == NULL` is how the second half is asked. A server that
+holds one request and replies to another leaves `c_serving` at that
+reply, while its held client is still REPLY-blocked with that channel
+in `t_blocked_on` and on none of the channel's lists. The server's
+entry was the only thing representing that client, and it has gone.
+That is a channel freed under a thread waiting on it, reachable by a
+program that can be written today.
+
+**What makes this worth a milestone rather than a fix.** Four
+milestones have built accounting on a field that counts to one.
+Section 12.3's chain walk, M18's departure notices, M20's channel
+lifetime and its walk, and M21's kill accounting all read the
+server-side record, and every one of them was checked against a server
+with one outstanding request, because that is the only server the boot
+has. The fix is a list. Finding out what each of those four says when
+the number is two is not.
+
+*Needs.* Nothing missing. Each outstanding client is already blocked,
+already carries `t_donee` pointing at the thread serving it, and is
+already its own record. What does not exist is the link the other way
+for more than one of them.
+
+**What this is not.** Not a worker pool and not asynchronous message
+passing: a request is still served by a thread running at the client's
+priority, and section 2.4 does not move. Not a change to who may reply,
+which section 12.2 settles. Not a new bound, since the thread pool is
+already one: a client appears on at most one of these lists and there
+are `SYS_MAX_THREADS` of them.
+
+**1. What a thread owes, counted.** *Planned.*
+
+- *Check.* The boot reports the greatest number of clients any
+  receiving thread owed at once, and what the kernel's record named at
+  that moment. Asserted to disagree, because if they agree the
+  milestone has no subject. The count goes in the compared report at
+  both tiers.
+- The number comes from the recorded shell session rather than from a
+  program written to produce it. The console holds a read and receives
+  again in every session with a line typed at it, which is what M20
+  found by walking a list that did not end.
+- Also counted: replies sent to a client the replying thread's record
+  did not name. That is section 12.2 working as specified and is the
+  reason nothing has noticed, so it is measured before anything is
+  changed.
+- Falsifiable by the case not reproducing, which would mean the console
+  does not do what M20 found it doing.
+
+**2. The set of clients a thread owes.** *Planned.*
+
+- *Check.* A server thread that owes two clients names both, and the
+  count from stage one agrees with a walk. The set is a list threaded
+  through the clients, headed on the server thread: section 12's own
+  principle is that the blocked sender is the queue slot, and a client
+  waiting for a reply is exactly that.
+- `t_client` becomes the head of it. What it meant before survives as
+  the question of whether the list is empty, and the two places that
+  used it to tell a request from a pulse have to say which they meant.
+- Falsifiable by dropping the link on the second rendezvous, which is
+  the code as it stands: the walk and the count disagree and stage one's
+  assertion comes back.
+- *Watch for.* The rendezvous path is the hottest in the kernel and
+  this adds a store to it. The cost is measured against M20's figure
+  for the same path.
+
+**3. The donation is what a thread still owes, not what it last took.**
+*Planned.*
+
+- *Check.* A server holding a request from a high-priority client and
+  answering a low-priority one keeps the priority it owes the first.
+  `undonate` recomputes from the set instead of dropping to base.
+- Needs a client at a priority the server does not already have, which
+  the boot does not produce because everything the shell spawns
+  inherits its priority. A program spawned at an explicit priority is
+  part of this stage.
+- Falsifiable by going back to base: the check names the priority the
+  server dropped to and the client it still owed.
+
+**4. A thread inside requests on two channels.** *Planned.*
+
+- *Check.* A server with two channels holds a request on the first and
+  receives on the second, and is on both serving lists. The lists are
+  walked to their ends and each ends.
+- The link moves off the thread and onto the client, for the same
+  reason as stage two: there is one client per request and one request
+  per entry, so a link per client is a link per entry. A channel's
+  `c_serving` becomes what it is serving rather than who, and the
+  server is reached from each entry.
+- Falsifiable by keeping the link on the thread, which is the code as
+  it stands: the first list runs into the second and the bounded walk
+  says which list it was on, the way M20's did.
+
+**5. A held client that dies, and a channel that must not go.**
+*Planned.*
+
+- *Check.* A client killed while its request is held leaves the set,
+  the server's priority is recomputed from what is left, and the
+  channel is not freed while another client is still REPLY-blocked on
+  it. The last is M20's idle test asked against the set rather than
+  against one entry.
+- `channel_thread_release` gives a donation back only if it is still
+  the dying client's, which is the conservative reading of a record
+  that counts to one. With a set it can say which.
+- Falsifiable two ways: leaving the dead client on the set, which
+  leaves the server owing a slot that will be reused; and asking the
+  idle test the old way, which frees a channel under a waiting thread.
+
+**6. A server that dies owing several.** *Planned.*
+
+- *Check.* Every client on the set is released and told the right one
+  of `SYS_ERR_STALE` and `SYS_ERR_OWNER_DEAD`, which section 12.5
+  distinguishes and which M18 built. Today at most one of them is
+  reachable from the server's record.
+- Falsifiable by releasing only the head: the others wait out a
+  deadline, which is stage one of M20's shape and M21's both.
+
+**7. What it cost, and section 12.6 written to it.** *Planned.*
+
+- *Check.* The compared report carries the greatest number of clients
+  owed at once, the replies sent to a client the thread's record did
+  not head, and the serving entries a thread left on more than one
+  channel. What the set cost on the rendezvous is reported above the
+  compared line, because it is a duration.
+- Section 12.6 gains what a receiving thread may owe and what bounds
+  it, which it describes a dispatcher against and does not state.
+  Section 12.3's chain walk is stated against the set rather than
+  against one entry per thread.
+
+*Done when* a receiving thread may owe several clients and the kernel
+names all of them, a donation is given back when the last of them is
+answered rather than the first, a thread inside requests on two
+channels is on both serving lists, a held client that dies leaves the
+set, and a channel is not freed while a client is REPLY-blocked on it.
+
+*Would falsify.* That a receiving thread should be allowed to owe
+several at all. If the set costs more on the rendezvous than it buys,
+or if the shapes it makes expressible are ones no server should be
+written to use, then the answer is the other one: refuse a receive on a
+thread that still owes a reply, say so in section 12.6, and move the
+console's held read to the thread that answers it. That is a smaller
+milestone, and it withdraws section 12.6's dispatcher rather than
+supporting it, which the design would have to say.
+
+*Watch for.* A check that cannot fail, which is now nine consecutive
+milestones. The shape here is specific: everything this milestone
+changes is on the rendezvous path, which every check in the boot
+crosses thousands of times, so a stage broken on purpose will usually
+be caught by something earlier and louder than its own check. Expect
+falsifications that fire in another milestone's check, the way M21
+stage one's did, and write them down as that rather than as this
+stage's own.
+
+And a count that is a constant. The greatest number of clients owed at
+once is two for the whole boot unless something is written to make it
+more, and two is also what an off-by-one would print.
+
+*Size.* Medium. The list is small and it is on the hottest path in the
+kernel. Stages three, four and six each need a program that does not
+exist, and stage four's is the first server in this tree with two
+channels of its own.
+
+---
+
 
 ## 4. Milestone 1, in Retrospect
 
