@@ -18,7 +18,7 @@ used at most: 24 of 32 threads, 13 of 24 processes
   a server thread owed more than one reply: 2, and at most 2 at once
   a record that holds one: 2 written over, 3 off a serving list still owing
   and a set that holds them all: 2 of 2 the record lost
-  a donation given back to what is left: 1 stopped above base
+  a donation given back: 1 stopped above base, 0 left to another core
   names: 2589 given out, 2557 again, 1 spaces without, 9 live
   names given back: 2580, each throwing away what was filed under it
 stage 9 complete

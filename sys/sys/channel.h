@@ -174,6 +174,7 @@ extern uint64_t channel_owed_serving_stale;
 extern uint64_t channel_owed_kept;
 extern uint64_t channel_owed_cleared_kept;
 extern uint64_t channel_owed_kept_prio;
+extern uint64_t channel_owed_reprio_elsewhere;
 
 
 /*

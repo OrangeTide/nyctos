@@ -339,9 +339,30 @@ owed_reprio(struct thread *t)
         channel_owed_kept_prio++;
     }
 
-    if (t->t_prio != want) {
-        sched_reprioritise(t, want);
+    if (t->t_prio == want) {
+        return;
     }
+
+    /*
+     * And only where this core may move it. A thread that is ready is
+     * on some core's run queue, and the queues are that core's: this
+     * is the rule `chain_raise` states for the raise, per section
+     * 11.4, and the way back needs it for the same reason. Without it
+     * the reprioritise reaches `dequeue_specific`, which panics with a
+     * message about queues rather than about donation.
+     *
+     * Skipped rather than deferred, which leaves the thread running at
+     * a priority it no longer owes until something else moves it. That
+     * is unfair and it is not an inversion, which is the direction to
+     * err in. Counted, because the day this is not zero is the day the
+     * residue section 11.4 already carries has a number.
+     */
+    if (t->t_state == THREAD_READY && t->t_core != cpu_self()->cp_index) {
+        channel_owed_reprio_elsewhere++;
+        return;
+    }
+
+    sched_reprioritise(t, want);
 }
 
 /*
@@ -424,6 +445,12 @@ uint64_t channel_owed_cleared_kept;
  * priority is recomputed, which is where a client stops being owed.
  */
 uint64_t channel_owed_kept_prio;
+
+/*
+ * Recomputes this core could not make, because the thread was ready on
+ * another core and the run queues are that core's.
+ */
+uint64_t channel_owed_reprio_elsewhere;
 
 /*
  * A client stops being owed. The three places `t_donee` goes back to

@@ -14322,7 +14322,7 @@ rather than to its base. The compared report at each tier:
   a server thread owed more than one reply: 2, and at most 2 at once
   a record that holds one: 2 written over, 3 off a serving list still owing
   and a set that holds them all: 2 of 2 the record lost
-  a donation given back to what is left: 1 stopped above base
+  a donation given back: 1 stopped above base, 0 left to another core
 ```
 
 The first three are stage one's and stage two's and they moved,
@@ -14402,6 +14402,47 @@ And one more channel made and given back, because the check closes
 its handles at the end. A check that exists to say something about
 priorities should not quietly raise the number of channels the boot
 ends holding, which is a number M20 made mean something.
+
+**What the review found: the recompute could reach another core's run
+queue.** `sched_reprioritise` takes a ready thread off a queue and puts
+it back, and `dequeue_specific` panics if that queue is not this core's.
+The guard that was removed had been keeping this away by accident: it
+skipped the recompute whenever the donation was not the leaving
+client's, which is most of the cases where the thread being recomputed
+is not the one running here. With the guard gone the recompute runs
+whenever the value changes, and a server that is ready on the other
+core is one `dequeue_specific` refuses.
+
+`chain_raise` already states the rule for the other direction, that a
+runnable thread is on some core's queue and moving it between another
+core's queues is that core's business, per section 11.4. The way back
+follows it now: where the thread is ready on another core the recompute
+is skipped and counted, which leaves it running at a priority it no
+longer owes until something else moves it. That is unfair and it is not
+an inversion, which is the direction to err in.
+
+Reasoned rather than observed. A probe that panicked on exactly that
+case did not fire in six two-core runs, so the count is zero and is in
+the compared report rather than asserted: skipping is the right answer
+on the day it happens, and a zero in a compared file stops being zero
+in a diff.
+
+**And the check assumed the scheduler had done what it wanted.** It
+readied two clients and then made the server, on the reasoning that
+both would be queued by then. Readying a thread does not say when it
+has reached its send, and at Tier 2 it reaches it on the other core: a
+server made too early receives the lower client first and the check
+stops with `served the higher client at 21, not 24`. That is an
+intermittent failure waiting for a slower host rather than a wrong
+answer, and it is this milestone's *Watch for* clause from the other
+side.
+
+The check now waits for two senders on the queue before the server
+exists, read under the kernel lock because the queue is a list the
+other core writes, with the walk bounded and a deadline on the wait.
+Falsified both ways: asking for three fires `2 clients queued, not 3`,
+and making the server before the second client is queued fires the
+panic above, which is the failure the wait removes.
 
 **4. A thread inside requests on two channels.** *Planned.*
 

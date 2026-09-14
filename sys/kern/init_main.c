@@ -905,6 +905,58 @@ owe_server(void *arg)
     thread_exit(0);
 }
 
+/*
+ * Both clients on the queue before the server exists.
+ *
+ * They are served in priority order only if both are queued when the
+ * first receive happens, and readying a thread does not say when it
+ * has reached its send: at Tier 2 it reaches it on the other core.
+ * Waited for rather than assumed, which is M21 stage three's review
+ * written as a rule, and read under the kernel lock because the queue
+ * is a list the other core puts threads on.
+ *
+ * Yielded rather than slept on, because here the boot thread is below
+ * both clients and giving up the core is what lets them run.
+ */
+static void
+owe_wait_queued(uint32_t want)
+{
+    uint64_t until = time_now() + time_from_ms(2000);
+    uint32_t cap = pool_slots(thread_pool());
+
+    for (;;) {
+        const struct thread *t;
+        intr_state_t is;
+        intr_state_t ks = 0;
+        bool took = false;
+        uint32_t n = 0;
+
+        is = md_intr_disable();
+        if (!klock_held()) {
+            ks = klock_enter();
+            took = true;
+        }
+        for (t = ch_owe->c_senders; t != NULL; t = t->t_snext) {
+            if (++n > cap) {
+                panic("owe: the sender queue does not end");
+            }
+        }
+        if (took) {
+            klock_exit(ks);
+        }
+        md_intr_restore(is);
+
+        if (n >= want) {
+            return;
+        }
+        if (time_now() > until) {
+            panic("owe: %u clients queued, not %u", (unsigned int)n,
+              (unsigned int)want);
+        }
+        sched_yield();
+    }
+}
+
 static void
 owe_checks(void)
 {
@@ -939,6 +991,7 @@ owe_checks(void)
     owe_mid = thread_create("owe-mid", OWE_MID, owe_middle, NULL);
     sched_ready(lo);
     sched_ready(hi);
+    owe_wait_queued(2);
 
     srv = thread_create("owe-srv", OWE_BASE, owe_server, NULL);
     sched_ready(srv);
@@ -17995,8 +18048,10 @@ kernel_main(void)
     cnprintf("  and a set that holds them all: %lu of %lu the record "
       "lost\n", (unsigned long)channel_owed_kept,
       (unsigned long)channel_owed_overwrote);
-    cnprintf("  a donation given back to what is left: %lu stopped "
-      "above base\n", (unsigned long)channel_owed_kept_prio);
+    cnprintf("  a donation given back: %lu stopped above base, %lu "
+      "left to another core\n",
+      (unsigned long)channel_owed_kept_prio,
+      (unsigned long)channel_owed_reprio_elsewhere);
 
     if (channel_owed_most <= 1) {
         panic("owed: no thread ever owed more than one reply");
@@ -18032,6 +18087,11 @@ kernel_main(void)
      * owed somebody who had raised it. Zero would mean the recompute
      * never had anything left to read, and the way back to base would
      * be right for every case this boot reaches.
+     *
+     * Beside it, the recomputes this core could not make because the
+     * thread was ready on another core. Not asserted, because skipping
+     * is the right answer when it happens and the compared file is
+     * what says it has not: a zero there stops being zero in a diff.
      */
     if (channel_owed_kept_prio == 0) {
         panic("owed: every donation went all the way back to base");
