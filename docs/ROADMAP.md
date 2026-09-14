@@ -14844,7 +14844,7 @@ The compared line now says `released at once at most`, which is what
 the number counts. What one death reached and what it released are
 the same only when nothing is left to the owner.
 
-**7. What it cost, and section 12.6 written to it.** *Planned.*
+**7. What it cost, and section 12.6 written to it.** *Built.*
 
 - *Check.* The compared report carries the greatest number of clients
   owed at once, the replies sent to a client the thread's record did
@@ -14855,6 +14855,83 @@ the same only when nothing is left to the owner.
   it, which it describes a dispatcher against and does not state.
   Section 12.3's chain walk is stated against the set rather than
   against one entry per thread.
+
+**What it settled.** What the set costs a rendezvous is one pointer
+step for each client already owed, and nothing for the client being
+answered. The compared report carries it at each tier:
+
+```
+  what the set costs a rendezvous: 0 steps in 200 owing one, 200 in 200 owing two
+```
+
+and the same two runs report their microseconds above the line, where
+a number that is the host's belongs:
+
+```
+what the set costs on a rendezvous
+    200 round trips against a set of one   18678 us, 0 steps
+    200 round trips against a set of two   19310 us, 200 steps
+    of which the milestone's own walk      200 of them
+```
+
+**Two runs of one loop, differing in one thing.** In the second the
+server is already holding a request from somebody else, so every
+rendezvous ends against a set of two rather than a set of one. The
+request being answered is at the head of the set, because the receive
+that took it pushed it there, so the unlink finds it without a step
+and what is walked is whatever was there before. A server owing one
+walks nothing at all. The cost is paid by the server that asked for
+the shape.
+
+**The microseconds do not resolve it.** Across four runs the first
+loop took 18678 to 21174 us and the second 19310 to 22301 us: the
+difference between the means is about 5.6 us a round trip and the
+spread within either is about 12. The second also carries 200 of the
+cross-check stage two added, which walks every thread in the pool
+whenever a thread owes more than one, so what the durations bound is
+the set and its instrument together, and they bound it below the
+noise of the host. The count is the figure that means something,
+which is why it is the one in the compared file.
+
+**That answers the question the milestone put to itself.** *Would
+falsify* says the answer is the other one if the set costs more on
+the rendezvous than it buys. One pointer step per entry, paid only by
+a server that holds a request and receives again, is not that.
+
+**A check that fired on the way.** Stage one asserted that the set
+kept every record a blocking receive gave away, as an equality. Two
+hundred round trips against a held request broke it: after each reply
+the record is empty and the thread still owes the held client, so it
+blocks receiving with nothing to hand over, and 219 blocks had only
+20 records. There was nothing for the set to keep in the other 199.
+The equality is now against the blocks that had a record, which is
+what it was always about, and the report says both numbers.
+
+That case is the milestone in one sentence, and it took until stage
+seven to produce it: a thread that owes something no field on it
+names.
+
+**Section 12.6 gains what a receiving thread may owe**, which it
+described a dispatcher against and did not state: that receiving does
+not require having replied, that the bound on the set is the number
+of threads in the system because a client is one thread and is owed
+by one server at a time, what the set is for that a field cannot do,
+and what it costs. Section 12.3's walk is stated against the requests
+a channel names rather than against the threads, which is what stage
+four made true in the code.
+
+**Falsified three ways.** Not counting the walk that reads what is
+left fires `cost: 0 steps for 200 round trips against two`. Counting
+a step for the client itself fires `cost: 200 steps for 200 round
+trips against one`, which is the claim that the request being
+answered is free. And the equality above fired on its own, before
+anything was broken on purpose, which is the third and the only one
+this milestone did not have to arrange.
+
+**What it cost.** 1072 bytes of text, 96 of bss, and one more channel.
+Four hundred more rendezvous a boot, which is why the count of
+threads owing more than one went from 5 to 205 and donations given
+back above base from 4 to 204.
 
 *Done when* a receiving thread may owe several clients and the kernel
 names all of them, a donation is given back when the last of them is

@@ -328,6 +328,7 @@ owed_reprio(struct thread *t)
     uint8_t want = t->t_base_prio;
 
     for (c = t->t_owed_head; c != NULL; c = c->t_owed_next) {
+        channel_owed_steps++;
         if (c->t_prio > want) {
             want = c->t_prio;
         }
@@ -421,6 +422,15 @@ uint64_t channel_owed_walks;
 uint64_t channel_serving_two;
 
 /*
+ * Entries stepped over on the set, per M22 stage seven. Every
+ * rendezvous that ends walks the set twice, once to unlink the client
+ * and once to read what is left, and this is what that comes to. It
+ * is the cost of the set stated as a count rather than as a duration,
+ * which is the only way to state it that is the same on every host.
+ */
+uint64_t channel_owed_steps;
+
+/*
  * What one server's death reached, per M22 stage six: the most
  * clients released by a single exit, and the ones left blocked
  * because section 12.5 is coming for them with the other error.
@@ -452,6 +462,7 @@ static void serving_end(struct thread *client);
  */
 uint64_t channel_owed_kept;
 uint64_t channel_owed_cleared_kept;
+uint64_t channel_owed_cleared_named;
 
 /*
  * Donations given back that did not go all the way to base, because the
@@ -574,6 +585,7 @@ owed_drop(struct thread *client)
         if (steps-- == 0) {
             panic("channel: the list of %s does not end", server->t_name);
         }
+        channel_owed_steps++;
     }
     *link = client->t_owed_next;
 
@@ -1621,8 +1633,23 @@ recv_inner(struct channel *ch, struct sys_msg *out,
             struct thread *given = owed_record_client(self);
 
             channel_owed_cleared++;
-            if (given != NULL && owed_listed(given)) {
-                channel_owed_cleared_kept++;
+
+            /*
+             * Counted apart from the block itself, per M22 stage
+             * seven. A thread can block receiving while owing and
+             * have no record to give away at all: it replied to the
+             * client of its last receive, which cleared the field,
+             * and what it still owes is somebody it took earlier.
+             * The set is the only thing that knows about that one,
+             * which is the milestone in one sentence, and counting
+             * it as a record handed over made the two numbers below
+             * disagree for a reason that was not a fault.
+             */
+            if (given != NULL) {
+                channel_owed_cleared_named++;
+                if (owed_listed(given)) {
+                    channel_owed_cleared_kept++;
+                }
             }
         }
         self->t_msg = &self->t_stage;

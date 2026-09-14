@@ -1718,6 +1718,212 @@ owing_checks(void)
 }
 
 /*
+ * What the set costs on a rendezvous, per M22 stage seven.
+ *
+ * Two runs of the same loop, differing in one thing: in the second
+ * the server is already holding a request from somebody else, so
+ * every rendezvous ends against a set of two rather than a set of
+ * one. The difference is what one more entry costs.
+ *
+ * The count is the answer and the durations are context. Steps taken
+ * on the set are a property of the kernel and are the same on every
+ * host; microseconds are the host's, and per M9 they are reported
+ * above the compared line and asserted against nothing.
+ */
+static struct channel *ch_cost;
+static sys_handle_t h_cost_recv;
+static volatile int cost_loop_done;
+static volatile int cost_holding;
+static volatile int cost_srv_done;
+static uint64_t cost_us[2];
+static uint64_t cost_steps[2];
+static uint64_t cost_walks[2];
+
+#define COST_BASE   15
+#define COST_PRIO   21
+#define COST_ROUNDS 200
+
+static void
+cost_loop(void *arg)
+{
+    unsigned long phase = (unsigned long)(uintptr_t)arg;
+    struct sys_msg req, rep;
+    uint64_t t0, steps, walks;
+    unsigned long i;
+
+    memset(&req, 0, sizeof(req));
+    req.handle = SYS_ID_INVALID;
+    req.inline_len = 5;
+    memcpy(req.inline_data, "loop", 5);
+
+    steps = channel_owed_steps;
+    walks = channel_owed_walks;
+    t0 = time_now();
+    for (i = 0; i < COST_ROUNDS; i++) {
+        memset(&rep, 0, sizeof(rep));
+        if (channel_send(ch_cost, 0, &req, &rep,
+          SYS_DEADLINE_NEVER) != SYS_OK) {
+            panic("cost: a round trip failed");
+        }
+    }
+    cost_us[phase] = (time_now() - t0) * 1000000ULL / time_hz();
+    cost_steps[phase] = channel_owed_steps - steps;
+    cost_walks[phase] = channel_owed_walks - walks;
+
+    cost_loop_done = 1;
+    thread_exit(0);
+}
+
+/*
+ * The one the server keeps. It is never replied to until the end, so
+ * the set has something on it for the whole of the second run.
+ */
+static void
+cost_hold(void *arg)
+{
+    struct sys_msg req, rep;
+
+    (void)arg;
+
+    memset(&req, 0, sizeof(req));
+    memset(&rep, 0, sizeof(rep));
+    req.handle = SYS_ID_INVALID;
+    req.inline_len = 5;
+    memcpy(req.inline_data, "hold", 5);
+
+    if (channel_send(ch_cost, 0, &req, &rep,
+      SYS_DEADLINE_NEVER) != SYS_OK) {
+        panic("cost: the held request failed");
+    }
+
+    thread_exit(0);
+}
+
+static void
+cost_server(void *arg)
+{
+    struct sys_msg msg, rep;
+    sys_thread_id_t peer, held = 0;
+    uint64_t cookie;
+    unsigned long served = 0;
+
+    (void)arg;
+
+    while (served < 2 * COST_ROUNDS) {
+        memset(&msg, 0, sizeof(msg));
+        if (channel_recv(ch_cost, &msg, &peer, &cookie) != SYS_OK) {
+            panic("cost: a receive failed");
+        }
+
+        /*
+         * The one to keep says so in the message. Nothing else tells
+         * the two apart, and a server that guessed by counting would
+         * be a check that depends on the order two threads happen to
+         * reach the queue in.
+         */
+        if (msg.inline_data[0] == 'h') {
+            held = peer;
+            cost_holding = 1;
+            continue;
+        }
+
+        memset(&rep, 0, sizeof(rep));
+        rep.handle = SYS_ID_INVALID;
+        if (channel_reply(peer, &rep) != SYS_OK) {
+            panic("cost: a reply failed");
+        }
+        served++;
+    }
+
+    memset(&rep, 0, sizeof(rep));
+    rep.handle = SYS_ID_INVALID;
+    if (channel_reply(held, &rep) != SYS_OK) {
+        panic("cost: the held reply failed");
+    }
+
+    cost_srv_done = 1;
+    thread_exit(0);
+}
+
+static void
+cost_checks(void)
+{
+    struct proc *p = proc_current();
+    struct thread *srv, *cl;
+    sys_err_t err;
+
+    cnputs("what the set costs on a rendezvous\n");
+
+    ch_cost = channel_create("cost", p);
+    if (ch_cost == NULL) {
+        panic("cost: no channel");
+    }
+    err = handle_insert(&p->p_handles, ch_cost, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_cost_recv);
+    expect("a receive handle on the channel", err, SYS_OK);
+
+    srv = thread_create("cost-srv", COST_BASE, cost_server, NULL);
+    sched_ready(srv);
+
+    cost_loop_done = 0;
+    cl = thread_create("cost-one", COST_PRIO, cost_loop,
+      (void *)(uintptr_t)0);
+    sched_ready(cl);
+    while (!cost_loop_done) {
+        sched_yield();
+    }
+
+    cl = thread_create("cost-held", COST_PRIO, cost_hold, NULL);
+    sched_ready(cl);
+    while (!cost_holding) {
+        sched_yield();
+    }
+
+    cost_loop_done = 0;
+    cl = thread_create("cost-two", COST_PRIO, cost_loop,
+      (void *)(uintptr_t)1);
+    sched_ready(cl);
+    while (!cost_loop_done) {
+        sched_yield();
+    }
+
+    while (!cost_srv_done) {
+        sched_yield();
+    }
+
+    cnprintf("    %-38s %lu us, %lu steps\n",
+      "200 round trips against a set of one",
+      (unsigned long)cost_us[0], (unsigned long)cost_steps[0]);
+    cnprintf("    %-38s %lu us, %lu steps\n",
+      "200 round trips against a set of two",
+      (unsigned long)cost_us[1], (unsigned long)cost_steps[1]);
+    cnprintf("    %-38s %lu of them\n",
+      "of which the milestone's own walk",
+      (unsigned long)cost_walks[1]);
+
+    /*
+     * One step for each entry left on the set, and none for the
+     * client itself: it was pushed at the head by the receive that
+     * took it, so the unlink finds it without a step and the walk
+     * that reads what is left walks whatever was there before. A
+     * rendezvous against a set of n costs n - 1 steps, which is the
+     * figure this stage exists to state, and it is arithmetic rather
+     * than a measurement, so it is asserted.
+     */
+    if (cost_steps[0] != 0) {
+        panic("cost: %lu steps for %u round trips against one",
+          (unsigned long)cost_steps[0], (unsigned int)COST_ROUNDS);
+    }
+    if (cost_steps[1] != COST_ROUNDS) {
+        panic("cost: %lu steps for %u round trips against two",
+          (unsigned long)cost_steps[1], (unsigned int)COST_ROUNDS);
+    }
+
+    expect("giving the channel back",
+      handle_close(&p->p_handles, h_cost_recv), SYS_OK);
+}
+
+/*
  * A server that outranks its client, which is the case that found the
  * defect this exists to keep out.
  *
@@ -17778,8 +17984,10 @@ owed_checks(void)
     }
 
     cnputs("what a server thread owes, against what it records\n");
-    cnprintf("    %-38s %lu\n", "held a request and blocked receiving",
-      (unsigned long)channel_owed_cleared);
+    cnprintf("    %-38s %lu, %lu with a record\n",
+      "held a request and blocked receiving",
+      (unsigned long)channel_owed_cleared,
+      (unsigned long)channel_owed_cleared_named);
     cnprintf("    %-38s %lu\n", "replies its record did not name",
       (unsigned long)channel_owed_reply_unnamed);
     cnprintf("    %-38s %u\n",
@@ -17790,7 +17998,7 @@ owed_checks(void)
     cnprintf("    %-38s %lu of %lu\n",
       "the set kept what a block gave away",
       (unsigned long)channel_owed_cleared_kept,
-      (unsigned long)channel_owed_cleared);
+      (unsigned long)channel_owed_cleared_named);
 
     /*
      * Asserted above zero rather than at a value, because it counts
@@ -17818,10 +18026,19 @@ owed_checks(void)
      * as an equality rather than above zero, because the equality holds
      * in both the paced run and the burst one while the count itself
      * does not.
+     *
+     * Against the blocks that had a record to give away, and not
+     * against every block by a thread that owed something, per M22
+     * stage seven. The two were the same number until a check held
+     * one request across two hundred round trips: after each reply
+     * the field is empty and the thread still owes the held one, so
+     * it blocks receiving with nothing to hand over. There is
+     * nothing for the set to keep in that case, and counting it made
+     * an equality that is about records into one about blocks.
      */
-    if (channel_owed_cleared_kept != channel_owed_cleared) {
+    if (channel_owed_cleared_kept != channel_owed_cleared_named) {
         panic("owed: %lu records given away at a block, %lu kept",
-          (unsigned long)channel_owed_cleared,
+          (unsigned long)channel_owed_cleared_named,
           (unsigned long)channel_owed_cleared_kept);
     }
 
@@ -18019,6 +18236,7 @@ kernel_main(void)
     two_channel_checks();
     held_death_checks();
     owing_checks();
+    cost_checks();
 #if SYS_TIER == 2
     cross_core_donation_checks();
     pool_stress_checks();
@@ -18725,6 +18943,17 @@ kernel_main(void)
       "released at once at most, and %lu left to the owner's\n",
       (unsigned long)channel_owed_death_most,
       (unsigned long)channel_owed_death_left);
+
+    /*
+     * What the set costs a rendezvous, from the two runs of one loop
+     * that stage seven measures. A count and not a duration, so it
+     * belongs here: the same two runs report their microseconds
+     * above, where a number that is the host's belongs.
+     */
+    cnprintf("  what the set costs a rendezvous: %lu steps in %u "
+      "owing one, %lu in %u owing two\n",
+      (unsigned long)cost_steps[0], (unsigned int)COST_ROUNDS,
+      (unsigned long)cost_steps[1], (unsigned int)COST_ROUNDS);
 
     if (channel_owed_most <= 1) {
         panic("owed: no thread ever owed more than one reply");
