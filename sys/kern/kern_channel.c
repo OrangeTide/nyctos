@@ -420,6 +420,14 @@ uint64_t channel_owed_walks;
  */
 uint64_t channel_serving_two;
 
+/*
+ * Slots kept because a request was in flight when the last thing
+ * naming the channel let go, and clients that died with their request
+ * being served, per M22 stage five.
+ */
+uint64_t channel_held_kept_slot;
+uint64_t channel_held_died;
+
 static void serving_begin(struct channel *ch, struct thread *client);
 static void serving_end(struct thread *client);
 
@@ -2086,7 +2094,15 @@ channel_thread_release(struct thread *t, bool tell)
      * away would have been reaching into a call this thread is not
      * part of. With a set there is nothing to guess: the recompute
      * happens where the client leaves the set and reads what is left.
+     *
+     * Counted first, because the drop is what takes the entry off the
+     * channel: a thread released here while a request of its own is
+     * being served is section 12.1's client that abandons work in
+     * progress, seen from the channel rather than from the client.
      */
+    if (t->t_serve_ch != NULL) {
+        channel_held_died++;
+    }
     owed_drop(t);
 
     vm_charge_begin();
@@ -2963,6 +2979,19 @@ channel_free_if_idle(struct channel *ch)
     s = md_intr_disable();
     idle = ch->c_senders == NULL && ch->c_receivers == NULL &&
       ch->c_serving == NULL;
+
+    /*
+     * A slot nothing names that a request is standing in, per M22
+     * stage five. The request is the client waiting for its reply, so
+     * what keeps the slot is a thread that has to be answered on this
+     * channel, and the answer arrives on a channel that is still
+     * here. Before stage four the entry was the server, which could
+     * leave while that client was still blocked.
+     */
+    if (!idle && ch->c_serving != NULL) {
+        channel_held_kept_slot++;
+    }
+
     if (idle) {
         uint32_t i;
 

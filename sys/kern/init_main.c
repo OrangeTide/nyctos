@@ -1278,6 +1278,307 @@ two_channel_checks(void)
 }
 
 /*
+ * A client that dies while its request is held, and a channel that
+ * must not go while one is, per M22 stage five.
+ *
+ * Two things follow from the entry being the request. A client that is
+ * cancelled between the rendezvous and the reply takes its entry with
+ * it, so what the server owes and what the channel is serving both
+ * shrink by one and the priority follows the rest. And a channel whose
+ * last holder lets go while a request is in flight on it is not free,
+ * because the request is standing in it: that is M20's idle test asked
+ * about a held request rather than about the thread that took it.
+ */
+static struct channel *ch_held;
+static sys_handle_t h_held_recv;
+static uint8_t held_prio_after;
+static uint32_t held_owed_after;
+static uint32_t held_listed_after;
+static struct timeline held_tl;
+static int held_ready;
+static int held_done;
+static uint32_t held_freed_after_close;
+static uint32_t held_freed_after_reply;
+
+#define HELD_BASE   15
+#define HELD_LO     21
+#define HELD_HI     24
+
+static void
+held_client(void *arg)
+{
+    struct channel *ch = arg;
+    struct sys_msg req, rep;
+
+    memset(&req, 0, sizeof(req));
+    memset(&rep, 0, sizeof(rep));
+    req.handle = SYS_ID_INVALID;
+    req.inline_len = 5;
+    memcpy(req.inline_data, "held", 5);
+
+    /*
+     * The error is not checked. One of these is cancelled out of the
+     * rendezvous on purpose and comes back interrupted, which is the
+     * case the stage is about.
+     */
+    (void)channel_send(ch, 0, &req, &rep, SYS_DEADLINE_NEVER);
+
+    thread_exit(0);
+}
+
+/*
+ * What the server owes and what the channel is serving, at one moment
+ * and under the kernel's exclusion.
+ */
+static void
+held_look(struct thread *self)
+{
+    intr_state_t is;
+    intr_state_t ks = 0;
+    bool took = false;
+    uint32_t cap = pool_slots(thread_pool());
+    const struct thread *e;
+    uint32_t n = 0;
+
+    is = md_intr_disable();
+    if (!klock_held()) {
+        ks = klock_enter();
+        took = true;
+    }
+
+    for (e = ch_held->c_serving; e != NULL; e = e->t_serve_next) {
+        if (++n > cap) {
+            panic("held: the serving list of %s does not end",
+              ch_held->c_name);
+        }
+    }
+    held_listed_after = n;
+    held_owed_after = self->t_owed;
+    held_prio_after = self->t_prio;
+
+    if (took) {
+        klock_exit(ks);
+    }
+    md_intr_restore(is);
+}
+
+static void
+held_server(void *arg)
+{
+    struct sys_msg msg, rep;
+    struct thread *self = thread_current();
+    sys_thread_id_t peer_hi, peer_lo;
+    uint64_t cookie;
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(ch_held, &msg, &peer_hi, &cookie) != SYS_OK) {
+        panic("held: the first receive failed");
+    }
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(ch_held, &msg, &peer_lo, &cookie) != SYS_OK) {
+        panic("held: the second receive failed");
+    }
+
+    if (self->t_owed != 2 || self->t_prio != HELD_HI) {
+        panic("held: owes %u at %u before anything died",
+          (unsigned int)self->t_owed, (unsigned int)self->t_prio);
+    }
+
+    /*
+     * The boot thread does the cancelling, and this one has to stop
+     * running for it to happen: the boot thread is below everything
+     * and a yield from here comes straight back, because this thread
+     * is at the priority it owes its highest client. So it blocks on
+     * a timeline the canceller signals, which gives the core up
+     * rather than handing it round.
+     */
+    held_ready = 1;
+    if (timeline_wait(&held_tl, 1,
+      time_now() + time_from_ms(2000)) != SYS_OK) {
+        panic("held: the cancel never arrived");
+    }
+
+    held_look(self);
+
+    /*
+     * And the reply the dead client will never get is refused, which
+     * is how a server finds out per section 12.1. Asked here rather
+     * than assumed, because a server that still owed it would be
+     * answered instead.
+     */
+    memset(&rep, 0, sizeof(rep));
+    rep.handle = SYS_ID_INVALID;
+    if (channel_reply(peer_hi, &rep) != SYS_ERR_STALE) {
+        panic("held: the reply to the dead client was not refused");
+    }
+
+    memset(&rep, 0, sizeof(rep));
+    rep.handle = SYS_ID_INVALID;
+    rep.inline_len = 3;
+    memcpy(rep.inline_data, "ok", 3);
+    if (channel_reply(peer_lo, &rep) != SYS_OK) {
+        panic("held: the reply to the living client failed");
+    }
+    if (self->t_prio != self->t_base_prio) {
+        panic("held: at %u with nobody left to owe",
+          (unsigned int)self->t_prio);
+    }
+
+    held_done = 1;
+    thread_exit(0);
+}
+
+/*
+ * The second half: a channel whose last holder goes while a request is
+ * being served on it.
+ */
+static struct channel *ch_last;
+static sys_handle_t h_last_recv;
+static int last_done;
+
+static void
+last_server(void *arg)
+{
+    struct sys_msg msg, rep;
+    sys_thread_id_t peer;
+    uint64_t cookie;
+    struct proc *p = proc_current();
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(ch_last, &msg, &peer, &cookie) != SYS_OK) {
+        panic("held: the receive on the last-holder channel failed");
+    }
+
+    /*
+     * The only handle goes while the request is in flight. Nothing
+     * names the channel after this and the slot may not come back,
+     * because a thread is blocked on a reply that has to arrive on it.
+     */
+    if (handle_close(&p->p_handles, h_last_recv) != SYS_OK) {
+        panic("held: the last handle would not close");
+    }
+    held_freed_after_close = channel_freed;
+
+    memset(&rep, 0, sizeof(rep));
+    rep.handle = SYS_ID_INVALID;
+    rep.inline_len = 3;
+    memcpy(rep.inline_data, "ok", 3);
+    if (channel_reply(peer, &rep) != SYS_OK) {
+        panic("held: the reply on the last-holder channel failed");
+    }
+    held_freed_after_reply = channel_freed;
+
+    last_done = 1;
+    thread_exit(0);
+}
+
+static void
+held_death_checks(void)
+{
+    struct proc *p = proc_current();
+    struct thread *srv, *lo, *hi, *cl;
+    uint32_t freed_before;
+    sys_err_t err;
+
+    cnputs("a client that dies while its request is held\n");
+
+    timeline_init(&held_tl, "held-settle");
+
+    ch_held = channel_create("held", p);
+    if (ch_held == NULL) {
+        panic("held: no channel");
+    }
+    err = handle_insert(&p->p_handles, ch_held, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_held_recv);
+    expect("a receive handle on the channel", err, SYS_OK);
+
+    lo = thread_create("held-lo", HELD_LO, held_client, ch_held);
+    hi = thread_create("held-hi", HELD_HI, held_client, ch_held);
+    sched_ready(lo);
+    sched_ready(hi);
+    wait_senders(ch_held, 2, "held");
+
+    srv = thread_create("held-srv", HELD_BASE, held_server, NULL);
+    sched_ready(srv);
+
+    while (!held_ready) {
+        sched_yield();
+    }
+
+    expect("cancelling the client it held above",
+      thread_cancel(hi), SYS_OK);
+    expect("and letting the server look",
+      timeline_signal(&held_tl, 1), SYS_OK);
+
+    while (!held_done) {
+        sched_yield();
+    }
+
+    cnprintf("    %-38s %u, on a list of %u\n",
+      "what it owed after the death", (unsigned int)held_owed_after,
+      (unsigned int)held_listed_after);
+    cnprintf("    %-38s %u, the one still owed\n",
+      "and what it was left running at",
+      (unsigned int)held_prio_after);
+
+    if (held_owed_after != 1 || held_listed_after != 1) {
+        panic("held: owed %u on a list of %u after one death",
+          (unsigned int)held_owed_after,
+          (unsigned int)held_listed_after);
+    }
+    if (held_prio_after != HELD_LO) {
+        panic("held: left at %u, not the %u it still owed",
+          (unsigned int)held_prio_after, (unsigned int)HELD_LO);
+    }
+
+    expect("giving the channel back",
+      handle_close(&p->p_handles, h_held_recv), SYS_OK);
+
+    /*
+     * And the channel nothing names while a request is in flight.
+     */
+    ch_last = channel_create("held-last", p);
+    if (ch_last == NULL) {
+        panic("held: no second channel");
+    }
+    err = handle_insert(&p->p_handles, ch_last, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_last_recv);
+    expect("a handle that will be the last one", err, SYS_OK);
+
+    freed_before = channel_freed;
+    cl = thread_create("last-cl", HELD_LO, held_client, ch_last);
+    sched_ready(cl);
+    wait_senders(ch_last, 1, "held");
+
+    srv = thread_create("last-srv", HELD_BASE, last_server, NULL);
+    sched_ready(srv);
+
+    while (!last_done) {
+        sched_yield();
+    }
+
+    cnprintf("    %-38s %s\n",
+      "its last handle closed while serving",
+      held_freed_after_close == freed_before ? "the slot stayed"
+        : "the slot went");
+    cnprintf("    %-38s %s\n", "and the reply that finished it",
+      held_freed_after_reply == freed_before + 1 ? "gave the slot back"
+        : "did not");
+
+    if (held_freed_after_close != freed_before) {
+        panic("held: the slot went back with a request in flight");
+    }
+    if (held_freed_after_reply != freed_before + 1) {
+        panic("held: %u slots went back at the reply, not one",
+          (unsigned int)(held_freed_after_reply - freed_before));
+    }
+}
+
+/*
  * A server that outranks its client, which is the case that found the
  * defect this exists to keep out.
  *
@@ -17577,6 +17878,7 @@ kernel_main(void)
     inversion_checks();
     owe_checks();
     two_channel_checks();
+    held_death_checks();
 #if SYS_TIER == 2
     cross_core_donation_checks();
     pool_stress_checks();
@@ -18275,6 +18577,9 @@ kernel_main(void)
       (unsigned long)channel_owed_reprio_elsewhere);
     cnprintf("  a request taken on a channel its thread was already "
       "serving another on: %lu\n", (unsigned long)channel_serving_two);
+    cnprintf("  a request in flight when its client died: %lu, and a "
+      "slot kept for one: %lu\n", (unsigned long)channel_held_died,
+      (unsigned long)channel_held_kept_slot);
 
     if (channel_owed_most <= 1) {
         panic("owed: no thread ever owed more than one reply");
@@ -18324,6 +18629,19 @@ kernel_main(void)
      */
     if (channel_serving_two == 0) {
         panic("owed: no thread was inside requests on two channels");
+    }
+
+    /*
+     * And the two halves of stage five. A client that died with its
+     * request being served, and a slot the free could not take
+     * because a request was standing in it. Zero for either would
+     * mean the boot never built the case.
+     */
+    if (channel_held_died == 0) {
+        panic("owed: no client died with its request being served");
+    }
+    if (channel_held_kept_slot == 0) {
+        panic("owed: no slot was ever kept for a request in flight");
     }
 
 

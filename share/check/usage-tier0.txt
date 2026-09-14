@@ -12,11 +12,12 @@ used at most: 22 of 32 threads, 13 of 24 processes
   peers: 8 collected, pulses 1 dropped and 11 evicted
   senders: 2 refused, 2 displaced
   connections: 7 in use, 12 at once
-  channels: 618 made, 596 given back, 22 live
+  channels: 620 made, 598 given back, 22 live
   channels at once: 23 of 48, and 52 restarts of a server on one slot
-  pulses that went with a channel: 9, of which 2 of the reserved kind
-  a server thread owed more than one reply: 3, and at most 2 at once
-  a record that holds one: 3 written over, and a set that kept 3 of them
-  a donation given back: 2 stopped above base, 0 left to another core
+  pulses that went with a channel: 10, of which 3 of the reserved kind
+  a server thread owed more than one reply: 4, and at most 2 at once
+  a record that holds one: 4 written over, and a set that kept 4 of them
+  a donation given back: 3 stopped above base, 0 left to another core
   a request taken on a channel its thread was already serving another on: 1
+  a request in flight when its client died: 15, and a slot kept for one: 2
 stage 9 complete

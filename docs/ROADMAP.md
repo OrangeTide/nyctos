@@ -14578,7 +14578,7 @@ whether they counted to one or two. They are one function taking a
 channel, a count and a name.
 
 **5. A held client that dies, and a channel that must not go.**
-*Planned.*
+*Built.*
 
 - *Check.* A client killed while its request is held leaves the set,
   the server's priority is recomputed from what is left, and the
@@ -14591,6 +14591,78 @@ channel, a count and a name.
 - Falsifiable two ways: leaving the dead client on the set, which
   leaves the server owing a slot that will be reused; and asking the
   idle test the old way, which frees a channel under a waiting thread.
+
+**What it settled.** A request that ends because its client died takes
+its entry with it, and a channel with a request in flight is not free
+whatever else has let go of it. One line in the compared report at each
+tier:
+
+```
+  a request in flight when its client died: 15, and a slot kept for one: 2
+```
+
+and two constructions above the line:
+
+```
+a client that dies while its request is held
+    cancelling the client it held above    OK
+    and letting the server look            OK
+    what it owed after the death           1, on a list of 1
+    and what it was left running at        21, the one still owed
+    its last handle closed while serving   the slot stayed
+    and the reply that finished it         gave the slot back
+```
+
+**Fifteen requests a boot end with the client rather than the reply.**
+That number was not visible before this milestone, because what left
+the channel's list was the server and the server was still there. It is
+section 12.1's client abandoning work in progress, counted from the
+channel's side.
+
+**The recompute on a death is the same code as the recompute on a
+reply, and this is the first check of it.** Stage three gave a
+donation back to what a thread still owes and exercised it through a
+reply. A cancellation reaches it by a different path, through
+`channel_thread_release` rather than `reply_inner`, and the guard that
+path used to carry was the one stage three removed. The server holds
+requests from clients at 24 and 21, the one at 24 is cancelled, and
+what the server is left running at is 21: not its base, and not the
+priority of the client that has gone.
+
+**And a channel nothing names is kept by a request standing in it.** A
+server takes a request and closes the only handle on the channel while
+holding it. Nothing names the slot and it does not come back, because
+the client is blocked for a reply that has to arrive on that channel;
+the reply then finishes the request and the slot goes in the same
+breath. Two slots a boot are kept that way. Before stage four this was
+the case that could go wrong in the other direction, since the entry
+was the server and a server that answered somebody else left the list
+while the held client was still there.
+
+**The check had to stop running to be checked.** The server is at the
+priority of its highest client and the boot thread is below everything,
+so a server spinning on a flag never gives the core to the thread that
+does the cancelling. It blocks on a timeline the canceller signals.
+That is the same shape M20 stage five's review names for a program that
+runs below the checker, arriving from the other end: here the check is
+below the thread it is waiting for.
+
+**Falsified five ways.** Taking requests in flight out of the idle test
+fired `the slot went back with a request in flight`. Leaving a dead
+client on the set fired the exit check stage four's review added,
+`held-hi exits while served on held`, which is that check doing exactly
+what it was put there for. Not counting either of the two new numbers
+fired its own assertion by name.
+
+And going back to base on a death fired stage three's check first,
+`owe: left running at 15, not the 24 it still owed`, because the same
+code serves both and stage three's construction runs earlier. With
+stage three's assertions out of the way it fires this stage's, `held:
+left at 15, not the 21 it still owed`. Written down because the first
+falsification says less about stage five than it appears to.
+
+**What it cost.** 5592 bytes of text, 144 of bss, and two more channels
+made and given back, one of them by the free this stage is about.
 
 **6. A server that dies owing several.** *Planned.*
 
