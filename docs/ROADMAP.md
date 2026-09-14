@@ -14664,6 +14664,51 @@ falsification says less about stage five than it appears to.
 **What it cost.** 5592 bytes of text, 144 of bss, and two more channels
 made and given back, one of them by the free this stage is about.
 
+**What the review found.** A question this milestone stopped asking,
+and two smaller things.
+
+**The free at the reply has been asking the wrong thread since stage
+four.** M20 stage four put a `channel_maybe_free` at the end of
+`channel_reply`, because a reply is one of the three ways a thread
+leaves a channel and the slot may have nothing left in it. It found
+the channel by reading `thread_current()->t_serve_ch`. Stage four of
+this milestone made the serving entry the request, which moved that
+field onto the client: a server's is empty, and the identifier the
+reply path kept was `SYS_ID_INVALID` every time. Counted over one
+boot, 200 replies with the server's field set 0 times and the
+client's set 191, the other 9 being replies to a client already gone.
+
+Nothing leaked, because the client asks the same question when it
+comes back out of `channel_send`, and a client that will never come
+back was freed by the release path instead. So the defect was a
+guarantee that had quietly become somebody else's to keep. The
+channel is now read off the client the reply names, which is the
+thread the entry belongs to.
+
+This is the second time stage four's change of meaning has left a
+reader behind. The first was the serving entry the deadline path did
+not remove, found in stage four itself. A field that keeps its name
+and changes its owner is not a rename the compiler can help with.
+
+**A slot counted as kept for a request that a queued sender would
+have kept anyway.** The new counter asked whether the channel was not
+idle and had a request in it. Not idle also means a sender or a
+receiver waiting, and either of those keeps the slot on its own. It
+now asks that the queues are empty, so the number says what the line
+claims: a slot that only the request in flight is holding. Both of
+this boot's two are of that kind already, so the count did not move.
+Tightened by reasoning rather than by a failure, and written down as
+such.
+
+**Flags spun on across threads, without saying so.** Stages three,
+four and five each added a plain `int` that one thread sets and the
+boot thread spins on. The file's own convention for that is
+`volatile`, which it uses everywhere else a check waits on a worker.
+The generated code reloads inside the loops today, checked in the
+disassembly, so nothing was hanging. It is a spin loop resting on the
+compiler's not proving something it is allowed to prove, and it is
+six characters to make right.
+
 **6. A server that dies owing several.** *Planned.*
 
 - *Check.* Every client on the set is released and told the right one

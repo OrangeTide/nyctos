@@ -814,9 +814,9 @@ static uint8_t owe_lo_prio;
 static uint8_t owe_prio_after;
 static uint32_t owe_left_owing;
 static struct thread *owe_mid;
-static int owe_mid_ran;
+static volatile int owe_mid_ran;
 static int owe_mid_seen;
-static int owe_done;
+static volatile int owe_done;
 
 #define OWE_BASE    15
 #define OWE_MID     20
@@ -1060,7 +1060,7 @@ static sys_handle_t h_two_a;
 static sys_handle_t h_two_b;
 static uint32_t two_lists;
 static uint32_t two_owed;
-static int two_done;
+static volatile int two_done;
 
 /* Whether a channel is serving anything, read under the lock. */
 static bool
@@ -1295,8 +1295,8 @@ static uint8_t held_prio_after;
 static uint32_t held_owed_after;
 static uint32_t held_listed_after;
 static struct timeline held_tl;
-static int held_ready;
-static int held_done;
+static volatile int held_ready;
+static volatile int held_done;
 static uint32_t held_freed_after_close;
 static uint32_t held_freed_after_reply;
 
@@ -1436,7 +1436,7 @@ held_server(void *arg)
  */
 static struct channel *ch_last;
 static sys_handle_t h_last_recv;
-static int last_done;
+static volatile int last_done;
 
 static void
 last_server(void *arg)

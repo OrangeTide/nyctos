@@ -1977,6 +1977,14 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
  * gives: a reply hands the core to the client it woke, and the slot
  * can be gone and taken by the time this thread runs again.
  *
+ * The channel is read off the client and not off this thread, per
+ * M22 stage five's review. While the entry was the server this
+ * thread's own `t_serve_ch` named the channel it was answering on.
+ * Stage four made the entry the request, so that field belongs to
+ * the client now and a server's is empty: asking this thread was
+ * asking the wrong one of the two, and the question went unasked for
+ * every reply in a boot.
+ *
  * A reply that is refused still takes the thread off the list, which
  * is the case the comment inside is about, so the question is asked
  * whatever the answer was.
@@ -1984,6 +1992,7 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
 sys_err_t
 channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
 {
+    const struct thread *client;
     const struct channel *was;
     intr_state_t s = 0;
     bool held = klock_held();
@@ -1994,7 +2003,8 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
         s = klock_enter();
     }
 
-    was = thread_current()->t_serve_ch;
+    client = thread_by_id(peer);
+    was = client != NULL ? client->t_serve_ch : NULL;
     id = was != NULL ? was->c_id : SYS_ID_INVALID;
     err = reply_inner(peer, reply);
 
@@ -2987,8 +2997,13 @@ channel_free_if_idle(struct channel *ch)
      * channel, and the answer arrives on a channel that is still
      * here. Before stage four the entry was the server, which could
      * leave while that client was still blocked.
+     *
+     * The queues have to be empty for the request to be what kept it.
+     * Asking only whether the channel was not idle counted a slot a
+     * waiting sender would have kept anyway, per stage five's review.
      */
-    if (!idle && ch->c_serving != NULL) {
+    if (ch->c_senders == NULL && ch->c_receivers == NULL &&
+      ch->c_serving != NULL) {
         channel_held_kept_slot++;
     }
 
