@@ -306,13 +306,41 @@ donate(struct thread *to, uint8_t prio)
     }
 }
 
-/* Recompute a thread's priority now that it owes nobody anything. */
+/*
+ * Put a thread back to the priority the clients it still owes justify.
+ *
+ * Not to its base. The comment here used to say "now that it owes
+ * nobody anything", which was true of a record that held one client and
+ * false of a thread that can owe several: answering one of them said
+ * nothing about the others, and the thread went back to base while a
+ * client it still owed waited at a priority it had given away. Section
+ * 12.3 gives a server the priority of whoever it is serving, and a
+ * server serving two is serving the higher of them.
+ *
+ * The donor is forgotten only when there is nobody left. While any
+ * client remains, some client raised this thread and the field still
+ * means what it says.
+ */
 static void
-undonate(struct thread *t)
+owed_reprio(struct thread *t)
 {
-    t->t_donor = NULL;
-    if (t->t_prio != t->t_base_prio) {
-        sched_reprioritise(t, t->t_base_prio);
+    const struct thread *c;
+    uint8_t want = t->t_base_prio;
+
+    for (c = t->t_owed_head; c != NULL; c = c->t_owed_next) {
+        if (c->t_prio > want) {
+            want = c->t_prio;
+        }
+    }
+
+    if (t->t_owed_head == NULL) {
+        t->t_donor = NULL;
+    } else if (want > t->t_base_prio) {
+        channel_owed_kept_prio++;
+    }
+
+    if (t->t_prio != want) {
+        sched_reprioritise(t, want);
     }
 }
 
@@ -389,6 +417,13 @@ uint64_t channel_owed_serving_stale;
  */
 uint64_t channel_owed_kept;
 uint64_t channel_owed_cleared_kept;
+
+/*
+ * Donations given back that did not go all the way to base, because the
+ * thread still owed somebody who had raised it. Counted where the
+ * priority is recomputed, which is where a client stops being owed.
+ */
+uint64_t channel_owed_kept_prio;
 
 /*
  * A client stops being owed. The three places `t_donee` goes back to
@@ -491,6 +526,18 @@ owed_drop(struct thread *client)
     server->t_owed--;
     client->t_owed_next = NULL;
     client->t_donee = NULL;
+
+    /*
+     * And the priority follows the set, which is the whole of why the
+     * two are kept in one place. A client that stops being owed stops
+     * being a reason for this thread to run at its priority, and the
+     * clients that are left are the reasons that remain.
+     *
+     * The raise is still at the call sites, after `serving_begin`,
+     * where it has been since M1 and where the order of the two is
+     * already settled. Only the way back is here.
+     */
+    owed_reprio(server);
 }
 
 /*
@@ -1262,12 +1309,7 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
      * finds out when its reply is refused.
      */
     if (err == SYS_ERR_TIMEOUT && self->t_wait == THREAD_WAIT_REPLY) {
-        if (self->t_donee != NULL) {
-            if (self->t_donee->t_donor == self) {
-                undonate(self->t_donee);
-            }
-            owed_drop(self);
-        }
+        owed_drop(self);
 
         vm_charge_begin();
         msg_buf_take_back(self);
@@ -1823,10 +1865,6 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
     client->t_blocked_on = NULL;
     client->t_wait = THREAD_WAIT_NONE;
 
-    if (self->t_donor == client) {
-        undonate(self);
-    }
-
     /*
      * Which thread received this request, before the record of it goes.
      *
@@ -2016,17 +2054,16 @@ channel_thread_release(struct thread *t, bool tell)
      * is not coming. Section 12.3 says nothing about this because
      * nothing before cancellation could reach it.
      *
-     * Only if the donation is still this thread's. A server that has
-     * already moved on to somebody else is at a priority it owes to
-     * them, and taking it away would be this thread reaching into a
-     * call it is not part of.
+     * Which thread gets it back is the one that owes this client, and
+     * how much it gets back is what the clients it still owes justify.
+     * The test that used to guard this asked whether the donation was
+     * still this thread's, because a server that had moved on to
+     * somebody else was at a priority it owed to them and taking it
+     * away would have been reaching into a call this thread is not
+     * part of. With a set there is nothing to guess: the recompute
+     * happens where the client leaves the set and reads what is left.
      */
-    if (t->t_donee != NULL) {
-        if (t->t_donee->t_donor == t) {
-            undonate(t->t_donee);
-        }
-        owed_drop(t);
-    }
+    owed_drop(t);
 
     vm_charge_begin();
     msg_buf_take_back(t);

@@ -14303,7 +14303,7 @@ so the stage was run eight times per port on two cores rather than once
 per configuration.
 
 **3. The donation is what a thread still owes, not what it last took.**
-*Planned.*
+*Built.*
 
 - *Check.* A server holding a request from a high-priority client and
   answering a low-priority one keeps the priority it owes the first.
@@ -14314,6 +14314,94 @@ per configuration.
   part of this stage.
 - Falsifiable by going back to base: the check names the priority the
   server dropped to and the client it still owed.
+
+**What it settled.** A donation goes back to what a thread still owes
+rather than to its base. The compared report at each tier:
+
+```
+  a server thread owed more than one reply: 2, and at most 2 at once
+  a record that holds one: 2 written over, 3 off a serving list still owing
+  and a set that holds them all: 2 of 2 the record lost
+  a donation given back to what is left: 1 stopped above base
+```
+
+The first three are stage one's and stage two's and they moved,
+because this stage's construction is a second thread that owes two.
+The first of them was also reworded: it read "1 time" while the count
+was one and would have read "2 time" now.
+
+And the construction that produces the fourth, above the line:
+
+```
+a server that owes two clients at once
+    the one it held and the one answered   24 and 21, base 15
+    what it ran at after that reply        24, owing 1
+    and the thread at 20 it yielded to     did not run
+```
+
+**The number and the consequence are both checked, because a number
+nothing depends on can be wrong quietly.** Two clients are queued
+before the server exists, which is the only arrangement in which they
+are served in priority order rather than arrival order. The server
+takes the higher, holds it, takes the lower, answers the lower, and is
+asserted to be running at 24. A third thread at 20 is made runnable
+between the two receives and the server yields after the reply: at the
+priority it still owes the yield comes back to the server and that
+thread has not run, and at base that thread takes the core while a
+client waiting for a reply waits behind it. That is the inversion
+section 12.3 exists to prevent, and it is what the old way back
+produced.
+
+**No program at an explicit priority was needed.** The plan said one
+would be, because everything the shell spawns inherits the shell's
+priority. A kernel thread is made at whatever priority it is asked
+for, which the existing donation check has done since M1, so the
+construction is four kernel threads and is deterministic rather than
+raced.
+
+**The three places that gave a donation back became one.** The reply,
+the deadline and the cancellation each asked whether the donation was
+still the leaving client's before undoing it, which is the question a
+record holding one client has to ask and a set does not. The recompute
+now happens where the client leaves the set, reads what is left, and
+is the same code for all three. The guard in the cancellation path
+whose comment said that taking the priority away would be "reaching
+into a call this thread is not part of" is gone with them: with a set
+there is nothing to guess about which call the priority belongs to.
+
+**The raise stayed where it was.** `donate` is still called at the two
+rendezvous sites after `serving_begin`, and only the way back moved
+into the set. Symmetry would put both in one place, and the order of
+the raise against the list insertion has been settled since M1; this
+stage did not have a reason to disturb it.
+
+**Falsified four ways, and one of them fired in a check from M1.**
+Dropping the loop that reads the remaining clients, which is the code
+as it was, fired `owe: left running at 15, not the 24 it still owed`.
+With that assertion taken out of the way as well, the consequence
+fired instead: `a thread at 20 took the core from a server owing 24`.
+Not counting the recompute fired `every donation went all the way back
+to base`. Taking the recompute out altogether fired M1's own check,
+`server: still donated to after replying`, which is a check written
+fifteen milestones ago catching this one, and is worth naming because
+it means that falsification says less about stage three than it looks
+like it does.
+
+**And answering the other client first gives 21.** Replying to the
+higher one first leaves the server at the lower one's priority, which
+is the recompute reading the set rather than remembering the highest
+it ever saw. That is a demonstration rather than a falsification and
+is recorded as one.
+
+**What it cost.** 992 bytes of text, 48 of bss, and nothing on the
+round trip: 473 to 489 ticks over three runs, inside everything this
+host has shown across the milestone. The recompute walks the set,
+which is one client in every case but the one this stage builds.
+
+And one more channel made and given back, because the check closes
+its handles at the end. A check that exists to say something about
+priorities should not quietly raise the number of channels the boot
+ends holding, which is a number M20 made mean something.
 
 **4. A thread inside requests on two channels.** *Planned.*
 

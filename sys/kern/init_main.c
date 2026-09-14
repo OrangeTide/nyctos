@@ -784,6 +784,209 @@ ipc_checks(void)
 }
 
 /*
+ * A server that owes two clients at different priorities, per M22
+ * stage three.
+ *
+ * Section 12.3 gives a server the priority of whoever it is serving,
+ * and until this stage the way back from that was to the base
+ * priority, on the reasoning that a thread which has replied owes
+ * nobody. A thread can owe several. Answering one of them says nothing
+ * about the rest, and the thread went back to base while a client it
+ * still owed waited at a priority it had given away.
+ *
+ * The construction is two clients queued before the server receives,
+ * so that the queue order is the priority order and the higher one is
+ * served first. The server holds that request, receives the lower, and
+ * answers the lower. What it is running at after that is the question.
+ *
+ * A third thread makes the answer matter rather than merely be a
+ * number. It is readied between the two rendezvous, runs above the
+ * server's base and below the client it still owes, and the server
+ * yields after the reply. At the priority it owes, the yield comes
+ * back to the server and that thread has not run; at base, that thread
+ * takes the core and the client waiting for its reply waits behind it,
+ * which is the inversion section 12.3 exists to prevent.
+ */
+static struct channel *ch_owe;
+static sys_handle_t h_owe_recv;
+static uint8_t owe_hi_prio;
+static uint8_t owe_lo_prio;
+static uint8_t owe_prio_after;
+static uint32_t owe_left_owing;
+static struct thread *owe_mid;
+static int owe_mid_ran;
+static int owe_mid_seen;
+static int owe_done;
+
+#define OWE_BASE    15
+#define OWE_MID     20
+#define OWE_LO      21
+#define OWE_HI      24
+
+static void
+owe_middle(void *arg)
+{
+    (void)arg;
+
+    owe_mid_ran = 1;
+    thread_exit(0);
+}
+
+static void
+owe_server(void *arg)
+{
+    struct sys_op_recv_args rx;
+    struct sys_op_reply_args tx;
+    struct thread *self = thread_current();
+    sys_thread_id_t peer_hi, peer_lo;
+
+    (void)arg;
+
+    memset(&rx, 0, sizeof(rx));
+    if (run(SYS_OP_IPC_RECV, h_owe_recv, &rx, sizeof(rx)) != SYS_OK) {
+        panic("owe: the first receive failed");
+    }
+    peer_hi = rx.peer;
+    if (self->t_prio != OWE_HI) {
+        panic("owe: served the higher client at %u, not %u",
+          (unsigned int)self->t_prio, (unsigned int)OWE_HI);
+    }
+
+    /*
+     * Held rather than answered, and the second receive is what makes
+     * this thread owe two. Without the hold there is one client at a
+     * time and the way back to base is right.
+     */
+    memset(&rx, 0, sizeof(rx));
+    if (run(SYS_OP_IPC_RECV, h_owe_recv, &rx, sizeof(rx)) != SYS_OK) {
+        panic("owe: the second receive failed");
+    }
+    peer_lo = rx.peer;
+    if (self->t_owed != 2) {
+        panic("owe: owes %u after two receives, not two",
+          (unsigned int)self->t_owed);
+    }
+
+    /*
+     * Ready here, between the receives and the reply, so that the
+     * thread is runnable at the moment the priority is given back and
+     * the yield below has something to give the core to.
+     */
+    sched_ready(owe_mid);
+
+    memset(&tx, 0, sizeof(tx));
+    tx.peer = peer_lo;
+    tx.reply.inline_len = 3;
+    memcpy(tx.reply.inline_data, "ok", 3);
+    if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
+        panic("owe: the reply to the lower client failed");
+    }
+
+    owe_prio_after = self->t_prio;
+    owe_left_owing = self->t_owed;
+
+    sched_yield();
+    owe_mid_seen = owe_mid_ran;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.peer = peer_hi;
+    tx.reply.inline_len = 3;
+    memcpy(tx.reply.inline_data, "ok", 3);
+    if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
+        panic("owe: the reply to the higher client failed");
+    }
+
+    if (self->t_prio != self->t_base_prio) {
+        panic("owe: still at %u with nobody left to owe",
+          (unsigned int)self->t_prio);
+    }
+
+    owe_done = 1;
+    thread_exit(0);
+}
+
+static void
+owe_checks(void)
+{
+    struct proc *p = proc_current();
+    struct thread *srv, *lo, *hi;
+    sys_handle_t send_h;
+    sys_err_t err;
+
+    cnputs("a server that owes two clients at once\n");
+
+    ch_owe = channel_create("owe", p);
+    if (ch_owe == NULL) {
+        panic("owe: no channel");
+    }
+    err = handle_insert(&p->p_handles, ch_owe, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_owe_recv);
+    expect("a receive handle on the channel", err, SYS_OK);
+    err = handle_insert(&p->p_handles, ch_owe, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_SEND, &send_h);
+    expect("a send handle on the channel", err, SYS_OK);
+
+    owe_hi_prio = OWE_HI;
+    owe_lo_prio = OWE_LO;
+
+    /*
+     * Both queued before the server exists, which is the only
+     * arrangement in which the order they are served in is the order
+     * of their priorities rather than the order they arrived.
+     */
+    lo = thread_create("owe-lo", OWE_LO, client, (void *)(uintptr_t)send_h);
+    hi = thread_create("owe-hi", OWE_HI, client, (void *)(uintptr_t)send_h);
+    owe_mid = thread_create("owe-mid", OWE_MID, owe_middle, NULL);
+    sched_ready(lo);
+    sched_ready(hi);
+
+    srv = thread_create("owe-srv", OWE_BASE, owe_server, NULL);
+    sched_ready(srv);
+
+    while (!owe_done || !owe_mid_ran) {
+        sched_yield();
+    }
+
+    cnprintf("    %-38s %u and %u, base %u\n",
+      "the one it held and the one answered", (unsigned int)owe_hi_prio,
+      (unsigned int)owe_lo_prio, (unsigned int)OWE_BASE);
+    cnprintf("    %-38s %u, owing %u\n",
+      "what it ran at after that reply", (unsigned int)owe_prio_after,
+      (unsigned int)owe_left_owing);
+    cnprintf("    %-38s %s\n", "and the thread at 20 it yielded to",
+      owe_mid_seen ? "took the core" : "did not run");
+
+    /*
+     * The number first, because it is what the stage changes, and then
+     * the consequence, because a number nothing depends on is a number
+     * that can be wrong quietly.
+     */
+    if (owe_prio_after != owe_hi_prio) {
+        panic("owe: left running at %u, not the %u it still owed",
+          (unsigned int)owe_prio_after, (unsigned int)owe_hi_prio);
+    }
+    if (owe_left_owing != 1) {
+        panic("owe: owed %u after answering one of two",
+          (unsigned int)owe_left_owing);
+    }
+    if (owe_mid_seen) {
+        panic("owe: a thread at %u took the core from a server owing %u",
+          (unsigned int)OWE_MID, (unsigned int)owe_hi_prio);
+    }
+
+    /*
+     * And the channel goes back, so that a check which exists to say
+     * something about priorities does not quietly raise the number of
+     * channels the boot ends holding. M20 made that number mean
+     * something and a check that adds to it is a check taking it away.
+     */
+    expect("giving the channel back",
+      handle_close(&p->p_handles, send_h), SYS_OK);
+    expect("and the receive handle with it",
+      handle_close(&p->p_handles, h_owe_recv), SYS_OK);
+}
+
+/*
  * A server that outranks its client, which is the case that found the
  * defect this exists to keep out.
  *
@@ -17093,6 +17296,7 @@ kernel_main(void)
     high_priority_server_checks();
     chain_bound_checks();
     inversion_checks();
+    owe_checks();
 #if SYS_TIER == 2
     cross_core_donation_checks();
     pool_stress_checks();
@@ -17781,8 +17985,8 @@ kernel_main(void)
      * owes more than the record holds, the milestone has no subject and
      * should be abandoned rather than built.
      */
-    cnprintf("  a server thread owed more than one reply: %lu time, "
-      "at most %u at once\n", (unsigned long)channel_owed_walks,
+    cnprintf("  a server thread owed more than one reply: %lu, and at "
+      "most %u at once\n", (unsigned long)channel_owed_walks,
       (unsigned int)channel_owed_most);
     cnprintf("  a record that holds one: %lu written over, %lu off a "
       "serving list still owing\n",
@@ -17791,6 +17995,8 @@ kernel_main(void)
     cnprintf("  and a set that holds them all: %lu of %lu the record "
       "lost\n", (unsigned long)channel_owed_kept,
       (unsigned long)channel_owed_overwrote);
+    cnprintf("  a donation given back to what is left: %lu stopped "
+      "above base\n", (unsigned long)channel_owed_kept_prio);
 
     if (channel_owed_most <= 1) {
         panic("owed: no thread ever owed more than one reply");
@@ -17819,6 +18025,16 @@ kernel_main(void)
         panic("owed: %lu records written over and %lu of them kept",
           (unsigned long)channel_owed_overwrote,
           (unsigned long)channel_owed_kept);
+    }
+
+    /*
+     * And a donation that stopped above base because the thread still
+     * owed somebody who had raised it. Zero would mean the recompute
+     * never had anything left to read, and the way back to base would
+     * be right for every case this boot reaches.
+     */
+    if (channel_owed_kept_prio == 0) {
+        panic("owed: every donation went all the way back to base");
     }
 
 
