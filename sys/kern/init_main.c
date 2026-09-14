@@ -16743,11 +16743,14 @@ owed_checks(void)
     uint32_t standing = 0;
     uint32_t phantom = 0;
     uint32_t checked = 0;
+    uint32_t pointing = 0;
+    uint32_t owing = 0;
     intr_state_t ks = 0;
     intr_state_t s;
+    uint64_t t0;
+    uint64_t t1;
     bool held;
     uint32_t i;
-    uint32_t j;
 
     /*
      * Under the kernel's exclusion, and with interrupts off inside it.
@@ -16765,12 +16768,12 @@ owed_checks(void)
         ks = klock_enter();
     }
     s = md_intr_disable();
+    t0 = time_now();
 
     for (i = 0; i < pool_slots(threads); i++) {
         struct thread *t = pool_at(threads, i);
         struct thread *c;
         uint32_t listed;
-        uint32_t seen = 0;
 
         if (t == NULL) {
             continue;
@@ -16783,35 +16786,18 @@ owed_checks(void)
             }
         }
 
+        if (t->t_donee != NULL) {
+            pointing++;
+        }
+
         /*
-         * And every thread's count against the clients pointing at it,
-         * not only the one that owed two.
+         * Every thread's list against its count, and every member of
+         * that list against its own record of who owes it.
          *
          * The walk inside the rendezvous runs where the count passes
          * one, which is once in this boot and says nothing about the
-         * other thirty-one slots. This is the same question asked of
-         * all of them at a moment when the answer should be settled,
-         * and what it would catch is a count left behind: a thread that
-         * still owes somebody who has gone, or a client still pointing
-         * at a thread that has stopped counting it.
-         */
-        for (j = 0; j < pool_slots(threads); j++) {
-            struct thread *c = pool_at(threads, j);
-
-            if (c != NULL && c->t_donee == t) {
-                seen++;
-            }
-        }
-        if (seen != t->t_owed) {
-            panic("owed: %s owes %u and %u threads say so", t->t_name,
-              (unsigned int)t->t_owed, (unsigned int)seen);
-        }
-
-        /*
-         * And the list against both of them. A walk of every `t_donee`
-         * says how many clients point here; the list says which ones,
-         * and a set that agrees on the number while holding the wrong
-         * threads is the failure a count alone cannot see.
+         * other thirty-one slots. This asks all of them at a moment
+         * when the answer should be settled.
          */
         listed = 0;
         for (c = t->t_owed_head; c != NULL; c = c->t_owed_next) {
@@ -16829,9 +16815,28 @@ owed_checks(void)
             panic("owed: %s owes %u and its list holds %u", t->t_name,
               (unsigned int)t->t_owed, (unsigned int)listed);
         }
+        owing += t->t_owed;
         checked++;
     }
 
+    /*
+     * And the two totals, which is what an inner walk of every thread
+     * used to say and this says in one pass instead of thirty-two.
+     *
+     * Each thread's list holds exactly as many clients as it owes, and
+     * every one of them names that thread, both checked above. So the
+     * sum of what every thread owes is the number of distinct clients
+     * that are on some list. If that equals the number of clients
+     * naming a server, then no client names a server whose list it is
+     * not on, which is the third view and the one the other two cannot
+     * give between them.
+     */
+    if (owing != pointing) {
+        panic("owed: %u clients are owed and %u name a server",
+          (unsigned int)owing, (unsigned int)pointing);
+    }
+
+    t1 = time_now();
     md_intr_restore(s);
     if (!held) {
         klock_exit(ks);
@@ -16848,8 +16853,9 @@ owed_checks(void)
     cnprintf("    %-38s %u, %u of them owing nobody\n",
       "on a serving list at the end", (unsigned int)standing,
       (unsigned int)phantom);
-    cnprintf("    %-38s %u threads, all agreeing\n",
-      "count, list and walk at the end", (unsigned int)checked);
+    cnprintf("    %-38s %u threads, all agreeing, about %lu us\n",
+      "count, list and walk at the end", (unsigned int)checked,
+      (unsigned long)((t1 - t0) * 1000000ULL / time_hz()));
     cnprintf("    %-38s %lu of %lu\n",
       "the set kept what a block gave away",
       (unsigned long)channel_owed_cleared_kept,
@@ -17425,7 +17431,6 @@ kernel_main(void)
           (unsigned int)DEADLINE_WORKING_EXPECTED);
     }
 
-    owed_checks();
 
 
     cnprintf("frames: %u of %u used at most, %u still held\n",
@@ -17466,6 +17471,16 @@ kernel_main(void)
     intr_region_report();
     irq_dispatch_report();
     ipc_report();
+
+    /*
+     * And what a server thread owes, after the regions are reported
+     * for the reason the channel walk below is placed here: this walk
+     * runs with the kernel held and interrupts off, and a region
+     * opened after that report is one the boot's own instrument cannot
+     * see. What stands in for being measured is printing how long it
+     * held, which it does.
+     */
+    owed_checks();
 
     /*
      * The one pool nothing gives back, per M20 stage one, read once
@@ -17773,8 +17788,9 @@ kernel_main(void)
       "serving list still owing\n",
       (unsigned long)channel_owed_overwrote,
       (unsigned long)channel_owed_left_serving);
-    cnprintf("  and a set that holds them all: %lu the record lost and "
-      "the set kept\n", (unsigned long)channel_owed_kept);
+    cnprintf("  and a set that holds them all: %lu of %lu the record "
+      "lost\n", (unsigned long)channel_owed_kept,
+      (unsigned long)channel_owed_overwrote);
 
     if (channel_owed_most <= 1) {
         panic("owed: no thread ever owed more than one reply");

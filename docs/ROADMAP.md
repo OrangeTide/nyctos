@@ -14184,14 +14184,14 @@ already died or gone was counted and is zero in all eight runs.
 in the compared report at each tier:
 
 ```
-  and a set that holds them all: 1 the record lost and the set kept
+  and a set that holds them all: 1 of 1 the record lost
 ```
 
 and two more above it, where the walk is new and the count of blocks is
 the host's:
 
 ```
-    count, list and walk at the end        19 threads, all agreeing
+    count, list and walk at the end        19 threads, all agreeing, about 205 us
     the set kept what a block gave away    19 of 19
 ```
 
@@ -14257,6 +14257,50 @@ pointers on each of thirty-two threads and the counters. The best round
 trip was 460 to 675 ticks over three runs against 442 to 471 before,
 inside a spread this host has shown from 442 to 696 across the
 milestone so far.
+
+**What the review found: the walk was inside the instrument it would
+have distorted.** It runs with the kernel held and interrupts off, and
+it was called before `intr_region_report`, so it was one of the regions
+section 13.3 measures. Measured at 404 microseconds, against a longest
+region of 708 in the same run, which means a diagnostic added by this
+milestone was within a factor of two of becoming the number the boot
+reports about its worst interrupts-off region. It is after that report
+now, beside M20's channel walk, which is there for the same reason and
+says so in its own comment. What stands in for being measured is
+printing how long it held, which it now does.
+
+**And it was quadratic where one pass would do.** Every thread was
+walked, and for each of them every thread again, to count the clients
+pointing at it. The same fact comes out of one pass: each thread's list
+is already checked to hold exactly what that thread owes and to hold
+only clients that name it, so the sum of what every thread owes is the
+number of clients that are on some list. Comparing that with the number
+of clients naming a server says no client names a server whose list it
+is not on, which is the third view and the one the other two cannot
+give between them. 404 microseconds became 205 to 221.
+
+**A number in the compared report whose partner was on another line.**
+The set's line carried a 1 and the line above it carried the same 1,
+and the reader had to notice that the two are one fact. It reads `1 of
+1 the record lost` now. The same shape M21's review found in a sum
+whose last term was a subtraction, arriving as a pair split across two
+lines instead.
+
+**What a strict count does to an untested path, written down.** The
+drop used to decrement quietly; it panics now if the thread owes
+nothing, and stage two added a second panic if the client is not on the
+list. A server that exits owing more than one releases only the client
+its record names, and the others keep pointing at a thread whose slot
+will be cleared when it is reused, so the sweep that eventually
+releases them would now stop the machine where before it would have
+carried on with a wrong count. That is the better failure and it is a
+change on a path nothing here takes: drops whose thread had already
+gone were counted at zero in stage one's review and are still zero.
+
+**Sixteen runs at Tier 2 on both ports, all of them finishing.** The
+new panics are strict and the rendezvous is where the two cores meet,
+so the stage was run eight times per port on two cores rather than once
+per configuration.
 
 **3. The donation is what a thread still owes, not what it last took.**
 *Planned.*
