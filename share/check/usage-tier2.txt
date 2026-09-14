@@ -18,7 +18,7 @@ used at most: 24 of 32 threads, 13 of 24 processes
   a server thread owed more than one reply: 3, and at most 2 at once
   a record that holds one: 3 written over, and a set that kept 3 of them
   a donation given back: 2 stopped above base, 0 left to another core
-  a thread inside requests on two channels: 1, at most 2 channels at once
+  a request taken on a channel its thread was already serving another on: 1
   names: 2589 given out, 2557 again, 1 spaces without, 9 live
   names given back: 2580, each throwing away what was filed under it
 stage 9 complete

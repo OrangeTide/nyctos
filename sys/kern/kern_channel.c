@@ -412,14 +412,13 @@ uint64_t channel_owed_reply_unnamed;
 uint64_t channel_owed_walks;
 
 /*
- * A thread inside requests on more than one channel, per M22 stage
- * four. One entry per request makes that expressible; the entry used
- * to be the thread and there was one link between every list it could
- * be on. Counted at the moment it happens, with the greatest number of
- * channels one thread was serving on at once beside it.
+ * Requests taken by a thread that already had one on another channel,
+ * per M22 stage four. One entry per request makes that expressible;
+ * the entry used to be the thread and there was one link between every
+ * list it could be on. Counted where it happens, and how many channels
+ * at once is asserted by the check that builds the case.
  */
 uint64_t channel_serving_two;
-uint32_t channel_serving_most_ch;
 
 static void serving_begin(struct channel *ch, struct thread *client);
 static void serving_end(struct thread *client);
@@ -2189,6 +2188,21 @@ channel_thread_exited(struct thread *t)
 {
     intr_state_t s = md_intr_disable();
 
+    /*
+     * A thread that is a request being served cannot be here: it is
+     * blocked waiting for the reply, and every way out of that wait
+     * takes it off the channel first. Asserted because this stage
+     * broke it once. The path that gives up at a deadline left the
+     * entry behind, the thread went on to exit, and what found it was
+     * M20's channel walk reporting a list that named a free slot,
+     * several thousand lines of check later and a long way from the
+     * cause.
+     */
+    if (t->t_serve_ch != NULL) {
+        panic("channel: %s exits while served on %s", t->t_name,
+          t->t_serve_ch->c_name);
+    }
+
 
     if (t->t_client != 0) {
         struct thread *client = thread_by_id(t->t_client);
@@ -2564,37 +2578,27 @@ serving_begin(struct channel *ch, struct thread *client)
     ch->c_serving = client;
 
     /*
-     * And whether the thread serving this request is now inside
-     * requests on more than one channel, which the entry being the
-     * request is what makes possible. Asked only where it owes more
-     * than one, which is rare, so the walk is not on the path every
-     * rendezvous takes.
+     * And whether the thread serving this request now has one on
+     * another channel, which the entry being the request is what
+     * makes possible.
+     *
+     * One pass over what it owes, and only where it owes more than
+     * one. The first version of this counted the distinct channels
+     * among them, which is a walk inside a walk on the path every
+     * rendezvous takes, with interrupts off and section 13.3
+     * measuring what that costs. How many channels at once is a fact
+     * the check asserts where it builds the case; what the kernel
+     * counts is the event.
      */
     if (client->t_donee != NULL && client->t_donee->t_owed > 1) {
         const struct thread *a;
-        uint32_t distinct = 0;
 
         for (a = client->t_donee->t_owed_head; a != NULL;
           a = a->t_owed_next) {
-            const struct thread *b;
-            bool seen = false;
-
-            for (b = client->t_donee->t_owed_head; b != a;
-              b = b->t_owed_next) {
-                if (b->t_serve_ch == a->t_serve_ch) {
-                    seen = true;
-                    break;
-                }
+            if (a->t_serve_ch != ch) {
+                channel_serving_two++;
+                break;
             }
-            if (!seen) {
-                distinct++;
-            }
-        }
-        if (distinct > 1) {
-            channel_serving_two++;
-        }
-        if (distinct > channel_serving_most_ch) {
-            channel_serving_most_ch = distinct;
         }
     }
 }

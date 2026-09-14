@@ -14465,7 +14465,7 @@ inside two of them on two channels. The compared report at each tier:
   a server thread owed more than one reply: 3, and at most 2 at once
   a record that holds one: 3 written over, and a set that kept 3 of them
   a donation given back: 2 stopped above base, 0 left to another core
-  a thread inside requests on two channels: 1, at most 2 channels at once
+  a request taken on a channel its thread was already serving another on: 1
 ```
 
 and the construction, above the line:
@@ -14537,6 +14537,45 @@ which is the old model's consequence without its other damage.
 **What it cost.** 1392 bytes of text, 64 of bss, and nothing on the
 round trip: 452 to 571 ticks over three runs. Two more channels made
 and given back, for the two the check needs.
+
+**What the review found: a measurement that was a walk inside a walk on
+the rendezvous.** The count of channels a thread was serving on at once
+compared every entry against every earlier one, on the path every
+rendezvous takes, with interrupts off and section 13.3 measuring what
+that costs. The set is two here and thirty-one at worst, so the work is
+small today and quadratic in something the kernel does not bound below
+the thread pool. That is the stage two review's finding again and one
+path hotter: a number this milestone wanted made the region it was
+measured in longer.
+
+It is one pass now, and it counts the event rather than the maximum: a
+request taken by a thread that already had one on another channel. How
+many channels at once is asserted where the case is built, by the check
+that builds it, which is the right place for a fact that needs a
+construction to be true at all.
+
+**And the failure the stage hit once is now caught where it happens.**
+Leaving an entry behind when a request ends was found by M20's channel
+walk saying a serving list named a free thread slot, several thousand
+lines of check after the cause and with nothing in the message about
+what had gone wrong. A thread cannot exit while it is a request being
+served, because it is blocked waiting for the reply and every way out
+of that wait takes it off the channel first, so the exit says so:
+`fourways exits while served on fourways send`, from the same
+falsification.
+
+**The check read two channels' lists with nothing held.** Nothing else
+touches those two channels and both clients are blocked, so nothing was
+racing. It is read under the kernel lock anyway, and both readings are
+one region so that the two lists describe one moment. That rule came
+out of M20 stage three and again out of this milestone's own stage
+three review, and arguing an exception for the third one is how the
+rule stops being a rule.
+
+**Two waiters that were one waiter.** Stage three's review added a wait
+for senders on a queue and stage four added another, differing in
+whether they counted to one or two. They are one function taking a
+channel, a count and a name.
 
 **5. A held client that dies, and a channel that must not go.**
 *Planned.*

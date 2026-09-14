@@ -919,7 +919,7 @@ owe_server(void *arg)
  * both clients and giving up the core is what lets them run.
  */
 static void
-owe_wait_queued(uint32_t want)
+wait_senders(struct channel *ch, uint32_t want, const char *what)
 {
     uint64_t until = time_now() + time_from_ms(2000);
     uint32_t cap = pool_slots(thread_pool());
@@ -936,9 +936,10 @@ owe_wait_queued(uint32_t want)
             ks = klock_enter();
             took = true;
         }
-        for (t = ch_owe->c_senders; t != NULL; t = t->t_snext) {
+        for (t = ch->c_senders; t != NULL; t = t->t_snext) {
             if (++n > cap) {
-                panic("owe: the sender queue does not end");
+                panic("%s: the sender queue of %s does not end", what,
+                  ch->c_name);
             }
         }
         if (took) {
@@ -950,8 +951,8 @@ owe_wait_queued(uint32_t want)
             return;
         }
         if (time_now() > until) {
-            panic("owe: %u clients queued, not %u", (unsigned int)n,
-              (unsigned int)want);
+            panic("%s: %u queued on %s, not %u", what, (unsigned int)n,
+              ch->c_name, (unsigned int)want);
         }
         sched_yield();
     }
@@ -991,7 +992,7 @@ owe_checks(void)
     owe_mid = thread_create("owe-mid", OWE_MID, owe_middle, NULL);
     sched_ready(lo);
     sched_ready(hi);
-    owe_wait_queued(2);
+    wait_senders(ch_owe, 2, "owe");
 
     srv = thread_create("owe-srv", OWE_BASE, owe_server, NULL);
     sched_ready(srv);
@@ -1061,6 +1062,86 @@ static uint32_t two_lists;
 static uint32_t two_owed;
 static int two_done;
 
+/* Whether a channel is serving anything, read under the lock. */
+static bool
+two_busy(struct channel *ch)
+{
+    intr_state_t is;
+    intr_state_t ks = 0;
+    bool took = false;
+    bool busy;
+
+    is = md_intr_disable();
+    if (!klock_held()) {
+        ks = klock_enter();
+        took = true;
+    }
+    busy = ch->c_serving != NULL;
+    if (took) {
+        klock_exit(ks);
+    }
+    md_intr_restore(is);
+
+    return busy;
+}
+
+/*
+ * Both lists read at one moment, under the kernel's exclusion.
+ *
+ * The clients are blocked and this thread is the only one serving
+ * these two channels, so nothing here is racing today. It is read
+ * under the lock anyway because that is the rule M20 stage three and
+ * M21 stage three both arrived at the hard way: a check that reads a
+ * channel's lists with nothing held is a check that can be right about
+ * a moment that never existed.
+ */
+static void
+two_look(struct thread *self)
+{
+    intr_state_t is;
+    intr_state_t ks = 0;
+    bool took = false;
+    struct thread *ea, *eb;
+
+    is = md_intr_disable();
+    if (!klock_held()) {
+        ks = klock_enter();
+        took = true;
+    }
+
+    ea = ch_two_a->c_serving;
+    eb = ch_two_b->c_serving;
+    two_owed = self->t_owed;
+    two_lists = (ea != NULL ? 1u : 0u) + (eb != NULL ? 1u : 0u);
+
+    /*
+     * Each list holds one entry, that entry is a client, and the
+     * thread serving it is this one. Walked to the end rather than
+     * read at the head, because a list that runs into another one has
+     * a head that looks right.
+     */
+    if (ea == NULL || ea->t_serve_next != NULL) {
+        panic("two: the first list does not hold exactly one request");
+    }
+    if (eb == NULL || eb->t_serve_next != NULL) {
+        panic("two: the second list does not hold exactly one request");
+    }
+    if (ea == eb) {
+        panic("two: one entry is on both lists");
+    }
+    if (ea->t_donee != self || eb->t_donee != self) {
+        panic("two: a list names a request this thread is not serving");
+    }
+    if (ea->t_serve_ch != ch_two_a || eb->t_serve_ch != ch_two_b) {
+        panic("two: an entry names a channel it is not on");
+    }
+
+    if (took) {
+        klock_exit(ks);
+    }
+    md_intr_restore(is);
+}
+
 static void
 two_server(void *arg)
 {
@@ -1087,40 +1168,7 @@ two_server(void *arg)
         panic("two: the receive on the second channel failed");
     }
 
-    two_owed = self->t_owed;
-    two_lists = 0;
-    if (ch_two_a->c_serving != NULL) {
-        two_lists++;
-    }
-    if (ch_two_b->c_serving != NULL) {
-        two_lists++;
-    }
-
-    /*
-     * Each list holds one entry, that entry is the client, and the
-     * thread serving it is this one. Walked to the end rather than
-     * read at the head, because a list that runs into another one has
-     * a head that looks right.
-     */
-    if (ch_two_a->c_serving == NULL ||
-      ch_two_a->c_serving->t_serve_next != NULL) {
-        panic("two: the first list does not hold exactly one request");
-    }
-    if (ch_two_b->c_serving == NULL ||
-      ch_two_b->c_serving->t_serve_next != NULL) {
-        panic("two: the second list does not hold exactly one request");
-    }
-    if (ch_two_a->c_serving == ch_two_b->c_serving) {
-        panic("two: one entry is on both lists");
-    }
-    if (ch_two_a->c_serving->t_donee != self ||
-      ch_two_b->c_serving->t_donee != self) {
-        panic("two: a list names a request this thread is not serving");
-    }
-    if (ch_two_a->c_serving->t_serve_ch != ch_two_a ||
-      ch_two_b->c_serving->t_serve_ch != ch_two_b) {
-        panic("two: an entry names a channel it is not on");
-    }
+    two_look(self);
 
     memset(&rep, 0, sizeof(rep));
     rep.handle = SYS_ID_INVALID;
@@ -1129,10 +1177,10 @@ two_server(void *arg)
     if (channel_reply(peer_a, &rep) != SYS_OK) {
         panic("two: the reply on the first channel failed");
     }
-    if (ch_two_a->c_serving != NULL) {
+    if (two_busy(ch_two_a)) {
         panic("two: the first list still holds a request answered");
     }
-    if (ch_two_b->c_serving == NULL) {
+    if (!two_busy(ch_two_b)) {
         panic("two: the second list lost its request to the first");
     }
 
@@ -1143,7 +1191,7 @@ two_server(void *arg)
     if (channel_reply(peer_b, &rep) != SYS_OK) {
         panic("two: the reply on the second channel failed");
     }
-    if (ch_two_b->c_serving != NULL) {
+    if (two_busy(ch_two_b)) {
         panic("two: the second list still holds a request answered");
     }
 
@@ -1167,38 +1215,6 @@ two_client(void *arg)
     }
 
     thread_exit(0);
-}
-
-static void
-two_wait_queued(struct channel *ch)
-{
-    uint64_t until = time_now() + time_from_ms(2000);
-
-    for (;;) {
-        bool queued;
-        intr_state_t is;
-        intr_state_t ks = 0;
-        bool took = false;
-
-        is = md_intr_disable();
-        if (!klock_held()) {
-            ks = klock_enter();
-            took = true;
-        }
-        queued = ch->c_senders != NULL;
-        if (took) {
-            klock_exit(ks);
-        }
-        md_intr_restore(is);
-
-        if (queued) {
-            return;
-        }
-        if (time_now() > until) {
-            panic("two: nothing queued on %s", ch->c_name);
-        }
-        sched_yield();
-    }
 }
 
 static void
@@ -1231,8 +1247,8 @@ two_channel_checks(void)
     cb = thread_create("two-b-cl", 21, two_client, ch_two_b);
     sched_ready(ca);
     sched_ready(cb);
-    two_wait_queued(ch_two_a);
-    two_wait_queued(ch_two_b);
+    wait_senders(ch_two_a, 1, "two");
+    wait_senders(ch_two_b, 1, "two");
 
     srv = thread_create("two-srv", 15, two_server, NULL);
     sched_ready(srv);
@@ -1251,9 +1267,8 @@ two_channel_checks(void)
         panic("two: owed %u on %u lists", (unsigned int)two_owed,
           (unsigned int)two_lists);
     }
-    if (channel_serving_most_ch < 2) {
-        panic("two: the kernel saw at most %u channels at once",
-          (unsigned int)channel_serving_most_ch);
+    if (channel_serving_two == 0) {
+        panic("two: the kernel counted no request on a second channel");
     }
 
     expect("giving the first channel back",
@@ -18258,9 +18273,8 @@ kernel_main(void)
       "left to another core\n",
       (unsigned long)channel_owed_kept_prio,
       (unsigned long)channel_owed_reprio_elsewhere);
-    cnprintf("  a thread inside requests on two channels: %lu, at most "
-      "%u channels at once\n", (unsigned long)channel_serving_two,
-      (unsigned int)channel_serving_most_ch);
+    cnprintf("  a request taken on a channel its thread was already "
+      "serving another on: %lu\n", (unsigned long)channel_serving_two);
 
     if (channel_owed_most <= 1) {
         panic("owed: no thread ever owed more than one reply");
@@ -18308,7 +18322,7 @@ kernel_main(void)
      * would mean the boot never built the case the serving list was
      * changed shape for.
      */
-    if (channel_serving_two == 0 || channel_serving_most_ch < 2) {
+    if (channel_serving_two == 0) {
         panic("owed: no thread was inside requests on two channels");
     }
 
