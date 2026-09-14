@@ -14723,7 +14723,7 @@ and not the one its record happened to name. One line in the compared
 report at each tier:
 
 ```
-  a death that reached every client it owed: 2 at once at most, and 1 left to the owner's
+  a death that reached every client it owed: 2 released at once at most, and 1 left to the owner's
 ```
 
 and the construction above the line:
@@ -14794,6 +14794,55 @@ than counted as covered.
 **What it cost.** 918 bytes of text, 64 of bss, and one more channel
 made and given back. Three clients told `STALE` a boot became five,
 and requests that end with their client went from 15 to 17.
+
+**What the review found.** A walk with nothing held, and two smaller
+things.
+
+**Sixty-nine exits a boot hold no kernel lock, and four of them owe
+somebody.** A thread ended from a syscall is inside an entry from a
+vector and holds the kernel's exclusion. A kernel thread calling
+`thread_exit` holds nothing, which the lock's own comment says in as
+many words: everything that enters from a vector holds it and every
+kernel thread does not. `channel_thread_exited` unlinks clients from
+a channel's serving list, gives a donation back and makes threads
+runnable, and all it had was interrupts off on this core, which is
+this core keeping out of its own way and not the other core keeping
+out of it.
+
+Counted rather than argued: 2531 exits under the lock, 69 without,
+and 4 of those 69 owing at least one client. The fix is the pattern
+this file already uses in four other places, `klock_held` and take it
+if this core does not have it.
+
+The single-client release this stage replaced was exposed the same
+way, so the hole is older than the stage. What the stage did was make
+the unlocked region longer and give it more to touch, which is what
+makes it worth closing now rather than what makes it wrong. This is
+the second time in this milestone that a walk turned out to be
+holding nothing, after stage one's.
+
+**A flag each, rather than one counter two threads write.** The
+check's two clients both did `owing_back++` and the boot waited for
+it to reach two. Two threads reading and writing one word is an
+update that can be lost, and the one that is lost is a boot waiting
+for a client that has already finished.
+
+Not observed. Both clients came back on core 0 in four Tier 2 runs,
+which is what the deferred release makes likely: they are readied
+together with dispatch suppressed and the core that readies them
+runs them. The flags are one per client so that the check does not
+rest on that.
+
+**And the deadline case is asked first.** A client whose deadline has
+fired is not blocked on anything, so section 12.5 will not find it:
+counting it as one left for the owner's death named it as waiting for
+a release that was never going to look for it. The boot does not
+reach that case at all, so nothing moved. Reordered on the reading,
+and written down as that.
+
+The compared line now says `released at once at most`, which is what
+the number counts. What one death reached and what it released are
+the same only when nothing is left to the owner.
 
 **7. What it cost, and section 12.6 written to it.** *Planned.*
 

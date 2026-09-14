@@ -1597,7 +1597,7 @@ held_death_checks(void)
 static struct channel *ch_owing;
 static sys_handle_t h_owing_recv;
 static volatile sys_err_t owing_err[2];
-static volatile int owing_back;
+static volatile int owing_back[2];
 static uint64_t owing_took;
 static uint64_t owing_most;
 
@@ -1618,9 +1618,16 @@ owing_client(void *arg)
     req.inline_len = 6;
     memcpy(req.inline_data, "dying", 6);
 
+    /*
+     * One flag each, and not one counter, per stage six's review.
+     * Both of these are released by the same death and at Tier 2
+     * they come back on two cores, so a shared `++` is two threads
+     * reading and writing one word: the update that is lost is a
+     * boot that waits for a client that has already finished.
+     */
     owing_err[which] = channel_send(ch_owing, 0, &req, &rep,
       time_now() + time_from_ms(OWING_MS));
-    owing_back++;
+    owing_back[which] = 1;
 
     thread_exit(0);
 }
@@ -1685,7 +1692,7 @@ owing_checks(void)
     srv = thread_create("owing-srv", OWING_BASE, owing_server, NULL);
     sched_ready(srv);
 
-    while (owing_back < 2) {
+    while (!owing_back[0] || !owing_back[1]) {
         sched_yield();
     }
     owing_took = (time_now() - t0) * 1000000ULL / time_hz();
@@ -18714,8 +18721,8 @@ kernel_main(void)
       "slot kept for one: %lu\n", (unsigned long)channel_held_died,
       (unsigned long)channel_held_kept_slot);
 
-    cnprintf("  a death that reached every client it owed: %lu at "
-      "once at most, and %lu left to the owner's\n",
+    cnprintf("  a death that reached every client it owed: %lu "
+      "released at once at most, and %lu left to the owner's\n",
       (unsigned long)channel_owed_death_most,
       (unsigned long)channel_owed_death_left);
 

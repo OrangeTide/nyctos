@@ -2233,6 +2233,8 @@ void
 channel_thread_exited(struct thread *t)
 {
     intr_state_t s = md_intr_disable();
+    intr_state_t ks = 0;
+    bool took = false;
     struct thread *client;
     uint64_t released = 0;
     uint32_t steps;
@@ -2254,6 +2256,29 @@ channel_thread_exited(struct thread *t)
 
 
     /*
+     * Under the kernel's exclusion, and taken here only if this core
+     * does not already have it, per M22 stage six's review.
+     *
+     * An exit arrives either way. A thread ended from a syscall is
+     * inside an entry from a vector and holds it; a kernel thread
+     * calling thread_exit holds nothing, which is 69 of the exits in
+     * a boot and 4 of the exits that owe anybody. The walk below
+     * unlinks clients from a channel's serving list, gives a
+     * donation back and makes threads runnable, and the other core
+     * can be inside a rendezvous on the same channel while it does.
+     * Interrupts off is this core keeping out of its own way, and
+     * that was the whole of what this had.
+     *
+     * The single-client release this replaces was exposed the same
+     * way. The walk is longer and touches more, which is what makes
+     * it worth closing rather than what makes it wrong.
+     */
+    took = !klock_held();
+    if (took) {
+        ks = klock_enter();
+    }
+
+    /*
      * Deferred once around the whole walk, for the reason section
      * 12.5's walk defers: releasing a client makes it runnable, and
      * one that outranks this thread would take the core in the middle
@@ -2271,7 +2296,24 @@ channel_thread_exited(struct thread *t)
             panic("channel: the list of %s does not end", t->t_name);
         }
 
-        if (owner_going(t, client->t_blocked_on)) {
+        if (!waiting) {
+            /*
+             * Its deadline fired and it has not run yet, so it is
+             * already runnable with its answer written and is going
+             * to take itself off the set when it does run. Releasing
+             * it again would enqueue a thread that is on a run
+             * queue. Taken off here anyway, for the reason the next
+             * case gives, and its own drop then finds nothing to do.
+             *
+             * Asked before the owner, per this stage's review.
+             * Section 12.5 releases what is REPLY-blocked on a
+             * channel, and this thread is not blocked on anything
+             * any more: counting it as one left for the owner's
+             * death would name it as waiting for a release that is
+             * never going to look for it.
+             */
+            owed_drop(client);
+        } else if (owner_going(t, client->t_blocked_on)) {
             /*
              * Left for section 12.5, which is going to tell it
              * OWNER_DEAD, and taken off the set here anyway: the
@@ -2290,16 +2332,6 @@ channel_thread_exited(struct thread *t)
             if (client->t_serve_ch != NULL) {
                 channel_held_died++;
             }
-            owed_drop(client);
-        } else if (!waiting) {
-            /*
-             * Its deadline fired and it has not run yet, so it is
-             * already runnable with its answer written and is going
-             * to take itself off the set when it does run. Releasing
-             * it again would enqueue a thread that is on a run queue.
-             * Taken off here for the same reason as above, and its
-             * own drop then finds nothing to do.
-             */
             owed_drop(client);
         } else {
             channel_stale_clients++;
@@ -2332,6 +2364,10 @@ channel_thread_exited(struct thread *t)
     }
 
     sched_undefer();
+
+    if (took) {
+        klock_exit(ks);
+    }
 
     /*
      * And the record, which named at most one of them. Until this
