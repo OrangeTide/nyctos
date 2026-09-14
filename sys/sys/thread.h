@@ -169,9 +169,15 @@ struct thread {
     bool                t_don_across;
 
     /*
-     * The channel this thread is inside a request on, and the next
-     * thread serving the same one. Section 12.3's chain is walked
-     * along these.
+     * The channel this thread's own request is being served on, and
+     * the next request being served on the same one. Section 12.3's
+     * chain is walked along these.
+     *
+     * Client-side since M22 stage four. These used to be the server's,
+     * one channel and one link for a thread that can be inside
+     * requests on several, and the lists ran into each other. A client
+     * is served on one channel at a time, so one of each per thread is
+     * a full account of the entries.
      */
     struct channel     *t_serve_ch;
     struct thread      *t_serve_next;

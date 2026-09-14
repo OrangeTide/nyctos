@@ -1040,6 +1040,229 @@ owe_checks(void)
 }
 
 /*
+ * A thread inside requests on two channels, per M22 stage four.
+ *
+ * The serving entry used to be the server thread, and a thread has one
+ * `t_serve_next` between every list it could be on. A server holding a
+ * request on one channel and taking one on another wrote the second
+ * list into the field the first was using, so the first ran into the
+ * second and unlinking took the thread off one of them. `README.md`
+ * carried that as worse if it happened, since nothing in the boot did
+ * it. This is the boot doing it.
+ *
+ * The entry is the request now, and a client is served on one channel
+ * at a time, so the two lists are separate and each one ends.
+ */
+static struct channel *ch_two_a;
+static struct channel *ch_two_b;
+static sys_handle_t h_two_a;
+static sys_handle_t h_two_b;
+static uint32_t two_lists;
+static uint32_t two_owed;
+static int two_done;
+
+static void
+two_server(void *arg)
+{
+    struct sys_msg msg, rep;
+    struct thread *self = thread_current();
+    sys_thread_id_t peer_a, peer_b;
+    uint64_t cookie;
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(ch_two_a, &msg, &peer_a, &cookie) != SYS_OK) {
+        panic("two: the receive on the first channel failed");
+    }
+
+    /*
+     * Held, and the second request comes from the other channel. This
+     * is the arrangement section 19.3 says a server should not be
+     * written in and nothing refuses, and until this stage it was the
+     * arrangement that corrupted a list.
+     */
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(ch_two_b, &msg, &peer_b, &cookie) != SYS_OK) {
+        panic("two: the receive on the second channel failed");
+    }
+
+    two_owed = self->t_owed;
+    two_lists = 0;
+    if (ch_two_a->c_serving != NULL) {
+        two_lists++;
+    }
+    if (ch_two_b->c_serving != NULL) {
+        two_lists++;
+    }
+
+    /*
+     * Each list holds one entry, that entry is the client, and the
+     * thread serving it is this one. Walked to the end rather than
+     * read at the head, because a list that runs into another one has
+     * a head that looks right.
+     */
+    if (ch_two_a->c_serving == NULL ||
+      ch_two_a->c_serving->t_serve_next != NULL) {
+        panic("two: the first list does not hold exactly one request");
+    }
+    if (ch_two_b->c_serving == NULL ||
+      ch_two_b->c_serving->t_serve_next != NULL) {
+        panic("two: the second list does not hold exactly one request");
+    }
+    if (ch_two_a->c_serving == ch_two_b->c_serving) {
+        panic("two: one entry is on both lists");
+    }
+    if (ch_two_a->c_serving->t_donee != self ||
+      ch_two_b->c_serving->t_donee != self) {
+        panic("two: a list names a request this thread is not serving");
+    }
+    if (ch_two_a->c_serving->t_serve_ch != ch_two_a ||
+      ch_two_b->c_serving->t_serve_ch != ch_two_b) {
+        panic("two: an entry names a channel it is not on");
+    }
+
+    memset(&rep, 0, sizeof(rep));
+    rep.handle = SYS_ID_INVALID;
+    rep.inline_len = 3;
+    memcpy(rep.inline_data, "ok", 3);
+    if (channel_reply(peer_a, &rep) != SYS_OK) {
+        panic("two: the reply on the first channel failed");
+    }
+    if (ch_two_a->c_serving != NULL) {
+        panic("two: the first list still holds a request answered");
+    }
+    if (ch_two_b->c_serving == NULL) {
+        panic("two: the second list lost its request to the first");
+    }
+
+    memset(&rep, 0, sizeof(rep));
+    rep.handle = SYS_ID_INVALID;
+    rep.inline_len = 3;
+    memcpy(rep.inline_data, "ok", 3);
+    if (channel_reply(peer_b, &rep) != SYS_OK) {
+        panic("two: the reply on the second channel failed");
+    }
+    if (ch_two_b->c_serving != NULL) {
+        panic("two: the second list still holds a request answered");
+    }
+
+    two_done = 1;
+    thread_exit(0);
+}
+
+static void
+two_client(void *arg)
+{
+    struct channel *ch = arg;
+    struct sys_msg req, rep;
+
+    memset(&req, 0, sizeof(req));
+    memset(&rep, 0, sizeof(rep));
+    req.handle = SYS_ID_INVALID;
+    req.inline_len = 4;
+    memcpy(req.inline_data, "two", 4);
+    if (channel_send(ch, 0, &req, &rep, SYS_DEADLINE_NEVER) != SYS_OK) {
+        panic("two: a client was not answered");
+    }
+
+    thread_exit(0);
+}
+
+static void
+two_wait_queued(struct channel *ch)
+{
+    uint64_t until = time_now() + time_from_ms(2000);
+
+    for (;;) {
+        bool queued;
+        intr_state_t is;
+        intr_state_t ks = 0;
+        bool took = false;
+
+        is = md_intr_disable();
+        if (!klock_held()) {
+            ks = klock_enter();
+            took = true;
+        }
+        queued = ch->c_senders != NULL;
+        if (took) {
+            klock_exit(ks);
+        }
+        md_intr_restore(is);
+
+        if (queued) {
+            return;
+        }
+        if (time_now() > until) {
+            panic("two: nothing queued on %s", ch->c_name);
+        }
+        sched_yield();
+    }
+}
+
+static void
+two_channel_checks(void)
+{
+    struct proc *p = proc_current();
+    struct thread *srv, *ca, *cb;
+    sys_err_t err;
+
+    cnputs("a server thread inside requests on two channels\n");
+
+    ch_two_a = channel_create("two-a", p);
+    ch_two_b = channel_create("two-b", p);
+    if (ch_two_a == NULL || ch_two_b == NULL) {
+        panic("two: no channel");
+    }
+    err = handle_insert(&p->p_handles, ch_two_a, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_two_a);
+    expect("a handle on the first channel", err, SYS_OK);
+    err = handle_insert(&p->p_handles, ch_two_b, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_two_b);
+    expect("a handle on the second channel", err, SYS_OK);
+
+    /*
+     * Both clients queued before the server exists, and each on its
+     * own channel, so the server takes one from each and the order it
+     * takes them in is the order it asks.
+     */
+    ca = thread_create("two-a-cl", 21, two_client, ch_two_a);
+    cb = thread_create("two-b-cl", 21, two_client, ch_two_b);
+    sched_ready(ca);
+    sched_ready(cb);
+    two_wait_queued(ch_two_a);
+    two_wait_queued(ch_two_b);
+
+    srv = thread_create("two-srv", 15, two_server, NULL);
+    sched_ready(srv);
+
+    while (!two_done) {
+        sched_yield();
+    }
+
+    cnprintf("    %-38s %u, on %u lists\n",
+      "requests it held at once", (unsigned int)two_owed,
+      (unsigned int)two_lists);
+    cnprintf("    %-38s %s\n", "each list walked to its end",
+      "one request, naming this thread");
+
+    if (two_owed != 2 || two_lists != 2) {
+        panic("two: owed %u on %u lists", (unsigned int)two_owed,
+          (unsigned int)two_lists);
+    }
+    if (channel_serving_most_ch < 2) {
+        panic("two: the kernel saw at most %u channels at once",
+          (unsigned int)channel_serving_most_ch);
+    }
+
+    expect("giving the first channel back",
+      handle_close(&p->p_handles, h_two_a), SYS_OK);
+    expect("and the second", handle_close(&p->p_handles, h_two_b),
+      SYS_OK);
+}
+
+/*
  * A server that outranks its client, which is the case that found the
  * defect this exists to keep out.
  *
@@ -5472,8 +5695,8 @@ deadline_checks(void)
             time_now() + time_from_ms(JOIN_MS)), SYS_OK);
 
         if (dl_ch->c_serving != NULL) {
-            panic("deadline: %s ended and is still serving",
-              dl_ch->c_serving->t_name);
+            panic("deadline: %s ended and %s is still being served",
+              "the holder", dl_ch->c_serving->t_name);
         }
     }
 
@@ -7859,7 +8082,8 @@ chain_middle(void *arg)
      * moment it can be read: the boot thread is below all three and
      * does not run again until this one has replied and gone.
      */
-    chain_still_serving = chain_x->c_serving == thread_current();
+    chain_still_serving = chain_x->c_serving != NULL &&
+      chain_x->c_serving->t_donee == thread_current();
 
     memset(&rep, 0, sizeof(rep));
     rep.handle = SYS_HANDLE_INVALID;
@@ -16997,7 +17221,6 @@ owed_checks(void)
 {
     struct pool *threads = thread_pool();
     uint32_t standing = 0;
-    uint32_t phantom = 0;
     uint32_t checked = 0;
     uint32_t pointing = 0;
     uint32_t owing = 0;
@@ -17037,8 +17260,9 @@ owed_checks(void)
 
         if (t->t_serve_ch != NULL) {
             standing++;
-            if (t->t_owed == 0) {
-                phantom++;
+            if (t->t_donee == NULL) {
+                panic("owed: %s is served on %s and owed by nobody",
+                  t->t_name, t->t_serve_ch->c_name);
             }
         }
 
@@ -17103,12 +17327,8 @@ owed_checks(void)
       (unsigned long)channel_owed_cleared);
     cnprintf("    %-38s %lu\n", "replies its record did not name",
       (unsigned long)channel_owed_reply_unnamed);
-    cnprintf("    %-38s %lu\n",
-      "left on a serving list by a reply",
-      (unsigned long)channel_owed_serving_stale);
-    cnprintf("    %-38s %u, %u of them owing nobody\n",
-      "on a serving list at the end", (unsigned int)standing,
-      (unsigned int)phantom);
+    cnprintf("    %-38s %u\n",
+      "requests on a serving list at the end", (unsigned int)standing);
     cnprintf("    %-38s %u threads, all agreeing, about %lu us\n",
       "count, list and walk at the end", (unsigned int)checked,
       (unsigned long)((t1 - t0) * 1000000ULL / time_hz()));
@@ -17151,32 +17371,23 @@ owed_checks(void)
     }
 
     /*
-     * The other two are reported and not asserted, which is written
-     * down rather than left to look stronger than it is. Both need a
-     * reply sent by a thread other than the one that received, and the
-     * only thing in this boot that does it is the console answering a
-     * read it had to wait for a line to fill. In the burst session the
-     * line is always there, the request thread answers where it
-     * stands, and both counts are zero. An assertion above zero would
-     * hold in the paced run and stop the burst one, which is a check
-     * that measures the harness.
+     * Replies whose sender did not hold the request are reported and
+     * not asserted, which is written down rather than left to look
+     * stronger than it is. They need a reply sent by a thread other
+     * than the one that received, and the only thing in this boot that
+     * does it is the console answering a read it had to wait for a
+     * line to fill. In the burst session the line is always there, the
+     * request thread answers where it stands, and the count is zero.
+     * An assertion above zero would hold in the paced run and stop the
+     * burst one, which is a check that measures the harness.
+     *
+     * Stage one counted two more numbers here and stage four took
+     * both away. One was threads left on a serving list by another
+     * thread's reply and the other was threads standing on a list
+     * owing nobody, and neither can happen now: the entry is the
+     * request, it goes when the request is answered, and a thread on
+     * a list with nobody owing it is the panic in the walk above.
      */
-
-    /*
-     * A thread standing in a channel it is serving nothing on is one
-     * the boot ends with rather than one it merely passed through, and
-     * there are two of them for two different reasons. The console is
-     * left there by a reply from its other thread, and is in the paced
-     * run only. `wedge` is left there because its client was released
-     * without it, which is the release path taking the client off the
-     * server and leaving the server on the list, and that one is in
-     * both runs. So the assertion is that there is at least one, which
-     * is stage one's shape: this is the wrong answer, and the stage that
-     * makes the list say what is being served is what turns it over.
-     */
-    if (phantom == 0) {
-        panic("owed: every thread on a serving list owed somebody");
-    }
 }
 
 
@@ -17350,6 +17561,7 @@ kernel_main(void)
     chain_bound_checks();
     inversion_checks();
     owe_checks();
+    two_channel_checks();
 #if SYS_TIER == 2
     cross_core_donation_checks();
     pool_stress_checks();
@@ -17761,9 +17973,6 @@ kernel_main(void)
           (unsigned int)cs.cs_threads, (unsigned int)cs.cs_of,
           (unsigned long)(cs.cs_ns / 1000),
           (unsigned long)(channel_scan_first_ns / 1000));
-        cnprintf("    %-38s %u\n",
-          "serving entries left by a second request",
-          (unsigned int)cs.cs_stale_serving);
         cnprintf("    %-38s %u, first of them %s\n",
           "slots nothing names and nothing frees",
           (unsigned int)cs.cs_stuck,
@@ -18041,17 +18250,17 @@ kernel_main(void)
     cnprintf("  a server thread owed more than one reply: %lu, and at "
       "most %u at once\n", (unsigned long)channel_owed_walks,
       (unsigned int)channel_owed_most);
-    cnprintf("  a record that holds one: %lu written over, %lu off a "
-      "serving list still owing\n",
+    cnprintf("  a record that holds one: %lu written over, and a set "
+      "that kept %lu of them\n",
       (unsigned long)channel_owed_overwrote,
-      (unsigned long)channel_owed_left_serving);
-    cnprintf("  and a set that holds them all: %lu of %lu the record "
-      "lost\n", (unsigned long)channel_owed_kept,
-      (unsigned long)channel_owed_overwrote);
+      (unsigned long)channel_owed_kept);
     cnprintf("  a donation given back: %lu stopped above base, %lu "
       "left to another core\n",
       (unsigned long)channel_owed_kept_prio,
       (unsigned long)channel_owed_reprio_elsewhere);
+    cnprintf("  a thread inside requests on two channels: %lu, at most "
+      "%u channels at once\n", (unsigned long)channel_serving_two,
+      (unsigned int)channel_serving_most_ch);
 
     if (channel_owed_most <= 1) {
         panic("owed: no thread ever owed more than one reply");
@@ -18062,10 +18271,6 @@ kernel_main(void)
     if (channel_owed_overwrote == 0) {
         panic("owed: no record was ever written over while still owed");
     }
-    if (channel_owed_left_serving == 0) {
-        panic("owed: no thread left a serving list still owing");
-    }
-
     /*
      * And every identifier the record lost was still named by the set,
      * which is stage one's assertion turned over.
@@ -18095,6 +18300,16 @@ kernel_main(void)
      */
     if (channel_owed_kept_prio == 0) {
         panic("owed: every donation went all the way back to base");
+    }
+
+    /*
+     * And a thread inside requests on more than one channel, which
+     * the entry being the request is what makes expressible. Zero
+     * would mean the boot never built the case the serving list was
+     * changed shape for.
+     */
+    if (channel_serving_two == 0 || channel_serving_most_ch < 2) {
+        panic("owed: no thread was inside requests on two channels");
     }
 
 

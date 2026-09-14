@@ -14444,7 +14444,7 @@ Falsified both ways: asking for three fires `2 clients queued, not 3`,
 and making the server before the second client is queued fires the
 panic above, which is the failure the wait removes.
 
-**4. A thread inside requests on two channels.** *Planned.*
+**4. A thread inside requests on two channels.** *Built.*
 
 - *Check.* A server with two channels holds a request on the first and
   receives on the second, and is on both serving lists. The lists are
@@ -14457,6 +14457,86 @@ panic above, which is the failure the wait removes.
 - Falsifiable by keeping the link on the thread, which is the code as
   it stands: the first list runs into the second and the bounded walk
   says which list it was on, the way M20's did.
+
+**What it settled.** A serving entry is a request, and a thread can be
+inside two of them on two channels. The compared report at each tier:
+
+```
+  a server thread owed more than one reply: 3, and at most 2 at once
+  a record that holds one: 3 written over, and a set that kept 3 of them
+  a donation given back: 2 stopped above base, 0 left to another core
+  a thread inside requests on two channels: 1, at most 2 channels at once
+```
+
+and the construction, above the line:
+
+```
+a server thread inside requests on two channels
+    requests it held at once               2, on 2 lists
+    each list walked to its end            one request, naming this thread
+```
+
+**The entry is the client, and that is what makes it a request.** A
+client waiting for a reply is blocked, is its own record, and is served
+on one channel at a time, so a link on the client is a link per entry.
+The entry used to be the server, which has one `t_serve_next` between
+every list it can be on: a thread serving two channels wrote the second
+list into the field the first was using, and unlinking took it off one
+of them. `README.md` has carried that as worse if it happened, since
+nothing in the boot did it. The boot does it now.
+
+**Two numbers this milestone added are gone, and that is the result
+rather than a loss.** Stage one counted threads left on a serving list
+by another thread's reply, sixteen of them a paced run, and threads
+standing on a list owing nobody, two at the end. Neither can happen: the
+entry goes when the request is answered, whoever sends the answer, and
+an entry with nobody owing it is now a panic in the walk. Stage one
+asserted both were above zero, which was the wrong answer on purpose,
+and this is what turns them over.
+
+**And M20's inequality became an equality.** The channel walk asserted
+only that every thread naming a channel was on its list, and counted
+the other direction, because a server on two lists made the reverse
+false. The two directions are one assertion now, and the count of
+entries left behind is gone with the shape that produced it, along with
+the line that reported it.
+
+**The serving list and the set of clients are one fact, so they are
+kept in one place.** The first attempt kept them apart and every path
+that ends a request had to remember both. The one that gives up at a
+deadline remembered only the set, which left a freed thread on a
+channel for the boot's own walk to find: `its serving list names thread
+slot 15, which is free`. Ending the entry is part of leaving the set
+now, and the release path lost a comment that said the serving link was
+left alone because the thread being released is a client. That was true
+while the entry was the server.
+
+**What `chain_raise` reads is one request of possibly several.** It
+took the head of the list and followed what that thread was blocked on;
+it takes the head entry and follows the thread serving it. Where two
+requests are in flight on one channel it raises one chain, which is
+what it did before when the head was a thread. A chain per request is
+section 12.3 restated against the set, and it is stage seven's.
+
+**Falsified four ways.** Recording one entry per thread rather than per
+request, which is the model this stage replaced, fired `the second list
+does not hold exactly one request`. Leaving an entry behind when the
+request ends fired `owe-hi says it is served on owe and is not on its
+list`, from a client three checks earlier. Letting an entry be reachable
+after its thread had gone fired M20's walk, `its serving list names
+thread slot 11, which is free`. Not counting the channels a thread is
+serving on fired `no thread was inside requests on two channels`.
+
+**And the honest note on the first of those.** A faithful revert to the
+old model was tried first and did not fail this stage's check: it hung
+in M1's chain check, several thousand lines earlier, because the old
+shape corrupts a list that check walks. The falsification that is
+reported is a narrower one, a thread recorded on one list at a time,
+which is the old model's consequence without its other damage.
+
+**What it cost.** 1392 bytes of text, 64 of bss, and nothing on the
+round trip: 452 to 571 ticks over three runs. Two more channels made
+and given back, for the two the check needs.
 
 **5. A held client that dies, and a channel that must not go.**
 *Planned.*

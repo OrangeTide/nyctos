@@ -48,8 +48,9 @@ struct channel {
      * in any process's table that names it, and one for every
      * connection minted on it.
      *
-     * Two kinds and not four. A thread inside a request on this
-     * channel is on c_serving and has t_serve_ch pointing here, and
+     * Two kinds and not four. A request being served on this channel
+     * is on c_serving, in the shape of the client waiting for its
+     * reply, and that client has t_serve_ch pointing here;
      * serving_begin sets both together, so those are one fact and it
      * is already on the channel. A thread queued to send or blocked
      * receiving is on c_senders or c_receivers, which is likewise
@@ -70,13 +71,23 @@ struct channel {
     struct thread  *c_receivers;
 
     /*
-     * Threads that took a message from this channel and have not
-     * replied yet, newest first, linked through t_serve_next.
+     * The requests taken from this channel and not yet replied to,
+     * newest first, each one the client waiting for its reply and
+     * linked through that client's t_serve_next.
      *
      * Section 12.3 wants a link from a blocked sender to whoever is
-     * serving it, and this is that link. Without it a client queued on
-     * a busy server can raise nothing, because there is no way from
-     * the channel to the thread that is inside a request on it.
+     * serving it, and this is that link: the thread serving an entry
+     * is the entry's t_donee. Without it a client queued on a busy
+     * server can raise nothing, because there is no way from the
+     * channel to the thread that is inside a request on it.
+     *
+     * The entry was the server until M22 stage four. A thread has one
+     * t_serve_next between every list it can be on, so a server
+     * inside requests on two channels put the second list into the
+     * field the first was using; and a thread that held one request
+     * and answered another left the list while a client was still
+     * blocked here. One entry per request removes both, because a
+     * client is served on one channel at a time.
      */
     struct thread  *c_serving;
 
@@ -168,9 +179,9 @@ extern uint32_t channel_owed_most;
 extern uint64_t channel_owed_overwrote;
 extern uint64_t channel_owed_cleared;
 extern uint64_t channel_owed_reply_unnamed;
-extern uint64_t channel_owed_left_serving;
+extern uint64_t channel_serving_two;
+extern uint32_t channel_serving_most_ch;
 extern uint64_t channel_owed_walks;
-extern uint64_t channel_owed_serving_stale;
 extern uint64_t channel_owed_kept;
 extern uint64_t channel_owed_cleared_kept;
 extern uint64_t channel_owed_kept_prio;
@@ -289,13 +300,6 @@ struct channel_scan {
     uint32_t    cs_at_once;
     uint32_t    cs_of;
     uint32_t    cs_unreachable;
-
-    /*
-     * Entries on a serving list whose thread says it is serving
-     * something else, per section 19.3's unenforced rule. Moves with
-     * the session, so it is reported and never compared.
-     */
-    uint32_t    cs_stale_serving;
 
     /*
      * Slots nothing names that the free could not take back, because

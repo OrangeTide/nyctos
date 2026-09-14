@@ -403,13 +403,6 @@ uint64_t channel_owed_cleared;
  */
 uint64_t channel_owed_reply_unnamed;
 
-/*
- * Threads taken off a channel's serving list while they still owed a
- * client on it. `channel_free_if_idle` reads that list for whether
- * anybody is standing in the channel, so each of these is a moment
- * where a channel with a thread blocked on a reply looked idle.
- */
-uint64_t channel_owed_left_serving;
 
 /*
  * The count against a walk, the way M20 checked the channel holds. Done
@@ -419,12 +412,18 @@ uint64_t channel_owed_left_serving;
 uint64_t channel_owed_walks;
 
 /*
- * And the same list read the other way: a thread left on a channel's
- * serving list owing nobody, because the reply came from another thread
- * of the same server and `serving_end` runs on whoever replies. The
- * channel then looks as though somebody is standing in it.
+ * A thread inside requests on more than one channel, per M22 stage
+ * four. One entry per request makes that expressible; the entry used
+ * to be the thread and there was one link between every list it could
+ * be on. Counted at the moment it happens, with the greatest number of
+ * channels one thread was serving on at once beside it.
  */
-uint64_t channel_owed_serving_stale;
+uint64_t channel_serving_two;
+uint32_t channel_serving_most_ch;
+
+static void serving_begin(struct channel *ch, struct thread *client);
+static void serving_end(struct thread *client);
+
 
 /*
  * Clients the record stopped naming and the set still named, counted
@@ -514,6 +513,19 @@ owed_drop(struct thread *client)
     struct thread **link;
     struct thread *server;
     uint32_t steps;
+
+    /*
+     * The entry on the channel goes with the set, because the two are
+     * one fact: a client is on a serving list exactly while somebody
+     * owes it a reply. Keeping them apart meant every path that ends a
+     * request had to remember both, and the one that gives up at a
+     * deadline remembered only the set, which left a freed thread on a
+     * channel for the boot's own walk to find.
+     *
+     * A no-op for a thread that was never served, which is the other
+     * kind released through here.
+     */
+    serving_end(client);
 
     if (client->t_donee == NULL) {
         return;
@@ -648,8 +660,6 @@ owed_take(struct thread *server, struct thread *client)
 static bool buf_may_deliver(struct proc *from, struct proc *to, uintptr_t va,
   size_t len);
 
-static void serving_begin(struct channel *ch, struct thread *t);
-static void serving_end(struct thread *t);
 static sys_err_t chain_raise(struct channel *ch, uint8_t prio);
 static void release_blocked(struct thread *t, sys_err_t err);
 
@@ -1166,7 +1176,7 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         server->t_waitres = SYS_OK;
 
         server->t_wait = THREAD_WAIT_NONE;
-        serving_begin(ch, server);
+        serving_begin(ch, self);
         donate(server, self->t_prio);
 
         /*
@@ -1554,7 +1564,7 @@ recv_inner(struct channel *ch, struct sys_msg *out,
             self->t_donor = client;
             owed_take(self, client);
 
-            serving_begin(ch, self);
+            serving_begin(ch, client);
             donate(self, client->t_prio);
 
             /*
@@ -1801,7 +1811,6 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
 {
     struct thread *self = thread_current();
     struct thread *client;
-    struct thread *received_by;
     intr_state_t s;
     sys_err_t err;
 
@@ -1810,22 +1819,19 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
     client = thread_by_id(peer);
     if (client == NULL || client->t_reply == NULL) {
         /*
-         * The client is gone, and this server is still on the
-         * channel's list of threads inside a request. Nothing else
-         * takes it off: a normal reply does it below, and this returns
-         * before reaching there. chain_raise walks that list to donate
-         * a sender's priority down it, so a server left on it is a
-         * thread that gets raised for work it is no longer doing, and
-         * the walk follows what it is blocked on into somebody else's
-         * chain.
+         * The client is gone, and the entry that named its request
+         * went with it: whatever released that client took it off the
+         * channel's list, because the entry is the client. While the
+         * entry was the server this had to unlink one here, since a
+         * server left on the list is a thread `chain_raise` goes on
+         * raising for work it is no longer doing.
          *
-         * Only when the client named is the one this server was
-         * holding. A reply to an identifier that was never its own is
-         * refused the same way and has nothing to do with the request
-         * it does have.
+         * What is left to forget is the identifier, and only when it
+         * is the one this thread last received. A reply to an
+         * identifier that was never its own is refused the same way
+         * and has nothing to do with the request it does have.
          */
         if (self->t_client == peer) {
-            serving_end(self);
             self->t_client = 0;
         }
 
@@ -1893,25 +1899,17 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
     client->t_wait = THREAD_WAIT_NONE;
 
     /*
-     * Which thread received this request, before the record of it goes.
+     * The entry goes with the request, not with whoever answers it.
      *
-     * `serving_end` takes this thread off a serving list, and this
-     * thread is not always the one that received: section 12.2 lets any
-     * thread of the server reply, and the console answers a held read
-     * from the thread that has the bytes. The thread that did receive
-     * is then left on the channel's list owing nobody, which is the
-     * same list read the other way round and is counted below.
+     * Section 12.2 lets any thread of the server reply, and the
+     * console answers a held read from the thread that has the bytes.
+     * While the entry was the server, `serving_end` ran on the
+     * replying thread and left the receiving thread on the list; now
+     * it runs on the client, which is the request that has just
+     * finished, and which thread sent the reply does not come into it.
      */
-    received_by = client->t_donee;
-
     owed_drop(client);
-    serving_end(self);
     self->t_client = 0;
-
-    if (received_by != NULL && received_by != self &&
-      received_by->t_owed == 0 && received_by->t_serve_ch != NULL) {
-        channel_owed_serving_stale++;
-    }
 
     /*
      * The client is made runnable here and dispatched to below, which
@@ -2191,6 +2189,7 @@ channel_thread_exited(struct thread *t)
 {
     intr_state_t s = md_intr_disable();
 
+
     if (t->t_client != 0) {
         struct thread *client = thread_by_id(t->t_client);
 
@@ -2213,8 +2212,6 @@ channel_thread_exited(struct thread *t)
         t->t_client = 0;
     }
 
-    serving_end(t);
-
     md_intr_restore(s);
 }
 
@@ -2222,8 +2219,6 @@ channel_thread_exited(struct thread *t)
 void
 channel_thread_cancelled(struct thread *t)
 {
-    serving_end(t);
-
     channel_thread_release(t, true);
 }
 
@@ -2406,19 +2401,6 @@ static void
 release_blocked(struct thread *t, sys_err_t err)
 {
     /*
-     * What this thread is serving is left where it is, and that is a
-     * correction. This used to call serving_end on it, with a comment
-     * about a dead server left on a list: the thread being released
-     * here is a client, not a server, and the only serving link it can
-     * have belongs to a different call that it still owes an answer
-     * to. Taking it off that list is reaching into somebody else's
-     * request, and what it costs is the chain walk of section 12.3,
-     * which can no longer see the middle of a chain in order to raise
-     * it. A client released by its own deadline keeps that link, and
-     * these two have no reason to differ.
-     */
-
-    /*
      * Its buffer first, for the reason cancellation has: the pages are
      * in the server and gone from here, the reply that would have given
      * them back is not coming, and a thread released into its own
@@ -2553,76 +2535,98 @@ channel_owner(const struct channel *ch)
 }
 
 /*
- * A thread has taken a message from this channel and owes a reply.
+ * A request on this channel is being served, and the client is the
+ * record of it.
  *
  * Section 12.3 asks for a link from a blocked sender to whoever is
- * serving it, and this is where it is made. Until it existed the bound
- * on the chain and the deadlock error described a mechanism that was
- * not there.
+ * serving it, and this is where it is made. What is on the list is the
+ * client, and the thread serving it is reached through `t_donee`.
+ *
+ * The entry used to be the server, which cannot say more than one
+ * thing. A thread serving two channels has one `t_serve_next` between
+ * them, so the second list was written into the field the first was
+ * using and the first ran into it; and a thread that held one request
+ * and answered another left the list while a client was still blocked
+ * on the channel. One entry per request removes both: there is one
+ * client per request and a client is served on one channel at a time,
+ * so a link on the client is a link per entry.
  */
 static void
-serving_begin(struct channel *ch, struct thread *t)
+serving_begin(struct channel *ch, struct thread *client)
 {
-    /*
-     * Already on this list, and putting it on again made the list
-     * point at itself.
-     *
-     * Section 19.3 says a server thread serves one request at a time
-     * and nothing enforces it, which was known. What was not known is
-     * what happens when the thread takes the second request on the
-     * same channel it is already serving: the line below would read
-     * this thread out of c_serving and write it back as its own
-     * successor, and the list stops ending. M20 stage two's walk found
-     * it in a paced session, where the console driver does exactly
-     * that when a line is typed at it.
-     *
-     * The thread is already recorded as being inside a request on this
-     * channel, which is what the list is for, so recording it twice
-     * was never going to say anything a walker could use. Refusing the
-     * second request is section 19.3's business and is not done here.
-     */
-    if (t->t_serve_ch == ch) {
-        return;
+    if (client->t_serve_ch != NULL) {
+        panic("channel: %s is served on %s and now on %s",
+          client->t_name, client->t_serve_ch->c_name, ch->c_name);
     }
 
-    t->t_serve_ch = ch;
-    t->t_serve_next = ch->c_serving;
-    ch->c_serving = t;
+    client->t_serve_ch = ch;
+    client->t_serve_next = ch->c_serving;
+    ch->c_serving = client;
+
+    /*
+     * And whether the thread serving this request is now inside
+     * requests on more than one channel, which the entry being the
+     * request is what makes possible. Asked only where it owes more
+     * than one, which is rare, so the walk is not on the path every
+     * rendezvous takes.
+     */
+    if (client->t_donee != NULL && client->t_donee->t_owed > 1) {
+        const struct thread *a;
+        uint32_t distinct = 0;
+
+        for (a = client->t_donee->t_owed_head; a != NULL;
+          a = a->t_owed_next) {
+            const struct thread *b;
+            bool seen = false;
+
+            for (b = client->t_donee->t_owed_head; b != a;
+              b = b->t_owed_next) {
+                if (b->t_serve_ch == a->t_serve_ch) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                distinct++;
+            }
+        }
+        if (distinct > 1) {
+            channel_serving_two++;
+        }
+        if (distinct > channel_serving_most_ch) {
+            channel_serving_most_ch = distinct;
+        }
+    }
 }
 
 
 static void
-serving_end(struct thread *t)
+serving_end(struct thread *client)
 {
-    struct channel *ch = t->t_serve_ch;
+    struct channel *ch = client->t_serve_ch;
     struct thread **link;
+    uint32_t steps;
 
     if (ch == NULL) {
         return;
     }
 
-    /*
-     * Off the list while it still owes somebody on this channel.
-     *
-     * `channel_free_if_idle` reads this list for whether anybody is
-     * standing in the channel, and a thread that holds one request and
-     * replies to another leaves here with the held client still
-     * blocked on the reply and on none of the channel lists. Counted
-     * rather than fixed: what the list should hold is the next stage.
-     */
-    if (t->t_owed > 0) {
-        channel_owed_left_serving++;
-    }
-
-    for (link = &ch->c_serving; *link != NULL; link = &(*link)->t_serve_next) {
-        if (*link == t) {
-            *link = t->t_serve_next;
-            break;
+    steps = pool_slots(thread_pool());
+    for (link = &ch->c_serving; *link != client;
+      link = &(*link)->t_serve_next) {
+        if (*link == NULL) {
+            panic("channel: %s says it is served on %s and is not on "
+              "its list", client->t_name, ch->c_name);
+        }
+        if (steps-- == 0) {
+            panic("channel: the serving list of %s does not end",
+              ch->c_name);
         }
     }
+    *link = client->t_serve_next;
 
-    t->t_serve_ch = NULL;
-    t->t_serve_next = NULL;
+    client->t_serve_ch = NULL;
+    client->t_serve_next = NULL;
 }
 
 /*
@@ -2664,7 +2668,8 @@ chain_raise(struct channel *ch, uint8_t prio)
     uint32_t depth;
 
     for (depth = 0; depth < SYS_PRIO_CHAIN_MAX; depth++) {
-        struct thread *server = ch->c_serving;
+        struct thread *entry = ch->c_serving;
+        struct thread *server = entry != NULL ? entry->t_donee : NULL;
 
         if (server == NULL) {
             /*
@@ -2674,6 +2679,15 @@ chain_raise(struct channel *ch, uint8_t prio)
              */
             return SYS_OK;
         }
+
+        /*
+         * The newest request on the channel, and the thread serving
+         * it. The list holds requests now, so where several are in
+         * flight this follows one of them, which is what it did
+         * before when the list held threads and it read the head. A
+         * chain per request is section 12.3 restated against the set
+         * and is not this stage.
+         */
 
         /*
          * Raised only if it is blocked. A runnable thread is on some
@@ -3168,7 +3182,6 @@ channel_scan(struct channel_scan *out)
 
     out->cs_stuck_name = NULL;
     uint32_t tables = 0;
-    uint32_t stale = 0;
     uint32_t stuck = 0;
 
     for (i = 0; i < SYS_MAX_CHANNELS; i++) {
@@ -3315,30 +3328,21 @@ channel_scan(struct channel_scan *out)
 
         /*
          * The serving list against the threads that say they are on
-         * it, and the two do not have to be equal.
+         * it, and the two are equal.
          *
-         * Every thread whose t_serve_ch names this channel is on this
-         * list, because serving_begin does both in one place. The
-         * other direction does not hold, and the reason is the
-         * limitation section 19.3 states and nothing enforces: a
-         * server thread that takes a second request while it still
-         * owes a reply on the first is not refused, and it goes onto
-         * a second channel's list without leaving the first. Its
-         * t_serve_ch names the second, so the first list has an entry
-         * that says it is somewhere else, and when the thread finally
-         * ends its request it unlinks from the second list only.
+         * They were not, and the inequality was M20 stage two's
+         * finding: a server that took a second request went onto a
+         * second channel's list without leaving the first, because
+         * the entry was the thread and a thread has one link between
+         * every list it can be on. The first list kept an entry whose
+         * `t_serve_ch` named the second, so this walk asserted only
+         * the direction that held and counted the other.
          *
-         * So what is asserted is the direction that holds. The other
-         * way round is counted and reported, because it is a real
-         * thing happening in a real session rather than a
-         * possibility: the console driver does it when a line is
-         * typed at it, and this walk is the first thing in this
-         * kernel that has ever noticed.
-         *
-         * It costs nothing to stage three, because a list with
-         * anything on it keeps the slot either way. A stale entry
-         * makes a channel unfreeable rather than freeable, which is
-         * the safe half of the mistake.
+         * M22 stage four made the entry the request. A client is
+         * served on one channel at a time, so the entry and the field
+         * are one fact again and the two directions are one
+         * assertion. The count of entries left behind is gone with
+         * the shape that produced it.
          */
         for (t = ch->c_serving; t != NULL; t = t->t_serve_next) {
             uint32_t ti = sys_id_index(t->t_id);
@@ -3356,13 +3360,12 @@ channel_scan(struct channel_scan *out)
                   (unsigned int)threads->count);
             }
         }
-        if (serving[i] > inside) {
-            panic("channel %s: %u threads say they serve it and %u "
-              "are on its list",
+        if (serving[i] != inside) {
+            panic("channel %s: %u threads say they are served on it "
+              "and %u are on its list",
               ch->c_name != NULL ? ch->c_name : "?",
               (unsigned int)serving[i], (unsigned int)inside);
         }
-        stale += inside - serving[i];
 
         /*
          * Bounded, because a walk of a list is a walk of whatever the
@@ -3416,7 +3419,6 @@ channel_scan(struct channel_scan *out)
     channel_scans++;
 
     out->cs_tables = tables;
-    out->cs_stale_serving = stale;
     out->cs_stuck = stuck;
     out->cs_conns = conns->count;
     out->cs_threads = threads->count;
