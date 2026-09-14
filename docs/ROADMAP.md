@@ -14709,7 +14709,7 @@ disassembly, so nothing was hanging. It is a spin loop resting on the
 compiler's not proving something it is allowed to prove, and it is
 six characters to make right.
 
-**6. A server that dies owing several.** *Planned.*
+**6. A server that dies owing several.** *Built.*
 
 - *Check.* Every client on the set is released and told the right one
   of `SYS_ERR_STALE` and `SYS_ERR_OWNER_DEAD`, which section 12.5
@@ -14717,6 +14717,83 @@ six characters to make right.
   reachable from the server's record.
 - Falsifiable by releasing only the head: the others wait out a
   deadline, which is stage one of M20's shape and M21's both.
+
+**What it settled.** An exit reaches every client the thread owes,
+and not the one its record happened to name. One line in the compared
+report at each tier:
+
+```
+  a death that reached every client it owed: 2 at once at most, and 1 left to the owner's
+```
+
+and the construction above the line:
+
+```
+a server that dies owing two
+    what the two clients were told         STALE and STALE
+    and what one death reached at once     2, in about 832 us
+```
+
+**The second client waited for a deadline, and the reply it was
+waiting for could only have come from the thread that had just gone.**
+That is what the record cost. `channel_thread_exited` released
+`t_client`, which is one client, and a server that had taken two
+requests left the other blocked until its own deadline fired. The
+walk reads the set instead. Both clients of the new construction come
+back with `SYS_ERR_STALE` in about 832 us, where the second used to
+come back with `SYS_ERR_TIMEOUT` a second later.
+
+**Three cases, and only one of them is a release.** A client of a
+channel whose owner is going is left blocked for section 12.5, which
+is going to tell it `OWNER_DEAD`: told `STALE` here it would be told
+the server is still there to be asked again, which is the distinction
+section 12.5 exists to make. A client whose deadline has already
+fired is runnable with its answer written, and releasing it would
+enqueue a thread that is on a run queue. The rest are released.
+
+**Every one of them leaves the set, whichever case it is.** That is
+the part that is not about the error. The invariant is that a thread
+that is over owes nothing, and it is asserted at the end of the walk
+rather than described: `%s is over and still owes %u`. The reason
+given for it, that a client left on the set holds a pointer to a slot
+about to be given to another thread, has not been observed. The slot
+is freed at the reap and section 12.5 reaches these clients first, so
+the boot has never made that pointer name anything else. The
+assertion is what says so.
+
+**A number this walk would have lost.** Stage five counts a request
+that ends with its client. A client left for section 12.5 now leaves
+the channel's serving list here, before 12.5 releases it, so the
+count had to move with it: the boot's total went from 15 to 14 on the
+kernel change alone before the count was put where the entry now
+goes. Found by building the change with its own check switched off,
+which is the only way to see what a kernel change did to numbers a
+new construction is also moving.
+
+**The clients left to the owner's death are compared and not
+asserted.** Nothing in the boot builds that case on purpose. It comes
+out of where a supervisor's kills fall against a server thread's
+exit, and an assertion would be this stage claiming a number another
+part of the boot happens to produce. It read 1 in three paced and
+three burst runs, which is what makes a change in it worth looking
+at.
+
+**Falsified three ways, and one that would not falsify.** Releasing
+only the head gives back exactly the defect: `told STALE and TIMEOUT,
+not both stale`. Leaving the owner's client on the set fires
+`echoes is over and still owes 1`. Not raising the high-water mark
+fires `one death reached 0 clients, not 2`.
+
+The case that is not exercised is the client whose deadline has
+already fired: removing that branch changes nothing in the boot,
+because the window between a timer wake and the client running has
+never contained a server's exit. It is kept because the reason it was
+written has not changed, and it is written down as unexercised rather
+than counted as covered.
+
+**What it cost.** 918 bytes of text, 64 of bss, and one more channel
+made and given back. Three clients told `STALE` a boot became five,
+and requests that end with their client went from 15 to 17.
 
 **7. What it cost, and section 12.6 written to it.** *Planned.*
 

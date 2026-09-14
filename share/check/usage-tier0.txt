@@ -2,7 +2,7 @@ used at most: 22 of 32 threads, 13 of 24 processes
   kernel stacks under those threads: 90112 bytes
   buffer remapping: 0 pages in 0 halves, 0 entries, 0 tables, 0 invalidations, 0 flushes
   measured regions: 1024 entries and 2048, 4096 shared
-  kills: 70 written, pokes 0, clients told 3
+  kills: 70 written, pokes 0, clients told 5
   killed before ever running: 53 a program and 1 a thread it made, 0 entries
   of those, found inside the kernel: 0
   stopped at an entry boundary: 22
@@ -12,12 +12,13 @@ used at most: 22 of 32 threads, 13 of 24 processes
   peers: 8 collected, pulses 1 dropped and 11 evicted
   senders: 2 refused, 2 displaced
   connections: 7 in use, 12 at once
-  channels: 620 made, 598 given back, 22 live
+  channels: 621 made, 599 given back, 22 live
   channels at once: 23 of 48, and 52 restarts of a server on one slot
   pulses that went with a channel: 10, of which 3 of the reserved kind
-  a server thread owed more than one reply: 4, and at most 2 at once
-  a record that holds one: 4 written over, and a set that kept 4 of them
-  a donation given back: 3 stopped above base, 0 left to another core
+  a server thread owed more than one reply: 5, and at most 2 at once
+  a record that holds one: 5 written over, and a set that kept 5 of them
+  a donation given back: 4 stopped above base, 0 left to another core
   a request taken on a channel its thread was already serving another on: 1
-  a request in flight when its client died: 15, and a slot kept for one: 2
+  a request in flight when its client died: 17, and a slot kept for one: 2
+  a death that reached every client it owed: 2 at once at most, and 1 left to the owner's
 stage 9 complete

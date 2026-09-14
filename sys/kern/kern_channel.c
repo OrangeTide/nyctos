@@ -421,6 +421,14 @@ uint64_t channel_owed_walks;
 uint64_t channel_serving_two;
 
 /*
+ * What one server's death reached, per M22 stage six: the most
+ * clients released by a single exit, and the ones left blocked
+ * because section 12.5 is coming for them with the other error.
+ */
+uint64_t channel_owed_death_most;
+uint64_t channel_owed_death_left;
+
+/*
  * Slots kept because a request was in flight when the last thing
  * naming the channel let go, and clients that died with their request
  * being served, per M22 stage five.
@@ -2189,7 +2197,7 @@ owner_going(const struct thread *t, const struct channel *ch)
  * thread will be given, and the walk would read its priority and what
  * it is blocked on.
  *
- * And the client it was holding is released, with SYS_ERR_STALE. Until
+ * And the clients it was holding are released, with SYS_ERR_STALE. Until
  * M17 it waited until its own deadline, because section 12.5 releases
  * clients when the process dies and one thread of a live server dying
  * is not that. The wait was for nothing either way: the only thread
@@ -2197,22 +2205,37 @@ owner_going(const struct thread *t, const struct channel *ch)
  * nothing it was, and a client that reads it knows the server is still
  * there to be asked again, where OWNER_DEAD says it is not.
  *
- * Only the client this thread is actually serving. The identifier
- * carries a generation, so a slot given to something else since is not
- * found, and t_donee is the client's own record of who is serving it:
- * it is cleared by the reply, by a client giving up, and by a
- * cancellation, which are the three ways of stopping being served.
+ * Every client it owes, and not the one its record names, per M22
+ * stage six. The record holds one and a thread may owe several, so
+ * a server that had taken two requests and exited released the
+ * client of whichever receive finished last and left the other
+ * blocked until its own deadline, waiting for a reply that could
+ * only ever have come from the thread that had just gone. The set
+ * is what says who they all are.
  *
- * And only while that client is still blocked. A deadline that has
- * already fired leaves a thread runnable with its answer written and
- * its fields not yet put back, and releasing it again would enqueue a
- * thread that is on a run queue. thread_wake_timeout reads the state
- * for the same reason from the other side.
+ * Each of them leaves the set here whatever is done with it, which
+ * is the part that is not about the error. A client that stays on it
+ * keeps a pointer to this thread, and this thread's slot is about to
+ * be given to another: what is left is a client that will later try
+ * to stop being owed by somebody it never asked.
+ *
+ * Three cases, and only one of them is a release. A client of a
+ * channel whose owner is going is left blocked for section 12.5,
+ * which is going to tell it OWNER_DEAD, and being told STALE here
+ * would say the server is still there to be asked again. A client
+ * whose deadline has already fired is runnable with its answer
+ * written and its fields not yet put back, and releasing it again
+ * would enqueue a thread that is on a run queue; thread_wake_timeout
+ * reads the state for the same reason from the other side. The rest
+ * are released with SYS_ERR_STALE.
  */
 void
 channel_thread_exited(struct thread *t)
 {
     intr_state_t s = md_intr_disable();
+    struct thread *client;
+    uint64_t released = 0;
+    uint32_t steps;
 
     /*
      * A thread that is a request being served cannot be here: it is
@@ -2230,27 +2253,96 @@ channel_thread_exited(struct thread *t)
     }
 
 
-    if (t->t_client != 0) {
-        struct thread *client = thread_by_id(t->t_client);
+    /*
+     * Deferred once around the whole walk, for the reason section
+     * 12.5's walk defers: releasing a client makes it runnable, and
+     * one that outranks this thread would take the core in the middle
+     * of an exit that has not yet said this thread is over. A run of
+     * readies is one step, and with a set there can be several.
+     */
+    sched_defer();
 
-        if (client != NULL && client->t_donee == t &&
-          client->t_state == THREAD_BLOCKED &&
-          client->t_wait == THREAD_WAIT_REPLY &&
-          !owner_going(t, client->t_blocked_on)) {
-            /*
-             * Deferred, for the reason section 12.5's walk defers:
-             * releasing a client makes it runnable, and one that
-             * outranks this thread would take the core here, in the
-             * middle of an exit that has not yet said this thread is
-             * over.
-             */
-            sched_defer();
-            channel_stale_clients++;
-            release_blocked(client, SYS_ERR_STALE);
-            sched_undefer();
+    steps = pool_slots(thread_pool());
+    while ((client = t->t_owed_head) != NULL) {
+        bool waiting = client->t_state == THREAD_BLOCKED &&
+          client->t_wait == THREAD_WAIT_REPLY;
+
+        if (steps-- == 0) {
+            panic("channel: the list of %s does not end", t->t_name);
         }
-        t->t_client = 0;
+
+        if (owner_going(t, client->t_blocked_on)) {
+            /*
+             * Left for section 12.5, which is going to tell it
+             * OWNER_DEAD, and taken off the set here anyway: the
+             * pointer it keeps to this thread would otherwise name a
+             * slot that is about to be somebody else's.
+             */
+            channel_owed_death_left++;
+
+            /*
+             * Counted here rather than where it is released, which
+             * is the one number this walk would otherwise lose:
+             * stage five counts a request that ends with its client,
+             * and by the time section 12.5 reaches this one its
+             * entry has already gone with the drop below.
+             */
+            if (client->t_serve_ch != NULL) {
+                channel_held_died++;
+            }
+            owed_drop(client);
+        } else if (!waiting) {
+            /*
+             * Its deadline fired and it has not run yet, so it is
+             * already runnable with its answer written and is going
+             * to take itself off the set when it does run. Releasing
+             * it again would enqueue a thread that is on a run queue.
+             * Taken off here for the same reason as above, and its
+             * own drop then finds nothing to do.
+             */
+            owed_drop(client);
+        } else {
+            channel_stale_clients++;
+            released++;
+            release_blocked(client, SYS_ERR_STALE);
+        }
     }
+
+    if (released > channel_owed_death_most) {
+        channel_owed_death_most = released;
+    }
+
+    /*
+     * And nothing is owed by a thread that is over, which is the
+     * invariant the walk exists to keep and the one an exit that
+     * reached only its record could not. A client left on the set
+     * keeps a pointer to this slot, and the slot is going back to
+     * the pool: what it names after that is whichever thread is
+     * built next.
+     *
+     * That has not been observed. The slot is freed at the reap and
+     * section 12.5 gets to these clients first, so the boot has
+     * never made the pointer name anything else. This is the
+     * assertion that says so rather than a comment hoping it, and
+     * it is what a stage broken here fails against.
+     */
+    if (t->t_owed != 0) {
+        panic("channel: %s is over and still owes %u", t->t_name,
+          (unsigned int)t->t_owed);
+    }
+
+    sched_undefer();
+
+    /*
+     * And the record, which named at most one of them. Until this
+     * stage it was the only client an exit could find, so a server
+     * that owed two left the other waiting out a deadline for a
+     * reply that could only have come from the thread that had just
+     * gone. The set is what the walk above reads; this is now only
+     * the receive that completed last, and it is cleared because the
+     * thread is over and nothing should read it again.
+     */
+    t->t_client = 0;
 
     md_intr_restore(s);
 }

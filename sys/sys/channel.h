@@ -182,6 +182,8 @@ extern uint64_t channel_owed_reply_unnamed;
 extern uint64_t channel_serving_two;
 extern uint64_t channel_held_kept_slot;
 extern uint64_t channel_held_died;
+extern uint64_t channel_owed_death_most;
+extern uint64_t channel_owed_death_left;
 extern uint64_t channel_owed_walks;
 extern uint64_t channel_owed_kept;
 extern uint64_t channel_owed_cleared_kept;

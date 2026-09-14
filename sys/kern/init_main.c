@@ -1578,6 +1578,138 @@ held_death_checks(void)
     }
 }
 
+
+/*
+ * A server that dies owing several, per M22 stage six.
+ *
+ * The record held one client, so an exit released one client. A
+ * server that had taken two requests left the second waiting for a
+ * deadline, and the only thread that could have answered it was the
+ * one that had just gone. The set names them all, so the exit can
+ * reach them all.
+ *
+ * Both clients set a deadline, which is what tells the two outcomes
+ * apart. Released by the death they come back with SYS_ERR_STALE at
+ * once; left behind they come back with SYS_ERR_TIMEOUT a second
+ * later, which is the shape of the defect and the shape of the
+ * falsification.
+ */
+static struct channel *ch_owing;
+static sys_handle_t h_owing_recv;
+static volatile sys_err_t owing_err[2];
+static volatile int owing_back;
+static uint64_t owing_took;
+static uint64_t owing_most;
+
+#define OWING_BASE  15
+#define OWING_LO    21
+#define OWING_HI    24
+#define OWING_MS    2000
+
+static void
+owing_client(void *arg)
+{
+    unsigned long which = (unsigned long)(uintptr_t)arg;
+    struct sys_msg req, rep;
+
+    memset(&req, 0, sizeof(req));
+    memset(&rep, 0, sizeof(rep));
+    req.handle = SYS_ID_INVALID;
+    req.inline_len = 6;
+    memcpy(req.inline_data, "dying", 6);
+
+    owing_err[which] = channel_send(ch_owing, 0, &req, &rep,
+      time_now() + time_from_ms(OWING_MS));
+    owing_back++;
+
+    thread_exit(0);
+}
+
+/*
+ * Two requests taken and neither answered. The exit is the whole of
+ * what this thread does with them.
+ */
+static void
+owing_server(void *arg)
+{
+    struct sys_msg msg;
+    struct thread *self = thread_current();
+    sys_thread_id_t peer;
+    uint64_t cookie;
+
+    (void)arg;
+
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(ch_owing, &msg, &peer, &cookie) != SYS_OK) {
+        panic("owing: the first receive failed");
+    }
+    memset(&msg, 0, sizeof(msg));
+    if (channel_recv(ch_owing, &msg, &peer, &cookie) != SYS_OK) {
+        panic("owing: the second receive failed");
+    }
+    if (self->t_owed != 2) {
+        panic("owing: owes %u of the 2 it took",
+          (unsigned int)self->t_owed);
+    }
+
+    thread_exit(0);
+}
+
+static void
+owing_checks(void)
+{
+    struct proc *p = proc_current();
+    struct thread *srv, *lo, *hi;
+    uint64_t t0;
+    sys_err_t err;
+
+    cnputs("a server that dies owing two\n");
+
+    ch_owing = channel_create("owing", p);
+    if (ch_owing == NULL) {
+        panic("owing: no channel");
+    }
+    err = handle_insert(&p->p_handles, ch_owing, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_owing_recv);
+    expect("a receive handle on the channel", err, SYS_OK);
+
+    lo = thread_create("owing-lo", OWING_LO, owing_client,
+      (void *)(uintptr_t)0);
+    hi = thread_create("owing-hi", OWING_HI, owing_client,
+      (void *)(uintptr_t)1);
+    sched_ready(lo);
+    sched_ready(hi);
+    wait_senders(ch_owing, 2, "owing");
+
+    t0 = time_now();
+    srv = thread_create("owing-srv", OWING_BASE, owing_server, NULL);
+    sched_ready(srv);
+
+    while (owing_back < 2) {
+        sched_yield();
+    }
+    owing_took = (time_now() - t0) * 1000000ULL / time_hz();
+    owing_most = channel_owed_death_most;
+
+    cnprintf("    %-38s %s and %s\n", "what the two clients were told",
+      errname(owing_err[0]), errname(owing_err[1]));
+    cnprintf("    %-38s %lu, in about %lu us\n",
+      "and what one death reached at once",
+      (unsigned long)owing_most, (unsigned long)owing_took);
+
+    if (owing_err[0] != SYS_ERR_STALE || owing_err[1] != SYS_ERR_STALE) {
+        panic("owing: told %s and %s, not both stale",
+          errname(owing_err[0]), errname(owing_err[1]));
+    }
+    if (owing_most < 2) {
+        panic("owing: one death reached %lu clients, not 2",
+          (unsigned long)owing_most);
+    }
+
+    expect("giving the channel back",
+      handle_close(&p->p_handles, h_owing_recv), SYS_OK);
+}
+
 /*
  * A server that outranks its client, which is the case that found the
  * defect this exists to keep out.
@@ -17879,6 +18011,7 @@ kernel_main(void)
     owe_checks();
     two_channel_checks();
     held_death_checks();
+    owing_checks();
 #if SYS_TIER == 2
     cross_core_donation_checks();
     pool_stress_checks();
@@ -18581,6 +18714,11 @@ kernel_main(void)
       "slot kept for one: %lu\n", (unsigned long)channel_held_died,
       (unsigned long)channel_held_kept_slot);
 
+    cnprintf("  a death that reached every client it owed: %lu at "
+      "once at most, and %lu left to the owner's\n",
+      (unsigned long)channel_owed_death_most,
+      (unsigned long)channel_owed_death_left);
+
     if (channel_owed_most <= 1) {
         panic("owed: no thread ever owed more than one reply");
     }
@@ -18642,6 +18780,24 @@ kernel_main(void)
     }
     if (channel_held_kept_slot == 0) {
         panic("owed: no slot was ever kept for a request in flight");
+    }
+
+    /*
+     * And stage six. One death reaching two clients is the whole of
+     * what the stage added, and the boot builds it on purpose, so it
+     * is the same number on any host.
+     *
+     * The clients left for section 12.5 are compared and not
+     * asserted. Nothing in the boot builds that case on purpose: it
+     * comes out of where a supervisor's kills fall against a server
+     * thread's exit, so an assertion here would be this stage
+     * claiming something another part of the boot happens to
+     * produce. The compared file is the right place for it, and it
+     * has read the same in every paced and burst run so far, which
+     * is what makes a change in it worth looking at.
+     */
+    if (channel_owed_death_most < 2) {
+        panic("owed: no death ever reached more than one client");
     }
 
 
