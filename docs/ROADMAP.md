@@ -635,6 +635,35 @@ interrupted user thread and never restored them, which nothing in five
 milestones of two-core checks had noticed, because until this one no
 check asserted what an interrupted user thread went on to do.
 
+**M22 gave a receiving thread the set of clients it owes.** A thread
+recorded the client of its last rendezvous and nothing else, and the
+console had owed two since it was written: it holds a read with no
+line to return and goes back to receive. Four milestones of accounting
+read that one field, each checked against the only server this boot
+had, which owed one.
+
+The serving entry is the request now rather than the thread that took
+it. A channel names the clients standing in it, each client names the
+thread that owes it, and a thread inside requests on two channels is
+on both lists because the entries are two different clients. A
+donation goes back to the highest priority still owed rather than to
+base at the first reply; an exit releases every client rather than the
+one the record named; and a channel with a request standing in it is
+not free whatever else has let go of it.
+
+```
+  a server thread owed more than one reply: 205, and at most 2 at once
+  a record that holds one: 5 written over, and a set that kept 5 of them
+  a death that reached every client it owed: 2 released at once at most, and 1 left to the owner's
+  what the set costs a rendezvous: 0 steps in 200 owing one, 200 in 200 owing two
+```
+
+What the set costs a rendezvous is one pointer step for each client
+already owed and nothing for the one being answered, which is the
+milestone's own falsification clause answered: the alternative was to
+refuse a receive on a thread that still owes a reply and withdraw
+section 12.6's dispatcher.
+
 Nothing has run on hardware, so every duration this project has
 published is the right shape and the wrong magnitude. The counts are not
 durations, which is why these milestones assert counts.
@@ -13926,6 +13955,38 @@ one that is neither small nor known in advance.
 
 **A server thread records one client and may owe several.**
 
+**Done.** All seven stages are built. Section 25 says what it
+answered, what it cost, what the building kept finding, and what it
+left untested. What it replaced was a field that counts to one, read
+by four milestones of accounting and checked against the only server
+this boot had.
+
+A receiving thread now holds the set of clients it owes, and the
+serving entry on a channel is the request rather than the thread that
+took it. A donation goes back to the highest priority still owed
+rather than to base at the first reply. A thread inside requests on
+two channels is on both lists. A client that dies while its request
+is held leaves the set and the list, and a channel with a request
+standing in it is not freed. An exit releases every client the thread
+owes rather than the one its record named.
+
+```
+  a server thread owed more than one reply: 205, and at most 2 at once
+  a record that holds one: 5 written over, and a set that kept 5 of them
+  a donation given back: 4 stopped above base, 0 left to another core
+  a request taken on a channel its thread was already serving another on: 1
+  a request in flight when its client died: 17, and a slot kept for one: 2
+  a death that reached every client it owed: 2 released at once at most, and 1 left to the owner's
+  what the set costs a rendezvous: 0 steps in 200 owing one, 200 in 200 owing two
+```
+
+The last line is the falsification clause answered. A rendezvous
+against a set of n walks n - 1 entries, because the request being
+answered is at the head and what is walked is whatever was there
+before it, so a server owing one walks nothing. Section 12.6 gains
+what a receiving thread may owe and what bounds it, and section 12.3's
+chain walk is stated against the requests a channel names.
+
 `t_client` is one identifier, `t_donor` is one pointer, and
 `t_serve_ch` and `t_serve_next` are one channel and one link. Between
 them they are the whole of what the kernel knows about a receiving
@@ -18176,7 +18237,264 @@ before the damage.
 
 ---
 
-## 25. Bring-Up Order Within M1
+## 25. Milestone 22, in Retrospect
+
+M22 set out to replace a field that counts to one. A receiving thread
+recorded the client of its last rendezvous, and four milestones of
+accounting read that record: section 12.3's chain walk, M18's
+departure notices, M20's channel lifetime, and M21's kill accounting.
+Each had been checked against a server with one outstanding request,
+because that is the only server the boot had. The console already had
+two. The fix is a list; finding out what those four say when the
+number is two was the milestone.
+
+### 25.1 The Questions
+
+**Does a receiving thread ever owe more than one?**
+
+Yes, and before anything was built. Stage one measured the tree as it
+stood: the console's request thread holds a read with no line to
+return, receives again, and owes two. Nineteen times in a paced boot a
+thread held a request and blocked receiving, and the record it was
+about to give away was still owed every time.
+
+The number is small and it is not an accident of this boot. It is
+section 12.6's dispatcher, arrived at by a driver that had to hold a
+request open, and nothing in the kernel had a place to put the second
+client.
+
+**Does the record name the wrong client?**
+
+Yes. Five records a boot are written over while the client they name
+is still owed, and twenty replies a boot come from a thread whose
+record named somebody else. The second number is section 12.2 working
+as specified, which is why nothing had noticed: a reply is addressed
+by identifier and any thread of a server may send it.
+
+**Does the donation go back at the first reply rather than the last?**
+
+It did. `undonate` was documented as running "now that it owes nobody
+anything" and ran when the thread replied to whoever it had most
+recently received from. A thread holding a request from a client at 24
+and answering one at 21 went to its base priority with the first
+client still waiting.
+
+It now recomputes from what is left: the highest priority on the set,
+and the base only when the set is empty. Four recomputes a boot stop
+above base rather than at it. The case is not reachable from the
+shell, where every program inherits one priority, so the boot builds
+it: a server at 15 owing 24 and 21, answering 21, and still at 24.
+
+**Does a thread inside requests on two channels break the lists?**
+
+It would have, and the fix was to stop asking the question of the
+thread. The serving entry is the request now, not the server: a
+channel names the clients standing in it, each client names the thread
+that owes it, and a thread inside requests on two channels is on both
+lists because the two entries are two different clients. One link
+field per client is enough where one per thread was not.
+
+That is the milestone's one structural change, and everything after it
+was a consequence: the deadline path had to unlink the entry, the exit
+had to assert there was none, and `channel_reply`'s free had to ask
+the client rather than itself.
+
+**Is a channel freed under a client waiting on it?**
+
+Not any more, and the count says the case is real: two slots a boot
+are kept because a request is standing in them and nothing else names
+them. The reply that finishes the request gives the slot back in the
+same breath.
+
+And a request that ends because its client died takes its entry with
+it, seventeen times a boot. That number was not visible before this
+milestone, because what left the channel's list was the server and the
+server was still there.
+
+**Does a death reach every client?**
+
+It does now. An exit walked the record and released one client; the
+others waited out their own deadlines for a reply that could only have
+come from the thread that had just gone. The walk reads the set, and
+two clients a boot are released by one death, both told `STALE` in
+about 830 microseconds where the second used to be told `TIMEOUT` a
+second later.
+
+**And does the set cost more on the rendezvous than it buys?**
+
+No, which is the milestone's own falsification clause answered. A
+rendezvous against a set of n walks n-1 entries: the request being
+answered is at the head, so the unlink finds it without a step, and
+what is walked is whatever was there before it. A server owing one
+walks nothing at all, which is every server in this tree but the
+console and the checks.
+
+Measured as a duration, two hundred round trips against a set of one
+take 17629 to 17903 microseconds and against a set of two 19068 to
+19573. The 1740 microseconds between them are spent inside the
+cross-check this milestone added, timed from within, which leaves
+nothing for the pointer step that this can resolve.
+
+The answer the clause would have forced instead was to refuse a
+receive on a thread that still owes a reply, and to move the console's
+held read to another thread. That would have withdrawn section 12.6's
+dispatcher rather than supporting it.
+
+### 25.2 What It Cost
+
+**Fifteen commits, ten files, 3507 lines added and 182 removed**, of
+which 2390 are code, 1097 are documentation and twenty are the
+compared reports.
+
+**Two thirds of the code is the measurement.** `init_main.c` accounts
+for 1524 of those lines against 760 in `kern_channel.c`, 55 in
+`thread.h`, 42 in `channel.h` and nine across `subr_pool.c` and
+`pool.h`. The mechanism is a count, two pointers, and four functions
+that keep them: take, drop, recompute, and the walk that checks them
+against each other.
+
+**About 12 kilobytes of text** at Tier 0 on riscv64, 455090 to 466940,
+and 18 at Tier 2 on aarch64, 595260 to 613140. Almost all of it is
+checks.
+
+**1024 bytes of bss** at Tier 0 and 1040 at Tier 2, of which 512 is
+the set itself: sixteen bytes on every thread, across a pool of
+thirty-two. The rest is twenty counters and the statics of five
+constructions.
+
+**Seven lines in the compared report**, where the milestone before
+this one added five.
+
+**No measurable boot time.** The burst session was 8.26 to 8.45
+seconds on riscv64 at Tier 0 before and 8.35 to 8.50 after, and 9.98
+to 10.50 on aarch64 at Tier 2 before and 9.95 to 10.06 after. That
+contains the four hundred round trips stage seven added, about forty
+milliseconds of them, and does not separate from the host.
+
+### 25.3 What the Building Kept Finding
+
+**A field that changed owner and kept its name.** Stage four moved
+`t_serve_ch` from the server to the client, and left two readers
+behind. The first was found in the stage: the path that gives up at a
+deadline no longer removed the entry, which surfaced thousands of
+lines later as a channel walk reporting a list that named a free slot.
+The second was found by the next stage's review: `channel_reply` read
+its own `t_serve_ch` to decide which channel might now be free, and a
+server's is empty, so the question went unasked for every reply in a
+boot. Two hundred replies with the server's field set zero times and
+the client's set 191.
+
+Nothing leaked, because the client asks the same question when it
+comes back out of `channel_send`. A guarantee had quietly become
+somebody else's to keep, which is the shape to watch for: a rename the
+compiler cannot help with.
+
+**Walks holding nothing, twice.** Stage one's check walked the thread
+pool with interrupts off on one core while the other was inside a
+rendezvous. Stage six found the same thing in the kernel: a thread
+ended from a syscall holds the kernel lock and a kernel thread calling
+`thread_exit` holds nothing, which is 69 of the exits in a boot and
+four of the exits that owe anybody. That hole was older than the
+stage; what the stage did was make the unlocked region longer and give
+it more to touch.
+
+That is the second milestone running to find a kernel entry point
+reached without the lock from a kernel thread. M21 found four of them
+and wrote the rule down; this one found a fifth by asking the question
+of a path M21 had not.
+
+**Instruments that changed what they measured.** Stage two's walk ran
+inside the window `intr_region_report` measures, so the boot's longest
+interrupts-off region became the check rather than the kernel: 404
+microseconds against a 708 microsecond region. Moving it after the
+report and making it one pass took it to 205 and gave the region back.
+Stage seven's two runs differed in two things, the set depth and two
+hundred priority recomputes the first run paid for and the second did
+not, which cancelled and made the cost look like noise. Both are the
+same error: a measurement that includes its own apparatus.
+
+**Guards that hid what they were meant to catch.** `owed_drop` refused
+to go below zero rather than saying it had been asked to, which turns
+a count that has gone wrong into one that reads as though it had not.
+It is a panic now, and dropping a client twice says so. The same
+milestone's overwrite test compared two counters that could both be
+right for the wrong reason, and was replaced by asking whether the
+record's client is still owed.
+
+**Falsifications that fire somewhere else.** The *Watch for* clause
+said to expect this and it happened twice. Stage two's unbounded walk,
+broken on purpose, hung inside M21 stage five's check rather than
+failing in its own. Stage five's donation falsification fired stage
+three's assertion first, because the same code serves both and stage
+three's construction runs earlier; reaching stage five's own assertion
+needed stage three's removed. Both are written down as what they are,
+which is the point of naming the shape in advance.
+
+**A check that had to stop running to be checked.** A server at the
+priority of its highest client never gives the core to the boot
+thread, so a check that spins waiting for the boot thread to do
+something waits for ever. It blocks on a timeline the boot signals
+instead. M20 stage five's review names the same shape from the other
+end.
+
+**And a substitution that landed in the wrong function.** A `perl`
+anchor matched inside a `#if SYS_TIER == 2` block, which compiled at
+Tier 0 because the block was preprocessed out, and was found only by
+building Tier 2. Anchor on unique text, and build both tiers after a
+patch applied by pattern.
+
+### 25.4 What Is Still Untested
+
+**A dispatcher.** Nothing in this tree receives on one thread and
+replies from another pool of workers, which is the shape section 12.6
+describes and this milestone makes expressible. What exercises the set
+is the console, which owes two, and five constructions written for the
+checks. The claim that the kernel now supports the shape rests on the
+pieces, not on a server built that way.
+
+**More than two owed at once.** The high-water mark is two for the
+whole boot, and the milestone's own *Watch for* clause named this: two
+is also what an off-by-one would print. The list walks are bounded by
+the thread pool and panic on overrun, so a longer set would be caught
+if it happened, but nothing here makes one.
+
+**A recompute that reaches another core's run queue.** The rule from
+section 11.4 says a READY thread belongs to the core whose queue it is
+on, and the recompute skips and counts rather than reaching across. A
+probe never fired in six Tier 2 runs. The branch is reasoned, not
+observed, and the counter in the compared report reads zero.
+
+**A client whose deadline fired while its server exits.** The exit
+walk has three cases and the boot reaches two of them. Removing the
+third changes nothing in any run, because the window between a timer
+wake and the client running has never contained a server's exit.
+
+**A pointer to a slot that was given away.** The exit takes every
+client off the set on the reasoning that the thread's slot is about to
+be somebody else's. The slot is freed at the reap and section 12.5
+reaches those clients first, so the boot has never produced the
+dangling pointer the invariant exists to prevent. What it has is the
+assertion that says so.
+
+**Replies the record did not name, as a compared number.** It moves
+with console pacing: twenty in a paced run and none in a burst one,
+because a burst session always has a line waiting and the console
+never holds a read. It is reported above the compared line for that
+reason, and the milestone's first stage learned it by asserting it
+above zero and stopping the burst run.
+
+**How the check publishes what it measured.** Every construction here
+writes its results and then sets a flag the boot thread spins on, with
+nothing ordering the two. The emulation will not reorder them and the
+convention is the file's rather than this milestone's, but nothing
+here makes it safe.
+
+**And the usual.** Two cores under an emulator, no hardware, and every
+duration the right shape and the wrong magnitude.
+
+---
+
+## 26. Bring-Up Order Within M1
 
 M1 is large enough to need its own sequence. Each stage produces something
 testable, and a stage that fails, fails visibly.
@@ -18220,7 +18538,7 @@ system responding to hardware several stages earlier.
 
 ---
 
-## 26. Ordering: What Is Forced and What Is Chosen
+## 27. Ordering: What Is Forced and What Is Chosen
 
 Worth separating, because the forced edges are not negotiable and the chosen
 ones are.
@@ -18251,7 +18569,7 @@ so the two can proceed in parallel if there is ever reason to.
 
 ---
 
-## 27. What Would Change This Plan
+## 28. What Would Change This Plan
 
 Each of these is a plausible outcome, not a worry. The plan is arranged so that
 they surface early and cheaply.
@@ -18298,7 +18616,7 @@ else.
 
 ---
 
-## 28. Deliberately Not Scheduled
+## 29. Deliberately Not Scheduled
 
 Named here so that they stay named rather than drifting in.
 

@@ -30,6 +30,56 @@ than hidden, and it narrows one stage at a time.
 
 ## Status
 
+**Milestone 22 is done: a server thread may owe several replies.** A
+thread that received a request recorded one client, and the console
+had owed two since it was written. It receives a read, finds no line
+to return, holds the request rather than answering it, and goes back
+to receive. The next request overwrote the first client's identifier.
+Four milestones of accounting read that field, and each had been
+checked against a server with one outstanding request, because that
+is the only server this system had.
+
+A thread now holds the set of clients it owes, and what a channel
+names is the requests standing in it rather than the threads that
+took them. A request is the client waiting for its reply, and it
+names the thread that owes it.
+
+```
+  a server thread owed more than one reply: 205, and at most 2 at once
+  a record that holds one: 5 written over, and a set that kept 5 of them
+  a death that reached every client it owed: 2 released at once at most, and 1 left to the owner's
+  what the set costs a rendezvous: 0 steps in 200 owing one, 200 in 200 owing two
+```
+
+**Four things change when the answer is a set rather than a field.** A
+donation goes back to the highest priority still owed rather than to
+the thread's base at the first reply, so a server holding a request
+from a client at 24 and answering one at 21 stays at 24. A thread
+inside requests on two channels is on both lists, where one shared
+link field used to make the first list run into the second. A client
+that dies while its request is held leaves the set and the channel's
+list, and the server's priority follows what is left. And a thread
+that ends releases every client it owes, where it used to release the
+one its record named and leave the others waiting out their own
+deadlines for a reply that could only have come from the thread that
+had just gone.
+
+**A channel with a request standing in it is not free.** M20 made a
+channel's slot come back when nothing holds it and nobody is standing
+in it, and asked the second half by looking for the server. A server
+that held one request and answered another was no longer standing
+there, while its held client still was. Two slots a boot are now kept
+by the request alone, and the reply that finishes it gives the slot
+back in the same breath.
+
+**What the set costs a rendezvous is one pointer step for each client
+already owed**, and nothing for the one being answered: it is at the
+head, and what is walked is whatever was there before it. A server
+that replies before it receives again never pays anything. That was
+the milestone's own falsification clause, and the answer it would
+have forced was to refuse a receive on a thread that still owes a
+reply.
+
 **Milestone 21 is done: a kill reaches a thread that has never run.** A
 process killed before its first thread had run was not killed. The mark
 went down, nothing was blocked to be released, and the thread then ran,
@@ -98,12 +148,14 @@ a week was a system that had run out.
 **Two things hold a channel and three things stand in it.** A handle
 in any process's table and a connection opened over it hold it, and
 are counted. A thread queued to send, a thread blocked receiving and a
-thread inside a request stand in it, and are read from the channel's
-own lists. The slot goes back when the last holder lets go and nobody
-is standing in it, which means the question has to be asked again on
-the way out of a receive, a reply and a send, because any of the three
-can be what lets the last one out. A pointer the kernel keeps holds
-nothing at all.
+request not yet replied to stand in it, and are read from the
+channel's own lists. The third was the thread serving the request
+until milestone 22 made it the client waiting for the reply, which is
+the one that is actually still there. The slot goes back when the
+last holder lets go and nobody is standing in it, which means the
+question has to be asked again on the way out of a receive, a reply
+and a send, because any of the three can be what lets the last one
+out. A pointer the kernel keeps holds nothing at all.
 
 The count is not taken on trust. Four times in a boot it is compared
 against a walk of every process handle table, every connection, every
@@ -1206,19 +1258,23 @@ copyright comment near the top, per [docs/CODING_STYLE.md](docs/CODING_STYLE.md#
   this since it was written, and a boot leaks its process slot, both
   thread slots and their kernel stacks. A program that closes the handle
   is reaped normally.
-- A server thread that takes a second request while it still owes a
-  reply on the first is not refused. It loses the client it owed, and
-  the record of what it is serving keeps only the second. Section 19.3
-  says a server thread serves one request at a time; nothing enforces
-  it. Until milestone 20 this also made the channel's serving list
-  point at itself when both requests arrived on the same channel,
-  which the console driver does in every session with a line typed at
-  it; nothing walked that list to the end, so nothing noticed. The
-  list is left alone now when the thread is already on it. The case
-  where the second request is on a different channel does not arise in
-  this boot and would be worse if it did: one link field is shared by
-  every serving list, so a thread that moves overwrites the link
-  belonging to the list it came from.
+- Nothing here is written as a dispatcher. A thread may owe several
+  replies and the kernel names all of them, which is the shape
+  section 12.6 describes, but no server in this tree receives on one
+  thread and replies from a pool of workers. What owes more than one
+  is the console, which owes two, and the checks written for it.
+- The greatest number of clients any thread owes at once is two, for
+  the whole boot. The walks are bounded by the thread pool and panic
+  on overrun, so a longer set would be caught, but nothing makes one.
+- A recompute that would reach a thread ready on another core's run
+  queue is skipped and counted rather than reaching across, per the
+  rule in section 11.4. The counter has read zero in every run, so
+  the branch is reasoned and not observed.
+- A client left for section 12.5 when its server exits is taken off
+  the set there and then, because the thread's slot is about to be
+  reused. That the pointer would otherwise dangle has never been
+  produced: the slot is freed at the reap and section 12.5 gets to
+  those clients first.
 - A client thread that dies beside a live sibling on the same connection
   is announced by a notice and by nothing else, because the connection
   is still in use. If that notice is lost, the record it named leaks.
