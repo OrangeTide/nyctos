@@ -363,6 +363,7 @@ owed_reprio(struct thread *t)
         return;
     }
 
+    channel_owed_moved++;
     sched_reprioritise(t, want);
 }
 
@@ -429,6 +430,16 @@ uint64_t channel_serving_two;
  * which is the only way to state it that is the same on every host.
  */
 uint64_t channel_owed_steps;
+/*
+ * Priorities actually moved by a recompute, and the time spent in
+ * the cross-walk above, both per M22 stage seven's review. The two
+ * runs that measure the set have to differ in one thing, and these
+ * are how the report says that they do: neither moves a priority,
+ * and what the second spends inside the walk this milestone added
+ * is the difference between them.
+ */
+uint64_t channel_owed_moved;
+uint64_t channel_owed_walk_ticks;
 
 /*
  * What one server's death reached, per M22 stage six: the most
@@ -660,6 +671,7 @@ owed_take(struct thread *server, struct thread *client)
     }
 
     if (server->t_owed > 1) {
+        uint64_t pt0 = time_now();
         struct pool *threads = thread_pool();
         struct thread *t;
         uint32_t seen = 0;
@@ -680,6 +692,7 @@ owed_take(struct thread *server, struct thread *client)
               server->t_owed, owed_list_len(server));
         }
         channel_owed_walks++;
+        channel_owed_walk_ticks += time_now() - pt0;
     }
 }
 

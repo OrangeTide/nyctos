@@ -1725,6 +1725,16 @@ owing_checks(void)
  * every rendezvous ends against a set of two rather than a set of
  * one. The difference is what one more entry costs.
  *
+ * The server's base is the clients' priority, per this stage's
+ * review, and that is the whole reason for it. With a base below
+ * them the first run gave the donation back on every reply and took
+ * it again on every receive, two hundred trips through
+ * sched_reprioritise that the second run does not make, because the
+ * held client keeps it where it already is. The runs then differed
+ * in two things and the one being measured was the smaller. Level
+ * bases mean neither run moves a priority at all, which the report
+ * below states rather than assumes.
+ *
  * The count is the answer and the durations are context. Steps taken
  * on the set are a property of the kernel and are the same on every
  * host; microseconds are the host's, and per M9 they are reported
@@ -1738,8 +1748,10 @@ static volatile int cost_srv_done;
 static uint64_t cost_us[2];
 static uint64_t cost_steps[2];
 static uint64_t cost_walks[2];
+static uint64_t cost_moved[2];
+static uint64_t cost_wt[2];
 
-#define COST_BASE   15
+#define COST_BASE   21
 #define COST_PRIO   21
 #define COST_ROUNDS 200
 
@@ -1748,7 +1760,7 @@ cost_loop(void *arg)
 {
     unsigned long phase = (unsigned long)(uintptr_t)arg;
     struct sys_msg req, rep;
-    uint64_t t0, steps, walks;
+    uint64_t t0, steps, walks, moved, wt;
     unsigned long i;
 
     memset(&req, 0, sizeof(req));
@@ -1758,6 +1770,8 @@ cost_loop(void *arg)
 
     steps = channel_owed_steps;
     walks = channel_owed_walks;
+    moved = channel_owed_moved;
+    wt = channel_owed_walk_ticks;
     t0 = time_now();
     for (i = 0; i < COST_ROUNDS; i++) {
         memset(&rep, 0, sizeof(rep));
@@ -1769,6 +1783,8 @@ cost_loop(void *arg)
     cost_us[phase] = (time_now() - t0) * 1000000ULL / time_hz();
     cost_steps[phase] = channel_owed_steps - steps;
     cost_walks[phase] = channel_owed_walks - walks;
+    cost_moved[phase] = channel_owed_moved - moved;
+    cost_wt[phase] = (channel_owed_walk_ticks - wt) * 1000000ULL / time_hz();
 
     cost_loop_done = 1;
     thread_exit(0);
@@ -1900,6 +1916,12 @@ cost_checks(void)
     cnprintf("    %-38s %lu of them\n",
       "of which the milestone's own walk",
       (unsigned long)cost_walks[1]);
+    cnprintf("    %-38s %lu and %lu\n",
+      "priority changes in the two runs",
+      (unsigned long)cost_moved[0], (unsigned long)cost_moved[1]);
+    cnprintf("    %-38s %lu us and %lu us\n",
+      "time inside that walk",
+      (unsigned long)cost_wt[0], (unsigned long)cost_wt[1]);
 
     /*
      * One step for each entry left on the set, and none for the

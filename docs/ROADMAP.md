@@ -14928,10 +14928,54 @@ answered is free. And the equality above fired on its own, before
 anything was broken on purpose, which is the third and the only one
 this milestone did not have to arrange.
 
-**What it cost.** 1072 bytes of text, 96 of bss, and one more channel.
-Four hundred more rendezvous a boot, which is why the count of
-threads owing more than one went from 5 to 205 and donations given
-back above base from 4 to 204.
+**What it cost.** 1262 bytes of text, 144 of bss, and one more
+channel. Four hundred more rendezvous a boot, which is why the count
+of threads owing more than one went from 5 to 205. Donations given
+back above base did not move, for the reason the review below
+gives.
+
+**What the review found.** The two runs differed in two things, and
+the one being measured was the smaller.
+
+**The first run gave a donation back two hundred times and the
+second gave none.** The server's base was 15 and both clients were
+at 21, so in the first run every reply took the server back to its
+base and every receive raised it again: two hundred trips through
+`sched_reprioritise` that the second run never makes, because the
+held client keeps the server where it already is. Counted, once the
+question was asked: 200 priority changes in the first run and 1 in
+the second.
+
+That is why the durations came out as noise. The first run was
+paying for a scheduler operation the second had been relieved of,
+which cancelled most of what the second paid for the walk. Reading
+that as "the set costs nothing measurable" was reading a
+cancellation.
+
+**Levelled, and the difference is there.** The server's base is now
+the clients' priority, so neither run moves a priority at all, which
+the report states rather than assumes. The first run then takes
+17629 to 17903 us and the second 19068 to 19573: about 8 us a round
+trip, and outside the spread of either.
+
+**And the eight microseconds are the instrument.** Timed from
+inside: the second run spends 1740 to 1757 us in the cross-walk
+stage two added, which is 8.7 us a round trip and the whole of the
+difference. What remains for the pointer step the set actually costs
+is nothing this can resolve, which is now a statement with a
+measurement under it rather than one made by two effects cancelling.
+
+So the conclusion stands and the reasoning that reached it was
+wrong. The set's cost is one step per entry and it is not
+measurable beside a walk over the thread pool; what had to be fixed
+was a comparison that was not comparing one thing.
+
+**What was not fixed.** The check publishes its results by writing
+them and then setting a flag the boot thread spins on, with nothing
+ordering the two. Every check in this file does that, and QEMU's
+emulation will not reorder them, so it is a property of the file's
+convention rather than of this stage. Written down where the stage
+that noticed it can be found.
 
 *Done when* a receiving thread may owe several clients and the kernel
 names all of them, a donation is given back when the last of them is
