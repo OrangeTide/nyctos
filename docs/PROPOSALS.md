@@ -1,7 +1,7 @@
 ---
 title: Nyctos
 subtitle: Proposals
-revision: "1"
+revision: "2"
 ---
 
 # Proposals
@@ -274,3 +274,143 @@ system works on the emulator.
 **A self-hosting toolchain.** A Plan 9 style compiler suite with compile-time
 backend selection, so the system can rebuild itself without a host toolchain.
 Appealing and entirely separable from the operating system.
+
+---
+
+## 5. ELF in the Boot Archive
+
+The boot archive carries flat images with a sidecar that states each member's
+writable region, and the loader copies the image to the address it was linked
+for, per "Loading on Tier 0". The host tool rejects an ELF member on purpose:
+the kernel loader is a copy and not a link, so the segment table an ELF file
+carries is information the loader was built not to need.
+
+The reason to revisit this is not the loader. It is everything that reads an
+image after it is built. A flat image with a sidecar discards the program
+headers, the section headers, and the symbol and debug tables, so a backtrace, a
+symbol lookup, or a line-number mapping has nothing to read. Keeping the ELF
+container in the archive, and teaching the host tool to read it rather than to
+reject it, puts that information back without changing what the kernel does with
+the bytes.
+
+The shape is a host-side change with no kernel cost. The host tool reads each
+member's `PT_LOAD` program headers to derive the load address, the memory size,
+and the writable bound, replacing the sidecar with facts the linker already
+emitted and keeping the per-member load, read-write and memory fields the
+archive records today. It must read `p_flags` to separate the read-execute span
+from the read-write one, which is the distinction the layout needs, per "Program
+Loading and Demand Paging". The kernel loader stays a copy to a linked address.
+What changes is that the address and the writable bound come from the member's
+own program headers instead of from a file written beside it, and that the
+symbol and debug sections survive into the archive for a later reader.
+
+What the current rejection buys is a loader that cannot be confused by a
+malformed segment table, because it never reads one. That argument moves to the
+host tool, where a malformed header is a build failure on a machine with an
+operator rather than a runtime fault on the target. A host-side ELF reader must
+still bound every offset and size it reads against the file, so that a truncated
+or hostile header fails the build rather than walking off the buffer. A reader
+exists to adopt rather than to write, and the one failure mode to carry across
+from it is the one it got wrong: it checked a segment's address against the image
+but copied the file size without first rejecting a file size larger than the
+memory size, which writes past the destination. The port fixes that on the way
+in.
+
+The trigger is a symbolized panic, which needs a symbol table the archive does
+not currently carry, and the toolchain simplification of not maintaining a
+sidecar format beside a container format that already states the same facts. See
+the offline symbolizer under "Subsystems" below, which this unblocks.
+
+---
+
+## 6. Walk and Directory-Read Semantics
+
+The filesystem protocol names `FS_OP_WALK` and `FS_OP_READDIR` and gives each a
+one-line effect and a wire encoding, per "The Filesystem Protocol". What it does
+not give is the behaviour at the edges, and the edges are where a client written
+against another system will guess. Two are worth pinning down before a second
+filesystem server exists to disagree with the first, and the rule for both is
+least surprise: where Plan 9's 9P and POSIX agree, match them, and where they
+differ, say which and why.
+
+**A walk resolves a whole path or fails.** Resolution is not incremental.
+`FS_OP_WALK` takes a complete relative path, already reduced lexically in the
+library before any message is sent, per "Naming Is Handle-Relative", and the
+server either returns a connection to the named node or returns an error and no
+connection. This is the openat-of-a-path shape and not 9P's Twalk, which clones
+a fid and reports how many of the requested names matched before returning the
+qids of the prefix it reached. The incremental form exists to amortize a
+per-name round trip that this protocol does not have, because the library sends
+the whole path at once. Matching it would add a partial-success reply to an
+operation with no use for one. A component that does not exist is
+`SYS_ERR_NO_ENT`.
+
+**A non-final component that is not a directory has no code of its own today,
+and that is the first thing the spike settles.** The protocol defines no error
+namespace of its own and a server must not invent one, per "Failure, Staleness,
+and Removable Media", so the choice is between reusing `SYS_ERR_WRONG_TYPE`,
+which says the connection would name the wrong kind of thing, and folding the
+case into `SYS_ERR_NO_ENT`, which says the path does not resolve and declines to
+say why. POSIX separates them as `ENOTDIR` against `ENOENT` and a client that
+distinguishes a typo from a wrong path wants the separation, which argues for
+`SYS_ERR_WRONG_TYPE`. The argument against is that it leaks the shape of a
+subtree the caller could not otherwise see. The spike picks one and the choice
+is recorded where the operation is defined.
+
+**A directory read is a cursor, and the cursor is the server's to define.**
+`FS_OP_READDIR` returns entries and a cursor to resume from, and a request
+carries the cursor the last reply gave or zero to start, which is the `cursor`
+field of the reply header. The cursor is opaque: a client may store it and send
+it back, and may not compute one or assume it counts anything. This matches a
+POSIX directory cookie and a backend-owned position, and it deliberately does not
+match 9P's rule that a directory read offset must be zero or the exact end of the
+previous read, which ties a client to re-reading from the start after any seek
+and makes a stored position meaningless. An opaque cursor lets a server
+implement a stable position without promising one to every client.
+
+The guarantees the cursor carries are the part a client cannot infer and the
+part the spike must settle. The candidate rule is that a cursor names a position
+in the directory and not a snapshot of it, so an entry created after a cursor was
+taken may or may not appear, an entry unlinked after a cursor was taken may or
+may not appear, and an entry present and unchanged across the whole read appears
+exactly once and is never skipped. This is the weakest guarantee that is still
+useful, it is what POSIX concurrent readers already tolerate, and it is what a
+server over the copy-on-write tree under "Subsystems" can give cheaply by letting
+the cursor name a key in the tree. A stronger guarantee, that a read reflects one
+atomic snapshot of the directory, is a property a snapshotting server may offer
+and the protocol does not require, for the same reason the protocol requires no
+locking.
+
+**The entries travel where bulk data travels.** A directory read fills the
+message buffer with packed entry records, each followed by its name and padded
+to eight, because the count is bounded by the buffer and not by the inline
+payload. A fixed-size entry record would let a reader step by one size rather
+than by a length, at the cost of a name-length cap and padding on every short
+name. The variable-length packed form is kept because it is what the protocol
+already specifies and because a directory of short names is the common case the
+fixed form pays most for.
+
+**The proof is a spike, not this text.** The model is a directory large enough
+to span several reads, a reader that walks it to the end across cursors, and
+mutation between the reader's calls: an entry already returned unlinked, an
+entry not yet reached unlinked, and an entry created past the cursor. The
+directory-read half checks that a surviving entry appears exactly once, that the
+read terminates, and that a cursor minted for one directory fails against
+another rather than returning garbage. The walk half checks that a missing
+component and a non-directory component return distinct, documented codes, and
+that no walk escapes the subtree its connection represents.
+
+**It has run.** `dirspike_checks` in `init_main.c` builds the tree in static
+memory and exercises the resolution and the directory read as functions,
+crossing no rendezvous and allocating no kernel object. It proves the semantics
+and not the transport, which the slice and the milestones since already prove,
+and staying out of the kernel pools is what keeps it out of the resource report
+the check compares. A non-directory mid-path component answers
+`SYS_ERR_WRONG_TYPE`, a missing component `SYS_ERR_NO_ENT`, and a `..`
+`SYS_ERR_PERM_DENIED`. Reading the directory across the mutation finds every
+surviving entry exactly once. Reverting the cursor from a key to a count fails
+it with a surviving entry read zero times, which is the falsification this rule
+predicts, so the check can fail. It passes on both architectures and both tiers.
+What remains is to carry `FS_OP_READDIR`, and the create and the unlink a
+mutable directory needs, into the protocol and across a real rendezvous, which
+is a milestone and not a proposal.
