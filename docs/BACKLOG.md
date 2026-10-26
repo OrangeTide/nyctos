@@ -100,8 +100,10 @@ rendezvous, and allocates no kernel object, so it changes neither the shell
 session nor the resource report. Sabotaging the cursor from a key to a count
 fails it, so the check can fail. It passes on both architectures and both tiers.
 
-The follow-on milestone carries `FS_OP_READDIR`, and the create and unlink a
-mutable directory needs, into `sys/sys/fs.h` and across the real protocol. A
+The follow-on is scheduled as M23 ("A Directory That Changes While It Is
+Read") in `ROADMAP.md`, which carries `FS_OP_READDIR`, and the create and
+unlink a mutable directory needs, into `sys/sys/fs.h` and across the real
+protocol. A
 capability-mount sandbox filesystem of mine answers the readdir-cursor and
 backend-split questions in code, in `~/Vibe/skjegg/fs/fs.h` with `ramfs.c` and
 `hostfs.c`; see the investigation note below.

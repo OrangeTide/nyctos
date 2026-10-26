@@ -1,7 +1,7 @@
 ---
 title: Nyctos
 subtitle: Roadmap
-revision: "2"
+revision: "3"
 ---
 
 **The floor is the switch (M12).** *Answered: it is not.* The region
@@ -15070,6 +15070,116 @@ more, and two is also what an off-by-one would print.
 kernel. Stages three, four and six each need a program that does not
 exist, and stage four's is the first server in this tree with two
 channels of its own.
+
+---
+
+### M23. A Directory That Changes While It Is Read
+
+**A mutable filesystem server, as an ordinary process, implementing a
+whole-path walk, a directory read, create and unlink over the protocol,
+with a reader that survives a mutation made between its reads.** Tier 0,
+single core, and the same source at Tier 2.
+
+The walk and directory-read edges were specified in `PROPOSALS.md` and
+proved there as a spike: `dirspike_checks` builds a tree in static memory
+and exercises the resolution and the directory read as functions, crossing
+no rendezvous and allocating no kernel object. What it did not do is carry
+the semantics into `sys/sys/fs.h` or across a real send, receive and
+reply, and no server in the tree yet holds a directory a client can
+change. This milestone does both, and it is the mutable filesystem the
+copy-on-write engine of `PROPOSALS.md` and any real storage need to exist
+before they can be written.
+
+**The whole of it is userland and one protocol header.** `FS_OP_READDIR`,
+`FS_OP_CREATE` and `FS_OP_UNLINK` are operations a server understands and
+the kernel carries without meaning, which is the claim of section 25.1
+tested a second way: the console was a filesystem that only read, and this
+is one that is written to, with no kernel change between them.
+
+A directory read carries an opaque cursor. The cursor names a position and
+not a snapshot, so an entry created or unlinked between two reads may or
+may not appear, and an entry present and unchanged across the whole read
+appears exactly once and is never skipped. The cursor is validated against
+the node the connection names rather than held as per-connection state, so
+a connection still carries no position per section 25.4, and a cursor
+minted for one directory is refused against another with
+`SYS_ERR_WRONG_TYPE`. A non-directory component in the middle of a path is
+`SYS_ERR_WRONG_TYPE`, a missing component is `SYS_ERR_NO_ENT`, and a `..`
+is `SYS_ERR_PERM_DENIED`, which are the codes the spike settled.
+
+*Needs.* Nothing the system does not have. Channels, connections, spawn
+with handle inheritance, the buffer reply path of section 25.5, a
+boot-archive load slot, and the root wiring that hands a server its
+receive handle and a client a connection. All present since milestone 3.
+
+*Not needed.* Any kernel change, the MMU, cohorts, SMP, and the submission
+engine. The new operations are protocol and not syscalls, and the server
+runs the same at both tiers.
+
+*Done when* a client walks a multi-component path to a file in the new
+server and reads it; lists a directory larger than one message buffer to
+its end across cursors; creates and unlinks entries and sees the listing
+change; and a second client mutating the directory between the reader's
+calls leaves every surviving entry read exactly once, with every one of
+these crossing the trap edge.
+
+*Would falsify.* Whether the cursor's one-appearance property survives a
+real rendezvous rather than the function call the spike proved it against.
+Whether a directory larger than one buffer-full pages to its end, or a
+short read drops the tail without saying so. Whether create and unlink
+return the server's own node storage exactly, measured as a count that
+comes back to where it started rather than argued. Whether a whole-path
+walk over the wire keeps the not-a-directory and the not-found cases
+distinct rather than collapsing them into one refusal.
+
+*Size.* Medium. A server near the size of the block-backed one, the
+operations added to `sys/sys/fs.h`, the root wiring, the client that
+drives the checks, and a regeneration of `share/check/usage-tier0.txt`
+and `usage-tier2.txt`, because a server live for the whole boot raises the
+channel, thread and connection high-waters the usage report states. No
+file under `sys/kern` changes.
+
+The stages, each ending in something that runs and a check that can fail:
+
+1. **The protocol and a server that walks and reads.** `FS_OP_READDIR`,
+   `FS_OP_CREATE` and `FS_OP_UNLINK` in `sys/sys/fs.h`, a cursor field in
+   the reply, and a packed directory entry. A server holding a mutable
+   in-memory tree, handed its receive handle at spawn, resolving a whole
+   relative path one component at a time. Runs: a client reads a file
+   reached by a multi-component walk. Falsifies: a non-directory component
+   in the middle of a path answered as `SYS_ERR_WRONG_TYPE` over the wire
+   rather than `SYS_ERR_NO_ENT`.
+2. **The directory read, across the rendezvous.** Entries packed into the
+   client's buffer, an opaque cursor in the reply, and a short read that
+   carries a cursor to continue from. Runs: a client lists a directory
+   larger than one buffer to its end. Falsifies: a listing that stops at
+   the first buffer-full without a cursor, or a cursor from another
+   connection answered rather than refused.
+3. **Create and unlink.** Runs: a client creates entries and unlinks them
+   and a listing reflects each change. Falsifies: a node left allocated in
+   the server after its unlink, or a create under a file rather than a
+   directory.
+4. **A reader across a mutation.** A second client unlinks an entry the
+   reader has already seen, unlinks one it has not yet reached, and creates
+   one past the reader's cursor, between two of the reader's reads. Runs:
+   the reader finishes with every surviving entry read once. Falsifies: a
+   survivor read twice or skipped, which is the spike's own falsification
+   carried onto the wire. The spike retires here, its property now proved
+   where it is used.
+5. **What it reclaims.** A soak of walk, create, unlink, read and close
+   that returns every connection and every server node to the count it
+   started at. Runs: the churn, and the counts read before and after.
+   Falsifies: a count that does not come back, which is the resource
+   exactness the static pools of section 2.7 exist to make checkable.
+
+Three decisions are settled in stage one and recorded in `sys/sys/fs.h`.
+The directory entry is packed and variable-length rather than fixed-width,
+following section 25.3, unless stepping a packed buffer proves awkward
+enough to pay the padding for. The walk takes the strict route and refuses
+any `..` component, which is what a single server with no physical parent
+links needs; the resolve-and-check route of section 20.3 waits for a
+server that has somewhere to climb. And a non-directory component stays
+`SYS_ERR_WRONG_TYPE`.
 
 ---
 
