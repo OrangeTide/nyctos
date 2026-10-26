@@ -39,8 +39,46 @@
 #define FS_OP_WALK      1
 #define FS_OP_READ      3
 #define FS_OP_WRITE     4
+#define FS_OP_CREATE    5
+#define FS_OP_UNLINK    6
+#define FS_OP_READDIR   8
 #define FS_OP_CLOSE     11
 #define FS_OP_BATCH     12
+
+/*
+ * The kind of a node, reported by a directory read so a reader can tell a
+ * subdirectory from a file without walking to it.
+ */
+#define FS_KIND_FILE    1
+#define FS_KIND_DIR     2
+
+/*
+ * A directory entry, packed into the reply buffer by FS_OP_READDIR: this
+ * header, then fd_namelen name bytes, padded to eight so the next entry is
+ * aligned. A reader steps by sizeof(fs_dirent_t) plus the padded name.
+ */
+typedef struct fs_dirent {
+    uint32_t    fd_kind;        /* FS_KIND_FILE or FS_KIND_DIR */
+    uint32_t    fd_namelen;     /* name bytes following, padded to eight */
+} fs_dirent_t;
+
+/*
+ * The reply to FS_OP_READDIR. The request carries the cursor in fr_offset,
+ * zero to start, and this returns how many entries were packed and the
+ * cursor to resume from. The cursor is opaque: a client stores it and
+ * sends it back, and may not compute one. It names a position and not a
+ * snapshot, so an entry unchanged across the whole read appears exactly
+ * once, and a cursor minted against one directory is refused against
+ * another. See PROPOSALS.md, "Walk and Directory-Read Semantics".
+ */
+typedef struct fs_readdir_reply {
+    sys_err_t   fr_status;
+    uint32_t    fr_count;       /* entries packed into the buffer */
+    uint64_t    fr_cursor;      /* pass as fr_offset in the next request */
+} fs_readdir_reply_t;
+
+/* Round a directory entry's name length up to the entry alignment. */
+#define FS_DIRENT_PAD(n)    (((n) + 7u) & ~7u)
 
 
 /*

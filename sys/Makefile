@@ -106,7 +106,8 @@ $(OBJTOP)/bin/leap/leap.bin \
     $(OBJTOP)/bin/patron/patron.bin \
     $(OBJTOP)/bin/twostep/twostep.bin \
     $(OBJTOP)/bin/fourways/fourways.bin \
-    $(OBJTOP)/bin/lastborn/lastborn.bin
+    $(OBJTOP)/bin/lastborn/lastborn.bin \
+    $(OBJTOP)/bin/ramfs/ramfs.bin
 
 BOOT_LAYOUTS := $(BOOT_BINS:.bin=.bin.layout)
 
@@ -155,6 +156,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) $(BOOT_BINS) $(BOOT_LAYOUTS)
 	    patron=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 35 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/patron/patron.bin \
 	    twostep=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 36 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/twostep/twostep.bin \
 	    fourways=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 37 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/fourways/fourways.bin \
-	    lastborn=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 38 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/lastborn/lastborn.bin
+	    lastborn=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 38 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/lastborn/lastborn.bin \
+	    ramfs=$(shell printf '0x%x' $$(( $(USER_LOAD_ADDR) + 39 * $(USER_LOAD_STRIDE) )))@$(OBJTOP)/bin/ramfs/ramfs.bin
 
 $(OBJDIR)/kern/bootimg.o: $(BOOT_ARCHIVE)

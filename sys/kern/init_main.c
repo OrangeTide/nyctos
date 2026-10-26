@@ -3574,6 +3574,134 @@ dirspike_checks(void)
 }
 
 /*
+ * M23 stage one: the dirspike's walk semantics, now in a real server over
+ * a real rendezvous. `ramfs` is an ordinary loaded program holding a
+ * mutable tree in its own memory, and this drives it across the trap edge:
+ * a whole-path walk to a file, a read of that file, and the three walk
+ * refusals the proposal settled. The create, unlink and directory read the
+ * tree is built for answer SYS_ERR_NOT_SUPPORTED until later stages, which
+ * this also checks, so the first client to use them learns the limit
+ * rather than inferring it.
+ */
+static void
+mutable_dir_checks(void)
+{
+    struct proc *self = proc_current();
+    struct sys_op_connect_args cargs;
+    struct sys_op_send_args tx;
+    sys_ns_spec_t ns[1];
+    struct channel *ch;
+    fs_request_t *req;
+    fs_reply_t *rep;
+    sys_handle_t h, root, leaf;
+    char buf[SYS_IPC_INLINE_BYTES];
+    sys_err_t err;
+    uint32_t n;
+
+    ch = channel_create("ramdir", self);
+    if (ch == NULL) {
+        panic("ramfs: no channel");
+    }
+    err = handle_insert(&self->p_handles, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h);
+    expect("a receive handle for the mutable filesystem", err, SYS_OK);
+
+    /*
+     * A connection to the root directory, minted before the receive right
+     * moves to the server, since only a holder of that right may mint one.
+     */
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = 0;                   /* the ramfs root node */
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to the ramfs root",
+      run(SYS_OP_CHAN_CONNECT, h, &cargs, sizeof(cargs)), SYS_OK);
+    root = cargs.out_handle;
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_SERVICE;
+    ns[0].handle = h;
+    cnputs("    loading ramfs, a directory served from its own memory\n");
+    (void)proc_spawn_image("ramfs", 15, ns, 1, NULL, 0);
+
+    /* A whole-path walk reaches the leaf, over the rendezvous. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "sub/leaf", sizeof("sub/leaf"));
+    tx.request.inline_len = sizeof(*req);
+    expect("a whole-path walk to sub/leaf",
+      run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_OK);
+    rep = (fs_reply_t *)tx.reply.inline_data;
+    expect("    the server resolved it", rep->fr_status, SYS_OK);
+    leaf = tx.reply.handle;
+
+    /* Read it, inline, and check the bytes are the leaf's, not afile's. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = 0;
+    req->fr_length = sizeof(buf);
+    tx.request.inline_len = sizeof(*req);
+    expect("a read of the leaf",
+      run(SYS_OP_IPC_SEND, leaf, &tx, sizeof(tx)), SYS_OK);
+    rep = (fs_reply_t *)tx.reply.inline_data;
+    expect("    the read succeeded", rep->fr_status, SYS_OK);
+    n = rep->fr_length;
+    if (n >= sizeof(buf)) {
+        n = sizeof(buf) - 1;
+    }
+    memcpy(buf, &tx.reply.inline_data[sizeof(*rep)], n);
+    buf[n] = '\0';
+    if (n == 0 || buf[0] != 'r') {
+        panic("ramfs: the leaf read did not return the leaf's bytes");
+    }
+
+    expect("closing the leaf connection",
+      run(SYS_OP_HANDLE_CLOSE, leaf, NULL, 0), SYS_OK);
+
+    /* The falsification: a non-directory in the middle of a path. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "afile/leaf", sizeof("afile/leaf"));
+    tx.request.inline_len = sizeof(*req);
+    expect("a non-directory mid-path component",
+      run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_ERR_WRONG_TYPE);
+
+    /* A missing component, and a climb out of the subtree. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "sub/nope", sizeof("sub/nope"));
+    tx.request.inline_len = sizeof(*req);
+    expect("a missing component",
+      run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_ERR_NO_ENT);
+
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "../afile", sizeof("../afile"));
+    tx.request.inline_len = sizeof(*req);
+    expect("a walk above the subtree",
+      run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_ERR_PERM_DENIED);
+
+    /* The operations a later stage fills in are named, not unknown. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_READDIR;
+    tx.request.inline_len = sizeof(*req);
+    expect("a directory read, not yet provided",
+      run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_ERR_NOT_SUPPORTED);
+
+    cnprintf("    ramfs: a whole-path walk over the wire read %u bytes at "
+      "sub/leaf, afile/leaf WRONG_TYPE, sub/nope NO_ENT, .. PERM_DENIED\n",
+      (unsigned int)n);
+
+    expect("closing the root connection",
+      run(SYS_OP_HANDLE_CLOSE, root, NULL, 0), SYS_OK);
+}
+
+/*
  * A three-level chain, to check the claim that transitivity falls out of
  * each hop sending at its own effective priority rather than needing a
  * walk. A client at 25 reaches a server at 10 which calls a server at 5;
@@ -18715,6 +18843,9 @@ kernel_main(void)
 
     cnputs("dirspike: the walk and directory-read edges of section 25.3\n");
     dirspike_checks();
+
+    cnputs("ramfs: a mutable directory, walk and read over IPC (M23 s1)\n");
+    mutable_dir_checks();
 
     cnputs("user mode: a program that can be interrupted\n");
     user_interrupt_checks();
