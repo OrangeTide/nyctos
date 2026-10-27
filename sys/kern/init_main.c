@@ -18178,6 +18178,101 @@ pinned_storage_checks(struct proc *store, sys_handle_t root,
 }
 #endif /* SYS_TIER == 2 */
 
+/*
+ * The store written to and read back, over the connection the filesystem
+ * will use. A free block the files do not occupy, so the written bytes are
+ * the check's and not a file's, and a neighbour block in the same sector to
+ * show the write placed only the block it named rather than the sector around
+ * it. The bytes come back inline because the boot thread's memory is the
+ * kernel's and a server may not be lent it, which is the read the store
+ * answers without a buffer.
+ */
+static void
+store_write_checks(sys_handle_t store)
+{
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+    const fs_reply_t *rep;
+    uint8_t before[BLK_BLOCK_BYTES];
+    uint8_t got[BLK_BLOCK_BYTES];
+    uint32_t i;
+    const uint64_t off7 = 7u * BLK_BLOCK_BYTES;   /* a free block */
+    const uint64_t off6 = 6u * BLK_BLOCK_BYTES;   /* its neighbour */
+
+    cnputs("storage: a block written to the device and read back\n");
+
+    /* The neighbour as it stands, to compare against after the write. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = off6;
+    req->fr_length = BLK_BLOCK_BYTES;
+    tx.request.inline_len = sizeof(*req);
+    expect("reading the neighbour block",
+      run(SYS_OP_IPC_SEND, store, &tx, sizeof(tx)), SYS_OK);
+    rep = (const fs_reply_t *)tx.reply.inline_data;
+    memcpy(before, &tx.reply.inline_data[sizeof(*rep)], BLK_BLOCK_BYTES);
+
+    /* Write a pattern to the free block. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WRITE;
+    req->fr_offset = off7;
+    req->fr_length = BLK_BLOCK_BYTES;
+    for (i = 0; i < BLK_BLOCK_BYTES; i++) {
+        tx.request.inline_data[sizeof(*req) + i] = (uint8_t)(0xb0u + i);
+    }
+    tx.request.inline_len = sizeof(*req) + BLK_BLOCK_BYTES;
+    expect("writing a block to the store",
+      run(SYS_OP_IPC_SEND, store, &tx, sizeof(tx)), SYS_OK);
+
+    /* Read it back: it must be what was written, off the device. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = off7;
+    req->fr_length = BLK_BLOCK_BYTES;
+    tx.request.inline_len = sizeof(*req);
+    expect("reading the written block back",
+      run(SYS_OP_IPC_SEND, store, &tx, sizeof(tx)), SYS_OK);
+    rep = (const fs_reply_t *)tx.reply.inline_data;
+    memcpy(got, &tx.reply.inline_data[sizeof(*rep)], BLK_BLOCK_BYTES);
+    for (i = 0; i < BLK_BLOCK_BYTES; i++) {
+        if (got[i] != (uint8_t)(0xb0u + i)) {
+            panic("storage: the block read back as 0x%x, not what was written",
+              (unsigned int)got[i]);
+        }
+    }
+
+    /* The neighbour, which a write to the block beside it must leave alone. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = off6;
+    req->fr_length = BLK_BLOCK_BYTES;
+    tx.request.inline_len = sizeof(*req);
+    expect("reading the neighbour again",
+      run(SYS_OP_IPC_SEND, store, &tx, sizeof(tx)), SYS_OK);
+    rep = (const fs_reply_t *)tx.reply.inline_data;
+    for (i = 0; i < BLK_BLOCK_BYTES; i++) {
+        if (tx.reply.inline_data[sizeof(*rep) + i] != before[i]) {
+            panic("storage: a write disturbed the block beside it");
+        }
+    }
+
+    /* A misaligned write is refused, as a misaligned read is. */
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WRITE;
+    req->fr_offset = 1;         /* not a block boundary */
+    req->fr_length = BLK_BLOCK_BYTES;
+    tx.request.inline_len = sizeof(*req) + BLK_BLOCK_BYTES;
+    expect("a misaligned write refused",
+      run(SYS_OP_IPC_SEND, store, &tx, sizeof(tx)), SYS_ERR_INVALID_ARG);
+
+    cnputs("    a block placed, read back, and its neighbour untouched\n");
+}
+
 static void
 user_slice(void)
 {
@@ -18399,6 +18494,8 @@ user_slice(void)
         (void)store;
 #endif
     }
+
+    store_write_checks(store);
 
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_SERVICE;

@@ -337,6 +337,46 @@ serve_read(void *dst, uint32_t dstlen, uint64_t off, uint32_t len)
     return SYS_OK;
 }
 
+/*
+ * A write of whole blocks to the device, refused by the same three rules a
+ * read is. A block is smaller than a sector, so the sector it lives in is read
+ * first, the block is placed into it, and the sector is written back: the
+ * blocks that share the sector are read and written unchanged, so a write
+ * places only the block it names. The bytes to write are the caller's, bounded
+ * by how many actually arrived rather than by the length the request claims.
+ */
+static sys_err_t
+serve_write(const void *src, uint32_t have, uint64_t off, uint32_t len)
+{
+    uint64_t store_bytes = (uint64_t)BLK_BLOCK_COUNT * BLK_BLOCK_BYTES;
+    uint64_t sector;
+
+    if ((off % BLK_BLOCK_BYTES) != 0 || (len % BLK_BLOCK_BYTES) != 0 ||
+      len == 0) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    if (off / BLK_BLOCK_BYTES >= BLK_BLOCK_COUNT || off + len > store_bytes) {
+        return SYS_ERR_NO_ENT;
+    }
+    if (src == NULL || have < len) {
+        return SYS_ERR_TRUNCATED;
+    }
+
+    sector = off / VIRTIO_BLK_SECTOR_BYTES;
+    if ((off % VIRTIO_BLK_SECTOR_BYTES) + len > VIRTIO_BLK_SECTOR_BYTES) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    if (read_sector(sector) != 0) {
+        return SYS_ERR_STALE;       /* the device would not read the sector */
+    }
+    memcpy(&q->data[off % VIRTIO_BLK_SECTOR_BYTES], src, len);
+    if (write_sector(sector) != 0) {
+        return SYS_ERR_STALE;       /* the device would not write the sector */
+    }
+
+    return SYS_OK;
+}
+
 int
 main(void)
 {
@@ -401,6 +441,7 @@ main(void)
         fs_reply_t rep;
         struct wire_in in;
         struct wire_out out;
+        uint32_t extra = 0;     /* read bytes appended after the reply header */
 
         if (sys_msg_recv(chan, &message, &peer, &cookie) != SYS_OK) {
             return 15;
@@ -415,24 +456,65 @@ main(void)
         rep.fr_length = 0;
         rep.fr_size = (uint64_t)BLK_BLOCK_COUNT * BLK_BLOCK_BYTES;
 
-        if (req.fr_op != FS_OP_READ) {
+        switch (req.fr_op) {
+        case FS_OP_READ:
+            if (message.buf != 0) {
+                rep.fr_status = serve_read((void *)message.buf,
+                  message.buf_len, req.fr_offset, req.fr_length);
+                if (rep.fr_status == SYS_OK) {
+                    rep.fr_length = req.fr_length;
+                }
+            } else {
+                /*
+                 * No buffer lent, so a small read comes back inline, in the
+                 * room the reply leaves after its header. This is what lets a
+                 * caller that cannot lend memory, the kernel boot thread among
+                 * them, read a block at all.
+                 */
+                uint32_t room =
+                  SYS_IPC_INLINE_BYTES - (uint32_t)sizeof(fs_reply_t);
+
+                rep.fr_status = serve_read(
+                  &reply.inline_data[sizeof(fs_reply_t)], room,
+                  req.fr_offset, req.fr_length);
+                if (rep.fr_status == SYS_OK) {
+                    rep.fr_length = req.fr_length;
+                    extra = req.fr_length;
+                }
+            }
+            break;
+
+        case FS_OP_WRITE: {
+            /*
+             * The bytes to write follow the request header inline, and are
+             * only as many as the message carried, which the store checks
+             * against the length the request claims.
+             */
+            uint32_t have = message.inline_len > sizeof(fs_request_t)
+              ? message.inline_len - (uint32_t)sizeof(fs_request_t) : 0;
+
+            rep.fr_status = serve_write(
+              &message.inline_data[sizeof(fs_request_t)], have,
+              req.fr_offset, req.fr_length);
+            if (rep.fr_status == SYS_OK) {
+                rep.fr_length = req.fr_length;
+            }
+            break;
+        }
+
+        default:
             /*
              * A store has no names to walk and nothing to open or close, so
              * every other operation is one this server cannot provide. A
              * server answers every operation, and this is the answer.
              */
             rep.fr_status = SYS_ERR_NOT_SUPPORTED;
-        } else {
-            rep.fr_status = serve_read((void *)message.buf, message.buf_len,
-              req.fr_offset, req.fr_length);
-            if (rep.fr_status == SYS_OK) {
-                rep.fr_length = req.fr_length;
-            }
+            break;
         }
 
         wire_out_init(&out, reply.inline_data, SYS_IPC_INLINE_BYTES);
         fs_reply_put(&out, &rep);
-        reply.inline_len = sizeof(fs_reply_t);
+        reply.inline_len = (uint32_t)sizeof(fs_reply_t) + extra;
 
         /* The same answer where the kernel can read it, for a chain behind. */
         reply.status = rep.fr_status;
