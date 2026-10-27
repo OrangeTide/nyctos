@@ -1,28 +1,14 @@
-/*
+/* subr_vm.c : address spaces for the kernel and for each process.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Address spaces: the kernel's, and one per process.
  *
- * Every space contains the same kernel, mapped at the address it is loaded
- * at, and one of them additionally contains a program. Identity for the
- * kernel, because it is linked to run where it is loaded and moving it to
- * a high half is a relink of both ports for a benefit this milestone
- * cannot spend.
+ * Creates the kernel's address space and one per process, and maps the
+ * kernel into each at its load address. A process space also maps the
+ * user window its loaded program runs in. Address space identifiers
+ * are allocated and released here, and per-core counters record table
+ * updates, flushes and address space switches, read through vm_cost_read.
  *
- * The kernel is in every space rather than shared between them, which
- * costs a handful of frames per process. Sharing it would mean sharing the
- * tables that describe it, and that is only possible where kernel and user
- * addresses fall in different top-level entries. They do not here: a
- * program is linked inside the same gigabyte the kernel occupies, because
- * at Tier 0 that address is physical memory and there is only one of it.
- *
- * What every space leaves out is the window loaded programs live in. In a
- * process space that window holds that process's own memory; in the
- * kernel's it holds nothing at all, because at Tier 2 nothing runs at
- * those addresses except a program in its own space.
  */
 
 #include <sys/measure.h>

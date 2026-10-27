@@ -1,11 +1,14 @@
-/*
+/* kern_channel.c : IPC channels and the send, receive and reply paths.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Send, receive, reply. See sys/sys/channel.h for the shape and section 12
- * for the reasoning.
+ *
+ * Creates and frees channels, and carries a message from a sender to a
+ * receiving thread and the reply back. A sender waiting on a server donates
+ * its priority to that server, and the donation is tracked on an owed list
+ * until the reply. Channel cleanup also covers owner death, thread exit and
+ * cancellation.
+ *
  */
 
 #include <sys/measure.h>

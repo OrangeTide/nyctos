@@ -1,26 +1,13 @@
-/*
+/* page.h : physical page frame allocator.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Physical page frames, and the first allocator here that is not a pool.
  *
- * Section 8 gives every kernel object a pool: a fixed count of a fixed
- * type, sized at build time, so that the memory a system needs can be read
- * off its configuration. Page tables do not fit that shape. How many a
- * system needs depends on how its address spaces happen to be laid out,
- * and the same frames also become process memory and whatever a pager
- * hands out, so there is no type to count.
+ * Declares the page size and alignment macros and the page_* functions that
+ * initialize, allocate, reserve, free and report the frame map. Frames are
+ * physical addresses. Included by the port page table code, sys/vm.h and much
+ * of sys/kern.
  *
- * What makes this acceptable rather than a hole in section 8's argument is
- * that its bound is not a guess. A pool's size is a number somebody chose;
- * this one's is the memory the machine has, which is a fact about the
- * board. Exhaustion is still a configuration error rather than a condition
- * to recover from, and it is still reported rather than waited on.
- *
- * Frames are physical addresses. Nothing here maps anything, which is the
- * port's business, and nothing here knows what a frame will be used for.
  */
 
 #ifndef _SYS_PAGE_H_

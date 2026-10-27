@@ -1,23 +1,15 @@
-/*
+/* cat.c : prints the contents of a file.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Print a file.
  *
- * The name is a path, resolved against the namespace this process was
- * given, per section 20.3. What that means here is what it should mean:
- * nothing. This program holds no root, knows no absolute names, and
- * cannot say where `/motd` lives; it hands a string to the library and
- * gets back a handle to something it was already entitled to reach.
+ * Opens the path in its first argument and writes the file to standard
+ * output. The path is resolved through the namespace the process was
+ * started with, so the program holds no root and knows no absolute names.
+ * Each failure prints a message and returns a distinct status: 1 for usage,
+ * 2 for a mount point, 3 for a missing file, 4 for a failed read, and 5 for
+ * a path that cannot be reached.
  *
- * It used to speak the protocol of section 25 itself, in about fifty
- * lines of message building, because there was no way to name a file
- * except by sending a walk to the one directory it had been handed. That
- * is the number the milestone is measured against: if naming made
- * programs longer, the complexity moved into the library rather than
- * went away.
  */
 
 #include <file.h>

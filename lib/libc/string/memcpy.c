@@ -1,6 +1,12 @@
-/*
+/* memcpy.c : copies a block of memory byte by byte.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * memcpy copies len bytes from src to dst, one byte at a time, and returns
+ * dst. The behavior is undefined if the regions overlap, as with the standard
+ * memcpy.
+ *
  */
 
 #include <string.h>

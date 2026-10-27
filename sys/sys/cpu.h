@@ -1,27 +1,15 @@
-/*
+/* cpu.h : per-core state and the CPU control interface.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Cores, and the state that belongs to one rather than to the system.
+ * Declares struct cpu, the state each core keeps for its own run queues
+ * and scheduling, and struct runq, a per-priority FIFO. Declares cpu_self(),
+ * cpu_at(), cpu_count(), the startup and reporting functions, and the
+ * md_cpu_* hooks each port provides. Included by the kernel scheduler,
+ * interrupt, lock, time, memory, and channel code and by the riscv64 and
+ * aarch64 ports.
  *
- * Section 11.4 gives each core its own run queue and its own scheduling
- * decisions, so everything the scheduler reads on the way to a decision
- * has to be reachable without asking anybody else. That is what this
- * structure is: found through a register the port sets once, so finding
- * it costs no memory reference and no lock.
- *
- * Which fields are here is not a matter of taste. They are the ones that
- * answer "what is this core doing", and every one of them was a global
- * until there were two cores to disagree about it.
- *
- * Section 13.3 puts multiprocessing at Tier 2 only: Tier 0 disables
- * interrupts inside the kernel and bounds latency by where the
- * preemption points are, on the argument that such parts are simple and
- * often uniprocessor. So a Tier 0 build has one of these and never looks
- * for a second.
  */
 
 #ifndef _SYS_CPU_H_

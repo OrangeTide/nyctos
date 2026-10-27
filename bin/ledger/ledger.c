@@ -1,44 +1,14 @@
-/*
+/* ledger.c : a server that keeps one record per client.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A server that keeps a record per client, per M18 stage one.
+ * Each client that asks takes a slot in a fixed table, and the slot is freed
+ * when the owning thread dies or its connection is reaped. Death pulses
+ * release the records of a dead owner, and reaped connections are collected
+ * before each reply. The first request is never answered, which keeps that
+ * client blocked in a rendezvous until it is killed.
  *
- * It exists to have something to lose. Sections 12.5 and 13.1 both
- * reason from a server that allocates on a client's behalf and would
- * leak that allocation if it never learned the client had gone, and no
- * server in this system had anything to allocate. This one takes a slot
- * out of a fixed table for each client that asks and holds it until the
- * client gives it back.
- *
- * At this stage it gives a record back only when asked. A death notice
- * arrives on the same channel as every request, and this counts it and
- * does nothing else with it, which is what every other server here does
- * with a pulse and is the state the milestone measures from.
- *
- * Records are keyed by the identifier the server has, which is the
- * thread that sent the request. Whether that is the right key is stage
- * three's question and is deliberately not answered here.
- *
- * **Two threads, because one of them stops.** Section 19.3 has a server
- * thread serve one request at a time, and this server needs one request
- * left unanswered for as long as its client lives: that is the state
- * section 12.5 announces a death from, and it is the only way to
- * arrange a client that dies inside a rendezvous. So the first thread
- * takes that request, starts the second, and stops. Everything after
- * the first request is the second thread's, including the death notice
- * when the first thread's client is killed.
- *
- * The first version of this had one thread receive again while it still
- * owed a reply, and the kernel let it: the second rendezvous overwrote
- * the client it owed and pushed it onto the channel's serving list a
- * second time, which left that list naming a thread serving nothing.
- * The review measured that and this server stopped doing it. What the
- * kernel should do about a server that tries is written down in the
- * milestone and is not settled here.
  */
 
 #include <os/sys.h>

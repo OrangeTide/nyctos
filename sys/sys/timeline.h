@@ -1,27 +1,13 @@
-/*
+/* timeline.h : timelines, the system's synchronization object.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Timelines: the system's single synchronization object, per section 9.
  *
- * A timeline is a monotonically increasing 64-bit counter, and a waiter
- * blocks until it reaches or passes a named value. Driver completion,
- * interrupt delivery, timer expiry and thread exit are all meant to be
- * advances of one of these, so that a thread blocks on one kind of object
- * whatever it is waiting for.
+ * Declares struct timeline, a 64-bit monotonic counter that threads wait on,
+ * and the timeline_* functions that create, embed, wait on, signal and force an
+ * error on one. Included by sys/proc.h, sys/thread.h, sys/object.h and the
+ * kernel timeline, interrupt, time, channel and operation sources.
  *
- * Monotonicity is what makes a late waiter safe: a value already passed
- * satisfies a wait immediately, so there is no window in which a waiter can
- * miss a value and no registration protocol to get wrong. Signalling a
- * value at or below the current one is therefore an error.
- *
- * The error state exists so that the disappearance of the only party that
- * could satisfy a wait is delivered as an event rather than left to a
- * timeout. It is a property the timeline keeps, not an event that has to be
- * observed, so a waiter arriving afterwards is failed just as promptly as
- * one already blocked.
  */
 
 #ifndef _SYS_TIMELINE_H_

@@ -1,6 +1,12 @@
-/*
+/* strncmp.c : compares at most n bytes of two strings.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * Bytes are compared as unsigned characters. The result is the difference
+ * between the first mismatched pair, or 0 if the bytes match through a
+ * terminating NUL or through n bytes.
+ *
  */
 
 #include <string.h>

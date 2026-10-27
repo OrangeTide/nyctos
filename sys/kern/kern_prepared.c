@@ -1,7 +1,14 @@
-/*
- * SPDX-License-Identifier: 0BSD OR Apache-2.0
+/* kern_prepared.c : prepared program load, execution and release.
  *
- * PUBLIC DOMAIN (CC0-1.0)
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * Loads a validated array of operation entries into a prepared program
+ * owned by a process, copying the entries so later executions need no
+ * re-check. prepared_exec runs the program through batch_run, and only
+ * for the process that loaded it. prepared_free returns the program to
+ * its pool.
+ *
  */
 
 #include <sys/cpu.h>

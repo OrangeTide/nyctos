@@ -1,23 +1,14 @@
-/*
+/* handle.h : per-process handle tables.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Per-process handle tables, per section 7.
  *
- * A handle is authority. What a process can reach is exactly what its table
- * contains, so this is the only place a reference to a kernel object is
- * turned into permission to act on it.
+ * Declares struct handle_slot and struct handle_table, which map a
+ * process's handle values to kernel objects and their rights. Declares the
+ * functions that initialize a table, then insert, look up, query rights
+ * for, duplicate, move, and close handles. Included by the kernel channel,
+ * operation, pager, process, and syscall code.
  *
- * Handle values carry the same index and generation split as pool
- * identifiers, so a handle held across a close names a valid index whose
- * generation no longer matches and is rejected rather than reaching
- * whatever now occupies the slot.
- *
- * A handle value means nothing outside the process holding it. Two
- * processes may hold the same integer and reach different objects. Nothing
- * here may be used as a system-wide identity.
  */
 
 #ifndef _SYS_HANDLE_H_

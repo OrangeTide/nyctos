@@ -1,39 +1,14 @@
-/*
+/* peer_a.c : a cohort member that reads and writes sent addresses.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * One half of a cohort, and the half that does the dereferencing.
+ * It waits on a channel for requests that carry an address and a value. For
+ * each one it reads the word at that address, writes the value there, and
+ * replies with the old contents. The address is used without validation,
+ * which is safe only because the channel was given to peer_b alone. The
+ * program loops forever and never returns.
  *
- * It is handed a receive handle as SYS_NS_SERVICE and waits. Each
- * message carries an address in the sender's own slot and a value. This
- * program reads that address, writes the value to it, and replies with
- * what was there before. Nothing in the message is a buffer descriptor,
- * so the kernel maps nothing and validates nothing: the address is
- * dereferenced exactly as it arrived.
- *
- * That is the whole of what a shared protection domain buys, stated as
- * small as it can be stated.
- *
- * It is also the whole of what makes such a server dangerous, and the
- * danger is not the cohort's doing. Nothing in a message says whether
- * the sender is a member, so a program that dereferences an address
- * because it arrived is trusting whoever holds a send handle rather
- * than trusting its peers. This one is safe because the only
- * connection to its channel was minted for peer_b and moved there. A
- * member that served the same channel to outsiders would be handing
- * them the whole cohort, and section 18 has nothing to say about that
- * because it is a question about who holds handles. At Tier 2 this works because peer_b's slot
- * is mapped in the address space this program runs in, which is true
- * because the build says the two are one cohort. Give the same message
- * to a program outside the cohort and it faults, which is what stage
- * one checks by hand.
- *
- * It never exits. A server that returned would be an exit nobody asked
- * about, which halts the machine, and there is nothing here for a
- * supervisor to do until section 18.2 is built in M7.
  */
 
 #include <os/sys.h>

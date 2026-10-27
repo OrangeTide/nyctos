@@ -1,15 +1,12 @@
-/*
+/* syscall.S : kernel entry point for __sysop on aarch64.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * long __sysop(sys_op_t *ops, unsigned long count)
  *
- * The operation entry point of section 23.1, and the only way into the
- * kernel. Nothing shifts: x0 already holds the descriptor pointer and x1
- * the count, which is where the trap path expects them and where the C
- * calling convention already put them.
+ * __sysop executes svc #0 and returns. The descriptor pointer and count
+ * arrive in x0 and x1 and are passed to the trap unchanged. Every sys_*
+ * wrapper in sys/op.c reaches the kernel through this routine.
+ *
  */
 
 .section .text

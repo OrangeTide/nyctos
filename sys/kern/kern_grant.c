@@ -1,12 +1,13 @@
-/*
- * SPDX-License-Identifier: 0BSD OR Apache-2.0
+/* kern_grant.c : grants of whole-page memory regions to processes.
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Grants. See sys/sys/grant.h for what one is and section 19.2 for why a
- * driver has one.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * grant_create records a page-aligned region and whether it is device memory,
+ * and panics on a region that is not whole pages. grant_map and grant_unmap
+ * add and remove the region in a process with the requested rights.
+ * grant_frames totals the frames in non-device grants.
+ *
  */
 
 #include <sys/grant.h>

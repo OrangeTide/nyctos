@@ -1,10 +1,13 @@
-/*
+/* uart_aarch64.c : PL011 UART driver for the AArch64 virt board.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * Drives the PL011 on QEMU's virt machine. The register base is given at
+ * run time through uart_attach, and every register access is an offset from
+ * that base. The entry points are declared in uart.h.
+ *
  */
-
-/* The PL011 on QEMU's virt board. See uart.h for where the address comes
- * from and why the driver no longer knows one. */
 
 #include "uart.h"
 

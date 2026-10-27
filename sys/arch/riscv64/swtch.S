@@ -1,20 +1,15 @@
-/*
+/* swtch.S : RISC-V thread context switch.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * void md_switch(void **old_sp, void *new_sp)
  *
- * Saves the callee-saved state of the calling thread onto its own stack,
- * records the resulting stack pointer through old_sp, then adopts new_sp
- * and restores from it. Returns in the thread that new_sp belongs to.
+ * md_switch pushes ra, s0 through s11, and the stack pointer of the
+ * outgoing thread, stores that stack pointer through old_sp, then loads
+ * the same registers from new_sp and returns onto the incoming thread's
+ * stack. md_thread_start sets SIE, calls the entry point in s0 with its
+ * argument from s1 passed in a0, and calls thread_exited if the entry
+ * point returns.
  *
- * ra is saved with the rest because it is where the switch returns to, and
- * a thread that has never run has a forged one. The frame is 112 bytes
- * rather than the 104 the registers need, to keep the 16-byte alignment
- * the ABI asks for. The layout must agree with md_thread_init in
- * thread_md.c.
  */
 
 .section .text

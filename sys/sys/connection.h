@@ -1,24 +1,14 @@
-/*
+/* connection.h : client connections to a channel's server.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Connections: what a client holds onto a server.
  *
- * Section 12.1 separates creating a channel from connecting to it, and
- * section 25.2 makes a connection the thing that names a file or a
- * directory. The server holds the state binding a connection to a node,
- * and the kernel carries an opaque word on its behalf without ever
- * looking at it.
+ * Declares struct connection, which carries a server-defined cookie that
+ * the kernel delivers with every message sent on it. Also declares the
+ * functions to create, destroy, retain, release, and query a connection.
+ * The kernel never interprets the cookie. Included by the kernel channel,
+ * connection, operation, pager, process, and object code.
  *
- * This is what makes handle-relative naming real rather than conventional.
- * The authority is a kernel object, so a client cannot forge a reference
- * to a node it was never given, and handing a directory to a child is an
- * ordinary handle move rather than a string it could have guessed.
- *
- * The object list in section 26 has no type for this, which looks like an
- * omission: a connection has to be a handle for any of the above to hold.
  */
 
 #ifndef _SYS_CONNECTION_H_

@@ -1,27 +1,13 @@
-/*
+/* bootarch.h : boot archive header, member records, and constants.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The boot archive of section 24.4: a header, a table of fixed-size
- * records, and payloads aligned to the port's region granularity. No
- * compression, because a decompressor implies a RAM budget the compact
- * build does not have.
  *
- * Alignment is the detail worth getting right the first time. Text runs in
- * place on Tier 0 and is mapped on Tier 2, and both want a payload
- * naturally placed. The cpio format the initramfs lineage inherited aligns
- * to two or four bytes, which defeats both.
+ * Defines BOOT_MAGIC, BOOT_VERSION, BOOT_NAME_MAX, and BOOT_ALIGN, the
+ * 4096-byte alignment of each payload. Declares struct boot_header and
+ * struct boot_member, the fixed-size records that make up an archive.
+ * Included by the kernel boot code and the mkbootarch host tool.
  *
- * The walk is a loop over fixed-size records and is not a filesystem: it
- * speaks no protocol and resolves no paths. Section 24.4 has root and the
- * romfs server each carry their own copy of it rather than putting a
- * server in the boot path ahead of root. The kernel carries one too, for
- * now, because root does not exist yet.
- *
- * This header is shared with the host tool that writes the archive, so it
- * must stay free of anything the host does not have.
  */
 
 #ifndef _SYS_BOOTARCH_H_

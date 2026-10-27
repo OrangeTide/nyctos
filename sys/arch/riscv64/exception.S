@@ -1,17 +1,15 @@
-/*
+/* exception.S : RISC-V supervisor trap entry.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Supervisor-mode trap entry.
  *
- * sscratch carries the whole of the kernel-versus-user distinction on this
- * port: it holds the running thread's kernel stack pointer while that
- * thread is in user mode, and zero while it is in the kernel. A trap can
- * therefore find its stack without trusting the user's sp and without
- * needing a spare register to decide which case it is in, because the swap
- * itself answers the question.
+ * trap_entry swaps sp with sscratch to find the kernel stack, saves the
+ * interrupted registers, sepc, and sstatus in a frame on that stack, and
+ * dispatches on scause. Environment calls from U-mode go to
+ * syscall_handler, and interrupts go to irq_dispatch. Other synchronous
+ * traps go to trap_user or trap_fatal according to SPP in sstatus. The
+ * frame is restored with sret.
+ *
  */
 
 .section .text

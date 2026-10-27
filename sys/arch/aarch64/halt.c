@@ -1,20 +1,14 @@
-/*
+/* halt.c : AArch64 machine halt and reset through PSCI.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Stopping the machine.
  *
- * QEMU's virt board emulates PSCI for the guest, so SYSTEM_OFF is enough to
- * end the run. Powering off rather than spinning is deliberate: a kernel
- * that has decided it cannot continue should end, so that whatever launched
- * it observes the exit rather than a hang.
+ * machine_halt ignores its status argument and calls PSCI SYSTEM_OFF
+ * through hvc #0. machine_reset calls SYSTEM_RESET the same way. PSCI
+ * carries no exit status, so QEMU exits 0 whether the kernel halted
+ * normally or panicked, and a script must read the console for "panic:".
+ * If the call returns, machine_halt waits in wfi.
  *
- * PSCI SYSTEM_OFF carries no status, so QEMU exits 0 whether the kernel
- * stopped deliberately or panicked. The RISC-V port has a finisher that
- * does carry a code and uses it. Anything checking this port automatically
- * has to read the console for "panic:" rather than trust the exit status.
  */
 
 #include <sys/systm.h>

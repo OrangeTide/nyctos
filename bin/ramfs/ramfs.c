@@ -1,29 +1,15 @@
-/*
- * ramfs: a filesystem server whose directory a client can change.
+/* ramfs.c : an in-memory filesystem server clients can change.
  *
- * M23 stages one through four. It holds its tree in its own memory rather
- * than reading a block store, so a create or an unlink is a change to that
- * memory and nothing beneath it. It walks a whole path, reads a file,
- * lists a directory across an opaque cursor that pages a directory larger
- * than one buffer to its end, and creates and unlinks entries in a
- * directory. An unlink frees the node's slot at once, so the fixed node
- * pool of section 2.7 is reclaimed exactly rather than leaked. The cursor
- * names a position by an entry's key and not a count, so a reader paging a
- * directory sees every entry that is present and unchanged across the read
- * exactly once, even as a second client creates and unlinks between its
- * reads.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * It is an ordinary program. It is handed a receive handle for its channel
- * as SYS_NS_SERVICE and creates nothing, per section 24.5. The cookie on a
- * connection is the node the request is about, chosen by this server when
- * it minted the connection.
+ * It keeps its directory tree in its own memory and serves the fs protocol
+ * on the channel it was given as SYS_NS_SERVICE. A walk resolves a whole
+ * relative path, a read returns file bytes, and a directory read returns
+ * entries through an opaque cursor, so a large directory is paged across
+ * several reads. Clients can create and unlink entries, and an unlink frees
+ * the node's slot immediately.
  *
- * A walk resolves a whole relative path one component at a time. A
- * component under a node that is not a directory is SYS_ERR_WRONG_TYPE,
- * because the name exists and names the wrong kind of thing; a component
- * that is not there is SYS_ERR_NO_ENT; and a `..` is SYS_ERR_PERM_DENIED,
- * the subtree backstop of section 20.3 by the strict route a server with
- * one level and no physical parent links takes.
  */
 
 #include <os/sys.h>

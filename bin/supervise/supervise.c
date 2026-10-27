@@ -1,28 +1,14 @@
-/*
+/* supervise.c : a userspace supervisor that restarts a program.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A supervisor, in userspace, because the kernel holds no restart
- * policy and section 18.3 says it must not.
+ * It starts the program named in argv[1], waits for it to exit with no
+ * deadline on the wait, and starts it again until the number of starts
+ * reaches the bound in argv[2]. The child's exit status is read but not acted
+ * on. The exit status of supervise is the number of starts it made, so zero
+ * means the first start failed or the arguments were invalid.
  *
- * The mechanism the kernel provides is the one from section 10.4: wait
- * on a child's completion timeline and start another. Everything else
- * here is policy, and this program is one policy rather than the
- * policy: how many restarts before giving up, and what giving up means,
- * are exactly the things section 18.3 says vary per deployment and do
- * not belong in a kernel trying to stay small enough to analyse.
- *
- * The bound is the interesting part. A child that dies immediately
- * every time is a configuration mistake, and a supervisor that
- * relaunched it for ever would turn a mistake into a system that looks
- * busy and never works. So the count is finite and running out is
- * reported rather than being the same silence as success.
- *
- * Its exit status is how many starts it made. Zero means it could not
- * start the child at all.
  */
 
 #include <os/sys.h>

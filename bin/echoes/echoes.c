@@ -1,20 +1,12 @@
-/*
+/* echoes.c : a server that answers every request with success.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A server with nothing to serve, so that killing it is the only
- * interesting thing about it.
+ * It replies to each request with a success status and no data, and it keeps
+ * no state. Given the argument holds, it receives one request and never
+ * replies, and given deaf, it never receives, so clients queue behind it.
  *
- * It answers every request the same way and holds no state, which is
- * the point: what a restart has to put back is a process that can
- * receive, and a server whose clients would notice a fresh one is a
- * server this check would be measuring instead.
- *
- * It never exits of its own accord. Section 24.3 has a supervisor decide
- * when a server should stop, and this one gives it nothing else to go on.
  */
 
 #include <os/sys.h>

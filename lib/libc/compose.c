@@ -1,24 +1,15 @@
-/*
+/* compose.c : builds the namespace array passed to a child process.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Composing a namespace for a child, per section 20.4.
+ * ns_compose copies entries from the caller's namespace into an output
+ * array, duplicating each handle with the requested rights. With NS_CLONE
+ * only the entries whose names appear in the caller's list are copied, with
+ * NS_NEW none are, and otherwise every entry is copied. If the array is too
+ * small or a duplication fails, the copies made so far are closed and an
+ * error is returned.
  *
- * The section says composition is trivial and this file is the claim
- * being cashed: `NS_SHARE`, `NS_CLONE` and `NS_NEW` are choices about
- * what array to pass, not mechanisms. There is no kernel involvement
- * because there is nothing for a kernel to do: a parent decides which of
- * the handles it holds to hand over and under what names, and spawn
- * moves them.
- *
- * The handles are duplicated rather than passed, because spawn moves
- * what it is given and a parent that handed over its own root would
- * cease to have one. A caller whose spawn fails owns what this built and
- * has to close it, which is the same rule as everywhere else here: what
- * you hold is what you were given and did not give away.
  */
 
 #include <ns.h>

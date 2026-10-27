@@ -1,28 +1,15 @@
-/*
+/* subr_page.c : the physical page frame allocator.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The frame allocator. See sys/sys/page.h for what it is and why it is not
- * a pool.
  *
- * A bitmap, scanned from the bottom, skipping words that are full. The
- * first version had a rotating cursor so that a run of allocations did
- * not rescan what it had just handed out, and it went because it made
- * the one property worth checking untrue: with a cursor, a frame that
- * has just been released is not the next one out, and a released frame
- * becoming available again is then only observable at exhaustion.
+ * Allocates and frees page frames from a statically sized bitmap,
+ * scanning from the lowest frame and skipping full words. Frames can
+ * also be taken at a given physical address. Reports the frame count,
+ * the used count, the high-water mark and per-core totals. A machine
+ * that offers more frames than SYS_MAX_FRAMES is capped at boot, with
+ * a message.
  *
- * Lowest-first is what section 7.3 refuses for handles, and for a
- * reason that does not apply here: a handle value is a name a program
- * sees and could come to rely on, and a frame number is not. What it
- * costs is a scan, and skipping full words makes that a word per
- * thirty-two frames.
- * The bitmap is statically sized, which keeps this out of the bootstrap
- * problem of needing an allocator to build the allocator. What it costs is
- * a build-time ceiling on how much memory a port may hand over, and a
- * machine with more says so at boot rather than silently using less.
  */
 
 #include <sys/cpu.h>

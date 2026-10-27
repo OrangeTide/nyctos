@@ -1,16 +1,14 @@
-/*
+/* kern_timeline.c : timelines, the counters that threads wait on.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Timelines. See sys/sys/timeline.h for what one is and why.
  *
- * Section 9.2 has a waiter donate its priority to the holder of a
- * signal-righted handle. That is not implemented here, and cannot be
- * usefully: donation needs the priority chain that arrives with IPC, and
- * the design does not say which holder receives it when more than one
- * exists. Noted where it would go.
+ * Implements timeline_wait and timeline_signal on a 64-bit value that
+ * threads block on, with a deadline on each wait. Tracks the waiting
+ * threads, a count of signalers, a forced error state and the owning
+ * object. Waiters are released with a result code when the value is
+ * reached or the timeline is put into error.
+ *
  */
 
 #include <sys/intr.h>

@@ -1,24 +1,18 @@
-/*
+/* kern_op.c : the operation entry point and its handlers.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-
-/*
- * The operation entry point of section 23.
  *
- * Every operation arrives here, whether from a user trap or from kernel
- * code, which is what gives each one exactly one implementation instead of
- * a fast path and a general path that have to be kept in agreement.
+ * Every operation enters through sys_op_exec, from a user trap or
+ * from kernel code, and each operation has one implementation in
+ * this file. Operations cover channel send, receive, reply, connect,
+ * listen and reap, handle close and duplicate, debug output, thread
+ * and process control, grant mapping, and prepared program load
+ * and execution. Validation runs before any work, in a fixed order:
+ * the opcode, then the operation's arguments, so a failed operation
+ * has performed none of its work. The descriptor's address is not
+ * validated here.
  *
- * Validation happens once, before anything executes, and in a fixed order:
- * the opcode, then the operation's own arguments. An operation that fails
- * validation has performed no part of itself.
- *
- * Nothing here validates the descriptor's address. At Tier 0 there is no
- * protection to validate against and a bad pointer is simply a bad pointer,
- * which section 6.1 says plainly is what the weaker tier cannot catch. The
- * check that section 23.2 describes appears with the MMU in milestone 4.
  */
 
 #include <sys/prepared.h>

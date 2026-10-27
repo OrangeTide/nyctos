@@ -1,16 +1,14 @@
-/*
+/* subr_prf.c : console output and the formatted print routines.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Console output. The newline expansion that a tty line discipline would
- * normally do lives here, so neither the kernel nor userland has to know
- * that the console wants CR LF.
  *
- * The formatter is deliberately small: enough to report numbers during
- * boot and to say something useful in a panic, and no more. It has a
- * minimum field width and no floating point.
+ * Formats numbers and strings to the console through cnprintf, cnvprintf
+ * and cnputs, expanding newlines to CR LF, with a minimum field width
+ * and no floating point. Output is locked per message, so messages from
+ * different cores do not interleave. panic prints its message and halts
+ * the machine, and detects re-entry.
+ *
  */
 #include <sys/cpu.h>
 #include <sys/lock.h>

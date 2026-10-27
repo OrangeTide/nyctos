@@ -1,16 +1,13 @@
-/*
+/* kern_batchreg.c : tagged register file for batched system calls.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * The register file of section 17.4.
+ * Each batch register holds a value and a tag that marks it as empty, a
+ * scalar or a handle. Put and get functions check the index and the tag, so
+ * a batch cannot read a handle as a number or read a register that nothing
+ * has written. Refused accesses return SYS_ERR_INVALID_ARG.
  *
- * Small enough that the interesting part is the refusals rather than
- * the reads: what this exists to do is say no to a batch that tries to
- * use a number as a handle, and to a batch that reads a register
- * nothing has written.
  */
 
 #include <sys/batchreg.h>

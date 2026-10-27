@@ -1,21 +1,13 @@
-/*
+/* fs_batch.c : reads a file as one compound request.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The same file read as one compound request, per section 25.7.
  *
- * Walk and read in one message. One round trip instead of three, two
- * context switches instead of six, and no connection drawn from the
- * server's pool at all: the node the walk produces lives only inside the
- * server's execution of this request.
+ * It walks to a file and reads it in a single message, using the compound
+ * request of the filesystem protocol. The server performs the walk and then
+ * the read, and sends one reply. fs_client makes the same read as three
+ * separate requests.
  *
- * There is no close entry. The server releases an intermediate node when
- * it sends the reply, so asking would be a no-op.
- *
- * Chaining is implicit. The read acts on whatever the walk produced,
- * because that is the entry before it. Nothing in the message says so.
  */
 
 #include <os/sys.h>

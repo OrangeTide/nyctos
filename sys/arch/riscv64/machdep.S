@@ -1,36 +1,14 @@
-/*
+/* machdep.S : RISC-V transition from supervisor to user mode.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * void enter_user(unsigned long entry, void *arg, unsigned long sp)
  *
- * Drops from supervisor mode to user mode at the given address and never
- * returns.
+ * enter_user saves tp below the kernel stack, clears tp for the program,
+ * and stores the kernel stack pointer in sscratch for trap_entry. It then
+ * sets SPP to user mode and SPIE, sets sepc to the entry address, and
+ * executes sret into the program with the argument in a0. A nonzero sp
+ * is installed as the user stack. The function does not return.
  *
- * The kernel stack pointer
- * is stashed in mscratch, which is the invariant trap_entry reads to tell
- * a user trap from a kernel one.
- *
- * arg arrives in a0. For a process's first thread that is the startup
- * record of section 20.4; for a thread the program created it is whatever
- * the creator passed.
- *
- * sp is the user stack, or zero to leave it as it is. A program's first
- * thread sets its own stack in crt1, because the image is where the stack
- * is and the kernel does not know the image. A thread the program created
- * runs on a stack the creator supplied, per section 10.2, and the kernel
- * has to install it because the thread has no code that runs first.
- * expects it. It is the only thing the program is told.
- *
- * A program runs with machine interrupts live. U-mode cannot mask them
- * and never could: the privileged specification enables interrupts from
- * a more privileged mode regardless of that mode's own enable bit, so
- * what actually decides is sie, and what changed is that the AArch64
- * side now has a lower-EL vector to take them on. SPIE is set here so
- * that the state a program returns to is the state the kernel meant
- * rather than whatever was left over.
  */
 
 .section .text

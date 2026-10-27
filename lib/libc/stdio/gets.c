@@ -1,25 +1,14 @@
-/*
+/* gets.c : reads one line from standard input into a buffer.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * A line of input, which is what every program that talks to a person
- * needs and the only shape the console offers.
  *
- * One read is not one line, which is what the first version of this
- * assumed. A read carries at most what fits in a message, and the console
- * answers with as much of a line as that allows, so a line longer than
- * forty-eight bytes arrives in pieces. A caller handed a piece cannot tell
- * it from a line, and a shell handed one runs it as a command: one long
- * line became six, five of them nonsense.
+ * readline reads one line from standard input into a buffer by calling read
+ * on STDIN_FILENO until it sees a newline or the buffer is full. The newline
+ * is removed and the result is NUL-terminated. The function returns the number
+ * of bytes stored, or -1 on error or invalid arguments, and a line longer than
+ * the buffer is returned in pieces.
  *
- * So this reads until it sees the end of a line or fills the buffer. The
- * newline is dropped and the result is terminated, because every caller
- * wants a word rather than a line ending. A line too long for the buffer
- * fills it and returns, and the caller can tell because the length is the
- * buffer's: what is left of the line arrives on the next call, which is
- * the only thing a reader with a fixed buffer can offer.
  */
 
 #include <stddef.h>

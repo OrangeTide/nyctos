@@ -1,24 +1,14 @@
-/*
+/* resolve.c : checks path resolution against a table of answers.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * The resolver, checked against a table of paths and answers.
+ * Resolution sends no messages, so each table entry is compared with the
+ * handle and remaining path the resolver returns for it. The table assumes a
+ * root mounted at / and another at /dev, with the working directory at /. The
+ * exit status is the number of the first case that failed, or zero if every
+ * case passes.
  *
- * This is the one thing in the system that can be checked without a
- * machine doing anything: resolution sends no message, asks the kernel
- * nothing, and is a function of a path and the namespace this process
- * was launched with. So it is checked the way a function is, by naming
- * what it should say and comparing.
- *
- * Whoever starts it mounts a root at `/` and something else at `/dev`,
- * with a working directory at `/`. The cases below are written against
- * that and would be wrong under any other namespace, which is the point:
- * the answers are properties of the table, not of the library.
- *
- * The exit status is the number of the first case that failed, or zero.
  */
 
 #include <os/sys.h>

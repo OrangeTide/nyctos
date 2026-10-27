@@ -1,22 +1,14 @@
-/*
+/* pmap.c : AArch64 page tables in TTBR0.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Page tables, AArch64.
  *
- * Four kilobyte granule, thirty-nine bits of virtual address, which is
- * three levels: one gigabyte at level one, two megabytes at level two,
- * four kilobytes at level three. Thirty-nine bits is enough for every
- * address either port uses and costs a level less than forty-eight would.
+ * Builds three-level translation tables with a 4 KiB granule and 39-bit
+ * virtual addresses, using 1 GiB, 2 MiB, and 4 KiB entries. Only TTBR0
+ * is used, and each address space is tagged with an ASID in TTBR0.
+ * Provides the md_as_* functions, md_map, md_unmap, and md_lookup, along
+ * with the TLB invalidation and MMU enable hooks.
  *
- * Only TTBR0 is used. A kernel in the high half through TTBR1 is the
- * arrangement most systems reach for, and it would mean relinking the
- * kernel to run at an address it is not loaded at, which buys nothing
- * this milestone spends. What it would buy is a kernel that stays mapped
- * across an address space switch without being in every table, and that
- * is worth revisiting when there are many address spaces rather than one.
  */
 
 #include <sys/intr.h>

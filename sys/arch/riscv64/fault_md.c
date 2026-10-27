@@ -1,22 +1,15 @@
-/*
+/* fault_md.c : RISC-V mapping from scause to fault kinds.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Every synchronous exception this port can raise, mapped to a kind of
- * section 16.1.
+ * Maps each synchronous scause exception code to a fault kind. Codes that
+ * cannot arrive on this system are listed explicitly with a comment
+ * giving the reason. md_fault_has_addr reports which causes carry a
+ * faulting address in stval. md_fault_check verifies the table against
+ * its expected values, and md_fault_access reports whether the faulting
+ * access was a fetch, a load, or a store.
  *
- * The mapping is exhaustive on purpose, including the codes that cannot
- * arrive in this system: a row saying "this cannot happen here" survives
- * someone enabling the feature that would make it happen, and a row that
- * is simply absent is a fault that arrives as whatever the default turns
- * out to be.
- *
- * scause holds the exception code with its top bit clear. Its companion
- * stval holds the address for the faults that have one, and zero for the
- * rest, which the architecture specifies rather than leaves to the part.
  */
 
 #include <sys/op.h>

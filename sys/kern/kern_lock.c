@@ -1,18 +1,14 @@
-/*
+/* kern_lock.c : spinlocks, the kernel lock and lock-discipline checks.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * The kernel lock, and the check that it is one.
+ * Spinlocks on Tier 2 use an atomic exchange with acquire and release
+ * ordering, and record their owning core. A per-core count tracks the locks
+ * each core holds. The kernel lock is one named spinlock, entered and left
+ * with interrupts masked, and klock_drop and klock_regain release and retake
+ * it. lock_check is one of the in-kernel checks.
  *
- * The atomic operations here are the compiler's rather than the port's.
- * A port provides what only it can know, and how to exchange a word
- * with the memory system is not that: both of these architectures have
- * the instruction and the compiler knows which it is. What the ports do
- * provide is the fence and the spin hint, because those are already
- * part of how a core is started.
  */
 
 #include <sys/cpu.h>

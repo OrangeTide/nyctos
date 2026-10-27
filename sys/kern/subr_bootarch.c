@@ -1,26 +1,14 @@
-/*
+/* subr_bootarch.c : the boot archive reader and RAM loader.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Walking the boot archive, and loading a member out of it.
  *
- * Section 24.4 describes this as a loop over fixed-size records, on the
- * order of forty lines, and not a filesystem: it speaks no protocol and
- * resolves no paths. That is what this is.
+ * Looks up members of the boot archive by name and checks each member's
+ * layout once per boot. Copies a member to the address it was linked
+ * for, with no relocation or symbol resolution, and its entry point is
+ * the first byte of the image. Also reports the archive, reserves the
+ * memory its images occupy, and gives the bounds of the user window.
  *
- * Section 15.2 makes execute-in-place the Tier 0 default and a RAM loader
- * a compile-time alternative for images that must run from RAM. This is
- * the RAM loader, and it is the only path here because the programs are
- * linked at absolute addresses. Running in place would need them built
- * position-independent, which is a change to how they are compiled rather
- * than to anything in this file.
- *
- * The copy is therefore the whole of loading: no relocation, no symbol
- * resolution, no segment table. A flat binary goes to the address it was
- * linked for and the entry point is the first byte of it, because the
- * linker script places .text.start first.
  */
 
 #include <sys/bootarch.h>

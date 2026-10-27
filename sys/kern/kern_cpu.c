@@ -1,21 +1,14 @@
-/*
+/* kern_cpu.c : per-core records, core claim and bring-up.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Cores, per section 11.4.
+ * A static array holds one record per core, sized by the build limit, with
+ * the core count supplied by the port. cpu_self returns the running core's
+ * record through the port, and reading it takes no lock. cpu_init claims the
+ * boot core and cpu_start_others brings up the rest. The report functions
+ * print per-core state and cross-core counts.
  *
- * The array is static like every other pool in this kernel, and it is
- * the one pool whose size the hardware gets a say in: a build says how
- * many cores it will use and the port says how many there are, and the
- * smaller wins.
- *
- * There is deliberately nothing here that a core has to take a lock to
- * read about itself. Section 11.4's whole argument is that a scheduling
- * decision decomposes into a per-core problem, and it cannot if finding
- * out what this core is doing means agreeing with another one.
  */
 
 #include <sys/cpu.h>

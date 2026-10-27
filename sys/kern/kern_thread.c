@@ -1,15 +1,14 @@
-/*
+/* kern_thread.c : thread creation, exit, reaping and context switch.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Threads: creation, exit, and the context switch itself.
  *
- * Which thread runs next is not decided here. That is the dispatch decision
- * of section 11.2 and it lives in kern_sched.c, which also owns thread
- * states: it is the only code that knows whether an outgoing thread is
- * going back on a run queue, blocking, or dead.
+ * Creates and reaps threads, and tracks the identifier of each thread
+ * and the thread current on each core. Handles thread exit, faults,
+ * timeout wakeups and cancellation, with reference counts on thread
+ * objects. The thread_switch_to function performs the context switch,
+ * and the choice of next thread is made in kern_sched.c.
+ *
  */
 
 #include <sys/objref.h>

@@ -1,18 +1,15 @@
-/*
+/* kern_objref.c : object effects of handle insertion and removal.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * What a handle coming or going means to the object it names.
  *
- * Most objects do not care. A timeline does, because section 9.3 makes the
- * loss of the last signal-righted handle an event: the party that could
- * have satisfied a wait has gone, and a waiter must be told rather than
- * left to a timeout.
+ * handle_object_retain and handle_object_release apply the per-type effects of
+ * a handle being added or removed. Timelines count their signaling handles,
+ * completion timelines hold their owning process or thread, and channels
+ * track ownership and holds. objref_enter and objref_leave serialize these
+ * updates with a spinlock on Tier 2 and with interrupt masking alone on
+ * Tier 0.
  *
- * This lives apart from the handle table so that the table stays generic
- * and does not grow a case per object type.
  */
 
 #include <sys/lock.h>

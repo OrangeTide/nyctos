@@ -1,19 +1,15 @@
-/*
+/* op.c : wrappers that build and submit kernel operations.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The one system call, and the wrappers that fill in a descriptor for it.
  *
- * Every function here builds a sys_op_t and submits it. There is no second
- * path, which is the property section 23.1 exists for: an operation has
- * one implementation whether it was reached from a wrapper, from a batch,
- * or from inside the kernel.
+ * Each sys_* function fills in a sys_op_t descriptor, submits it through
+ * __sysop, and copies results back into the caller's pointers. The wrappers
+ * cover messaging, handles, threads, processes, grants, fences, channels,
+ * pulses, and IRQs. sys_thread_create places a start record at the top of the
+ * new stack, and its entry is a trampoline that calls the function and then
+ * exits the thread.
  *
- * The argument structures are on the caller's stack and the kernel writes
- * its results back into them, so each wrapper copies out what its caller
- * asked for before returning.
  */
 
 #include <os/sys.h>

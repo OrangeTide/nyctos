@@ -1,24 +1,13 @@
-/*
+/* prepared.h : prepared programs, a validated batch held in the kernel.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Prepared programs, per section 17.7: a batch validated once and
- * executed many times.
+ * Declares struct prepared, which holds a copy of an operation batch validated
+ * at load time, and the prepared_load, prepared_exec and prepared_free
+ * functions. Included by the objref, object, operation and prepared program
+ * sources.
  *
- * The entries are copied into the kernel, which is what makes the
- * validation last. A program whose entries stayed in the caller's
- * memory would have to be checked again at every execution, because the
- * caller could have rewritten them, and then nothing would have been
- * validated once.
- *
- * What cannot be validated once is the handles. A handle is a slot in a
- * table and what it names can change or go away between one execution
- * and the next, so every execution looks them up again. The saving is
- * the static half: the array is kernel memory and needs no reachability
- * check, and the opcodes were checked when the program was loaded.
  */
 
 #ifndef _SYS_PREPARED_H_

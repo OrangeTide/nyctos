@@ -1,20 +1,13 @@
-/*
+/* greet.c : prints and reads a line through the console service.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * A program that talks to a person, and holds no ambient authority at all.
  *
- * Every other program here prints through the debug console of section
- * 22.4, which takes no handle and reaches the device because it exists.
- * This one is built without it: DEBUG_CONSOLE is off, so the macros expand
- * to nothing and there is no call to the backdoor anywhere in the image.
- * What it has instead is a connection to the console service, handed to it
- * at spawn under SYS_NS_CONSOLE.
+ * The program is built without the debug console, so its output reaches a
+ * person only through the console handle it receives at spawn. It prints
+ * formatted text, reads one line, prints it back, and returns the line length
+ * as its exit status.
  *
- * That is the whole of the check. If this program says anything at all,
- * output reached a person through a handle rather than through a hole.
  */
 
 #include <stdio.h>

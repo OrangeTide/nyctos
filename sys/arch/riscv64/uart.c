@@ -1,6 +1,13 @@
-/*
+/* uart.c : RISC-V 16550 UART console output.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * uart_putc writes one byte to the transmit holding register at
+ * 0x10000000, the UART of QEMU's virt board. It waits for the transmit
+ * holding register empty bit in the line status register first. This
+ * file has no receive path.
+ *
  */
 
 #include <sys/systm.h>

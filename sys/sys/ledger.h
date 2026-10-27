@@ -1,24 +1,13 @@
-/*
+/* ledger.h : ledger server protocol records and operation codes.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A server that keeps a record per client, for M18.
+ * Declares the request and reply structures and the LEDGER_OP_* codes of the
+ * ledger server, which keeps one record per client in a table of
+ * LEDGER_RECORDS slots. Included by bin/ledger/ledger.c, bin/patron/patron.c
+ * and sys/kern/init_main.c.
  *
- * Every server in this system so far has been able to forget a client
- * the moment it answers one: `fs_server` holds no position, because a
- * connection carries none and every request states its own offset, and
- * `echoes` holds nothing at all. Sections 12.5 and 13.1 both argue from
- * a server that does hold something, and say that a death notice is
- * what keeps it from leaking. This is that server, built so that the
- * argument has something to be true or false about.
- *
- * The record is deliberately a slot out of a fixed table rather than
- * something notional. A leak that costs nothing is a leak nothing
- * notices, and what this milestone measures is how many slots are still
- * taken when every client that took one has gone.
  */
 
 #ifndef _SYS_LEDGER_H_

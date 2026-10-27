@@ -1,23 +1,14 @@
-/*
+/* cpu_md.c : RISC-V per-hart pointer and hart startup.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Cores on this port.
+ * Holds the current struct cpu pointer in tp. With no firmware present,
+ * md_cpu_start stores the entry point in hart_entry and sets hart_release
+ * for the target hart, which is spinning in boot.S. md_cpu_available
+ * counts the harts that have parked, waiting up to one million polls for
+ * each.
  *
- * There is no firmware under this kernel, so there is no SBI and no hart
- * state management call to start a hart with. Every hart arrives at the
- * reset vector together and every one but the first parks in boot.S
- * waiting for a word to change. Starting a core is therefore writing
- * that word, which is less than a port with firmware has to do and is
- * the whole of the difference.
- *
- * The per-core pointer lives in tp. Supervisor mode owns it, the C code
- * here never had a thread pointer of its own, and reading it is one
- * instruction, which is what section 11.4 needs: finding out what this
- * core is doing must not mean agreeing with another one.
  */
 
 #include <sys/cpu.h>

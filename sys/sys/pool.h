@@ -1,33 +1,13 @@
-/*
+/* pool.h : static object pools and their slot identifiers.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Static object pools, and the identifiers that name their slots.
  *
- * A pool is a fixed array of same-sized objects with a free list threaded
- * through it. Allocation pops the free list and returns an identifier;
- * closing pushes the slot back and increments its generation, so an
- * identifier held across a free names a valid index whose generation no
- * longer matches and is rejected rather than silently naming the new
- * occupant. See design.md sections 7.1 and 8.
+ * Declares sys_id_t, which packs a slot index and a generation into one word,
+ * and struct pool, a fixed array of same-sized objects with a free list. Also
+ * declares the pool_* functions that allocate, free, look up and report slots.
+ * Included by most kernel object headers and by the pool and object sources.
  *
- * An identifier is one pointer-width word: a slot index in the low bits
- * and a generation above it. Generations start at 1, so an all-zero
- * identifier is never valid and zeroed memory does not name slot 0.
- *
- * The split differs by word size because the pools do. Twenty bits of
- * index is a million slots, which is right for a system whose pools are
- * sized in thousands and absurd for a part holding a few dozen objects in
- * total: it would spend half the word describing a range no configuration
- * of that part could reach. The narrower split spends those bits on
- * generation instead, where they are what makes a stale identifier safe.
- *
- * Both splits leave far more generation than the hazard needs. Aliasing
- * requires one slot to be recycled through the whole generation range
- * while a stale identifier naming it is still being held, which is four
- * million reuses in the narrow case.
  */
 
 #ifndef _SYS_POOL_H_

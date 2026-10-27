@@ -1,19 +1,15 @@
-/*
+/* pmap.c : RISC-V Sv39 page tables.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Page tables, RISC-V Sv39.
  *
- * Three levels of five hundred and twelve entries: one gigabyte, two
- * megabytes, four kilobytes. The same shape as the other port, which is
- * not a coincidence and is why the surface above them is one function.
+ * Builds three-level Sv39 tables with 1 GiB, 2 MiB, and 4 KiB entries. A
+ * table entry has R, W, and X clear, and a leaf has at least one of them
+ * set, which is how a walk tells the two apart. Address spaces are
+ * identified by an ASID in satp. Provides the md_as_* functions, md_map,
+ * md_unmap, and md_lookup, along with the TLB invalidation and MMU enable
+ * hooks.
  *
- * A leaf is an entry with any of read, write or execute set; a table is an
- * entry with none of them. That is the one rule of this format worth
- * knowing, and it is why a walk here tests permissions rather than a type
- * field.
  */
 
 #include <sys/intr.h>

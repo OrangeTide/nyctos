@@ -1,21 +1,14 @@
-/*
+/* file.h : open, read, and close files by path.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Files, by name.
+ * Declares file_open(), file_read(), and file_close() for the C library.
+ * file_open() resolves a path through the process namespace and returns
+ * a handle. file_read() returns the bytes that fit in one message, which
+ * may be fewer than requested, and zero at end of file. Included by the
+ * cat program and the C library file implementation.
  *
- * A path is resolved against the namespace this process was given, per
- * section 20.3, and the walk goes to whatever handle it landed on. There
- * is no descriptor table and no ambient root: what comes back is a
- * handle, which is what authority looks like here, and a program holding
- * no directory can open nothing.
- *
- * The protocol underneath is section 25's and a program may speak it
- * directly, which three of them do. This is for the ones that only want
- * the bytes.
  */
 
 #ifndef _FILE_H_

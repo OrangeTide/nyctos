@@ -1,28 +1,14 @@
-/*
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A process that hands out the makings of one more thread, for M21
- * stage five.
+/* lastborn.c : sends a thread's entry point and stack to the supervisor.
  *
- * The stage asks what happens when a thread is made in a process
- * that has already been killed. Answering it needs the same request
- * made twice, once while the process is alive and once after the
- * mark, so that the only difference between the two answers is the
- * mark. The supervisor cannot invent the request: a thread needs an
- * entry point and a stack in the program's own image, and only the
- * program knows where those are.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * So this sends them. The first message carries the address of the
- * function below and the top of a stack for it, and is never
- * answered, which leaves this thread inside a rendezvous and the
- * process alive for as long as the supervisor wants it. The thread
- * the supervisor then makes runs `kid`, which says so on the same
- * channel and waits in the same way.
+ * The first message carries the address of kid() and the top of a stack in
+ * this program's image, and it is never answered. The supervisor makes a
+ * thread from those values, and that thread sends its own message on the
+ * same channel and waits. Both threads then stay inside a request until the
+ * supervisor ends the process.
  *
- * After that there are two threads, both inside a request, and the
- * kill has something to reach.
  */
 
 #include <os/sys.h>

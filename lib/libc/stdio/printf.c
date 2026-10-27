@@ -1,22 +1,13 @@
-/*
+/* printf.c : printf and vprintf, writing to standard output.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Enough formatting for a utility to be worth writing.
  *
- * The kernel has a formatter of its own in subr_prf.c and this is a second
- * one, which is duplication with a reason: that one writes a byte at a
- * time to a device it owns, and this one has to gather bytes into a
- * message, because every write here is a rendezvous with another process.
- * Sharing the code would mean a formatter parameterised by how it emits,
- * which is more machinery than either side saves.
+ * Output is gathered in a 128-byte buffer and written to STDOUT_FILENO. The
+ * conversions are %s, %d, %u, %x, %c, and %%, with a minimum width and zero
+ * or space padding. An unknown conversion is printed as "%?". printf
+ * forwards its arguments to vprintf.
  *
- * The conversions are the ones utilities use: %s, %d, %u, %x, %c and %%.
- * A width is honoured only as a minimum with zero or space padding, which
- * is what a column of numbers needs. Anything else is printed as itself,
- * so a mistake in a format string is visible rather than silent.
  */
 
 #include <stdarg.h>

@@ -1,16 +1,13 @@
-/*
+/* stdio.h : console input and output for utilities.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * What a utility needs to talk to a person, and nothing else.
  *
- * There is no FILE, no fopen and no buffering, because there is nothing to
- * open: a program reaches the console through a handle it was given at
- * spawn, per section 20.4, and reaches a file through a connection, per
- * section 25.2. printf and readline are the two shapes utilities actually
- * use, and both go through the console of section 19.
+ * Declares puts(), printf(), vprintf(), and readline(). readline() reads
+ * one line of input into a caller buffer. There is no FILE type and no
+ * buffered stream. Included by utilities, the boot archive tool, and the
+ * C library stdio implementation.
+ *
  */
 
 #ifndef _STDIO_H_

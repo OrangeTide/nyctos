@@ -1,12 +1,13 @@
-/*
+/* kern_object.c : static object pools for each kernel object type.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The kernel's object pools: one per type, all of them in .bss, all of them
- * sized by sys/sys/config.h. This file is where the sizes in that header
- * become memory.
+ *
+ * Declares one static pool per object type in .bss, sized by sys/config.h,
+ * and checks at build time that each size fits the identifier index field.
+ * Accessor functions return the pool for each type. object_init, object_check
+ * and object_report set up, verify and print the pools at boot.
+ *
  */
 
 #include <sys/prepared.h>

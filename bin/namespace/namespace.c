@@ -1,21 +1,14 @@
-/*
+/* namespace.c : prints the namespace it was launched with.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A program that says what it was given.
+ * It prints one line for each entry in its namespace, using the name when
+ * the entry has one. The exit status is the number of named entries, so a
+ * caller can check the result without reading the console. The output
+ * depends on what the parent mounted, so the same image prints different
+ * tables under different parents.
  *
- * Section 20.4 has a process receive its namespace at launch and receive
- * nothing else, so this is the whole of what it can reach, printed. What
- * makes it worth printing is that the names came from whoever started it
- * rather than from a convention this program assumed: a parent that
- * mounts a handle somewhere else produces different output from the same
- * image, and a parent that mounts nothing produces an empty table.
- *
- * The exit status is the number of named entries, so that whoever started
- * it can check the answer without reading the console.
  */
 
 #include <os/sys.h>

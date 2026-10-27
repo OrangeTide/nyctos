@@ -1,28 +1,14 @@
-/*
+/* console.c : standard input and output over the console service.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * A program's own input and output, over the console service of section
- * 19 and the protocol of section 25.
  *
- * Until this stage write() went to the debug console of section 22.4 and
- * read() did not exist, which meant a program's output was ambient
- * authority and an image built without the backdoor could not talk to a
- * person at all. Now both ends are a connection the process was handed at
- * spawn, under SYS_NS_CONSOLE, and a process that was given no console
- * reaches none: section 20.1 has authority be a handle, and this is what
- * that means for the most ordinary thing a program does.
+ * write on STDOUT_FILENO or STDERR_FILENO and read on STDIN_FILENO send
+ * requests to the console connection, which is looked up in the namespace on
+ * first use. Output is sent in chunks that fit one inline message, and each
+ * read returns at most one reply's worth of data. Any other descriptor fails
+ * with -1.
  *
- * The debug macros in <debug.h> keep their own spelling and their own
- * build switch, per section 22.4, because a program's real output and its
- * diagnostics are different categories and only the second is one a build
- * removes wholesale.
- *
- * There are still no file descriptors. The three POSIX numbers all name
- * the same connection, because there is one console and nothing else to
- * open; the descriptor table arrives with the mount table in M5.
  */
 
 #include <os/sys.h>

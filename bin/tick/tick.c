@@ -1,19 +1,14 @@
-/*
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Read the system page, and say what was in it.
+/* tick.c : reads the system page and reports what it holds.
  *
- * Section 6.2 has a page mapped read-only into every process, found
- * through the process's own description of itself rather than at an
- * address a program assumes. This program follows that pointer and
- * returns what it finds, which is how the check outside compares it
- * with what the kernel put there.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * A program that never looks at its startup record cannot reach the
- * page at all, which is the point of the pointer being there rather
- * than the address being fixed.
+ * It follows the pointer from its startup record to the read-only system page
+ * that the kernel maps into every process. It prints the page's version and
+ * tick rate, then returns the rate's low 31 bits as its status. It returns 1,
+ * 2, or 3 if the page is missing, has the wrong version, or reports a zero
+ * rate.
+ *
  */
 
 #include <os/sys.h>

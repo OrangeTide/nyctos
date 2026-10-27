@@ -1,11 +1,14 @@
-/*
+/* kern_handle.c : per-process handle tables.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Handle tables. See sys/sys/handle.h for what a handle is and why the
- * generation is in it.
+ *
+ * Each process owns a fixed table of slots. A handle names a slot together
+ * with the generation it was issued under, so a closed handle goes stale when
+ * its slot is reused. The table inserts, looks up, duplicates, moves and
+ * closes handles, and reports the rights a handle carries.
+ * handle_table_close_all closes every handle a process still holds.
+ *
  */
 
 #include <sys/handle.h>

@@ -1,6 +1,12 @@
-/*
+/* string.h : memory and string function declarations.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * Declares memcpy(), memset(), strlen(), and strncmp(). Includes
+ * sys/types.h for size_t. Included by programs, the C library, and
+ * debug.h.
+ *
  */
 
 #ifndef _STRING_H_

@@ -1,21 +1,16 @@
-/*
+/* boot.S : RISC-V entry, machine-mode setup, and hart parking.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Entry, and the one thing this port does in machine mode.
  *
- * The kernel runs in supervisor mode, because that is the only mode on
- * this architecture that has an MMU: satp does nothing in machine mode,
- * where the only protection is the PMP. Milestone 4 needs page tables, so
- * the kernel had to move down a mode, and this is the whole of what stays
- * behind: hand the traps, the timer and the memory to supervisor mode, and
- * leave.
+ * _start runs on every hart in machine mode. Hart zero clears .bss,
+ * delegates every delegable trap and interrupt to supervisor mode, sets
+ * PMP to cover all of memory, enables the Sstc timer and the counters,
+ * and returns to supervisor mode at kernel_main. The other harts park
+ * until hart_release is written, then make the same transition into
+ * supervisor_secondary. machine_trap forwards a machine software
+ * interrupt to supervisor mode as SSIP.
  *
- * There is no firmware under this. A port that boots through SBI gets all
- * of the below from the firmware instead and starts at supervisor_start,
- * which is why the two are separated here rather than run together.
  */
 
 #include <sys/config.h>

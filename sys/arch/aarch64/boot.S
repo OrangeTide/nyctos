@@ -1,6 +1,15 @@
-/*
+/* boot.S : AArch64 entry point and early boot setup.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * _start drops from EL2 to EL1 when the core enters there, clears .bss,
+ * sets the stack and the vector table, and lets EL0 read the physical
+ * counter. Core zero continues into kernel_main, and every other core
+ * waits in wfe. secondary_entry brings a core started through PSCI to
+ * EL1 on its own stack, indexed by core number, and calls
+ * cpu_secondary_entry.
+ *
  */
 
 #include <sys/config.h>

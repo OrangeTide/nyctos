@@ -1,10 +1,14 @@
-/*
+/* mem_md.c : AArch64 memory layout and console registers.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * What this port tells the kernel about the machine it is on.
+ *
+ * Reports RAM at 0x40000000 with 128 MiB, and reports the range from
+ * _start to _stack_top as held back. The kernel image bounds are _start,
+ * _erodata, and _kernel_end. md_console_regs gives the PL011 at
+ * 0x09000000. md_mode reports EL1, and md_current_space returns
+ * TTBR0_EL1.
+ *
  */
 
 #include <sys/systm.h>

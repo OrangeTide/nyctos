@@ -1,25 +1,13 @@
-/*
+/* fs_server.c : a filesystem server that reads from a block store.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * A filesystem server, as an ordinary program.
  *
- * It is handed a receive handle for its channel as SYS_NS_SERVICE in its
- * startup namespace, and creates nothing. There is no operation for making a channel, and
- * there should not be: a server that could conjure one would be naming
- * something nobody granted it. Section 24.5 has root create the channel
- * and pass both ends, which is what the namespace entry is.
+ * It serves two directories, and the cookie on each connection selects the
+ * one that connection sees. It handles walk, read and batch requests on the
+ * channel named by SYS_NS_SERVICE, and reads file contents through the block
+ * store named by SYS_NS_STORE.
  *
- * The loop is section 12.6: receive, switch on the operation, reply. The
- * cookie says which node the request is about, because the server put it
- * there when it minted the connection, and it is the only thing the server
- * needs to know about a caller.
- *
- * The program produces no output. There is no console for a user program
- * yet, so results travel by IPC and by exit status; a console service is
- * milestone 3.
  */
 
 #include <os/sys.h>

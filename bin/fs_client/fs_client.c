@@ -1,22 +1,12 @@
-/*
+/* fs_client.c : reads a file with a walk, a read and a close.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Opening a file and reading it, the plain way: walk, read, close.
  *
- * Three round trips, six context switches, and a connection held in the
- * server's pool across two of them. This is the baseline that fs_batch is
- * measured against; section 25.7 is the argument that it is the wrong
- * shape for a client that only wants the bytes.
+ * Each step is a separate request on the connection given to the program as
+ * SYS_NS_ROOT, and the connection the walk returns is held until the close.
+ * The program returns the number of bytes read as its exit status.
  *
- * It is handed one connection, as SYS_NS_ROOT, and holds nothing else.
- * There is no root to name, no path that starts anywhere but the
- * connection it was given, and nothing it could have guessed.
- *
- * The program produces no output. There is no console for a user program
- * yet, so the byte count comes back as the exit status.
  */
 
 #include <os/sys.h>

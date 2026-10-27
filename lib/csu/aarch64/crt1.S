@@ -1,18 +1,13 @@
-/*
+/* crt1.S : entry point for aarch64 programs.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * C runtime startup. The kernel enters here with nothing set up but the
- * program counter and x0, so crt1 owns the stack, zeroes .bss (which is
- * not part of the loaded image) and turns main()'s return value into
- * exit().
  *
- * x0 holds the pointer to the startup record of section 20.4, which is
- * the only thing this program was told. It is stashed in a callee-saved
- * register across the stack and .bss work rather than reloaded, because
- * there is nowhere to reload it from: .bss is being zeroed.
+ * Entry point _start for aarch64 programs. It keeps the startup record
+ * pointer from x0 in x19, sets up the stack, and zeroes .bss. It then calls
+ * __libc_startup, loads argc and argv for main, and passes main's return
+ * value to exit.
+ *
  */
 
 .section ".text.start"

@@ -1,16 +1,12 @@
-/*
+/* subr_mem.c : the freestanding memset and memcpy.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The memory primitives a freestanding kernel has to supply for itself.
- * The compiler is entitled to emit calls to these for structure assignment
- * and array initialisation even under -fno-builtin, so they must exist even
- * where no kernel source calls them by name.
  *
- * These are the obvious byte-at-a-time versions. A port that cares can
- * replace them; nothing here is on a path that has been measured.
+ * Byte-at-a-time implementations of memset and memcpy. The compiler
+ * can emit calls to them even under -fno-builtin, so they exist even
+ * where no kernel code calls them by name. A port may replace them.
+ *
  */
 
 #include <sys/systm.h>

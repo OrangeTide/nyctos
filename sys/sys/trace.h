@@ -1,15 +1,13 @@
-/*
+/* trace.h : recording of thread wait states.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Recording what threads blocked on, per section 22.2.
  *
- * The two sides of a rendezvous cannot be observed by sampling, because
- * whichever thread does the sampling is running and therefore cannot see a
- * system in which something else is. States are recorded as they are
- * entered and read back afterwards.
+ * Declares struct trace_event and the trace_* functions that enable and reset
+ * the recorder, log the wait state each thread enters, and report or query what
+ * was recorded. Included by the timeline, channel and trace sources and by
+ * sys/kern/init_main.c.
+ *
  */
 
 #ifndef _SYS_TRACE_H_

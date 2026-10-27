@@ -1,11 +1,13 @@
-/*
+/* subr_pool.c : the fixed-size object pool allocator.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Static object pools. See sys/sys/pool.h for the identifier layout and the
- * reasoning; this file is the mechanism and holds no policy.
+ *
+ * Hands out and reclaims fixed-size objects from a statically sized
+ * table using a free list. Maps objects to slot indices and identifiers,
+ * and tracks live and high-water counts with per-core reporting. Each
+ * object type in kern_object.c has a pool built on this allocator.
+ *
  */
 
 #include <sys/cpu.h>

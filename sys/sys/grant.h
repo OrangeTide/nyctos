@@ -1,33 +1,14 @@
-/*
+/* grant.h : grants, handles to physical memory regions.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Grants: authority over a region of memory, held as a handle.
+ * Declares struct grant, a physical region with a base address, a length,
+ * and a device flag. Also declares the functions that create a grant, map
+ * it for a holder, and unmap it. grant_frames() reports the frames that
+ * grants hold. Included by the kernel init, grant, object, operation, and
+ * pager code.
  *
- * Section 6.1 has two forms in which memory crosses a boundary, and the
- * difference between them is lifetime rather than semantics. A message
- * buffer is memory lent for one call. A grant is memory delegated for as
- * long as the holder keeps the handle: a device's registers, a page a
- * pager supplied, a target for a device to write into.
- *
- * What a grant covers is a physical region. It is not a promise about a
- * virtual address, because a virtual address means something only inside
- * one address space and a grant can be held by more than one process.
- * The address a holder sees is decided when it maps the grant, and this
- * kernel gives it the physical address: every other mapping here is the
- * identity, the regions a grant covers are device registers outside
- * every program's window, and a holder that had to be told a different
- * number would be a holder that had to ask.
- *
- * Nothing in the system can mint one. There is no operation that turns a
- * physical address into authority, because that operation would be
- * ambient authority over the machine: whoever could call it could reach
- * any device. What assembles the system makes them, per section 19.2,
- * and hands them to the processes that need them. Here the kernel is
- * what assembles the system.
  */
 
 #ifndef _SYS_GRANT_H_

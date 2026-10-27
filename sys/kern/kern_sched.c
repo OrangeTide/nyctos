@@ -1,16 +1,13 @@
-/*
+/* kern_sched.c : per-core run queues and the dispatch decision.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The real-time band of section 11.2: a bitmap of non-empty priority
- * levels, and a FIFO per level.
  *
- * Selecting the highest runnable thread is one count-leading-zeros and one
- * dereference, and does not depend on how many threads are runnable. That
- * is the property the response time figures rest on, and it is the only
- * reason to prefer this over a sorted list.
+ * Keeps a run queue per core, made of a bitmap of non-empty priority
+ * levels and one FIFO per level, so the highest runnable thread is found
+ * with one count-leading-zeros. Provides ready, block, yield, defer and
+ * reprioritise operations, migration between cores, and the idle loop.
+ *
  */
 
 #include <sys/measure.h>

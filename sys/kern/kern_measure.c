@@ -1,14 +1,14 @@
-/*
- * SPDX-License-Identifier: 0BSD OR Apache-2.0
+/* kern_measure.c : timing measurements and clock consistency checks.
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * The measurement facility of section 13.3, and the one thing it has to
- * establish before any figure it produces means anything: that there is
- * one clock, that both cores read the same one, and that it does not go
- * backwards.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * Records per-core counts, shortest and longest durations, and point ranges
+ * for measured regions, and reports them. The measured regions are interrupt
+ * regions, context switches, IPC rounds, IRQ dispatch, donation and
+ * preemption points. A check confirms that every core reads one clock and
+ * that the clock does not go backwards.
+ *
  */
 
 #include <sys/channel.h>

@@ -1,26 +1,14 @@
-/*
+/* kern_intr.c : interrupt table and the interrupt dispatch path.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The interrupt path: claim, silence, advance a timeline, acknowledge,
- * return.
  *
- * There is deliberately almost nothing here. Section 13.2 keeps driver
- * logic out of the handler entirely, so what an interrupt does is make a
- * counter go up, and the thread waiting on that counter does the work.
+ * Each interrupt number has a static record that names either a kernel
+ * handler or a timeline. Dispatch claims the interrupt, signals end of
+ * interrupt to the port, then runs the handler or advances the timeline. A
+ * timeline source is masked before its timeline advances, and irq_unmask
+ * re-enables it.
  *
- * Silencing is the part section 13.2 does not describe and every device
- * that is not a timer needs. The section requires the handler to have
- * finished with the device before it advances anything, because advancing
- * can switch to the waiter from inside the handler, and a device still
- * asserting is re-entered the moment that thread enables interrupts. A
- * timer is finished with by reprogramming it, which is kernel code. A UART
- * is finished with by reading the bytes out of it, which is driver logic
- * and belongs in a process. What the kernel can do for a device it does
- * not understand is mask the source, and let the driver unmask it when it
- * has drained the device.
  */
 
 #include <sys/cpu.h>

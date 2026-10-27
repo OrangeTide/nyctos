@@ -1,17 +1,14 @@
-/*
+/* sys.h : the system call interface for programs.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The system call interface, as a program sees it. Section 26 of
- * design.md is the specification this file is the working subset of.
  *
- * There is one entry point. sys_op_submit() is it, and everything below is
- * a wrapper that fills in a descriptor and calls it, per section 23.1.
- * That is not a convenience layer over several system calls; it is the
- * only call there is, and the wrappers exist so that ordinary code does
- * not have to write out a descriptor by hand.
+ * Declares sys_op_submit(), the kernel entry point, and wrappers that
+ * fill in an operation descriptor and submit it. The wrappers cover
+ * messages, channels, process and thread control, grants, fences, IRQs,
+ * handles, the system page, the clock, and debug output. Included by
+ * most programs and by the C library.
+ *
  */
 
 #ifndef _OS_SYS_H_

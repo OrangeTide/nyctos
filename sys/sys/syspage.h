@@ -1,29 +1,14 @@
-/*
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * The system page of section 6.2: one page of kernel memory, mapped
- * read-only into every process, that a program reads without a syscall.
+/* syspage.h : layout of the read-only system page.
  *
- * What it carries is what a program cannot obtain any other way and
- * cannot be told once at startup because it changes. Today that is the
- * timebase: section 14.3 has every blocking call take an absolute
- * deadline on the monotonic clock, and a program with no way to read
- * that clock cannot construct one.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * It does not carry the time. Section 6.2 describes a 64-bit
- * uptime_ticks field the kernel writes and a program reads under a
- * seqlock, and M16 stage one measured what that would be worth in a
- * kernel that arms the hardware for the next event and for nothing
- * else: the longest stretch with no kernel running in it is about a
- * tenth of a second, and what runs across it is a program computing.
- * A deadline built from a value that old expires before it is made.
+ * Declares SYS_SYSPAGE_VERSION and sys_syspage_t, the structure of the
+ * read-only page that every process maps. It holds the version and the
+ * frequency of the counter a program reads for itself. Included by
+ * include/os/sys.h, lib/libc/sys/uptime.c, bin/tick/tick.c, sys/kern/kern_time.c
+ * and sys/kern/init_main.c.
  *
- * So the page carries the frequency and the program reads the counter,
- * which both ports have as an instruction and neither permitted from
- * user mode until this milestone. The seqlock has nothing to protect,
- * because there is no field the kernel writes after boot.
  */
 
 #ifndef _SYS_SYSPAGE_H_

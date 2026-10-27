@@ -1,21 +1,20 @@
-/*
+/* mkbootarch.c : build-host tool that writes the boot archive image.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Build a boot archive, per section 24.4.
+ *
+ * Packs a set of flat program binaries into one boot archive for the
+ * kernel to carry and unpack at boot. Usage:
  *
  *   mkbootarch out.img name=load@file [name=load@file ...]
  *
- * Each file is a flat binary, and beside it must sit "<file>.layout"
- * holding two hexadecimal offsets: where writable memory begins and
- * where the program's memory ends. See read_layout().
+ * Each input is a flat binary with a "<file>.layout" beside it holding two
+ * hexadecimal offsets, where writable memory begins and where the
+ * program's memory ends (see read_layout). It runs on the build host with
+ * the host compiler and stdio, and shares only sys/bootarch.h with the
+ * kernel, so the writer and the reader agree on one description of the
+ * format.
  *
- * This runs on the machine doing the build, not on the target, so it uses
- * the host's own compiler and the host's stdio. It shares only
- * sys/bootarch.h with the kernel, which is the point: one description of
- * the format, used by the writer and the reader.
  */
 
 #include <sys/bootarch.h>

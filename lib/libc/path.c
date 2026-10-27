@@ -1,32 +1,15 @@
-/*
+/* path.c : resolves a path to a namespace handle and a relative name.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Resolving a path against the namespace a process was given.
+ * ns_resolve_at canonicalizes a path and selects the longest namespace entry
+ * whose name is a whole-component prefix of it. It returns that entry's
+ * handle and the remainder of the path, and relative paths are joined to the
+ * current working directory entry first. The nth entry sharing the winning
+ * name is chosen on each call, which lets a caller try every handle in a
+ * union directory. ns_resolve is ns_resolve_at with nth set to 0.
  *
- * This is the whole of what section 20 puts in the C library, and the
- * thing to notice is what it does not do: it sends no message, holds no
- * cache, and asks the kernel nothing. A path is reduced to canonical
- * form, matched against the table of named handles the process was
- * launched with, and what comes out is one of those handles and the part
- * of the path that is relative to it. Section 20.2's claim that
- * resolution costs no syscall is this file being sixty lines of string
- * handling.
- *
- * The order is forced, per section 20.3. Dot-dot is reduced lexically
- * *before* an entry is selected, because a process holding `/` and `/dev`
- * from two different servers and opening `/dev/../motd` must reach the
- * first: matching `/dev` first would send `../motd` to a server that
- * cannot see the boundary above it and can only refuse.
- *
- * Confinement does not depend on any of this being right. A canonical
- * path that lands outside every entry matches no handle, so there is
- * nothing to send a message to, and a program that skips the library
- * gains nothing because it still holds only the handles it was given.
- * What the library owes is correctness, not safety.
  */
 
 #include <ns.h>

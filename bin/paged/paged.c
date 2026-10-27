@@ -1,35 +1,14 @@
-/*
+/* paged.c : a program that checksums its own image.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A program that reads itself.
+ * Its text pages are supplied by a pager on first touch, so the code that
+ * computes the sum is itself faulted in. The base address and length come
+ * from the command line, and the program returns the sum of those bytes,
+ * masked to 31 bits. The image also holds one word of initialised writable
+ * data, which the program uses.
  *
- * Its text is not in memory when it starts. Section 15.3 has each page
- * arrive when it is touched, as a message this program's own thread
- * sends to its pager without knowing it sent anything, so the first
- * instruction of this function is already the result of one.
- *
- * What it does is add up the bytes of its own image and return the sum.
- * That is a strange thing for a program to want, and it is the point:
- * whoever started it knows what those bytes are, so a checksum that
- * matches means every page arrived and arrived with the right contents
- * in it. A check that only asked whether the program ran would pass on a
- * pager that supplied blank pages.
- *
- * The image is where and how long the command line says. A program has
- * no way to ask where it was loaded, and inventing one for this would be
- * inventing an interface for a test.
- *
- * It also carries a word of initialised writable data, for M14 stage
- * five. Section 15.1 has writable segments copied eagerly and read-only
- * ones supplied on demand, and the loader could not obey that while it
- * could not see where text ended: everything with bytes in it went to
- * the pager, so a paged program with a word of data would have had that
- * word arrive read-only and faulted on writing it. Nothing had any, so
- * nothing found out. This has one, and checks it.
  */
 
 #include <os/sys.h>

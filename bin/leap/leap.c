@@ -1,27 +1,13 @@
-/*
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Jump into memory that is not text.
+/* leap.c : jumps into writable memory, which must not be executable.
  *
- * M14 stage three gives a program's writable memory the permissions
- * writable memory should have: read and write, and not execute. What
- * proves it is a program that tries to execute some. Nothing else here
- * can: every other program jumps only to addresses the linker chose,
- * which are all in text.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * With an argument it does the same thing to a buffer it has just lent
- * across a rendezvous. That is the one path where a program's page
- * leaves its address space and comes back, and a page that comes back
- * as something other than what it was is a hole in the permissions
- * nothing else would find. It came back executable, once.
+ * With no argument it jumps into writable program memory. With an argument
+ * it sends a buffer to a server, and when the buffer comes back it jumps into
+ * that buffer. The bytes at the jump target are never meant to be a valid
+ * instruction.
  *
- * The bytes jumped to are never meant to be a valid instruction, and it
- * does not matter what they are. A machine that refuses the fetch
- * refuses it before decoding anything; a machine that permits the fetch
- * is what this is here to catch, whatever it then makes of what it
- * found.
  */
 
 #include <os/sys.h>

@@ -1,36 +1,13 @@
-/*
+/* fs_chain.c : reads a file as one submission of chained entries.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * The same file read as fs_client, written as one submission.
+ * The walk, read and close entries go out together. The walk stores its
+ * resulting handle in register zero, and the later entries take their target
+ * from that register, so the program never holds the intermediate handle.
+ * fs_client makes the same read as three separate calls.
  *
- * fs_client walks, reads and closes as three calls, and holds the
- * connection the walk returned in a local variable between them. That
- * variable is the dependency: the second request cannot be written down
- * until the first has answered, which is why it had to be a second call.
- *
- * Section 17.4's registers are where that variable goes instead. The
- * walk says to put the handle its reply moved into register zero, and
- * the three entries after it say to take their target from register
- * zero. Nothing here names a handle the program does not already hold,
- * and the program never learns the value of the one it is passing
- * along.
- *
- * What this is for is the comparison. fs_client makes the same three
- * round trips this does and pays four crossings of the trap edge for
- * them; fs_batch makes one round trip by asking the server a compound
- * question, which is section 25.7 and a different mechanism entirely.
- * Set beside those two, this one separates what batching saves from
- * what the protocol saves.
- *
- * The last entry closes the local handle, which the program could not
- * do for itself: the handle exists in its table and its value was never
- * anywhere the program could read. Section 17.5 names that as a limit
- * when a chain aborts. It is the same limit when a chain succeeds, and
- * an entry that takes its target from a register is the answer to it.
  */
 
 #include <os/sys.h>

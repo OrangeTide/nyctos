@@ -1,22 +1,13 @@
-/*
+/* spawner.c : starts a program, waits for it, and reads its status.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * A program that starts a program, waits for it, and reads how it went.
  *
- * Everything here was the kernel's to do until now. Milestone 2 loaded
- * programs from the boot archive by calling into the loader directly, so
- * nothing outside the kernel had ever created a process, and the shell of
- * stage 7 is the first thing that has to. What this checks is not that a
- * child runs, which milestone 2 settled, but that the operation refuses
- * what it should refuse and leaves the caller intact when it does.
+ * It checks that the spawn operation refuses what it should and leaves the
+ * caller intact when it does. If every check holds, it exits with the child's
+ * status. Each failed check exits with a distinct negative code and prints a
+ * line to the debug console naming it.
  *
- * It reports by exiting: the child's status if everything held, and a
- * distinct negative code otherwise, with a line on the debug console
- * saying which. There is no formatting in the C library yet, which is
- * stage 6, so a number reaches the outside as a status and not as text.
  */
 
 #include <os/sys.h>

@@ -1,22 +1,16 @@
-/*
+/* ns.h : namespace lookup, path resolution, and spawn composition.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The namespace a program was launched with, per section 20.4.
  *
- * The C library consumes the startup table before main() runs and keeps
- * the entries here. This is the whole of naming at this stage: a lookup by
- * identifier against the table the process was given, with no resolution,
- * no mount table and no path syntax. Section 20 is what it grows into, and
- * the property it already has is the one that matters, which is that an
- * identifier matching no entry reaches nothing at all.
+ * Declares __libc_startup(), which the C runtime calls with the startup
+ * table, and the lookups over that table: ns_lookup(), ns_slots(),
+ * ns_slot(), and ns_name(). Declares ns_resolve(), ns_resolve_at(), and
+ * ns_name_of() for path resolution, and ns_compose() with the ns_how_t
+ * choices (NS_NEW, NS_SHARE, NS_CLONE) for building the handle array a
+ * spawn receives. Also defines NS_PATH_MAX. Included by many utilities
+ * and by the C library.
  *
- * Identifiers below SYS_NS_PRIVATE are assigned in sys/startup.h and mean
- * the same thing everywhere. Above it they mean whatever the parent and
- * the child agreed, which is a library-level convention the kernel has no
- * part in.
  */
 
 #ifndef _NS_H_

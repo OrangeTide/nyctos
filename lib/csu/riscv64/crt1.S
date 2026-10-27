@@ -1,18 +1,13 @@
-/*
+/* crt1.S : entry point for riscv64 programs.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * C runtime startup. The kernel enters here with nothing set up but the
- * program counter and a0, so crt1 owns the stack, zeroes .bss (which is
- * not part of the loaded image) and turns main()'s return value into
- * exit().
  *
- * a0 holds the pointer to the startup record of section 20.4. It is
- * stashed in a callee-saved register across the stack and .bss work rather
- * than reloaded, because there is nowhere to reload it from: .bss is being
- * zeroed and the record is the only thing this program was told.
+ * Entry point _start for riscv64 programs. It keeps the startup record
+ * pointer from a0 in s0, sets up the stack, and zeroes .bss. It then calls
+ * __libc_startup, loads argc and argv for main, and passes main's return
+ * value to exit.
+ *
  */
 
 .section .text.start

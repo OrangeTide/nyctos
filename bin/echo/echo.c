@@ -1,11 +1,12 @@
-/*
+/* echo.c : prints its arguments, separated by spaces.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Print the arguments. It exists to need argument passing and nothing
- * else, which is what makes it the first thing worth typing at the shell.
+ *
+ * Writes each argument after the program name, with a single space between
+ * them, then a newline. It is a short program that depends only on argument
+ * passing.
+ *
  */
 
 #include <stdio.h>

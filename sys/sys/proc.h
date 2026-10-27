@@ -1,19 +1,14 @@
-/*
+/* proc.h : process structure and process operations.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Processes.
  *
- * Section 5 makes a process an address space, a handle table, and one or
- * more threads. Only the handle table exists here: there is no address
- * space to speak of at Tier 0, and the thread list arrives with spawn.
+ * Declares struct proc, which holds the process identifier, name, handle table,
+ * namespace, startup record, command line and cohort. Also declares the process
+ * lifecycle, reference, reap and address-space functions. Included by the
+ * object header, the cohort, thread, pager, grant, channel, syscall, operation,
+ * CPU and init sources.
  *
- * A process exists at all at this stage because a handle table has to
- * belong to something. Authority is per-process, not per-thread, so the
- * question "what may this code reach" is answered by the process the
- * running thread belongs to and never by the thread itself.
  */
 
 #ifndef _SYS_PROC_H_

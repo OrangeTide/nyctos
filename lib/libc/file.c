@@ -1,27 +1,14 @@
-/*
+/* file.c : opens, reads, and closes files on a mounted file server.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Opening a file by name.
+ * file_open resolves the path in the namespace and sends a walk request to
+ * each candidate mount until one succeeds. file_read and file_close send
+ * read and close requests over the returned handle, and file_close also
+ * closes that handle. file_read is limited to what fits in one inline reply,
+ * and message layouts come from the fs protocol in sys/fs.h.
  *
- * This is where the two halves of section 20 meet. The resolver turns a
- * path into a handle the process already holds and the part of the path
- * below it; this turns that into a message. Nothing here knows what a
- * namespace is and nothing in the resolver knows what a file is, which
- * is the division the section asks for: naming is the library's and the
- * protocol is section 25's.
- *
- * The protocol is unchanged and was always shaped this way. A walk has
- * always carried a handle and a relative name, because a message to a
- * server could never carry anything else; what changed is that the name
- * now comes out of a resolver rather than out of the caller's hand.
- *
- * A program may still build these messages itself, and three of them do.
- * What this buys is that the ones which only want the bytes no longer
- * have to.
  */
 
 #include <os/sys.h>

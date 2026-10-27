@@ -1,25 +1,14 @@
-/*
+/* blk.h : block size and disk layout constants.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * What a block store is, for the layer above it.
+ * Defines the block size (BLK_BLOCK_BYTES), the block count
+ * (BLK_BLOCK_COUNT), and the starting block and byte length of each file
+ * on the disk. The header defines no protocol: block reads use the file
+ * read request with block-aligned offsets. Included by the block server,
+ * the filesystem server, and the kernel init code.
  *
- * There is no protocol here, deliberately. A block read is a read: the
- * request and reply of section 25.2 already carry an offset, a length
- * and a buffer, and a block device is what you get when you drop the
- * name from that and require the offset and the length to be whole
- * blocks. Inventing a second message shape for the same operation would
- * have been a second thing to keep right for no gain.
- *
- * What is here is the block size, the layout of the disk, and the size
- * of each file on it. All three are shared because both sides need
- * them and a number stated twice is a number that will disagree with
- * itself: the store places the bytes and the filesystem says how many
- * there are, and before this was one header they were two constants
- * that happened to match.
  */
 
 #ifndef _SYS_BLK_H_

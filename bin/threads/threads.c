@@ -1,25 +1,14 @@
-/*
+/* threads.c : a program with two threads and two exit codes.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * A program with more than one thread, which is the shape section 19.3
- * prescribes for every driver and which nothing here could write until
- * now.
  *
- * Two things are being checked, and they are different. The first is that
- * a created thread runs, blocks on something of its own while the thread
- * that created it blocks on something else, exits, and can be joined and
- * asked how it went. The second is that a process finishes when its last
- * thread does and not when its first one does: the main thread exits
- * immediately while the second is still blocked, and the status the
- * process reports has to be the second thread's.
+ * Two threads run on stacks from the program's own memory, each blocks on
+ * something of its own, and each exits with its own code, which is checked on
+ * join. The main thread exits while the second thread is still blocked. The
+ * process status must match the second thread's code, which shows that a
+ * process ends with its last thread.
  *
- * The stacks are ordinary arrays in this program's .bss, per section 10.2.
- * There is no allocator in the C library and the kernel allocates no user
- * memory at any tier, so a thread's stack is memory its creator already
- * had.
  */
 
 #include <os/sys.h>

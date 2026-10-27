@@ -1,21 +1,13 @@
-/*
+/* object.h : kernel object types and their pool accessors.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The kernel object types, and the pools they are allocated from.
  *
- * Each structure below is deliberately thin. The milestone that gives a
- * type its behaviour is the milestone that gives it fields, and the stage
- * is named on each so that the growth is expected rather than surprising.
- * What exists now is the allocation and naming machinery every later stage
- * depends on.
+ * Declares struct program, the accessors that return each kernel object pool,
+ * and the object_init, object_report and object_check functions. Included by
+ * the kernel object, process, thread, timeline, channel, connection, grant,
+ * prepared program and time sources.
  *
- * Objects owned by another object do not appear here and do not draw from a
- * pool. A thread's completion timeline is part of the thread and a channel's
- * pulse queue is part of the channel, so that the accounting is exact and
- * the calls that produce them cannot fail. See design.md section 8.
  */
 
 #ifndef _SYS_OBJECT_H_

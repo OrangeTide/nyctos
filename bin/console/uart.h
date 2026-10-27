@@ -1,19 +1,13 @@
-/*
+/* uart.h : interface of the console UART driver.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The device, as this driver sees it.
  *
- * Section 19.2 gives a driver a grant covering its registers, and that is
- * now what it has: an address it was handed, at run time, by whatever
- * started it. The driver holds no address of its own and cannot reach a
- * device nobody gave it, which at Tier 2 is enforced and at Tier 0 is the
- * same statement without a mechanism behind it.
+ * Declares the four entry points of the console UART driver: attach to a
+ * register region, enable receive interrupts, read one byte, and write one
+ * byte. The register region is supplied at run time by whatever started the
+ * driver, so the driver holds no device address of its own.
  *
- * uart_attach is called once, before anything else here, with the base of
- * the region the grant covers. Everything below is an offset from it.
  */
 
 #ifndef _CONSOLE_UART_H_

@@ -1,14 +1,13 @@
-/*
+/* thread_md.c : RISC-V initial stack frame for a new thread.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Building the first stack frame of a thread that has never run.
  *
- * md_switch restores a frame and returns into it, so a new thread is
- * started by forging the frame it would have saved had it been running.
- * The offsets here must agree with md_switch in swtch.S.
+ * md_thread_init builds a 112-byte frame at the top of a new thread's
+ * kernel stack. The frame holds md_thread_start in ra, the entry point in
+ * s0, and its argument in s1. The first switch into the thread therefore
+ * begins at md_thread_start.
+ *
  */
 
 #include <sys/systm.h>

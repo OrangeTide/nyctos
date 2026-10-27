@@ -1,26 +1,14 @@
-/*
+/* op.h : operation descriptor, error codes, rights and opcodes.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The operation interface of section 23: one descriptor, one opcode, and no
- * system call numbers.
  *
- * A caller fills in a descriptor and the kernel executes it, writing the
- * result into the descriptor and returning the same value. There is exactly
- * one implementation of every operation, reached the same way from a user
- * trap and from inside the kernel, which is the property section 23.1 is
- * after.
+ * Declares sys_err_t, sys_handle_t, the SYS_ERR_* codes, the SYS_RIGHT_* rights,
+ * the SYS_OBJ_* object types, and the SYS_OP_* opcodes and flags. Also declares
+ * sys_op, the operation descriptor, and the argument structures for each
+ * opcode. Included by sys/startup.h, sys/systm.h, sys/thread.h, include/os/sys.h
+ * and much of sys/kern.
  *
- * The trap carries a pointer and a count, and the count is one. Section 17
- * is what happens when it exceeds one; nothing here depends on that
- * existing, and this file is complete without it.
- *
- * This is the shared kernel and userland interface. The names follow the C
- * header in section 26 rather than the project's usual preference against
- * typedefs of structures, because this is the published interface and the
- * two should not disagree.
  */
 
 #ifndef _SYS_OP_H_

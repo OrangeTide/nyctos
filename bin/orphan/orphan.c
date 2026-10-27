@@ -1,25 +1,14 @@
-/*
+/* orphan.c : a client of a server whose owner is terminating.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A client of a server that goes away, per section 12.5.
+ * It sends to a channel whose owning process is about to exit, and expects
+ * the send to fail with an owner-dead error rather than get a reply. The
+ * argument "ok" makes it expect a reply instead. It is a separate program
+ * from wedged because at Tier 0 two live copies of one image cannot run
+ * together.
  *
- * It sends to a channel whose owning process is about to terminate and
- * expects to be failed rather than told: a client is not at a receive
- * point, so there is nothing it could collect, and the two sides of a
- * rendezvous therefore need different mechanisms. Neither depends on a
- * deadline, which is what makes this usable during a cohort restart
- * where a supervisor is deliberately destroying servers with clients
- * waiting on them.
- *
- * A separate program from `wedged` and not another case in it, because
- * at Tier 0 every image is loaded at the address it was linked for and
- * two live copies of one image would be one program written over
- * another. The check needs the client and the server it loses to be
- * running at the same time.
  */
 
 #include <os/sys.h>

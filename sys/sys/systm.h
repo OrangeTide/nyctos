@@ -1,10 +1,13 @@
-/*
+/* systm.h : kernel-internal function prototypes.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Kernel-internal prototypes. Nothing here is visible to userland.
+ *
+ * Declares the kernel-internal functions for the console, panic, string
+ * routines, batch and operation execution, boot archive loading, trap and
+ * fault handling, and the machine hooks that each port implements. Not visible
+ * to userland. Included by the port sources and much of sys/kern.
+ *
  */
 
 #ifndef _SYS_SYSTM_H_

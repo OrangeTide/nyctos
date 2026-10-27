@@ -1,33 +1,13 @@
-/*
+/* console.c : the console service and its UART driver, in one process.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The console: a driver and the service in front of it, as one process
- * with two threads.
  *
- * Section 19.3 gives a driver that must stay responsive two threads and no
- * shared state: a request thread blocked in receive, and an interrupt
- * thread blocked on the timeline the interrupt advances. Both halves are
- * here. What is not here is the second process the roadmap first described,
- * because splitting the device from the service would cost a rendezvous per
- * line and buy nothing until there is a second character device to put
- * behind one service.
+ * A receive thread stores bytes from the UART in a 256-byte ring when the
+ * interrupt fires. A request thread answers line reads from that ring. Both
+ * threads run at the same priority, so neither preempts the other between
+ * the blocking calls where they touch the ring.
  *
- * The two threads do share state, which is where this departs from the
- * wording of section 19.3: the bytes have to cross from the thread that
- * receives them to the thread that answers for them. What makes that safe
- * is not a lock, because there is nothing to lock with. It is that both
- * threads run at the same priority, so neither preempts the other, and
- * every place either one touches the shared ring sits between two blocking
- * calls. Multicore is what breaks that argument, and multicore is M8.
- *
- * Input is a ring of bytes rather than a line buffer. A person types one
- * line at a time and a pipe delivers a whole session at once, and the ring
- * is what makes those the same thing to a reader. A full ring drops the
- * newest byte, which is the honest failure for a device with no flow
- * control and nowhere to push back to.
  */
 
 #include <os/sys.h>

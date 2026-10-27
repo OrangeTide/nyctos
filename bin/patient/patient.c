@@ -1,30 +1,14 @@
-/*
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A client that lends a buffer, gives up, and then uses it again.
+/* patient.c : a client that lends a buffer, gives up, and reuses it.
  *
- * M15 stage four is about what happens to memory a client lent to a
- * server it stopped waiting for. Section 6.1 gives the server the right
- * to the buffer for the length of the call, and at Tier 2 that is a
- * real mapping: the pages leave this program's address space and come
- * back when the reply does. A client that gives up instead has to get
- * them back the same way, with the permissions they had, or it runs on
- * afterwards with a hole where its memory was.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * The deadline is this program's own, as of M16 stage four. Section
- * 14.3 has every blocking call take an absolute instant, and section
- * 6.2 is what makes one affordable: the counter, read with no system
- * call, and the frequency from the page mapped into every process. It
- * arrived as an argument until then, because the kernel that started
- * this was the only thing here that could read a clock.
+ * It lends a 64-word buffer to a server that never answers, using a send
+ * with a 50 millisecond deadline. Once the send times out, it checks that
+ * the clock has reached the deadline, then writes a pattern to the buffer
+ * and reads it back. The program exits with 0 only if the buffer's pages
+ * returned and the program could use them again.
  *
- * How long it waits is written here and nowhere else, and the check
- * outside knows the same number as the floor it asserts. A shorter
- * wait here and the check sees a program back before its floor. A
- * longer one it does not see: the holder never answers, so this waits
- * out whatever it asked for and the boot merely takes longer.
  */
 
 #include <os/sys.h>

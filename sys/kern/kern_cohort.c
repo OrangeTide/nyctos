@@ -1,7 +1,13 @@
-/*
- * SPDX-License-Identifier: 0BSD OR Apache-2.0
+/* kern_cohort.c : cohort membership and cohort-wide fault handling.
  *
- * PUBLIC DOMAIN (CC0-1.0)
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * The storage and peers cohorts are fixed in a compiled-in table, with
+ * members named by boot image. An image is a member when its boot archive
+ * entry matches a member's entry. A fault in any member ends every member of
+ * its cohort, and the cohort functions place, release and report processes.
+ *
  */
 
 #include <sys/bootarch.h>

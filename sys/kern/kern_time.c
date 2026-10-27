@@ -1,11 +1,14 @@
-/*
+/* kern_time.c : timers, deadlines and the time base.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Timers and deadlines. See sys/sys/time.h for the shape and section 14
- * for the reasoning.
+ *
+ * Keeps the machine-wide list of armed timers and programs the hardware
+ * timer for the next deadline from a single timer core. Creates and
+ * destroys timers on timelines, sleeps threads until a deadline, and
+ * fires expired timers from the time interrupt. Also builds the time
+ * fields of the system page.
+ *
  */
 
 #include <sys/lock.h>

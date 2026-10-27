@@ -1,22 +1,15 @@
-/*
+/* kern_pager.c : page fault forwarding to the faulting process's pager.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A page fault, sent as a message by the thread that took it.
+ * A page fault is sent as a message by the thread that took it, to the
+ * pager of that thread's process. The kernel does not call the pager
+ * or queue a request, so the blocking, priority and channel mechanisms
+ * apply unchanged. pager_install maps the grant a pager replies with
+ * and closes the handle, and pager_fault returns true when the page is
+ * present and the faulting instruction can be retried.
  *
- * Section 15.3 is the whole of this file's reason. The kernel does not
- * call a pager, deliver an upcall, or queue a request: it makes the
- * faulting thread an ordinary blocked sender to an ordinary channel, and
- * every mechanism the rest of the system already has applies without
- * being told about paging.
- *
- * Priority inheritance is the one worth naming. A high-priority thread's
- * fault is serviced at high priority because the thread donates to its
- * pager exactly as any client donates to any server, and nothing here
- * arranges that. It falls out of sending rather than calling.
  */
 
 #include <sys/channel.h>

@@ -1,21 +1,13 @@
-/*
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Write a word at an address it was told, which is touch_addr's other
- * half.
+/* poke_addr.c : writes a word at the hex address it is given.
  *
- * M14 stage three gives a program's text the permissions text should
- * have: read and execute, and not write. Nothing could test that
- * before, because reading is all any program here did to an address it
- * was handed, and a mapping that permits everything and a mapping that
- * permits reading answer a read the same way.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * The address comes from the command line for touch_addr's reason: an
- * address this knew would be an address the build had to agree with,
- * and the interesting one is this program's own text, which only the
- * loader knows the address of.
+ * The address comes from the command line, so one image can write any
+ * address the loader placed. It is the write counterpart of touch_addr, and
+ * checks that text is mapped without write permission. It prints the address
+ * and exits with status 2 when the write returns.
+ *
  */
 
 #include <os/sys.h>

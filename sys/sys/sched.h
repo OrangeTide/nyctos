@@ -1,25 +1,13 @@
-/*
+/* sched.h : scheduler dispatch interface.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The dispatch decision: which runnable thread runs.
  *
- * Section 11.2 keeps this in one place deliberately, separate from the
- * mechanisms that make a thread runnable, because the latency claims are
- * claims about this code and a reader needs it in one piece.
+ * Declares the functions that make a thread runnable or block it, yield the
+ * core, change a thread's priority, defer and undefer preemption, and migrate a
+ * thread to another core. Included by the thread, interrupt, process,
+ * timeline, time, channel and operation sources, and by sys/kern/init_main.c.
  *
- * Only the real-time band of section 11.2 exists here: a bitmap of
- * non-empty priority levels and a FIFO per level, so selecting the highest
- * runnable thread is a count-leading-zeros and a head-of-list read, and
- * costs the same whatever the number of runnable threads. The proportional
- * tree below the floor is not built; see SYS_PRIO_RT_MIN in config.h.
- *
- * Section 11.2 closes the list of points at which a decision is taken. Of
- * that list, the two that can happen yet are here: a thread blocks, and a
- * thread is made runnable. Quantum expiry and return from interrupt arrive
- * with the timer and the interrupt path.
  */
 
 #ifndef _SYS_SCHED_H_

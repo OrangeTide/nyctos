@@ -1,35 +1,14 @@
-/*
+/* grabber.c : writes to a buffer after it has been moved in a message.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A program that breaks the move contract, on purpose, with a witness.
+ * The main thread sends a page-aligned buffer as a move. A second thread
+ * waits on a timeline that the server signals after it takes the message and
+ * before it replies, then writes to the buffer. The program reports 0 if the
+ * write succeeded and 1 if the second thread faulted at the buffer, and any
+ * other value means neither outcome was seen.
  *
- * Section 6.1: when memory is sent, the sender loses the right to read
- * or write it until the reply arrives. One thread cannot break that rule
- * on its own, because the thread that sent the message is blocked until
- * the reply comes back and has no instruction to execute in between. Two
- * threads can: the second one runs while the first is waiting, and the
- * buffer is the process's memory rather than the sender's.
- *
- * The second thread waits on a timeline rather than racing for the
- * window. The server signals it after taking the message and before
- * replying, so the write happens inside the window every time rather
- * than usually: an earlier version had the two threads take turns on the
- * timer and the write landed before the send about half the time, which
- * is a check that passes for the wrong reason as often as it fails.
- *
- * The program does not know which tier it is on and does not ask. It
- * reports what happened to the second thread, and the tiers differ:
- *
- *   0  the write went through, which is Tier 0 trusting the contract
- *   1  the thread died of an access fault at the buffer, which is Tier 2
- *      enforcing it
- *
- * Anything else is a way this could have gone wrong without proving
- * either, and each has its own number so that a failure says which.
  */
 
 #include <os/sys.h>

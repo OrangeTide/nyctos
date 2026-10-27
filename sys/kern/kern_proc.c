@@ -1,6 +1,14 @@
-/*
+/* kern_proc.c : process creation, images, memory ranges and teardown.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * Creates processes and their threads, and loads boot archive images
+ * into process address spaces. Tracks the frames and address ranges each
+ * process owns, and checks whether a range belongs to a process. Also
+ * sets a process's pager, name and command line, and implements process
+ * kill, the exit path and reaping.
+ *
  */
 
 #include <sys/measure.h>

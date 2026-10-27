@@ -1,16 +1,14 @@
-/*
+/* intr.c : RISC-V PLIC, Sstc timer, and inter-hart interrupts.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The timer and the interrupt controller, as supervisor mode sees them.
  *
- * The kernel runs in supervisor mode, because that is the only mode
- * here with an MMU. Both of these moved down with it: the timer is the
- * supervisor compare register of the Sstc extension rather than the
- * machine one in the CLINT, and the controller's context is the
- * supervisor context of hart zero rather than the machine one.
+ * The PLIC routes external interrupts, and each hart claims and completes
+ * them from its own supervisor context. The timer is the supervisor
+ * compare register from the Sstc extension, so no machine-mode handler is
+ * involved. An inter-processor interrupt is a write to the CLINT MSIP
+ * word of the target hart, which boot.S turns into SSIP.
+ *
  */
 
 #include <sys/cpu.h>

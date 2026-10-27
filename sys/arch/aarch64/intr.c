@@ -1,14 +1,14 @@
-/*
+/* intr.c : AArch64 GICv2 interrupt controller and generic timer.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * GICv2 and the ARM generic timer, as QEMU's virt board presents them.
  *
- * The timer is a private peripheral interrupt, so it needs no routing and
- * no distributor target setting: it is per-core by construction, which is
- * why it is the easiest first device.
+ * Drives the GICv2 distributor and CPU interface of QEMU's virt board,
+ * and the EL1 physical timer on PPI 30. The PL011 UART is SPI 1. A core
+ * signals another with an inter-processor interrupt, a software-generated
+ * interrupt written to GICD_SGIR. The md_intr_*, md_irq_*, and md_timer_*
+ * functions implement the machine-dependent interrupt interface.
+ *
  */
 
 #include <sys/measure.h>

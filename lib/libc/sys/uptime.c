@@ -1,28 +1,15 @@
-/*
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * The clock, read without a system call, per section 6.2.
+/* uptime.c : clock and deadline helpers for programs.
  *
- * One instruction on each port, and the same instruction the kernel
- * tells the time with: rdtime on riscv64 and cntpct_el0 on aarch64. A
- * program reading a different counter would be reading a clock that
- * agrees with the kernel's only by accident, and a deadline is a number
- * both of them have to mean the same thing by.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * The port has to permit it, once, at boot: scounteren bit TM and
- * CNTKCTL_EL1 bit EL0PCTEN. Without that these are not slow, they are
- * illegal, and a program taking the time takes a fault instead.
+ * sys_uptime reads the hardware counter (rdtime on riscv64, cntpct_el0 on
+ * aarch64) and returns ticks. sys_uptime_hz returns the tick frequency from
+ * the system page, or 0 if the page is missing or has another version.
+ * sys_deadline_in and sys_deadline_in_ms return an absolute deadline in ticks
+ * or milliseconds from now, and sys_deadline_in_ms returns SYS_DEADLINE_NOW
+ * when the frequency is 0.
  *
- * What comes back is ticks and not seconds. How long a tick is belongs
- * to the machine, and the system page is where a program learns it,
- * which is what sys_uptime_hz is for. Section 6.2 calls this
- * sys_syspage_uptime() because it expected the page to carry a stored
- * value; stage one of milestone 16 measured what such a value would be
- * worth in a tickless kernel and the answer was up to 141 milliseconds
- * stale. So the page carries the frequency, the counter carries the
- * time, and the name here says which of them this reads.
  */
 
 #include <os/sys.h>

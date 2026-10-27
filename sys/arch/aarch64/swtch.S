@@ -1,19 +1,14 @@
-/*
+/* swtch.S : AArch64 thread context switch.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * void md_switch(void **old_sp, void *new_sp)
  *
- * Saves the callee-saved state of the calling thread onto its own stack,
- * records the resulting stack pointer through old_sp, then adopts new_sp
- * and restores from it. Returns in the thread that new_sp belongs to.
+ * md_switch pushes x19 through x30 and the stack pointer of the outgoing
+ * thread, stores that stack pointer through old_sp, then loads the same
+ * registers from new_sp and returns onto the incoming thread's stack.
+ * md_thread_start unmasks IRQs, calls the thread's entry point with its
+ * argument in x0, and calls thread_exited if the entry point returns.
  *
- * Only callee-saved registers are here. Everything else is already the
- * caller's problem under the procedure call standard, which is the whole
- * reason a voluntary switch is this short. The frame layout must agree
- * with md_thread_init in thread_md.c.
  */
 
 .section ".text"

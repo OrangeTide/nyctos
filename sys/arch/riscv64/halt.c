@@ -1,18 +1,14 @@
-/*
+/* halt.c : RISC-V machine halt through the SiFive test finisher.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Stopping the machine.
  *
- * QEMU's virt board exposes the SiFive test finisher, a single MMIO word
- * that ends the run. Powering off rather than spinning is deliberate: a
- * kernel that has decided it cannot continue should end, so that whatever
- * launched it observes the exit rather than a hang.
+ * machine_halt writes the pass code to the SiFive test finisher at
+ * 0x100000 for status zero. Any other status writes the fail code with
+ * the status in the upper bits, so the host sees it as the exit status.
+ * machine_reset writes the reset code. If the write returns, the hart
+ * waits in wfi.
  *
- * Unlike PSCI on the ARM side, the finisher carries an exit status, so a
- * failing halt is visible to a script and not only on the console.
  */
 
 #include <sys/systm.h>

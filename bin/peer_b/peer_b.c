@@ -1,21 +1,14 @@
-/*
+/* peer_b.c : the cohort member whose word peer_a writes.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * The other half of a cohort, and the one whose memory gets written.
+ * It holds a word in its data and sends peer_a the word's address with a new
+ * value. It then checks that peer_a reported the old value and that the word
+ * now holds the new one. The exit status is zero when every step holds, and
+ * otherwise the number of the step that failed. It has no console handle and
+ * prints nothing.
  *
- * It holds a word, tells peer_a where that word is, and checks
- * afterwards that peer_a both read the old value and wrote the new one.
- * Two directions in one round trip, because a domain that only allowed
- * reads would be a different mechanism.
- *
- * The exit status is the report, in the manner of every other check
- * program here: zero is everything happening, and anything else names
- * the step it stopped at. There is no console handle in this
- * program's namespace and nothing to print to.
  */
 
 #include <os/sys.h>

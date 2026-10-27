@@ -1,25 +1,14 @@
-/*
+/* wedged.c : blocks in a chosen wait until an outside cancel.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A program that blocks, so that something outside can break it out.
+ * The first argument chooses which wait the program blocks in. An outside
+ * cancel releases it, and every case must return the same answer. The case
+ * that waits for a reply lends a buffer to the server and writes to it once
+ * released, so it dies there if the pages did not come back rather than
+ * reporting success.
  *
- * Section 10.5 says a supervisor never has to know which wait a wedged
- * thread is sitting in, because section 10.6 closes the list of ways to
- * block and each of them leaves behind the one function that takes a
- * thread off again. This is that claim made checkable: the argument
- * chooses the wait, one cancel arrives from outside, and every case has
- * to come back with the same answer.
- *
- * The reply-blocked case is the one worth the effort. A client between
- * the rendezvous and the reply has lent its buffer away: the pages are
- * mapped in the server and gone from here, and section 6.1 gives them
- * back at a reply that is never going to come. So this writes to its
- * buffer the moment it is released, and if the pages did not come home
- * it dies there rather than reporting success.
  */
 
 #include <os/sys.h>

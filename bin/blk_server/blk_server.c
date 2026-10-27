@@ -1,27 +1,13 @@
-/*
+/* blk_server.c : a RAM-backed block store, served as a program.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A block store, as an ordinary program.
+ * A block store held in the server's own memory, reached over the block
+ * protocol. It sits under the filesystem as a second storage layer, so a
+ * client read crosses two process boundaries to reach the bytes, one to
+ * the filesystem and one to here. There are no device registers.
  *
- * It is a RAM disk, which is the honest thing to build here: section 19
- * says a driver is a process holding a grant over its registers and an
- * interrupt handle, and neither of those is what this milestone is
- * about. What matters for section 18 is that there is a second layer
- * under the filesystem and that a request crosses two boundaries to
- * reach the bytes. A driver with real registers would cross the same
- * two.
- *
- * It serves reads in whole blocks and refuses anything else. That is
- * what makes it a block store rather than a second byte server: the
- * layer above has to do the block arithmetic, which is the work a
- * filesystem exists to do and the reason the two layers are two.
- *
- * It never exits, for the reason every server here never exits: an exit
- * nobody asked about halts the machine.
  */
 
 #include <os/sys.h>

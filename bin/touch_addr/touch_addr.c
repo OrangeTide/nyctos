@@ -1,22 +1,13 @@
-/*
+/* touch_addr.c : reads a word at the hex address it is given.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Read a word at an address it was told, and say what was there.
+ * The address comes from the command line, so one image can read any address
+ * the loader placed. It prints the word and the address it was read from, then
+ * exits with that word as its status. Where the hardware enforces memory
+ * protection, a refused read ends the thread.
  *
- * The address comes from the command line because the point is one
- * program behaving two ways: the same image, the same instruction, an
- * address that is somebody else's memory. At Tier 0 there is one address
- * space and it reads whatever is there. At Tier 2 the hardware refuses
- * and section 16.2 ends the thread.
- *
- * That is section 6.1's argument in two runs, and it is the reason this
- * program takes the address rather than knowing one: an address it knew
- * would be an address the build had to agree with, and the interesting
- * ones belong to whoever the loader put there.
  */
 
 #include <os/sys.h>

@@ -1,21 +1,13 @@
-/*
+/* time.h : monotonic time, timers and deadline sleeps.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Time, timers and deadlines, per section 14.
  *
- * There is no tick. The hardware timer is armed one-shot for the earliest
- * thing the core knows about, which is the nearest of the next timer
- * activation and the next deadline being waited on. A core with nothing
- * pending arms nothing at all, which is what makes an idle core genuinely
- * idle rather than woken to be told nothing happened.
+ * Declares sys_time_t on the monotonic timebase, struct timer, and the time_*
+ * and timer_* functions that read the clock, create and destroy timers, and
+ * sleep a thread until a deadline. Included by sys/object.h and the kernel
+ * time, timeline, process, scheduler and operation sources.
  *
- * Everything here is monotonic uptime. Calendar time is an offset a
- * userspace service writes and nothing in the kernel depends on, so a
- * clock correction of any size cannot make a timer miss an activation or
- * a wait return early. That is structural rather than defended against.
  */
 
 #ifndef _SYS_TIME_H_

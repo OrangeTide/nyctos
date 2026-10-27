@@ -1,6 +1,14 @@
-/*
+/* kern_connection.c : connections that link clients to a channel.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * Allocates connections from a pool and records the channel, a cookie and the
+ * identifier of the channel's owner at creation. Each connection keeps a
+ * reference count and a peer count, and is_peer checks whether a process is
+ * on the other end. The slot is freed once, by whichever of the server
+ * collecting it or the last reference drop comes first.
+ *
  */
 
 #include <sys/channel.h>

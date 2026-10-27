@@ -1,33 +1,15 @@
-/*
+/* thread.h : thread structure, states and the context switch.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Threads and the context switch.
  *
- * A thread here is a kernel thread: an execution context with its own
- * kernel stack and nothing else. Section 10.2 of design.md says the creator
- * supplies the stack, and that is about the *user* stack a thread runs on
- * once processes exist. The kernel stack is a different thing, supplied by
- * the port for every thread that has one, and section 28 suggests keeping
- * it in the same allocation as the object. That is what happens here: the
- * stack is the tail of the structure.
+ * Declares struct thread with its guard word, the thread_state and thread_wait
+ * enumerations, and the thread lifecycle, reference, cancel and switch
+ * functions. Also declares md_thread_init and md_switch, the port hooks for
+ * thread setup and context switching. Included by the port thread sources, the
+ * thread, scheduler, timeline and trace sources, and sys/object.h, sys/sched.h
+ * and sys/trace.h.
  *
- * A guard word sits immediately below every thread stack, so that an
- * overflow runs into it before it reaches anything else. On Tier 0 there is
- * no hardware to catch the write, which is exactly what section 10.2 says
- * about the weaker tier being unable to catch its own violations. A word
- * checked on every switch is the most that can be done here, and it turns
- * silent corruption into a message.
- *
- * The guard is reached through a pointer rather than read out of the object
- * directly, because the boot context runs on the stack the linker script
- * laid out rather than on one of these. Without the indirection its guard
- * would sit in an object that nothing writes past, and would never fire
- * however badly the boot stack overflowed.
- *
- * There is no scheduler yet. A thread runs until it names its successor.
  */
 
 #ifndef _SYS_THREAD_H_

@@ -1,25 +1,15 @@
-/*
+/* fault_md.c : AArch64 mapping from ESR_EL1 to fault kinds.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Every synchronous exception this port can raise, mapped to a kind of
- * section 16.1.
+ * Maps each ESR_EL1 exception class to a fault kind. For the abort
+ * classes, the fault status code in the low six bits of the ISS selects
+ * the kind. Classes that cannot arrive on this system are listed with a
+ * comment giving the reason. md_fault_check verifies the table against
+ * its expected values, and md_fault_access reports the access an abort
+ * was attempting.
  *
- * The mapping is exhaustive on purpose, including the classes that cannot
- * arrive in this system: a row that says "this cannot happen here" is a
- * statement that survives someone enabling the feature, and a row that is
- * simply absent is a fault that arrives as whatever the default happens
- * to be. Where a class cannot arrive, the comment says why rather than
- * the code omitting it.
- *
- * ESR_EL1 is two pieces. EC, the top six bits, says what class of thing
- * happened. ISS, the bottom twenty-five, says what within that class, and
- * for the two abort classes the bottom six bits of it are the fault
- * status code, which is where the difference between a translation fault,
- * a permission fault and an alignment fault lives.
  */
 
 #include <sys/op.h>

@@ -1,25 +1,15 @@
-/*
+/* vm.h : address spaces, mapping flags and the port VM interface.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Address spaces, and the surface a port provides under them.
  *
- * Section 27 asks a Tier 2 port for two things: page tables and TLB
- * maintenance. This is what that means in practice. Nothing above the port
- * knows what a page table looks like, how many levels it has, or which
- * bits mean what; what it knows is that a range of virtual addresses can
- * be made to name a range of physical ones with a set of permissions, and
- * that a space can be made the current one.
+ * Declares the VM_* mapping flags, struct addrspace, the vm_cost accounting
+ * structure, and the md_* functions that a port implements for page tables and
+ * TLB maintenance. Also declares the vm_* functions that create, destroy and
+ * count address spaces. Included by the cohort, process, object, thread, pager,
+ * grant, channel, CPU and syscall sources and by the aarch64 and riscv64 pmap
+ * code.
  *
- * An address space is one word here, which is the physical address of
- * whatever the port uses as a root. A port that needs more than that keeps
- * it in the same structure, and nothing above it looks inside.
- *
- * Tier 0 has none of this. The whole file is behind SYS_TIER, because the
- * alternative is a set of functions that exist and refuse, which is a way
- * of making a caller ask a question that has no meaning at that tier.
  */
 
 #ifndef _SYS_VM_H_

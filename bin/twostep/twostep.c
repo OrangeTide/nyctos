@@ -1,23 +1,14 @@
-/*
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Two requests in one submission, neither of them answered, for M21
- * stage three.
+/* twostep.c : submits two requests in one batch, neither answered.
  *
- * The stage reads the kill mark before an entry runs rather than
- * after it. What that has to be shown on is a thread that is at an
- * entry boundary with the mark set, and the way to put one there is
- * to have it blocked inside the entry before the boundary and let
- * the kill release it.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * So the first request goes to a supervisor that will never answer
- * it, and this waits. The kill cancels that wait, the first entry
- * comes back interrupted, and the second entry is the one that must
- * never begin. Neither request has a deadline: what ends this
- * program is the kill, and a deadline would give it another way out
- * and make the check pass for the wrong reason.
+ * The first request goes to a server that never replies, so the batch blocks
+ * inside its first entry. A kill delivered from outside cancels that wait and
+ * interrupts the entry, and the second entry must not begin. The program exits
+ * with 5 if the batch runs to its end. Neither request has a deadline, so the
+ * kill is the only way out.
+ *
  */
 
 #include <os/sys.h>

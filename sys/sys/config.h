@@ -1,23 +1,15 @@
-/*
+/* config.h : build-time kernel configuration constants.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Build-time configuration.
  *
- * There is no kernel heap. Every object type has a pool whose size is fixed
- * here, so the kernel's object memory is a property of this file rather than
- * of what applications do. A system that exhausts a pool is reconfigured and
- * rebuilt; see design.md section 8.
+ * Defines SYS_TIER, the protection tier of the build, which defaults to
+ * Tier 0. Defines the size of each kernel object pool, including
+ * SYS_MAX_PROCESSES, SYS_MAX_CHANNELS, and SYS_PRIO_COUNT. The kernel has
+ * no heap, so these sizes set how much object memory it can use. The same
+ * limits are published to programs as struct sys_pool_limits in the system
+ * page. Included by the kernel object, scheduler, IPC, and init code.
  *
- * These are the values published read-only to userland in the system page as
- * struct sys_pool_limits, which is why they carry the SYS_ prefix rather than
- * a kernel-private one.
- *
- * The numbers below are placeholders sized for a Tier 0 target running the
- * milestone 1 vertical slice. They have not been justified by measurement,
- * because there is nothing yet to measure.
  */
 
 #ifndef _SYS_CONFIG_H_

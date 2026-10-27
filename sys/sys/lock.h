@@ -1,35 +1,14 @@
-/*
+/* lock.h : kernel lock and spinlock primitives.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Mutual exclusion, per section 11.4 and as a stated deviation from
- * section 13.3.
+ * Declares the klock_* functions that hold the kernel lock from kernel entry
+ * to exit, and at Tier 2 the struct spinlock type with spin_lock, spin_unlock
+ * and spin_trylock. Tier 0 provides no-op macros in place of the klock_*
+ * functions and spin_take_count. The lock_check and lock_check_secondary
+ * functions exercise the lock on two cores. Included by much of sys/kern.
  *
- * Until this milestone there was one core, and disabling interrupts was
- * exclusion: nothing else could be running, so a region that could not
- * be interrupted could not be interfered with either. That reasoning is
- * gone. Disabling interrupts on this core says nothing whatever about
- * what the other core is doing, and every critical section in this
- * kernel was written when it did.
- *
- * So there is a lock, and one of them for the whole kernel. Section
- * 11.4 forbids a global scheduler lock and says nothing about the rest,
- * which is what makes this a resting place rather than a shortcut: the
- * next stage takes the scheduler out from under it because that section
- * requires it, and what else deserves taking out is a measurement.
- *
- * The deviation is from section 13.3, which has Tier 2 enabling
- * interrupts inside the kernel and locking finely. This holds the lock
- * with interrupts disabled, which is coarse in both directions at once.
- * It is recorded rather than hidden, and the section stands: what is
- * built here is the resting place the finer thing gets built from.
- *
- * At Tier 0 none of this exists. Section 13.3 buys that tier a kernel
- * with no internal locking at all, and one core is what makes disabling
- * interrupts exclusion again.
  */
 
 #ifndef _SYS_LOCK_H_

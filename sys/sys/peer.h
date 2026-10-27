@@ -1,23 +1,14 @@
-/*
+/* peer.h : request and reply records for the cohort check.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * What two cohort members say to each other, per section 18.
+ * Declares peer_request_t and peer_reply_t, the records the two cohort programs
+ * exchange. A request carries an address and the value to write there, and a
+ * reply carries the value that was there before. Also declares PEER_NS_OUTSIDER,
+ * a private namespace identifier. Included by bin/peer_a/peer_a.c,
+ * bin/peer_b/peer_b.c and sys/kern/init_main.c.
  *
- * This is not a service and nothing but the cohort check uses it. It is
- * here rather than in one of the two programs because both of them have
- * to agree on it, and a structure written out twice is a structure that
- * will disagree with itself eventually.
- *
- * The whole protocol is an address and a value. That is the point: what
- * crosses is a number, and the receiver dereferences it directly. No
- * buffer descriptor, no grant, and nothing for the kernel to map. In a
- * cohort that works because the sender's memory is already in the
- * receiver's address space. Outside one it faults, which is the other
- * half of the check.
  */
 
 #ifndef _SYS_PEER_H_

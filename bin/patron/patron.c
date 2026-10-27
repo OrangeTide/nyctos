@@ -1,28 +1,15 @@
-/*
+/* patron.c : a ledger client that ends in one of several ways.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A client of the ledger, per M18 stage one.
+ * The first argument names how it ends: hold, idle, leave, polite, or
+ * giveup. The hold case dies inside the server's first rendezvous, idle
+ * waits with nothing outstanding, leave returns without telling the server,
+ * polite returns the record first, and giveup sends with a deadline to a
+ * server that will not answer. The server's state afterwards is what a
+ * check measures.
  *
- * It takes a record and then stops existing in whichever of the ways
- * its argument names. What the milestone is measuring is what the
- * server is left holding afterwards, so the only thing this program has
- * to do carefully is take exactly one record and then be predictable
- * about how it goes.
- *
- *   hold    is the server's first client, and a server never answers
- *           its first request, so this one dies inside the rendezvous
- *           section 12.5 announces a death from
- *   idle    takes a record, is answered, and then waits for something
- *           nobody will signal, so it dies with nothing outstanding
- *   leave   takes a record and returns, which is a client that ends
- *           without saying anything to the server
- *   polite  takes a record, gives it back, and returns
- *   giveup  sends with a deadline to a server that will not answer,
- *           and abandons the request rather than dying in it
  */
 
 #include <os/sys.h>

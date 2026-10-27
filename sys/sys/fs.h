@@ -1,25 +1,15 @@
-/*
+/* fs.h : filesystem protocol operations and message formats.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The filesystem protocol of section 25, in the subset the vertical slice
- * needs: walk, read, close.
  *
- * It is a protocol rather than a layer. Nothing here is a kernel
- * interface; these are the messages a filesystem server understands, and
- * anything that speaks them is a filesystem. The kernel carries them and
- * does not know what they mean.
+ * Defines the FS_OP_* operation numbers, the FS_KIND_* node kinds, and the
+ * request, reply, directory entry, and batch structures that filesystem
+ * servers exchange with clients. A connection names one node and carries
+ * no read position, so each read supplies its own offset. Included by the
+ * filesystem and block servers, the filesystem client programs, and the C
+ * library.
  *
- * A connection names a node. Walking one returns a connection to another,
- * so a client reaches a file by being handed a directory and asking, never
- * by naming a path from a root it was not given. There is no root here at
- * all, which is what section 20.3 means by naming being handle-relative.
- *
- * A connection carries no position. Every read states its own offset, so
- * two threads may share one connection without coordinating and a retry
- * means what the original meant.
  */
 
 #ifndef _SYS_FS_H_

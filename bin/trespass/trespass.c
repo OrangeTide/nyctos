@@ -1,28 +1,14 @@
-/*
+/* trespass.c : asks the file server to read memory it does not own.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A program that describes memory it does not own, and lives.
+ * It sends read requests whose buffers point at addresses outside its own
+ * memory, and checks that each one is refused. A refusal by the server appears
+ * in the reply status, and a refusal by the kernel is a failed send, and the
+ * program tells the two apart. It exits with zero when both refusals happen,
+ * and otherwise with the number of the step it stopped at.
  *
- * Section 23.2 says the kernel validates what a program hands it before
- * an operation executes. A buffer descriptor is the case that matters:
- * what crosses the boundary is a number, and if nothing checks it the
- * kernel reads whatever it points at on the caller's behalf. That is not
- * a Tier 2 question. At Tier 0 the read succeeds and hands one program
- * another program's memory; at Tier 2 the kernel faults trying to map a
- * page it was never given. Both are wrong in the same way, which is why
- * the refusal is in the operation and not in the tier.
- *
- * The exit status is the report, because a program with no console
- * handle has nowhere to say anything. Zero is both refusals happening;
- * anything else names the step it stopped at.
- *
- * The reply is the point. A refused descriptor is an error returned to a
- * program that is still running, not a dead process, so this exits zero
- * after being told no twice.
  */
 
 #include <os/sys.h>

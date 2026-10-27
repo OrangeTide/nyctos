@@ -1,31 +1,15 @@
-/*
+/* kern_syscall.c : the trap entry and batch submission path.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * The trap path.
  *
- * Section 23.1: one entry point carrying a pointer to an operation
- * descriptor and a count, and no system call numbers. The count is one
- * until the submission engine of section 17 exists.
+ * Each entry takes a pointer to an operation descriptor and a count,
+ * and runs them through batch_run. The count is checked against its
+ * bound, the opcode against the operation table, and each operation
+ * checks its own argument length, handles and rights. The descriptor
+ * pointer and any pointer argument it carries are not checked. The file
+ * also holds the fatal and user trap handlers.
  *
- * The machine-dependent stubs land here with the arguments already in the
- * C calling convention.
- *
- * What is checked here, and what is not, is section 23.2 and is worth
- * stating in the file rather than leaving to the reader. The count is
- * checked against its bound. The opcode is checked against the table, and
- * each operation checks its own argument length, its handles and their
- * rights, because all of those are questions about values the kernel
- * holds.
- *
- * The pointer is not checked at all. There is one flat address space on
- * this tier, so there is nothing to ask whether a range is mapped into: a
- * descriptor pointer from a user program is dereferenced, and so is every
- * arg_ptr it carries. That is section 6's line about handles enforcing
- * modularity and not security, arriving at the system call path. A Tier 2
- * port is where step 2 of section 23.2 acquires an answer.
  */
 
 #include <stdbool.h>

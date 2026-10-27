@@ -1,43 +1,13 @@
-/*
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * A process with a thread in each of the states a kill has to reach,
- * for M21 stage four.
+/* fourways.c : a process with a thread in each state a kill must reach.
  *
- * Section 10.5 says process termination unblocks every thread of the
- * target exactly as if each had been cancelled individually. Four
- * different things have to happen for that to be true, and until now
- * each was checked on a process that had one thread in one of them.
- * A supervisor ending a driver cohort is not in that position: it
- * ends a process whose threads are wherever they happened to be.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * The four, and how each is arranged here:
+ * The asker is blocked inside a request, the spinner runs without entering
+ * the kernel, and the main thread waits to receive. The fourth state, a
+ * thread that is ready but never run, is made by the supervisor from the
+ * entry point and stack this program sends it.
  *
- *   blocked receiving      this thread, once the other three exist
- *   inside a request       the asker, whose message the supervisor
- *                          takes and never answers
- *   running                the spinner, which never enters the kernel
- *                          again and so can only be reached by being
- *                          made to
- *   ready and never run    not made here at all. This program sends
- *                          the supervisor an entry point and a stack
- *                          instead, and the supervisor makes that
- *                          thread itself with dispatch deferred and
- *                          the kill written in the same region.
- *
- * The last of those was made here once, created behind a thread that
- * never yields, and the claim was that it therefore sits on the queue
- * for the life of the process. It does not. A thread preempted by
- * something that outranks it goes to the back of its own level, so
- * the first time the supervisor wakes to look, the spinner lands
- * behind the thread that was never supposed to run, and the next
- * time the supervisor sleeps that thread runs. It was measured at
- * about one run in twenty five. A program at the lowest priority
- * cannot arrange for anything below it, so the arrangement moved to
- * the side that can: the supervisor, which can hold off dispatch
- * altogether.
  */
 
 #include <os/sys.h>

@@ -1,27 +1,14 @@
-/*
+/* batchreg.h : typed registers for batch submissions.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * The registers of section 17.4, which are what lets one entry of a
- * submission hand something to the next.
+ * Declares struct batch_regs, the typed register file a submission uses to
+ * pass a handle or a scalar from one entry to the next. Each register is
+ * tagged REG_EMPTY, REG_SCALAR, or REG_HANDLE. Reading a register as the
+ * wrong kind, or reading an empty one, returns SYS_ERR_INVALID_ARG.
+ * Included by the kernel operation, syscall, and init code.
  *
- * Private to one execution and zeroed at its start, so nothing survives
- * from one submission to another and a program cannot read what the
- * program before it left behind. They live on the stack of the call that
- * runs the batch, which is what makes that true without anything having
- * to clear them afterwards.
- *
- * Each register holds a handle or a scalar and says which. The tag is
- * the whole reason this is a typed file rather than an array of words:
- * without it a batch could put an integer in a register and have a
- * later entry use it as a handle, which is a handle the caller
- * constructed by arithmetic rather than one the kernel gave it. Section
- * 7 makes a handle unforgeable and section 17.4 says in as many words
- * that an untyped register file would defeat that. Refusing the read is
- * how it stays true.
  */
 
 #ifndef _SYS_BATCHREG_H_

@@ -1,25 +1,13 @@
-/*
+/* startup.h : startup record handed to a new program.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * What a program is handed at launch, per section 20.4.
  *
- * A process receives its namespace as a table of handles and receives
- * nothing else. The loader places this record in the child's memory, the
- * entry point is called with a pointer to it, and the C library consumes
- * the table before main() runs, exactly the way envp is delivered.
+ * Declares the startup record the loader passes to a program. It holds a
+ * namespace table of identifier and handle pairs, with optional names, and the
+ * sys_ns_* types and lookup functions. Included by sys/proc.h, sys/peer.h,
+ * sys/systm.h, include/ns.h and include/os/sys.h.
  *
- * It is a record rather than a convention because a handle value means
- * nothing outside the table holding it. A child cannot be told what it
- * holds by any means other than being told, and it cannot name anything it
- * was not told about, which is what section 20.3 means by there being no
- * ambient root.
- *
- * This is the shared kernel and userland interface, like sys/op.h, so the
- * names follow the C header of section 26 rather than the project's usual
- * preference against typedefs of structures.
  */
 
 #ifndef _SYS_STARTUP_H_

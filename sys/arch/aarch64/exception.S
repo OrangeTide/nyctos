@@ -1,13 +1,15 @@
-/*
+/* exception.S : AArch64 EL1 exception vectors and trap entry.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * EL1 exception vectors. Three entries do real work: a synchronous
- * exception from a lower exception level, which is how an SVC from a
- * userland program arrives, and an IRQ at either level, because a
- * program can now be interrupted as well as a kernel thread.
+ *
+ * The vector table at vectors is 2 KiB aligned. An SVC from EL0 saves a
+ * frame on the thread's stack and calls syscall_handler. Other
+ * synchronous exceptions and SError from EL0 call trap_user, and any
+ * exception from EL1 that is not an IRQ calls trap_fatal. IRQs from EL1
+ * and EL0 save a frame and call irq_dispatch, and each EL0 IRQ also
+ * increments md_user_irqs.
+ *
  */
 
 .macro VECTOR_ENTRY target

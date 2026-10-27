@@ -1,27 +1,13 @@
-/*
+/* subr_trace.c : the thread wait trace ring.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * A record of what threads blocked on and when, which is the smallest
- * useful thing section 22.2 means by "enough to build a tracer".
  *
- * It exists because the two sides of a rendezvous cannot be caught in the
- * act by looking. Whichever thread would do the looking is by definition
- * running, so it cannot see the state of a system in which something else
- * is running. The states have to be recorded as they are entered and read
- * afterwards, which is what a tracer is for.
+ * Records each thread's wait state as it blocks into a fixed ring that
+ * overwrites its oldest entries. Recording is switched with trace_enable
+ * and cleared with trace_reset. trace_report formats the ring when a
+ * caller asks for it.
  *
- * A fixed ring, overwritten when full, formatted only when something asks.
- * Section 22.1 requires that an unobserved system pay nothing for
- * introspection; what this costs when nothing reads it is two stores and a
- * mask per blocking transition. Formatting happens in the reader.
- *
- * This is not sys_stat_read(). Section 22 puts attributes behind a handle
- * and there are no thread handles yet, so what is here is the kernel's own
- * view, printed by the kernel. Section 22.3's rule that inspection follows
- * the supervision tree arrives with the supervisor that would use it.
  */
 
 #include <sys/config.h>

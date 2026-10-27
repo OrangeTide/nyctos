@@ -1,25 +1,15 @@
-/*
+/* channel.h : synchronous message channels for the kernel.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Synchronous message passing, per section 12.
  *
- * Strict send, receive, reply: a send blocks until a server receives the
- * message and replies to it. There is no queue of messages, because the
- * blocked senders are the queue.
+ * Declares struct channel and the kernel operations on it: create, send,
+ * receive, reply, listen, reap, and pulse. A sender blocks until a server
+ * receives its message and replies. Blocked senders queue in priority
+ * order, and a reply is addressed by the client's thread id. Included by
+ * the kernel channel, connection, operation, pager, process, and thread
+ * code.
  *
- * That queue is ordered by sender priority and not by arrival. FIFO here
- * would be a priority inversion no amount of donation could repair, since
- * the inversion would be in the queue rather than in the execution.
- *
- * A reply is addressed by the client's thread id and needs no transaction
- * identifier, because section 5 has a thread blocked on at most one thing:
- * a blocked sender is uniquely named by its id and there is nothing to
- * disambiguate. The generation in the id closes the recycling hazard, so a
- * reply to a client that died is refused rather than delivered to whatever
- * now occupies the slot.
  */
 
 #ifndef _SYS_CHANNEL_H_

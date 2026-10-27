@@ -1,27 +1,16 @@
-/*
+/* sh.c : a shell that runs one program per line and waits for it.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * A shell: read a line, start what it names, wait for it, say how it went.
  *
- * That is the whole loop and it is the milestone's goal. Everything under
- * it was built for this: a console to read from, an operation to spawn
- * with, a completion timeline to wait on and a status to read afterwards.
+ * It splits each line into words, refuses a line with more words than a
+ * command can carry, and starts the program named by the first word with the
+ * rest as its arguments. The child receives duplicates of the console and
+ * root entries, and the shell waits for it to exit before reading the next
+ * line. A leading "alone" or "only NAME" word selects how the child's
+ * namespace is built. The shell reports the exit status, or the fault if the
+ * child faulted.
  *
- * What a child is given is what this hands it, and nothing else. A
- * duplicate of the console, so it can talk to the person; a duplicate of
- * whatever this shell has as a root, so it can reach files; and its
- * arguments. Section 7.4 makes a handle move rather than copy, so the
- * duplicate is what leaves and the original stays, and section 20.1 is why
- * a program started here can reach nothing this shell did not name.
- *
- * It blocks on reading a line and it blocks on joining a child, one after
- * the other and never both at once, which is the blocking invariant of
- * section 5 holding without anything having to arrange it. The first shell
- * that wants a keystroke while a child runs is the one that needs a second
- * thread.
  */
 
 #include <os/sys.h>

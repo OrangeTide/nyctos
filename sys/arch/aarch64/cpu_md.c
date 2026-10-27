@@ -1,21 +1,14 @@
-/*
+/* cpu_md.c : AArch64 per-core pointer and secondary core start.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Cores on this port.
+ * Holds the current struct cpu pointer in TPIDR_EL1 and reads the core
+ * number from MPIDR_EL1. Starts a secondary core by calling PSCI CPU_ON
+ * through hvc #0, with secondary_entry from boot.S as the entry point.
+ * The core count is SYS_MAX_CORES, since this port does not enumerate
+ * cores from a device tree.
  *
- * The platform holds the secondaries powered off and starts one on
- * request, through the same PSCI interface this port already uses to
- * power the machine down. So starting a core here is a call into
- * firmware, where the other port has no firmware and releases a hart
- * that was already spinning. Both end at the same place, which is a core
- * running kernel code with a stack of its own.
- *
- * The per-core pointer lives in TPIDR_EL1, which is exactly what the
- * architecture provides it for and which nothing here used before.
  */
 
 #include <sys/cpu.h>

@@ -1,6 +1,13 @@
-/*
+/* init_main.c : machine-independent kernel entry and the boot thread.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * kernel_main is the first C code after the architecture boot. It brings up
+ * the object pools, page frames, interrupts, timers and the scheduler, then
+ * starts the boot thread. The boot thread drives the in-kernel self-checks,
+ * which exercise the subsystems and print their results to the console.
+ *
  */
 
 #include <sys/measure.h>

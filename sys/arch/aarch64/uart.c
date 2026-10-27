@@ -1,6 +1,12 @@
-/*
+/* uart.c : AArch64 PL011 console output.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
+ *
+ * uart_putc writes one byte to the PL011 data register at 0x09000000,
+ * the UART0 of QEMU's virt board. It waits while the transmit FIFO is
+ * full. This file has no receive path.
+ *
  */
 
 #include <sys/systm.h>

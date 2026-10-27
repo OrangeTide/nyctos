@@ -1,22 +1,13 @@
-/*
- * PUBLIC DOMAIN (CC0-1.0)
- */
-
-/*
- * Read the clock twice, and say where the readings fell.
+/* clock.c : reads the clock twice and reports the second reading.
  *
- * The check outside takes the time before this runs and again after it
- * has finished, and this program's business is to put its own readings
- * where that check can compare them with those two. What it returns is
- * the second reading measured from the kernel's first, which is one
- * number the check can bracket: below zero and the program read a clock
- * behind the kernel's, above the kernel's own span and it read one
- * ahead, and a clock that reads a constant or counts in other units
- * fails one end or the other rather than the eye.
+ * SPDX-License-Identifier: 0BSD OR Apache-2.0
+ * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * The two readings of its own are what say the clock moves forwards.
- * The kernel cannot see them, so this checks that part itself and
- * reports the failure as a status the check knows by name.
+ * The kernel's first reading arrives as a hex argument. The program takes
+ * two readings of its own and returns the second, measured from the
+ * kernel's reading. Negative statuses, defined at the top of the file, name
+ * the check that failed.
+ *
  */
 
 #include <os/sys.h>

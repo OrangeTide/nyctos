@@ -1,24 +1,15 @@
-/*
+/* startup.c : consumes the startup record and exposes its contents.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Consuming the startup record, per section 20.4.
  *
- * crt1 calls this with whatever the loader left in the first argument
- * register, before main() and before anything else in the library has run.
- * What it does is copy: the record and its table live in memory the loader
- * owns, and a library that kept a pointer into it would be reading someone
- * else's storage for the life of the process. The table is a flat array of
- * identifier and handle pairs, so the copy is a few dozen bytes and needs
- * no allocation.
+ * __libc_startup, called from crt1, copies the namespace table, the namespace
+ * names, the command line, and the system page pointer from the startup
+ * record. A record with a different version is ignored, which leaves the
+ * namespace and arguments empty. The accessors for this state are ns_lookup,
+ * ns_slots, ns_slot, ns_name, ns_name_of, __libc_argc, __libc_argv, and
+ * sys_syspage.
  *
- * A record whose version is not the one this library was built against is
- * refused whole rather than read field by field. A program launched by a
- * loader it does not understand should hold nothing, which leaves it
- * unable to reach anything, which is the correct outcome for a process
- * that cannot trust what it was told.
  */
 
 #include <ns.h>

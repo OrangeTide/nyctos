@@ -1,29 +1,13 @@
-/*
+/* intr.h : interrupt control and the machine interrupt interface.
+ *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
- */
-
-/*
- * Interrupts, and the critical sections they force.
  *
- * Section 13.2: an interrupt service routine advances a timeline and
- * returns, and that is the whole of it. It runs no driver logic, takes no
- * lock a thread can hold, and allocates nothing. A driver waits on a
- * timeline whether it is waiting for a device, a timer or a transfer.
+ * Declares the md_intr_* functions that set and restore interrupt state, the
+ * controller and timer hooks that each port implements, and the irq_* calls
+ * that bind an interrupt to a timeline or a handler. Included by the port
+ * interrupt code, much of sys/kern, sys/lock.h and sys/objref.h.
  *
- * Section 13.3 makes Tier 0 disable interrupts inside the kernel rather
- * than lock, which is what buys a kernel with no internal locking at all.
- * That is what md_intr_disable is for: the run queues and the timeline
- * waiter lists are touched by both threads and interrupt handlers, and
- * nothing else keeps them apart.
- *
- * At Tier 2 that sentence is now half true, and the half it lost is the
- * one it was written for. Disabling interrupts still keeps a handler
- * out of a region a thread is inside, because a handler runs on the
- * core it interrupts. It no longer keeps anything else out, because
- * the other core is not interrupted by anything this core does. What
- * keeps the two cores apart is the lock of sys/lock.h, taken at every
- * entry into the kernel, and the regions below sit inside it.
  */
 
 #ifndef _SYS_INTR_H_
