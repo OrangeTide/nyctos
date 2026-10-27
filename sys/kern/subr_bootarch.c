@@ -111,7 +111,7 @@ boot_lookup(const char *name)
 
 /*
  * The layout the archive carries for a member, checked rather than
- * trusted, per M14 stage 1.
+ * trusted.
  *
  * The numbers come from a symbol table by way of a build, and a build
  * that half changed is the way they go wrong: a linker script without
@@ -153,7 +153,6 @@ boot_check_layout(const struct boot_member *m)
  * point. Nothing checks that the destination is free, because there is no
  * MMU and no allocator to ask: the load addresses come from the program
  * Makefiles and not overlapping is their job, per share/mk/nyc.prog.mk.
- * Section 15.2 is where a loader service takes ownership of that.
  */
 uintptr_t
 boot_load(const struct boot_member *m)
@@ -188,10 +187,9 @@ boot_report(void)
         boot_check_layout(&m[i]);
 
         /*
-         * What it needs against what a slot is, which is the whole of
-         * M14 in one line per image. The two page counts are the
-         * regions the loader will map; the third is what a process
-         * costs today, and the milestone is the difference.
+         * What it needs against what a slot is, in one line per image.
+         * The two page counts are the regions the loader will map; the
+         * third is what a process costs today.
          */
         cnprintf("    %-12s %4lu bytes, loads at 0x%lx, %lu+%lu of %lu "
           "pages\n", m[i].bm_name, (unsigned long)m[i].bm_size,
@@ -221,8 +219,8 @@ _Static_assert(SYS_IMAGE_NAME_MAX == BOOT_NAME_MAX,
  *
  * Without this the frame allocator hands out the text of a running
  * program, which was true the moment it existed and would have been found
- * out by the first page table that landed on one. Section 15.2's loader is
- * what ends the whole arrangement, and at Tier 2 the slots go with it.
+ * out by the first page table that landed on one. At Tier 2 the slots go
+ * with it.
  */
 void
 boot_reserve(void)

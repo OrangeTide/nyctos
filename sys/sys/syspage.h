@@ -25,7 +25,7 @@ typedef struct sys_syspage {
     /*
      * Ticks per second of the counter a program reads for itself. A
      * program turns a duration into a deadline with this and nothing
-     * else, so it is the whole of what section 14.3 needs from here.
+     * else, so it is the whole of what a program needs from here.
      */
     uint64_t    hz;
 } sys_syspage_t;

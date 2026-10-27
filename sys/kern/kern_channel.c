@@ -55,20 +55,13 @@ channel_create(const char *name, struct proc *owner)
     ch->c_name = name;
     ch->c_owner = owner;
     /*
-     * Every field, said rather than inherited, and none of it
-     * required.
+     * Every field is set explicitly, though none of them needs it.
+     * `pool_alloc` clears the object it hands out on every allocation,
+     * so a recycled slot arrives as zero exactly as a fresh one does.
      *
-     * M18 wrote four of these with a note that nothing had ever
-     * needed writing, because a channel is never released and a pool
-     * slot starts as zero, and that this would stop being true the
-     * day a slot came back. M20 stage three is that day and the note
-     * turns out to be wrong about why: `pool_alloc` clears the object
-     * it hands out, every time and not only the first, so a recycled
-     * slot arrives as zero exactly as a fresh one does.
-     *
-     * The state that would have been felt if it did not is
-     * c_pulse_lost. A channel that had a pulse dropped and then
-     * evicted the last one it was holding can go with that flag set,
+     * The state that would be felt if it did not is c_pulse_lost. A channel
+     * that had a pulse dropped and then evicted the last one it was holding
+     * can go with that flag set,
      * and the next occupant would tell its server it had missed
      * something that happened before it existed. That is what the
      * check on a reused slot is for, and it passes because of the
@@ -103,7 +96,7 @@ channel_create(const char *name, struct proc *owner)
  *
  * Lowest by priority rather than last in the list, and those are not
  * always the same thread. The list is ordered when a sender is inserted
- * and not afterwards, and section 12.3's chain raises a queued sender
+ * and not afterwards, and the priority chain raises a queued sender
  * in place: a thread that took a request and then sent on is raised
  * where it stands when somebody high priority arrives behind it, so its
  * priority goes up and its position does not. Taking the tail would
@@ -141,10 +134,9 @@ uint64_t channel_senders_displaced;
 uint64_t channel_peers_collected;
 
 /*
- * How many senders this channel will hold, per M18 stage six and
- * section 12.1. Nothing is evicted here: a depth lowered under a queue
- * that is already longer takes effect at the next send, which is the
- * one moment the queue is being looked at anyway.
+ * How many senders this channel will hold. Nothing is evicted here: a
+ * depth lowered under a queue that is already longer takes effect at the
+ * next send, which is the one moment the queue is being looked at anyway.
  */
 void
 channel_listen(struct channel *ch, uint32_t depth)
@@ -207,8 +199,8 @@ list_remove(struct thread **head, struct thread *t)
 static void channel_thread_release(struct thread *t, bool tell);
 
 /*
- * Count a send that gave up at its deadline, in whichever of section
- * 12.1's two states it was in.
+ * Count a send that gave up at its deadline, in whichever of its two
+ * states it was in.
  *
  * Counted here rather than in channel_unwait_thread, which is where the
  * two states are told apart, because that hook is reached by
@@ -238,7 +230,7 @@ channel_unwait_thread(void *obj, struct thread *t)
     /*
      * A client whose message a server is holding is on neither list:
      * the rendezvous already happened and what it is waiting for is the
-     * reply. Section 12.1 has it abandon work in progress.
+     * reply. The client abandons work in progress.
      *
      * Only the pointers here, and the rest when the thread runs again.
      * This is called from the timer interrupt, where thread_current()
@@ -268,27 +260,20 @@ channel_unwait_thread(void *obj, struct thread *t)
 /*
  * Raise a thread to at least prio.
  *
- * This is one step, and section 12.3 asks for a transitive chain. It gets
- * one anyway, by a different route: a server sends onward at its own
- * effective priority, which is already the donated value, so each hop
- * carries the donation forward without anything walking a chain. A client
- * at 25 reaching a server at 10 that calls a server at 5 leaves all three
- * running at 25.
+ * This is one step, not a transitive chain. A chain forms by a different
+ * route: a server sends onward at its own effective priority, which is
+ * already the donated value, so each hop carries the donation forward
+ * without anything walking a chain. A client at 25 reaching a server at 10
+ * that calls a server at 5 leaves all three running at 25.
  *
- * What that does not give is the bound. SYS_PRIO_CHAIN_MAX and the
- * SYS_ERR_DEADLOCK the section attaches to it presuppose a walk, and a
- * walk is only needed to raise a thread that is already blocked onward.
- * Nothing here can be: donation happens at the rendezvous, when the target
- * has just stopped being blocked. So the bound is unenforced rather than
- * enforced trivially, and a cycle of servers would deadlock undetected.
- * That is a real gap between section 12.3 and this, and it wants either a
- * link from a blocked sender to whoever is serving it, or the section
- * conceding that per-send donation is the whole mechanism.
- *
- * The earlier version of this walked from the target back to the thread
- * that had just donated to it, which by construction already outranked the
- * value being donated, so the loop always stopped on its first test. It
- * looked like a bounded chain walk and was a no-op.
+ * What that does not give is the bound. SYS_PRIO_CHAIN_MAX and
+ * SYS_ERR_DEADLOCK presuppose a walk, and a walk is only needed to raise a
+ * thread that is already blocked onward. Nothing here can be: donation
+ * happens at the rendezvous, when the target has just stopped being
+ * blocked. So the bound is unenforced rather than enforced trivially, and
+ * a cycle of servers would deadlock undetected. That is a real gap. Closing
+ * it wants either a link from a blocked sender to whoever is serving it,
+ * or a decision that per-send donation is the whole mechanism.
  */
 static void
 donate(struct thread *to, uint8_t prio)
@@ -297,8 +282,8 @@ donate(struct thread *to, uint8_t prio)
         ipc_donate_stamp(to, to->t_core != cpu_self()->cp_index);
 #if SYS_TIER == 2
         /*
-         * Raised on a thread this core does not own, which is what
-         * section 11.4 has cross a boundary. Counted because it is a
+         * Raised on a thread this core does not own, which has crossed a
+         * boundary. Counted because it is a
          * cost partitioning has and a single core does not.
          */
         if (to->t_core != cpu_self()->cp_index) {
@@ -312,13 +297,10 @@ donate(struct thread *to, uint8_t prio)
 /*
  * Put a thread back to the priority the clients it still owes justify.
  *
- * Not to its base. The comment here used to say "now that it owes
- * nobody anything", which was true of a record that held one client and
- * false of a thread that can owe several: answering one of them said
- * nothing about the others, and the thread went back to base while a
- * client it still owed waited at a priority it had given away. Section
- * 12.3 gives a server the priority of whoever it is serving, and a
- * server serving two is serving the higher of them.
+ * Not to its base. A thread that owes several clients answers for one of
+ * them and still owes the rest, so it stays at the priority they justify.
+ * A server takes the priority of whoever it is serving, and a server
+ * serving two is serving the higher of them.
  *
  * The donor is forgotten only when there is nobody left. While any
  * client remains, some client raised this thread and the field still
@@ -350,8 +332,8 @@ owed_reprio(struct thread *t)
     /*
      * And only where this core may move it. A thread that is ready is
      * on some core's run queue, and the queues are that core's: this
-     * is the rule `chain_raise` states for the raise, per section
-     * 11.4, and the way back needs it for the same reason. Without it
+     * is the rule `chain_raise` states for the raise, and the way back
+     * needs it for the same reason. Without it
      * the reprioritise reaches `dequeue_specific`, which panics with a
      * message about queues rather than about donation.
      *
@@ -359,7 +341,7 @@ owed_reprio(struct thread *t)
      * a priority it no longer owes until something else moves it. That
      * is unfair and it is not an inversion, which is the direction to
      * err in. Counted, because the day this is not zero is the day the
-     * residue section 11.4 already carries has a number.
+     * residue already carried here has a number.
      */
     if (t->t_state == THREAD_READY && t->t_core != cpu_self()->cp_index) {
         channel_owed_reprio_elsewhere++;
@@ -374,8 +356,8 @@ owed_reprio(struct thread *t)
  * What a receiving thread owes, which is not what it records.
  *
  * `t_client` is one identifier and a thread may owe several replies:
- * section 12.6 has a server hand the client id to a worker and keep
- * receiving, section 12.2 lets any thread of the server answer, and the
+ * a server may hand the client id to a worker and keep receiving, any
+ * thread of the server may answer, and the
  * console holds a read with no line behind it and receives again. These
  * count what that costs, and every one of them is taken at the place
  * the thing happens rather than worked out from the others.
@@ -401,32 +383,31 @@ uint64_t channel_owed_overwrote;
 uint64_t channel_owed_cleared;
 
 /*
- * Replies this thread's record did not name. Section 12.2 says any
- * thread of the server may send one and the identifier is what
- * addresses it, so these are correct replies; they are the measure of
+ * Replies this thread's record did not name. Any thread of the server may
+ * send one and the identifier is what addresses it, so these are correct
+ * replies; they are the measure of
  * how far the record is from the fact.
  */
 uint64_t channel_owed_reply_unnamed;
 
 
 /*
- * The count against a walk, the way M20 checked the channel holds. Done
- * only where the count says more than one, which is rare, so the walk
- * is not on the path every rendezvous takes.
+ * The count checked against a walk. Done only where the count says more
+ * than one, which is rare, so the walk is not on the path every rendezvous
+ * takes.
  */
 uint64_t channel_owed_walks;
 
 /*
- * Requests taken by a thread that already had one on another channel,
- * per M22 stage four. One entry per request makes that expressible;
- * the entry used to be the thread and there was one link between every
- * list it could be on. Counted where it happens, and how many channels
- * at once is asserted by the check that builds the case.
+ * Requests taken by a thread that already had one on another channel.
+ * One entry per request makes that expressible. Counted where it happens,
+ * and how many channels at once is asserted by the check that builds the
+ * case.
  */
 uint64_t channel_serving_two;
 
 /*
- * Entries stepped over on the set, per M22 stage seven. Every
+ * Entries stepped over on the set. Every
  * rendezvous that ends walks the set twice, once to unlink the client
  * and once to read what is left, and this is what that comes to. It
  * is the cost of the set stated as a count rather than as a duration,
@@ -435,19 +416,18 @@ uint64_t channel_serving_two;
 uint64_t channel_owed_steps;
 /*
  * Priorities actually moved by a recompute, and the time spent in
- * the cross-walk above, both per M22 stage seven's review. The two
- * runs that measure the set have to differ in one thing, and these
- * are how the report says that they do: neither moves a priority,
- * and what the second spends inside the walk this milestone added
+ * the cross-walk above. The two runs that measure the set have to
+ * differ in one thing, and these are how the report says that they do:
+ * neither moves a priority, and what the second spends inside the walk
  * is the difference between them.
  */
 uint64_t channel_owed_moved;
 uint64_t channel_owed_walk_ticks;
 
 /*
- * What one server's death reached, per M22 stage six: the most
- * clients released by a single exit, and the ones left blocked
- * because section 12.5 is coming for them with the other error.
+ * What one server's death reached: the most clients released by a
+ * single exit, and the ones left blocked for the exit path to release
+ * with the other error.
  */
 uint64_t channel_owed_death_most;
 uint64_t channel_owed_death_left;
@@ -455,7 +435,7 @@ uint64_t channel_owed_death_left;
 /*
  * Slots kept because a request was in flight when the last thing
  * naming the channel let go, and clients that died with their request
- * being served, per M22 stage five.
+ * being served.
  */
 uint64_t channel_held_kept_slot;
 uint64_t channel_held_died;
@@ -499,9 +479,7 @@ uint64_t channel_owed_reprio_elsewhere;
 /*
  * How long a server's list of clients is, bounded by the thread pool.
  *
- * Bounded because M20 stage two spent a boot on a list that pointed at
- * itself and a walk that did not come back, and the lesson written down
- * there is that a diagnostic which hangs is worse than one that says
+ * Bounded, because a diagnostic which hangs is worse than one that says
  * what it found. A client is on at most one of these lists, so a list
  * longer than the pool has threads is a cycle.
  */
@@ -614,8 +592,7 @@ owed_drop(struct thread *client)
      * clients that are left are the reasons that remain.
      *
      * The raise is still at the call sites, after `serving_begin`,
-     * where it has been since M1 and where the order of the two is
-     * already settled. Only the way back is here.
+     * where the order of the two is already settled. Only the way back is here.
      */
     owed_reprio(server);
 }
@@ -710,7 +687,7 @@ static void
 msg_copy(struct sys_msg *dst, const struct sys_msg *src)
 {
     /*
-     * A message copy chunk boundary, per section 13.3. This copy is
+     * A message copy chunk boundary. This copy is
      * one fixed-size structure and is not chunked, so there is exactly
      * one boundary and it is here. A copy that grows into chunks puts
      * a point at each of them.
@@ -722,7 +699,7 @@ msg_copy(struct sys_msg *dst, const struct sys_msg *src)
 
 /*
  * Take a lent buffer back out of the space it was lent to and put it
- * back in the sender's, per section 6.1: the reply is the end of the
+ * back in the sender's: the reply is the end of the
  * call and the point at which the right returns.
  *
  * The pages are found by asking the receiver's tables what its addresses
@@ -740,7 +717,7 @@ msg_copy(struct sys_msg *dst, const struct sys_msg *src)
  *
  * A client whose server never replies does not get its memory back. That
  * is a server that has stopped serving, and what to do about one is
- * section 24.3's question rather than this function's.
+ * decided elsewhere, not by this function.
  */
 static void
 msg_buf_take_back(struct thread *client)
@@ -809,7 +786,7 @@ msg_buf_take_back(struct thread *client)
 #if SYS_TIER == 2
 
 /*
- * What the receiver may do with the buffer, per section 6.1: the flags
+ * What the receiver may do with the buffer: the flags
  * in the message are the access it is being given and not a description
  * of what the sender has.
  *
@@ -835,7 +812,7 @@ buf_perms(uint32_t buf_flags)
 #endif /* SYS_TIER == 2 */
 
 /*
- * Hand a request's buffer to the receiver, per section 6.1.
+ * Hand a request's buffer to the receiver.
  *
  * The address in the message is the sender's on the way in and the
  * receiver's on the way out. At Tier 0 that rewrite is the identity: one
@@ -847,11 +824,11 @@ buf_perms(uint32_t buf_flags)
  * address are mapped into the receiver's space at the same address, so
  * the number in the message keeps meaning what it meant. Keeping the
  * address is what lets a server dereference it directly, which is what
- * the fs protocol does and what section 25.5 says it does.
+ * the fs protocol does.
  *
  * It is a move and not a loan. The pages go out of the sender as they go
  * into the receiver, so a sender that touches its own buffer between the
- * send and the reply faults on it, which is section 6.1's rule with the
+ * send and the reply faults on it, which is the rule with the
  * hardware behind it. Tier 0 keeps the rule and cannot keep it: there is
  * one address space, nothing to unmap, and a program that breaks the
  * contract there is not corrected. That difference is the whole of what
@@ -874,7 +851,7 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
      * member sending the domain's memory to somebody outside the
      * domain is refused, and it is the only place that can.
      *
-     * Both tiers, because section 23.2 is not a tier. At Tier 0 this
+     * Both tiers, since the rule is the same at each. At Tier 0 this
      * function does nothing else at all, and this is the whole of what
      * it is for there.
      */
@@ -976,10 +953,9 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
 
             /*
              * And out of the sender, which is what makes this a move
-             * rather than a loan. Section 6.1: the sender loses the
-             * right to the memory until the reply arrives, and until
-             * this line that was a rule nothing enforced on either
-             * tier. A sender with a second thread now faults on its own
+             * rather than a loan. The sender loses the right to the memory
+             * until the reply arrives. A sender with a second thread now
+             * faults on its own
              * buffer while the call is outstanding, which is the whole
              * of what Tier 2 is for.
              *
@@ -1014,15 +990,11 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
          * call names no identifier, so removing that address removes
          * both entries.
          *
-         * This used to say that a port with address space identifiers
-         * would need two calls here rather than one, and that the
-         * count of one was a cost this was not paying. Both ports have
-         * identifiers since M19 and this is still one call, because
-         * the by-address form on both of them names no space and
-         * reaches every one. M19 stage six then asked whether two
-         * calls that do name the two spaces would be cheaper anyway,
-         * and they are not: two of them cost about twice one on both,
-         * and one of them costs about what one broad call costs.
+         * Both ports have address space identifiers, and this is still one
+         * call, because the by-address form on both of them names no space
+         * and reaches every one. Two calls that do name the two spaces are
+         * not cheaper: two of them cost about twice one on both ports, and
+         * one of them costs about what one broad call costs.
          *
          * Throwing the whole cache away instead was correct and was
          * also every other translation in the system, most of which
@@ -1043,7 +1015,7 @@ msg_buf_hand_over(struct thread *server, struct thread *client,
 }
 
 /*
- * Rendezvous taken, for section 25.7's measurement. One per rendezvous
+ * Rendezvous taken, for measurement. One per rendezvous
  * that happens, counted by whichever side completes it, so a request
  * that crosses three messages counts three and a compound counts one.
  *
@@ -1058,10 +1030,9 @@ uint64_t channel_rendezvous;
 uint64_t channel_stale_clients;
 
 /*
- * How many sends gave up at their deadline, told apart by which of
- * section 12.1's two states they were in. The section says the two
- * differ and that the difference is what the server sees, so counting
- * them together would report the thing the section says not to.
+ * How many sends gave up at their deadline, told apart by which of two
+ * states they were in. The two differ in what the server sees, so
+ * counting them together would hide that difference.
  */
 uint64_t channel_gave_up_queued;
 uint64_t channel_gave_up_working;
@@ -1069,13 +1040,12 @@ uint64_t channel_gave_up_working;
 /*
  * Whether this sender may describe this memory to this receiver.
  *
- * The ordinary answer is that it must be the sender's own, per section
- * 23.2: what arrives from a program is a number, and a number naming
- * another program's memory would be acted on for that program if
- * nothing checked.
+ * The ordinary answer is that it must be the sender's own: what arrives
+ * from a program is a number, and a number naming another program's
+ * memory would be acted on for that program if nothing checked.
  *
  * Two members of one cohort are the exception, and it is the whole of
- * what section 18 buys on this path. They are one protection domain, so
+ * what cohorts buy on this path. They are one protection domain, so
  * the receiver can already reach everything the sender can, and the
  * kernel maps nothing and dereferences nothing: at Tier 2 the hand-over
  * sees one address space at both ends and does no work, and at Tier 0
@@ -1086,8 +1056,8 @@ uint64_t channel_gave_up_working;
  * is the reason a cohort is a named thing at Tier 0 rather than
  * nothing. At Tier 0 every process shares an address space, so a rule
  * asking about the space would let any program describe any other
- * program's memory and would undo what M4 built. Asking about the
- * cohort gives the same answer at both tiers, which is what the two
+ * program's memory and would undo the separation between programs. Asking
+ * about the cohort gives the same answer at both tiers, which is what the two
  * tiers are for.
  *
  * What this does not check is that the sender can reach the address.
@@ -1135,7 +1105,7 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
     /*
      * The buffer a caller describes has to be the caller's own memory.
-     * Section 23.2: what arrives from a program is a number, and a number
+     * What arrives from a program is a number, and a number
      * that names another program's memory would be read on that program's
      * behalf if nothing checked. This is a refusal, not a fault: the
      * caller gets an error and goes on running.
@@ -1150,7 +1120,7 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
     }
 
     /*
-     * A buffer has to name the access it grants. Section 6.1 has the
+     * A buffer has to name the access it grants. The
      * flags say what the receiver may do with the memory, so a buffer
      * that grants nothing is a description of nothing, and there is no
      * mapping that means it: on one port it would become a page nobody
@@ -1233,18 +1203,18 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
         /*
          * A server was already waiting, so this never queued: it is
-         * REPLY-blocked from the outset and section 12.1 says the two
-         * states are told apart precisely here.
+         * REPLY-blocked from the outset. The two states are told apart
+         * precisely here.
          */
         channel_rendezvous++;
         self->t_wait = THREAD_WAIT_REPLY;
     } else {
         /*
          * Nobody is at a receive point, so this thread would queue.
-         * Unless it was not willing to wait: section 14.3 makes
-         * SYS_DEADLINE_NOW a poll, and a poll that finds no server has
+         * Unless it was not willing to wait: SYS_DEADLINE_NOW is a poll,
+         * and a poll that finds no server has
          * its answer. Nothing was queued and nothing was delivered,
-         * which is the case section 12.1 calls clean.
+         * which is the clean case.
          *
          * Before the raise rather than after, so that there is nothing
          * to undo. Asked here rather than at the top of the function,
@@ -1259,9 +1229,9 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         }
 
         /*
-         * Section 12.3 has the priority-ordered queue serve it, and
-         * that is only half: whoever is inside a request on this
-         * channel may be blocked further down, and everything below is
+         * The priority-ordered queue serves it, and that is only half:
+         * whoever is inside a request on this channel may be blocked
+         * further down, and everything below is
          * running at the priority of the client it is serving rather
          * than of this one.
          */
@@ -1277,7 +1247,7 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
         self->t_wait = THREAD_WAIT_SEND;
 
         /*
-         * And the depth of section 12.1, per M18 stage six. The insert
+         * And the depth of the queue. The insert
          * happened first and is not conditional: a send joins the
          * queue and then the queue gives up whatever it cannot hold,
          * which is one rule rather than a "would this fit" asked
@@ -1345,7 +1315,7 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
     /*
      * And the deadline it said it would wait until, whichever of the
-     * two states it is in. Section 12.1 has them give up differently
+     * two states it is in. The two give up differently
      * and channel_unwait_thread is where that difference lives: a
      * queued sender is taken off the queue and nobody ever knew, and a
      * client whose message a server holds abandons work in progress and
@@ -1385,7 +1355,7 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
      * gave up while a server held its message has a buffer lent out and
      * a priority donated, and both come back here, where there is a
      * thread to charge the work to and the client is the thread doing
-     * it. Section 12.1: it abandons work in progress, and the server
+     * it. It abandons work in progress, and the server
      * finds out when its reply is refused.
      */
     if (err == SYS_ERR_TIMEOUT && self->t_wait == THREAD_WAIT_REPLY) {
@@ -1399,15 +1369,14 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 
     /*
      * Nothing may still be lent out. A reply gives the buffer back
-     * before it releases this thread, and until M15 a reply was the
-     * only thing that released it.
+     * before it releases this thread.
      *
-     * A deadline is the other thing now, and a SEND-blocked client that
-     * gives up has lent nothing: the hand-over happens when a server
-     * takes the message, and nobody took it. A REPLY-blocked client has
-     * lent something and this is where that would be found, which is
-     * stage four. The alternative to finding it is a program running
-     * again with a hole where its memory was.
+     * A deadline is the other thing that can release it, and a SEND-blocked
+     * client that gives up has lent nothing: the hand-over happens when a
+     * server takes the message, and nobody took it. A REPLY-blocked client
+     * has lent something and this is where that is found. The alternative to
+     * finding it is a program running again with a hole where its memory
+     * was.
      */
     if (self->t_lend_len != 0) {
         panic("ipc: %s ran again with its buffer still lent out",
@@ -1461,7 +1430,7 @@ send_inner(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 /*
  * Say, once, that user pulses were dropped since the last receive.
  *
- * On any receive and not only on a pulse, which section 13.1 asks for:
+ * On any receive and not only on a pulse:
  * the flag is what the receiver observes on its next receive, and a
  * server that took a message in between would otherwise learn late or
  * not at all.
@@ -1545,7 +1514,7 @@ recv_inner(struct channel *ch, struct sys_msg *out,
      */
     for (;;) {
         /*
-         * A pulse first, per section 13.1: one receive point for both,
+         * A pulse first: one receive point for both,
          * and a notification about something that has already happened
          * should not wait behind work. The queue is bounded and drains,
          * so this cannot starve messages: there are at most
@@ -1651,15 +1620,14 @@ recv_inner(struct channel *ch, struct sys_msg *out,
             channel_owed_cleared++;
 
             /*
-             * Counted apart from the block itself, per M22 stage
-             * seven. A thread can block receiving while owing and
+             * Counted apart from the block itself. A thread can block
+             * receiving while owing and
              * have no record to give away at all: it replied to the
              * client of its last receive, which cleared the field,
              * and what it still owes is somebody it took earlier.
              * The set is the only thing that knows about that one,
-             * which is the milestone in one sentence, and counting
-             * it as a record handed over made the two numbers below
-             * disagree for a reason that was not a fault.
+             * and counting it as a record handed over made the two numbers
+             * below disagree for a reason that was not a fault.
              */
             if (given != NULL) {
                 channel_owed_cleared_named++;
@@ -1682,7 +1650,7 @@ recv_inner(struct channel *ch, struct sys_msg *out,
 
         /*
          * Running again, which for a server that was donated to is the
-         * moment section 12.3's mechanism has finished doing anything.
+         * moment the donation mechanism has finished doing anything.
          */
         ipc_donate_arrived(self);
 
@@ -1692,7 +1660,7 @@ recv_inner(struct channel *ch, struct sys_msg *out,
          * pulse arriving from a handler sets it. Reading it after the
          * restore would lose one that arrived in between: the send
          * side sets the flag under the same exclusion, and taking it
-         * outside was a hole this stage opened and its review found.
+         * outside would leave a hole.
          *
          * The bit it turns into is applied to the caller's message
          * after the copy, because the copy overwrites the flags.
@@ -1749,17 +1717,15 @@ recv_inner(struct channel *ch, struct sys_msg *out,
 }
 
 /*
- * And a send is the third way out, per M20 stage seven.
+ * And a send is the third way out.
  *
- * Stage four wrapped the receive and the reply and said there were
- * three. The third is a send that leaves without being served: a
+ * The third is a send that leaves without being served: a
  * deadline that expires, a cancellation, an owner that died. The
  * thread comes off the sender queue on all of those, and if nothing
  * names the channel by then it was the last thing keeping the slot.
  * Without this a channel whose holders all went while somebody was
  * queued on it is given back when the sender is served and leaked
- * when the sender gives up, which is the case nothing was asking
- * about.
+ * when the sender gives up.
  *
  * Asked on the served path as well as the abandoned one, because the
  * question is the same and one wrapper is cheaper to read than a
@@ -1772,8 +1738,7 @@ recv_inner(struct channel *ch, struct sys_msg *out,
  * Every entry from user mode arrives on a vector that takes the lock
  * on the way in and drops it on the way out, so the body below runs
  * under it. A kernel thread calling the same thing holds nothing,
- * and until M21 stage six's review that is how the boot's checks
- * made these calls: the same operations with the exclusion missing.
+ * and calls with the exclusion missing.
  *
  * What it costs is a lost wake. A call that means to block reads the
  * state, finds it not ready, and puts the thread on a list; the core
@@ -1810,7 +1775,7 @@ channel_send(struct channel *ch, uint64_t cookie, const struct sys_msg *req,
 }
 
 /*
- * And the channel may have nothing left in it, per M20 stage four.
+ * And the channel may have nothing left in it.
  *
  * A receive is one of the three ways a thread leaves a channel: it
  * takes a sender off the queue, and it takes this thread off the
@@ -1898,8 +1863,8 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
     }
 
     /*
-     * A reply this thread's record does not name, which section 12.2
-     * allows: the identifier addresses the reply and any thread of the
+     * A reply this thread's record does not name, which is allowed: the
+     * identifier addresses the reply and any thread of the
      * server may send it. Counted because it is the measure of how far
      * `t_client` is from what is actually owed, and every one of these
      * is a reply that worked while the record pointed elsewhere.
@@ -1909,7 +1874,7 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
     }
 
     /*
-     * The buffer goes home first. Section 6.1 returns the right to the
+     * The buffer goes home first. The right returns to the
      * sender when the reply arrives, and the client is about to be made
      * runnable: after that point there is a thread that may touch memory
      * another process still has mapped.
@@ -1919,7 +1884,7 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
     vm_charge_end();
 
     /*
-     * Section 7.4: a handle travels by move. The value changes across the
+     * A handle travels by move. The value changes across the
      * boundary because a handle means something only in the table holding
      * it, and the sender slot is invalidated rather than merely unused, so
      * presenting the old value afterwards is refused rather than reaching
@@ -1929,7 +1894,7 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
     client->t_stage.handle = SYS_ID_INVALID;
 
     /*
-     * A reply carries no buffer. Section 6.1: a server that handed back
+     * A reply carries no buffer. A server that handed back
      * memory of its own could not tell when the client had finished with
      * it and so could never reclaim it, which is why a large reply writes
      * into the buffer the client supplied in the request instead.
@@ -1959,7 +1924,7 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
     /*
      * The entry goes with the request, not with whoever answers it.
      *
-     * Section 12.2 lets any thread of the server reply, and the
+     * Any thread of the server may reply, and the
      * console answers a held read from the thread that has the bytes.
      * While the entry was the server, `serving_end` ran on the
      * replying thread and left the receiving thread on the list; now
@@ -1971,13 +1936,11 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
 
     /*
      * The client is made runnable here and dispatched to below, which
-     * used to be one step and is two so that they are two
-     * interrupts-off regions instead of one.
+     * is split into two interrupts-off regions.
      *
-     * Section 13.3's first term was measured as beginning here and
-     * ending in the client's own `channel_send`, which is to say it
-     * covered this reply's work, the context switch, and the client
-     * coming back. A quarter to a half of it was the work above.
+     * The first term of the measured cost runs from here to the client's
+     * own `channel_send`, and covers this reply's work, the context
+     * switch, and the client coming back.
      *
      * What that work needs interrupts off for is that the client's
      * state is being taken apart and put back together: it is blocked
@@ -2018,7 +1981,7 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
 
 /*
  * And the channel this server was serving on may have nothing left in
- * it, per M20 stage four.
+ * it.
  *
  * A reply is the second of the three ways a thread leaves a channel:
  * it takes this thread off the serving list. The channel has to be
@@ -2028,13 +1991,9 @@ reply_inner(sys_thread_id_t peer, const struct sys_msg *reply)
  * gives: a reply hands the core to the client it woke, and the slot
  * can be gone and taken by the time this thread runs again.
  *
- * The channel is read off the client and not off this thread, per
- * M22 stage five's review. While the entry was the server this
- * thread's own `t_serve_ch` named the channel it was answering on.
- * Stage four made the entry the request, so that field belongs to
- * the client now and a server's is empty: asking this thread was
- * asking the wrong one of the two, and the question went unasked for
- * every reply in a boot.
+ * The channel is read off the client and not off this thread. The entry
+ * is the request, so the field belongs to the client, and a server's is
+ * empty.
  *
  * A reply that is refused still takes the thread off the list, which
  * is the case the comment inside is about, so the question is asked
@@ -2085,9 +2044,8 @@ channel_reply(sys_thread_id_t peer, const struct sys_msg *reply)
  * finished with.
  *
  * The real answer is teardown: a channel whose owner dies should go,
- * releasing its senders and telling its receivers, which is stage four
- * and stage six. Until then this makes the hazard stop the machine
- * rather than corrupt it quietly.
+ * releasing its senders and telling its receivers. For now this makes the
+ * hazard stop the machine rather than corrupt it quietly.
  */
 bool
 channel_owned_by(const struct proc *p)
@@ -2111,21 +2069,19 @@ channel_owned_by(const struct proc *p)
 }
 
 /*
- * A thread has been cancelled out of a channel operation, per section
- * 10.5. Called with interrupts disabled, before the thread is made
- * runnable again.
+ * A thread has been cancelled out of a channel operation. Called with
+ * interrupts disabled, before the thread is made runnable again.
  *
  * Two things have to be undone, and only one of them is memory.
  *
  * The buffer comes home. A client cancelled between the rendezvous and
  * the reply has its pages mapped in the server and taken away from
- * itself, and section 6.1 gives them back at the reply. There is not
+ * itself, and the reply gives them back. There is not
  * going to be a reply, so they come back here, and the alternative is a
  * program released into a call it never finished with a hole where its
- * memory was. M4 wrote a panic on the far side of the send saying this
- * is where it would be found when cancellation existed.
+ * memory was.
  *
- * And the reply has nowhere to go. Section 10.5 step 3 says a server
+ * And the reply has nowhere to go. A server
  * that replies anyway is told SYS_ERR_STALE, and what makes that
  * happen is this: the reply path asks whether the client is still
  * waiting for one, and after this it is not. The server keeps its
@@ -2144,21 +2100,20 @@ channel_thread_release(struct thread *t, bool tell)
      * that has been cancelled has no reason to keep running at that
      * client's priority, and nothing else will ever take it away: the
      * reply is the only place a donation was ever undone, and the reply
-     * is not coming. Section 12.3 says nothing about this because
-     * nothing before cancellation could reach it.
+     * is not coming.
      *
      * Which thread gets it back is the one that owes this client, and
      * how much it gets back is what the clients it still owes justify.
-     * The test that used to guard this asked whether the donation was
-     * still this thread's, because a server that had moved on to
-     * somebody else was at a priority it owed to them and taking it
-     * away would have been reaching into a call this thread is not
-     * part of. With a set there is nothing to guess: the recompute
-     * happens where the client leaves the set and reads what is left.
+     * No test is needed to decide whether the donation is still this
+     * thread's. A server that has moved on to somebody else is at a
+     * priority it owed to them, and taking it away would reach into a
+     * call this thread is not part of. With a set there is nothing to
+     * guess: the recompute happens where the client leaves the set and
+     * reads what is left.
      *
      * Counted first, because the drop is what takes the entry off the
      * channel: a thread released here while a request of its own is
-     * being served is section 12.1's client that abandons work in
+     * being served is the client that abandons work in
      * progress, seen from the channel rather than from the client.
      */
     if (t->t_serve_ch != NULL) {
@@ -2175,8 +2130,8 @@ channel_thread_release(struct thread *t, bool tell)
     t->t_replied = false;
 
     /*
-     * And the server is told, per section 10.5 step 2 and section
-     * 12.5. A server is at a receive point and can collect a pulse,
+     * And the server is told. A server is at a receive point and can
+     * collect a pulse,
      * where this thread is not and has to be failed instead: that
      * asymmetry is the whole reason both mechanisms exist rather than
      * one. Without it a server learns only when it replies and is
@@ -2189,7 +2144,7 @@ channel_thread_release(struct thread *t, bool tell)
      * client waiting for a reply, because it would send one and
      * release a thread that is in the middle of being released.
      *
-     * The value is the identifier truncated, per section 7.1, not a
+     * The value is the identifier truncated, not a
      * bare index. A bare index would let the slot be recycled between
      * the enqueue and the collection and have the server match the
      * notice against somebody else's request.
@@ -2201,7 +2156,7 @@ channel_thread_release(struct thread *t, bool tell)
 }
 
 /*
- * Whether section 12.5 is going to release this client anyway.
+ * Whether the exit path is going to release this client anyway.
  *
  * A process that is going releases everything blocked on the channels
  * it owns, with SYS_ERR_OWNER_DEAD, when its last thread has gone. A
@@ -2210,7 +2165,7 @@ channel_thread_release(struct thread *t, bool tell)
  * which is exactly what OWNER_DEAD exists to deny.
  *
  * Owned by this process, and not merely served by it. A thread serving
- * on somebody else's channel is not on the list section 12.5 walks, so
+ * on somebody else's channel is not on the list the exit walks, so
  * its client is this function's business after all.
  *
  * Going, by either route: killed, which sets the mark before any thread
@@ -2240,16 +2195,15 @@ owner_going(const struct thread *t, const struct channel *ch)
  * thread will be given, and the walk would read its priority and what
  * it is blocked on.
  *
- * And the clients it was holding are released, with SYS_ERR_STALE. Until
- * M17 it waited until its own deadline, because section 12.5 releases
- * clients when the process dies and one thread of a live server dying
- * is not that. The wait was for nothing either way: the only thread
- * that could have answered is this one. The error says which kind of
+ * And the clients it was holding are released, with SYS_ERR_STALE. Clients
+ * are released wholesale only when the process dies, and one thread of a
+ * live server dying is not that. The only thread that could have answered
+ * is this one. The error says which kind of
  * nothing it was, and a client that reads it knows the server is still
  * there to be asked again, where OWNER_DEAD says it is not.
  *
- * Every client it owes, and not the one its record names, per M22
- * stage six. The record holds one and a thread may owe several, so
+ * Every client it owes, and not the one its record names. The record
+ * holds one and a thread may owe several, so
  * a server that had taken two requests and exited released the
  * client of whichever receive finished last and left the other
  * blocked until its own deadline, waiting for a reply that could
@@ -2263,7 +2217,7 @@ owner_going(const struct thread *t, const struct channel *ch)
  * to stop being owed by somebody it never asked.
  *
  * Three cases, and only one of them is a release. A client of a
- * channel whose owner is going is left blocked for section 12.5,
+ * channel whose owner is going is left blocked for the exit path,
  * which is going to tell it OWNER_DEAD, and being told STALE here
  * would say the server is still there to be asked again. A client
  * whose deadline has already fired is runnable with its answer
@@ -2285,12 +2239,9 @@ channel_thread_exited(struct thread *t)
     /*
      * A thread that is a request being served cannot be here: it is
      * blocked waiting for the reply, and every way out of that wait
-     * takes it off the channel first. Asserted because this stage
-     * broke it once. The path that gives up at a deadline left the
-     * entry behind, the thread went on to exit, and what found it was
-     * M20's channel walk reporting a list that named a free slot,
-     * several thousand lines of check later and a long way from the
-     * cause.
+     * takes it off the channel first. Asserted because a path that left
+     * the entry behind would let the thread exit with a list that named a
+     * free slot, found much later and far from the cause.
      */
     if (t->t_serve_ch != NULL) {
         panic("channel: %s exits while served on %s", t->t_name,
@@ -2300,7 +2251,7 @@ channel_thread_exited(struct thread *t)
 
     /*
      * Under the kernel's exclusion, and taken here only if this core
-     * does not already have it, per M22 stage six's review.
+     * does not already have it.
      *
      * An exit arrives either way. A thread ended from a syscall is
      * inside an entry from a vector and holds it; a kernel thread
@@ -2322,8 +2273,8 @@ channel_thread_exited(struct thread *t)
     }
 
     /*
-     * Deferred once around the whole walk, for the reason section
-     * 12.5's walk defers: releasing a client makes it runnable, and
+     * Deferred once around the whole walk, for the reason the exit walk
+     * defers: releasing a client makes it runnable, and
      * one that outranks this thread would take the core in the middle
      * of an exit that has not yet said this thread is over. A run of
      * readies is one step, and with a set there can be several.
@@ -2348,8 +2299,8 @@ channel_thread_exited(struct thread *t)
              * queue. Taken off here anyway, for the reason the next
              * case gives, and its own drop then finds nothing to do.
              *
-             * Asked before the owner, per this stage's review.
-             * Section 12.5 releases what is REPLY-blocked on a
+             * Asked before the owner.
+             * The exit path releases what is REPLY-blocked on a
              * channel, and this thread is not blocked on anything
              * any more: counting it as one left for the owner's
              * death would name it as waiting for a release that is
@@ -2358,7 +2309,7 @@ channel_thread_exited(struct thread *t)
             owed_drop(client);
         } else if (owner_going(t, client->t_blocked_on)) {
             /*
-             * Left for section 12.5, which is going to tell it
+             * Left for the exit path, which is going to tell it
              * OWNER_DEAD, and taken off the set here anyway: the
              * pointer it keeps to this thread would otherwise name a
              * slot that is about to be somebody else's.
@@ -2368,8 +2319,8 @@ channel_thread_exited(struct thread *t)
             /*
              * Counted here rather than where it is released, which
              * is the one number this walk would otherwise lose:
-             * stage five counts a request that ends with its client,
-             * and by the time section 12.5 reaches this one its
+             * the held-died count covers a request that ends with its client,
+             * and by the time the exit path reaches this one its
              * entry has already gone with the drop below.
              */
             if (client->t_serve_ch != NULL) {
@@ -2396,10 +2347,10 @@ channel_thread_exited(struct thread *t)
      * built next.
      *
      * That has not been observed. The slot is freed at the reap and
-     * section 12.5 gets to these clients first, so the boot has
+     * the exit path gets to these clients first, so the boot has
      * never made the pointer name anything else. This is the
      * assertion that says so rather than a comment hoping it, and
-     * it is what a stage broken here fails against.
+     * it is what a broken walk here fails against.
      */
     if (t->t_owed != 0) {
         panic("channel: %s is over and still owes %u", t->t_name,
@@ -2413,12 +2364,9 @@ channel_thread_exited(struct thread *t)
     }
 
     /*
-     * And the record, which named at most one of them. Until this
-     * stage it was the only client an exit could find, so a server
-     * that owed two left the other waiting out a deadline for a
-     * reply that could only have come from the thread that had just
-     * gone. The set is what the walk above reads; this is now only
-     * the receive that completed last, and it is cleared because the
+     * And the record, which names at most one of them. The set is what the
+     * walk above reads; the record holds only the receive that completed
+     * last, and it is cleared because the
      * thread is over and nothing should read it again.
      */
     t->t_client = 0;
@@ -2434,7 +2382,7 @@ channel_thread_cancelled(struct thread *t)
 }
 
 /*
- * Pulses that did not fit, for M18 stage five. Counts rather than
+ * Pulses that did not fit. Counts rather than
  * flags because these are the boot's, not a channel's: a receiver is
  * told that it missed something and does not care how much, and these
  * are here so that a check can say which way the queue overflowed.
@@ -2445,7 +2393,7 @@ uint64_t channel_pulses_dropped;
 /*
  * Take the oldest pulse of one kind out of the queue, and say whether
  * there was one. `users` picks a user pulse; otherwise the kind is the
- * hint of M18 stage four, which is the one system pulse a channel can
+ * hint, which is the one system pulse a channel can
  * lose for nothing, because what it announces is on the connection and
  * stays there.
  *
@@ -2494,7 +2442,7 @@ pulse_drop_oldest(struct channel *ch, bool users)
 }
 
 /*
- * Enqueue a pulse, per section 13.1. Never blocks, and never fails for
+ * Enqueue a pulse. Never blocks, and never fails for
  * want of room: what a full queue costs is a pulse, not the caller.
  *
  * The rule is one line and the reason is the whole of why pulses are
@@ -2505,12 +2453,11 @@ pulse_drop_oldest(struct channel *ch, bool users)
  * that floods a channel with pulses of its own cannot push a death
  * notice out.
  *
- * What section 13.1 said next was that a dropped death notice leaks a
- * dead client's resources for good, and it was right while the notice
- * was the only record of the death. M18 stage four put that record on
- * the connection, where it stays until the server collects it, so a
- * queue with more outstanding deaths than slots now drops one instead
- * of halting the machine, and says so.
+ * A dropped death notice leaks a dead client's resources for good when
+ * the notice is the only record of the death. The record is kept on the
+ * connection, where it stays until the server collects it, so a queue
+ * with more outstanding deaths than slots drops one instead of halting
+ * the machine, and says so.
  */
 void
 channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
@@ -2530,7 +2477,7 @@ channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
          * A full queue drops the pulse it can most afford to lose, and
          * there is an order to that.
          *
-         * A user pulse first, which is the reservation of section 13.1
+         * A user pulse first, which is the reservation
          * honoured here as well as at the cap above: a queue that
          * reached eight with user pulses in it has room an arriving
          * notice is entitled to. Then a hint, which is the one system
@@ -2538,13 +2485,13 @@ channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
          * is on the connection and stays there until the server
          * collects it. Then the arriving pulse, whatever it is.
          *
-         * That last case halted the machine until M18 stage five, on
-         * section 13.1's argument that losing a notice leaks a dead
-         * client's resources for good. Stage four made that untrue for
-         * every client that goes away entirely, so the queue stops
-         * being something that must not overflow and becomes what it
-         * says it is, a fixed number of hints, with the flag below
-         * telling the receiver that it missed something.
+         * The last case does not halt the machine. Losing a notice would
+         * leak a dead client's resources for good, but the record of a
+         * death now lives on the connection, so that is not true for a
+         * client that goes away entirely. The queue stops being something
+         * that must not overflow and becomes what it says it is, a fixed
+         * number of hints, with the flag below telling the receiver that
+         * it missed something.
          *
          * The arriving one goes rather than one already queued. The
          * ones in the queue are the ones the receiver is about to
@@ -2577,7 +2524,7 @@ channel_pulse(struct channel *ch, uint16_t code, uint32_t value)
     /*
      * And somebody to collect it, if anybody is waiting. A receiver
      * blocked on this channel is woken exactly as a message would wake
-     * it, because section 13.1 gives a server one receive point for
+     * it, because a server has one receive point for
      * both and the wait is the same wait.
      */
     waiter = list_pop(&ch->c_receivers);
@@ -2632,14 +2579,14 @@ release_blocked(struct thread *t, sys_err_t err)
 }
 
 /*
- * A process that owned channels has terminated, per section 12.5.
+ * A process that owned channels has terminated.
  *
  * A client blocked in send is not at a receive point and cannot collect
  * a pulse, so it is released with an error instead. That is the whole
  * of why the two directions need different mechanisms: the party that
  * can be told is told, and the party that cannot is failed.
  *
- * Both blocked states, which the section is explicit about. A queued
+ * Both blocked states are covered. A queued
  * sender is waiting for a server that will never take it, and a
  * reply-blocked client is waiting for a reply that will never come; the
  * first is on the channel's sender list and the second is not on any
@@ -2714,17 +2661,15 @@ channel_owner_died(struct proc *p)
         }
 
         /*
-         * And the channel stops naming a process that has gone. M6
-         * left this pointer taking no reference and M7 stage one
-         * guarded a reap against it, because a reaped owner would
-         * leave it naming a freed slot and a reused one would leave it
-         * naming somebody else. Clearing it here is what that guard
-         * was waiting for: the pointer is only interesting while the
-         * owner is alive, and this is the moment it stops being.
+         * And the channel stops naming a process that has gone. A reaped
+         * owner would leave this pointer naming a freed slot, and a reused
+         * one would leave it naming somebody else. The pointer is only
+         * interesting while the owner is alive, and this is the moment it
+         * stops being.
          *
          * The channel itself stays. Anything still holding a receive
          * handle can still receive on it, and tearing one down with
-         * its owner is section 18.2's teardown, which is stage six.
+         * its owner is not done here.
          */
         ch->c_owner = NULL;
     }
@@ -2749,18 +2694,14 @@ channel_owner(const struct channel *ch)
  * A request on this channel is being served, and the client is the
  * record of it.
  *
- * Section 12.3 asks for a link from a blocked sender to whoever is
- * serving it, and this is where it is made. What is on the list is the
- * client, and the thread serving it is reached through `t_donee`.
+ * A link from a blocked sender to whoever is serving it is made here.
+ * What is on the list is the client, and the thread serving it is
+ * reached through `t_donee`.
  *
- * The entry used to be the server, which cannot say more than one
- * thing. A thread serving two channels has one `t_serve_next` between
- * them, so the second list was written into the field the first was
- * using and the first ran into it; and a thread that held one request
- * and answered another left the list while a client was still blocked
- * on the channel. One entry per request removes both: there is one
- * client per request and a client is served on one channel at a time,
- * so a link on the client is a link per entry.
+ * The entry is the request, so a thread serving two channels has an
+ * entry on each and the lists never share a link. There is one client
+ * per request, and a client is served on one channel at a time, so a
+ * link on the client is a link per entry.
  */
 static void
 serving_begin(struct channel *ch, struct thread *client)
@@ -2780,12 +2721,10 @@ serving_begin(struct channel *ch, struct thread *client)
      * makes possible.
      *
      * One pass over what it owes, and only where it owes more than
-     * one. The first version of this counted the distinct channels
-     * among them, which is a walk inside a walk on the path every
-     * rendezvous takes, with interrupts off and section 13.3
-     * measuring what that costs. How many channels at once is a fact
-     * the check asserts where it builds the case; what the kernel
-     * counts is the event.
+     * one. Counting the distinct channels among them would be a walk
+     * inside a walk on the path every rendezvous takes, with interrupts
+     * off, so this counts the event instead. How many channels at once is
+     * a fact the check asserts where it builds the case.
      */
     if (client->t_donee != NULL && client->t_donee->t_owed > 1) {
         const struct thread *a;
@@ -2832,12 +2771,12 @@ serving_end(struct thread *client)
 
 /*
  * Raise everyone between this sender and the bottom of the chain it is
- * waiting on, per section 12.3.
+ * waiting on.
  *
- * A client that queues on a busy server used to raise nobody. The
- * section said there was no thread whose promotion would help, and
- * there is one: the server is inside a request of its own and may be
- * blocked sending further down, and everything below it is running at
+ * A client that queues on a busy server must raise the chain, because
+ * there is a thread whose promotion would help: the server is inside a
+ * request of its own and may be blocked sending further down, and
+ * everything below it is running at
  * the priority of whoever it is serving rather than of whoever is
  * waiting.
  *
@@ -2849,8 +2788,8 @@ serving_end(struct thread *client)
 /*
  * How many threads a chain walk has actually raised, and how deep the
  * deepest walk went. A walk that refuses cycles and never raises
- * anybody is a deadlock detector rather than the inheritance section
- * 12.3 describes, and the two are worth telling apart.
+ * anybody is a deadlock detector rather than inheritance, and the two
+ * are worth telling apart.
  */
 static uint64_t chain_raised;
 static uint64_t chain_deepest;
@@ -2876,24 +2815,22 @@ chain_raise(struct channel *ch, uint8_t prio)
             /*
              * Nobody is inside a request on this channel, so the queue
              * being priority-ordered is the whole of what this sender
-             * needs. That is the case section 12.3 already described.
+             * needs.
              */
             return SYS_OK;
         }
 
         /*
          * The newest request on the channel, and the thread serving
-         * it. The list holds requests now, so where several are in
-         * flight this follows one of them, which is what it did
-         * before when the list held threads and it read the head. A
-         * chain per request is section 12.3 restated against the set
-         * and is not this stage.
+         * it. The list holds requests, so where several are in flight
+         * this follows one of them. A chain per request is not
+         * implemented here.
          */
 
         /*
          * Raised only if it is blocked. A runnable thread is on some
          * core's queue, and moving it between another core's queues is
-         * that core's business, per section 11.4.
+         * that core's business.
          */
         if (depth > chain_deepest) {
             chain_deepest = depth;
@@ -2920,7 +2857,7 @@ chain_raise(struct channel *ch, uint8_t prio)
 
 /*
  * The connections minted on this channel, and collecting the ones whose
- * peers have gone, per M18 stage four.
+ * peers have gone.
  *
  * The list is the server's claim on them, which is why it is on the
  * channel and not somewhere a server would have to hold a handle for:
@@ -2968,7 +2905,7 @@ channel_conn_remove(struct channel *ch, struct connection *cn)
 
 /*
  * A connection's peers have all gone. The server is nudged with the
- * pulse of section 13.1, which is a hint and nothing more: it may be
+ * pulse, which is a hint and nothing more: it may be
  * coalesced with another, and it may be lost, and neither costs
  * anything because what says which connection it was is the list above.
  *
@@ -2994,7 +2931,7 @@ channel_conn_gone(struct channel *ch, struct connection *cn)
      * already know and would spend a slot doing it.
      *
      * That matters because the slot is a reserved one. A system pulse
-     * arriving at a full queue panics, per section 13.1, and a client
+     * arriving at a full queue panics, and a client
      * may fill the six user slots whenever it likes, so a channel that
      * enqueued one of these per departing client would halt the
      * machine on the third departure that nobody had collected. The
@@ -3021,7 +2958,7 @@ channel_reaping(const struct channel *ch)
 }
 
 /*
- * Collect one, per M18 stage four. The cookie goes back because it is
+ * Collect one. The cookie goes back because it is
  * the server's own name for the connection and the only one it has:
  * the kernel never looked at it, and this is the one moment it hands it
  * back.
@@ -3079,18 +3016,16 @@ channel_reap(struct channel *ch, bool enable, uint64_t *out)
 }
 
 /*
- * Something took a reference to this channel, or let one go, per M20
- * stage two.
+ * Something took a reference to this channel, or let one go.
  *
  * Under the lock the other reference counts are kept under, because
  * these are called from the same two places: a handle appearing in a
  * table and a handle leaving one. A connection is the other caller
  * and it arrives here through channel_conn_add and its pair.
  *
- * Nothing is freed here. Stage two exists to find out whether the
- * count can be made to agree with a scan before anything depends on
- * the answer, and a free written before that is a free written on
- * trust.
+ * Nothing is freed here. The count is checked against a scan to find
+ * out whether it agrees before anything depends on the answer, and a free
+ * written before that is a free written on trust.
  */
 void
 channel_hold(struct channel *ch)
@@ -3108,8 +3043,7 @@ channel_hold(struct channel *ch)
 
 /*
  * Nothing names this channel and nobody is standing in it, so the
- * slot goes back. Per M20 stage three, and the first thing in this
- * system's life to return one.
+ * slot goes back.
  *
  * Three things say no, and each is a thread that is going to come
  * back to this channel: one queued to send on it, one blocked
@@ -3117,8 +3051,7 @@ channel_hold(struct channel *ch)
  * of them hands the slot to somebody else while a thread is still
  * holding a pointer into it.
  *
- * A pulse in the queue is not one of them, and stage four is where
- * that was decided rather than assumed. A pulse is collected by
+ * A pulse in the queue is not one of them. A pulse is collected by
  * receiving on the channel, receiving needs a handle, and there are
  * no handles: nothing that exists can ever collect it. Keeping the
  * slot for it would be keeping a slot for a message with no possible
@@ -3162,16 +3095,16 @@ channel_free_if_idle(struct channel *ch)
       ch->c_serving == NULL;
 
     /*
-     * A slot nothing names that a request is standing in, per M22
-     * stage five. The request is the client waiting for its reply, so
-     * what keeps the slot is a thread that has to be answered on this
-     * channel, and the answer arrives on a channel that is still
-     * here. Before stage four the entry was the server, which could
-     * leave while that client was still blocked.
+     * A slot nothing names that a request is standing in. The request is
+     * the client waiting for its reply, so what keeps the slot is a thread
+     * that has to be answered on this channel, and the answer arrives on a
+     * channel that is still here. The entry is the request and not the
+     * server, so the channel cannot be left while that client is still
+     * blocked.
      *
      * The queues have to be empty for the request to be what kept it.
      * Asking only whether the channel was not idle counted a slot a
-     * waiting sender would have kept anyway, per stage five's review.
+     * waiting sender would have kept anyway.
      */
     if (ch->c_senders == NULL && ch->c_receivers == NULL &&
       ch->c_serving != NULL) {
@@ -3184,11 +3117,11 @@ channel_free_if_idle(struct channel *ch)
         /*
          * Counted by kind, because the two mean different things.
          * A user pulse nobody can collect is a message to a server
-         * that no longer exists. A system pulse is section 13.1's
+         * that no longer exists. A system pulse is the
          * reserved kind, and the only one that reaches here is a
          * death notice for a client of a channel whose server has
          * already gone, which is a notice with nobody to act on it.
-         * M18 moved the fact a notice carries onto the connection
+         * The fact a notice carries lives on the connection
          * for exactly this reason, so losing one costs latency and
          * not a record.
          */
@@ -3345,23 +3278,22 @@ mark_channel(uint32_t *held, const struct channel *ch)
 }
 
 /*
- * How many channels in use nothing can reach, per M20 stage one.
+ * How many channels in use nothing can reach.
  *
- * A scan rather than a count, because a count is the thing this
- * milestone has not got yet. Everything that can name a channel is
+ * A scan rather than a count, because the kernel does not keep one yet.
+ * Everything that can name a channel is
  * walked and what it names is marked, and what is left in use and
  * unmarked is a slot that will be occupied until the machine stops.
  *
- * Four kinds of holder, which is the list stage two has to turn into a
- * number the kernel maintains:
+ * Four kinds of holder, which a count would have to track:
  *
  *   - A handle in some process's table. This is the authority of
- *     section 7 and the only one a program has.
- *   - A connection minted on it, per section 12.1. A pager is one of
+ *     the only one a program has.
+ *   - A connection minted on it. A pager is one of
  *     these, so a channel a process faults to is held this way and not
  *     only by whoever holds the handle.
  *   - A thread inside a request on it, which is t_serve_ch and is how
- *     section 12.3 gets from a queued sender to whoever is serving it.
+ *     a queued sender gets to whoever is serving it.
  *   - A thread queued on it, receiving on it, or serving from it. The
  *     channel holds those lists rather than the other way round, but a
  *     channel with anything on one of them is a channel somebody is
@@ -3370,7 +3302,7 @@ mark_channel(uint32_t *held, const struct channel *ch)
  *
  * What no scan can see is the kernel's own pointers. The boot holds
  * channels in file-scope variables in init_main.c, and those are
- * exactly the leak this milestone is about rather than an exception to
+ * exactly the leak this scan is about rather than an exception to
  * it: a check made a channel, closed every handle to it, and nothing
  * in the system will ever put the slot back. They are counted as
  * unreachable because that is what they are.
@@ -3456,7 +3388,7 @@ channel_scan(struct channel_scan *out)
          * nothing measurable here, and it turns a table whose count
          * has drifted from its slots into a scan that quietly stops
          * short. A wrong count in a compared file is the failure this
-         * milestone is least able to afford.
+         * is least able to afford.
          */
         for (j = 0; j < SYS_MAX_HANDLES_PER_PROC; j++) {
             const struct handle_slot *h = &p->p_handles.ht_slots[j];
@@ -3515,7 +3447,7 @@ channel_scan(struct channel_scan *out)
     /*
      * And the count the kernel keeps against the count just made.
      *
-     * This is the whole of the stage. Everything above walks what can
+     * This is the whole of it. Everything above walks what can
      * name a channel and arrives at a number per slot; c_holds is what
      * the kernel believes without walking anything. A holder nobody
      * wrote down shows up here as a slot the walk found and the kernel
@@ -3549,19 +3481,15 @@ channel_scan(struct channel_scan *out)
          * The serving list against the threads that say they are on
          * it, and the two are equal.
          *
-         * They were not, and the inequality was M20 stage two's
-         * finding: a server that took a second request went onto a
-         * second channel's list without leaving the first, because
-         * the entry was the thread and a thread has one link between
-         * every list it can be on. The first list kept an entry whose
-         * `t_serve_ch` named the second, so this walk asserted only
-         * the direction that held and counted the other.
+         * They were not, and the inequality was a server that took a
+         * second request and went onto a second channel's list without
+         * leaving the first. The first list kept an entry whose
+         * `t_serve_ch` named the second, so the walk asserted only one
+         * direction and counted the other.
          *
-         * M22 stage four made the entry the request. A client is
-         * served on one channel at a time, so the entry and the field
-         * are one fact again and the two directions are one
-         * assertion. The count of entries left behind is gone with
-         * the shape that produced it.
+         * The entry is the request. A client is served on one channel
+         * at a time, so the entry and the field are one fact and the two
+         * directions are one assertion.
          */
         for (t = ch->c_serving; t != NULL; t = t->t_serve_next) {
             uint32_t ti = sys_id_index(t->t_id);
@@ -3600,7 +3528,7 @@ channel_scan(struct channel_scan *out)
 
         /*
          * Nothing names it, nobody is standing in it and no pulse is
-         * waiting, and yet here it is. Since stage three that cannot
+         * waiting, and yet here it is. That cannot
          * happen at the moment the last holder lets go, so a slot in
          * this state became free afterwards, when the last thread
          * left a list or the last pulse was collected, and nothing
@@ -3619,7 +3547,7 @@ channel_scan(struct channel_scan *out)
          * And the ones the free could not take: nothing names them,
          * and something is standing in them or a pulse is waiting.
          * Named, because one number says how many and the name says
-         * which, and stage four needs to know which.
+         * which, and a count alone does not say which.
          */
         if (held[i] == 0 && (inside != 0 || ch->c_pulse_count != 0)) {
             stuck++;

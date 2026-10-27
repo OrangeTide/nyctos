@@ -92,7 +92,7 @@ sys_msg_reply(sys_thread_id_t peer, const sys_msg_t *reply)
      * A reply names its target in the argument structure rather than in
      * the descriptor, because a thread id is not a handle: it confers no
      * authority and permits exactly one thing, which is completing the
-     * request the client is blocked in. See section 12.2.
+     * request the client is blocked in.
      */
     return submit(SYS_OP_IPC_REPLY, SYS_HANDLE_INVALID, &args, sizeof(args));
 }
@@ -249,8 +249,8 @@ sys_proc_status(sys_handle_t proc, int32_t *out_code, uint32_t *out_state)
 }
 
 /*
- * What ended a process, when the hardware ended it. Section 16.2 puts
- * the kind, the address and the instruction in the status, and this is
+ * What ended a process, when the hardware ended it. The status holds
+ * the kind, the address and the instruction, and this is
  * the shape a program reads them in; a process that exited by its own
  * choice reports SYS_FAULT_NONE and nothing else is filled in.
  *
@@ -295,8 +295,8 @@ sys_thread_fault(sys_handle_t thread, sys_fault_t *out)
 }
 
 /*
- * Where a grant's region is, and how much of it there is, per section
- * 19.2. The handle has to carry SYS_RIGHT_MAP; what the memory then
+ * Where a grant's region is, and how much of it there is. The handle has to
+ * carry SYS_RIGHT_MAP; what the memory then
  * permits is the other rights on the same handle.
  */
 sys_err_t

@@ -34,7 +34,7 @@ handle_object_retain(const struct handle_table *ht, uint32_t type,
     /*
      * A completion timeline lives inside its thread or process, so a
      * handle naming it is a pointer into that object and has to hold
-     * it. Section 10.4 wants the object reaped with the handle still
+     * it. The object is not reaped while the handle still
      * reporting the exit; what a reap can find is the difference, and
      * it can find nothing, so the object stays instead.
      */
@@ -54,11 +54,11 @@ handle_object_retain(const struct handle_table *ht, uint32_t type,
     }
 
     /*
-     * A handle to a process claims its exit. Section 10.4 keeps the
+     * A handle to a process claims its exit. It keeps the
      * status readable through the handle after the object has
      * finished, so holding one is what makes an exit something
      * somebody can still ask about, and an exit nobody can ask about
-     * halts the machine until section 24.3 has a parent to decide.
+     * halts the machine until there is a parent to decide.
      *
      * It does not come back off when the handle closes. The question
      * is whether anyone ever undertook to look, and closing a handle
@@ -78,8 +78,7 @@ handle_object_retain(const struct handle_table *ht, uint32_t type,
     }
 
     /*
-     * A channel belongs to whoever may receive on it, per section 12.5
-     * read against section 24.5: root creates a channel and hands the
+     * A channel belongs to whoever may receive on it. Root creates a channel and hands the
      * receive end to a server, and the process whose death matters to
      * a blocked client is the one that was going to answer it, not the
      * one that made the object.
@@ -94,7 +93,7 @@ handle_object_retain(const struct handle_table *ht, uint32_t type,
     }
 
     /*
-     * And the channel is held by the handle, per M20 stage two.
+     * And the channel is held by the handle.
      * Whatever the rights: a send handle is as good a reason not to
      * take the slot back as a receive handle, and better, since it is
      * the one a client holds.
@@ -109,7 +108,7 @@ handle_object_release(const struct handle_table *ht, uint32_t type,
   void *obj, uint32_t rights)
 {
     /*
-     * A prepared program is its handle, per section 17.7: nothing else
+     * A prepared program is its handle: nothing else
      * names one, so the slot goes back when the handle does. It did
      * not, and four slots meant the fifth program a process ever
      * loaded was refused for want of room that nothing was using.
@@ -139,8 +138,8 @@ handle_object_release(const struct handle_table *ht, uint32_t type,
     }
 
     /*
-     * A grant that was mapped stops being mapped. Section 7 has the
-     * handle be the authority, and a region that stayed reachable after
+     * A grant that was mapped stops being mapped. The handle is the
+     * authority, and a region that stayed reachable after
      * the handle went would be a driver keeping its device by dropping
      * the thing that said it could have it.
      *
@@ -184,7 +183,7 @@ handle_object_release(const struct handle_table *ht, uint32_t type,
         channel_set_owner(obj, NULL);
     }
 
-    /* And the handle that held it is gone, per M20 stage two. */
+    /* And the handle that held it is gone. */
     if (type == SYS_OBJ_CHANNEL) {
         channel_drop(obj);
     }
@@ -214,7 +213,7 @@ objref_leave(intr_state_t saved)
 #else
 
 /*
- * Section 13.3 buys Tier 0 a kernel with no internal locking at all,
+ * Tier 0 gives a kernel with no internal locking at all,
  * and one core is what makes disabling interrupts exclusion again.
  */
 intr_state_t

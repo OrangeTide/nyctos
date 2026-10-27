@@ -29,25 +29,18 @@
  * Flat and small is the point. A string-keyed table costs a name buffer
  * per entry and a comparison per lookup, which is the wrong trade on a
  * part where the whole startup record has to fit in a few hundred bytes.
- * Sixteen bytes a slot is the price of the 20/44 identifier layout of
- * section 7.1 and nothing else.
+ * Sixteen bytes a slot is the price of the 20/44 identifier layout and
+ * nothing else.
  */
 #define SYS_NS_MAX              8       /* slots, not bytes */
 #define SYS_NS_WORDS            (SYS_NS_MAX * 2)
 
 /*
- * A name per entry, and why the argument above no longer applies.
+ * A name per entry.
  *
- * The comment above defends a table keyed by number: a string-keyed one
- * costs a name buffer per entry and a comparison per lookup. That was
- * right while an entry was a role a parent and child agreed on, where the
- * number is the whole of the meaning and a name would be decoration.
- *
- * Section 20.4 asks for something else beside it: the set of directory
- * handles this process was given, with names attached, which is what a
- * mount table is. A parent that cannot say where to mount a handle cannot
- * compose a namespace, and composing one is the milestone. So an entry
- * may carry a name, and an entry that is only a role carries none.
+ * An entry may name the place its handle is mounted, which is what a
+ * mount table needs: a parent that cannot say where to mount a handle
+ * cannot compose a namespace. An entry that is only a role carries none.
  *
  * The cost is bounded and paid once: sixteen bytes a slot, beside the two
  * hundred and fifty-six the record already carries for a command line. It
@@ -66,7 +59,7 @@
 typedef enum sys_ns_id {
     SYS_NS_NONE     = 0,        /* unused slot */
 
-    /* Directories. Section 20.3: there is no ambient root, so a process
+    /* Directories. There is no ambient root, so a process
      * that was given neither of these can name nothing at all. */
     SYS_NS_ROOT     = 1,        /* what this process treats as its root */
     SYS_NS_CWD      = 2,        /* what relative names resolve against */
@@ -80,14 +73,14 @@ typedef enum sys_ns_id {
     SYS_NS_SERVICE  = 4,
 
     /*
-     * The device a driver drives, as a grant over its registers per
-     * section 19.2. A driver holds one of these and a program holds
+     * The device a driver drives, as a grant over its registers. A driver
+     * holds one of these and a program holds
      * none, which is the whole of the difference between them.
      */
     SYS_NS_DEVICE   = 5,
 
     /*
-     * The pager this process faults to, per section 15.3. A process
+     * The pager this process faults to. A process
      * given none cannot be paged and dies of a fault instead, which
      * is what every process in this system did before there was a
      * pager to give.
@@ -99,7 +92,7 @@ typedef enum sys_ns_id {
      * the driver that owns it. Not SYS_NS_DEVICE, which is a grant over
      * registers and is what a driver holds; this is what a layer above
      * a driver holds, which is an ordinary connection to an ordinary
-     * server. Section 19.1: a driver is a process, so talking to one is
+     * server. A driver is a process, so talking to one is
      * talking to a process.
      */
     SYS_NS_STORE    = 7,
@@ -109,7 +102,7 @@ typedef enum sys_ns_id {
 
 /*
  * One entry of what a parent hands a child: an identifier and the handle
- * it names. The handle is moved rather than copied, per section 7.4, so
+ * it names. The handle is moved rather than copied, so
  * an array of these is a list of what the parent is giving up.
  *
  * The table the child reads is flat words, and this is not that. A
@@ -125,23 +118,20 @@ typedef struct sys_ns_spec {
      * Where this handle is mounted, or an empty string for an entry that
      * is only a role.
      *
-     * Inline rather than a pointer, and the reason is worth keeping. A
-     * pointer is a second thing the kernel has to follow out of a
-     * caller's memory, which is section 23.2's problem again, and it is a
-     * field every existing caller of spawn would have left uninitialised:
-     * adding one turned fifteen working call sites into fifteen wild
-     * reads, which is what happened. Sixteen bytes in the caller's array
-     * costs a little stack and cannot point anywhere.
+     * Inline rather than a pointer. A pointer is a second thing the kernel
+     * has to follow out of a caller's memory, and a field that every
+     * caller of spawn would have to initialise is a field a caller can
+     * leave wild. Sixteen bytes in the caller's array costs a little stack
+     * and cannot point anywhere.
      */
     char            name[SYS_NS_NAME_MAX];
 } sys_ns_spec_t;
 
 /*
- * The record itself. argv and envp are here because section 20.4 says the
- * namespace arrives alongside them, and a record that has to grow a field
- * later is a record every loader has to be taught twice. They are zero
- * until something passes arguments. They cost sixteen bytes once, not
- * once per entry, which is why trimming the table did not touch them.
+ * The record itself. argv and envp are here because the namespace arrives
+ * alongside them, and a record that has to grow a field later is a record
+ * every loader has to be taught twice. They are zero until something
+ * passes arguments. They cost sixteen bytes once, not once per entry.
  *
  * version is checked by the library rather than assumed. A program loaded
  * by a kernel that writes a record it does not understand should refuse to
@@ -168,9 +158,8 @@ typedef struct sys_startup {
     uintptr_t       ns_names;   /* char *, SYS_NS_NAME_BYTES of them */
 
     /*
-     * The system page of section 6.2, mapped read-only into this
-     * process. An address rather than a fixed location, for the reason
-     * that section gives: what a program dereferences comes from its
+     * The system page, mapped read-only into this process. An address
+     * rather than a fixed location: what a program dereferences comes from its
      * own description of itself, so nothing is assumed about where a
      * page lands in an address space that is not shared.
      *

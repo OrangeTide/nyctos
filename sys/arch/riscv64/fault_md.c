@@ -63,8 +63,8 @@ md_fault_kind(unsigned long cause)
          * Translation said no. Sv39 gives no bit that separates "no
          * entry" from "wrong permission" in scause, so this port
          * cannot tell the two apart and answers with the one a pager
-         * can do something about: section 15.3 has the pager read
-         * the tables, which is where the difference is written down.
+         * can do something about. The pager reads the tables, which is
+         * where the difference is written down.
          *
          * A page the kernel has taken away is a permission fault by
          * construction on the other port and is this code here, so

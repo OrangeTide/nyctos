@@ -86,7 +86,7 @@ md_current_space(void)
 /*
  * The console's registers, for whoever hands them to a driver. The
  * kernel knows the address because it panics through the same device;
- * section 19.2 has a driver told rather than compiled with it, and this
+ * a driver is told the registers rather than compiled with them, and this
  * is the telling.
  */
 void

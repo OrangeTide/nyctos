@@ -23,8 +23,8 @@
 #define STACK_BYTES     4096
 
 /*
- * What the parent agreed to hand over. Section 20.4 reserves the
- * identifiers below SYS_NS_PRIVATE for things that mean the same
+ * What the parent agreed to hand over. The identifiers below
+ * SYS_NS_PRIVATE are reserved for things that mean the same
  * everywhere; an interrupt does not, so these two are a convention
  * between this program and whatever launched it, which is what the
  * private range is for.
@@ -41,7 +41,7 @@ static sys_handle_t h_fence;
 /*
  * The shared state, and all of it. head and tail are written by different
  * threads; see the note at the top of this file for why that needs nothing
- * around it here and will need something in M8.
+ * around it here.
  */
 static char ring[RING_BYTES];
 static uint32_t ring_head;      /* written by the receive thread */
@@ -121,9 +121,9 @@ take_line(char *out, uint32_t max)
 }
 
 /*
- * Answer a read. Either thread may do this: section 12.2 addresses a reply
- * by the client's thread identifier and says any thread of a server may
- * send one, which is what lets the thread that has the bytes answer the
+ * Answer a read. Either thread may do this: a reply is addressed by the
+ * client's thread identifier, and any thread of a server may send one,
+ * which is what lets the thread that has the bytes answer the
  * request the other thread accepted.
  */
 static void
@@ -144,14 +144,14 @@ reply_line(sys_thread_id_t peer, uint32_t want)
       max);
     reply.inline_len = sizeof(*rep) + rep->fr_length;
 
-    /* Section 12.4: the same answer where the kernel can read it. */
+    /* The same answer where the kernel can read it. */
     reply.status = rep->fr_status;
 
     (void)sys_msg_reply(peer, &reply);
 }
 /*
- * Blocked on the interrupt timeline, which is the whole of what section
- * 13.2 gives a driver: the handler advanced a counter and returned, and
+ * Blocked on the interrupt timeline, which is the whole of what a driver
+ * gets: the handler advanced a counter and returned, and
  * everything the device needs is done here, at this thread's own priority
  * and preemptible like anything else.
  */
@@ -217,8 +217,8 @@ rx_thread(void *arg)
             }
         }
         /*
-         * Drained to empty, then unmasked, in that order: section 13.2
-         * has the handler mask a source it cannot finish with, and this
+         * Drained to empty, then unmasked, in that order. The handler
+         * masks a source it cannot finish with, and this
          * is the driver saying it has finished with it.
          */
         (void)sys_irq_unmask(h_irq);
@@ -229,7 +229,7 @@ rx_thread(void *arg)
     }
 }
 /*
- * The request loop, per section 12.6. A read with nothing to return is not
+ * The request loop. A read with nothing to return is not
  * refused and does not block this thread: the request is held, which is
  * what a client blocked in a rendezvous already means, and the receive
  * thread answers it when a line arrives.
@@ -247,7 +247,7 @@ main(void)
     uintptr_t regs, span;
 
     /*
-     * The registers first, per section 19.2. A driver is a program that
+     * The registers first. A driver is a program that
      * holds a grant, and this is where it finds out what it holds: the
      * address is not in this image, and a copy started without the grant
      * stops here rather than reaching for something it was not given.
@@ -302,8 +302,7 @@ main(void)
             }
             /*
              * Held rather than answered. There is one reader here and no
-             * queue of them, which is what a console with one shell needs
-             * and is the whole of what this milestone claims.
+             * queue of them, which is what a console with one shell needs.
              */
             waiting_peer = peer;
             waiting_want = req->fr_length;
@@ -336,14 +335,14 @@ main(void)
 
         default:
             /*
-             * Section 25.3 has a server implement every operation, as a
+             * A server implements every operation, as a
              * rejection where it cannot do better, so that a client
              * discovers the limit where it uses it.
              */
             break;
         }
 
-        /* Section 12.4: the same answer where the kernel can read it. */
+        /* The same answer where the kernel can read it. */
         reply.status = rep->fr_status;
 
         (void)sys_msg_reply(peer, &reply);

@@ -36,14 +36,14 @@ struct grant {
      * the region and not of the holder, because what makes a mapping
      * wrong here is caching and reordering rather than permission, and
      * getting it wrong does not fault: it corrupts, at a distance, in a
-     * way that reads as a driver bug. Section 27 names it for that.
+     * way that reads as a driver bug.
      */
     bool            g_device;
 };
 
 /*
- * Make a grant over a region. Returns NULL when the pool is empty, per
- * section 8: this is called by whatever assembles the system, which is
+ * Make a grant over a region. Returns NULL when the pool is empty.
+ * This is called by whatever assembles the system, which is
  * the kernel at boot, and a system that cannot describe its own devices
  * is one that should say so rather than continue.
  */
@@ -63,7 +63,7 @@ uint32_t grant_frames(void);
  * carrying only SYS_RIGHT_READ becomes a read-only mapping.
  *
  * At Tier 0 there is nothing to map and this reports the address the
- * region already has. That is section 6.1's weaker tier exactly: the
+ * region already has. That is the weaker tier exactly: the
  * grant is what makes the permission explicit rather than what creates
  * it, and a holder that never asked could have reached the registers
  * anyway.

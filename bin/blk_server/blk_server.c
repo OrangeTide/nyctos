@@ -21,7 +21,7 @@ static uint8_t disk[BLK_BLOCK_COUNT * BLK_BLOCK_BYTES];
 
 /*
  * The bytes the filesystem serves, which live here now and not there.
- * That is the whole of what the second layer buys this milestone: a
+ * That is the whole of what the second layer buys: a
  * file server with no copy of its own files has to ask for them.
  */
 static const char motd_text[] = "served from outside the kernel\n";
@@ -147,9 +147,8 @@ main(void)
             /*
              * A store has no names to walk and nothing to open or
              * close, so every other operation is one this server
-             * cannot provide rather than one it declines to. Section
-             * 25.2's rule is that a server answers every operation,
-             * and this is the answer.
+             * cannot provide rather than one it declines to. A server
+             * answers every operation, and this is the answer.
              */
             rep->fr_status = SYS_ERR_NOT_SUPPORTED;
         } else {
@@ -161,7 +160,7 @@ main(void)
         }
 
         /*
-         * Section 12.4: the same answer where the kernel can read it.
+         * The same answer where the kernel can read it.
          * A refusal that lives only in the payload is a successful
          * send as far as the kernel is concerned, and a chain linked
          * behind it carries on.

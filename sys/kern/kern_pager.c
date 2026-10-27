@@ -30,9 +30,8 @@
  *
  * The grant says which memory and the fault says where, which is the one
  * place in this system that a grant is not mapped at its own address:
- * section 15.3 has the pager reply with a grant covering the faulting
- * address, and the faulting address is the client's rather than the
- * page's.
+ * the pager reply carries a grant covering the faulting address, and the
+ * faulting address is the client's rather than the page's.
  *
  * The handle is closed afterwards. The process was handed authority over
  * a page and the mapping is what that authority is for; leaving the
@@ -73,8 +72,8 @@ pager_install(struct proc *p, uintptr_t va, sys_handle_t h)
 
     /*
      * What the mapping permits is what the grant carries, as everywhere
-     * else, with one subtraction: section 15.1 has a pager supply
-     * read-only pages and nothing else, so a grant carrying write does
+     * else, with one subtraction: a pager supplies read-only pages and
+     * nothing else, so a grant carrying write does
      * not become a writable mapping on this path. Execute is the
      * difference between a page of text and a page of anything else,
      * and assuming it made every page a pager supplied executable.
@@ -113,7 +112,7 @@ pager_fault(uintptr_t addr, uintptr_t pc, uint32_t access)
     }
 
     /*
-     * Section 15.4 rule 3. A process on a paging path that faults is a
+     * A process on a paging path that faults is a
      * configuration mistake, and the alternative to stopping here is a
      * pager waiting for a page only it could have supplied.
      */
@@ -123,7 +122,7 @@ pager_fault(uintptr_t addr, uintptr_t pc, uint32_t access)
     }
 
     /*
-     * Section 15.1: a pager supplies read-only pages, so a fault that
+     * A pager supplies read-only pages, so a fault that
      * wanted to write is not one a pager can answer. Refused here rather
      * than after the reply, because asking costs the pager a frame and a
      * grant and the answer was never going to be usable.
@@ -147,8 +146,8 @@ pager_fault(uintptr_t addr, uintptr_t pc, uint32_t access)
     /*
      * With no deadline. A fault is not an operation the faulting thread
      * chose, so there is nobody to have expressed a willingness to wait,
-     * and section 15.4 has the chain terminate in a process that cannot
-     * fault rather than in a timeout.
+     * and the chain terminates in a process that cannot fault rather than
+     * in a timeout.
      */
     if (channel_send(p->p_pager->cn_channel, p->p_pager->cn_cookie,
       &req, &reply, SYS_DEADLINE_NEVER) != SYS_OK) {

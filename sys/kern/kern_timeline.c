@@ -135,8 +135,7 @@ timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
      * list. Without one exclusion over both halves the two interleave
      * in the order that leaves this thread on a list nobody is going
      * to look at again, and the deadline is the only thing that ends
-     * it. Measured in M21 stage six's review as a join that timed out
-     * on a process that had already exited.
+     * it.
      */
     if (!held) {
         k = klock_enter();
@@ -145,7 +144,7 @@ timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
 
     /*
      * A value that was reached stays reached, so this is checked before the
-     * error state and not after. Section 9.3 says the error state satisfies
+     * error state and not after. The error state satisfies
      * every outstanding and future wait with an error, but taking that over
      * an already-reached value would contradict the monotonicity that makes
      * a late waiter safe, which is the more load-bearing of the two.
@@ -166,7 +165,7 @@ timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
     }
 
     /*
-     * Section 14.3: deadlines are absolute. A poll is a deadline that has
+     * Deadlines are absolute. A poll is a deadline that has
      * already passed, so it needs no separate path.
      */
     if (deadline <= time_now()) {
@@ -186,7 +185,7 @@ timeline_wait(struct timeline *tl, uint64_t value, uint64_t deadline)
         time_sleep_until(self, deadline);
     }
 
-    /* Section 9.2 donation would happen here. */
+    /* Donation would happen here. */
 
     self->t_wait = THREAD_WAIT_FENCE;
     trace_wait(self, THREAD_WAIT_FENCE);
@@ -234,7 +233,7 @@ timeline_signal(struct timeline *tl, uint64_t value)
     }
 
     /*
-     * Section 9.1: signalling a value at or below the current one is an
+     * Signalling a value at or below the current one is an
      * error. Monotonicity is the whole basis of a late waiter being safe,
      * so going backwards is refused rather than clamped.
      */
@@ -265,7 +264,7 @@ timeline_add_signaler(struct timeline *tl)
 }
 
 /*
- * Section 9.3 rule 2. Losing the last signal right means no one can advance
+ * Losing the last signal right means no one can advance
  * this timeline again, so every waiter blocked on a value it has not
  * reached is released with an error, and the error is kept so that a waiter
  * arriving later is failed just as promptly.
@@ -295,12 +294,12 @@ timeline_drop_signaler(struct timeline *tl)
 }
 
 /*
- * Section 17.5's last line: a batch that aborts force-signals every
+ * A batch that aborts force-signals every
  * timeline it was going to signal, in error state.
  *
  * A waiter that was going to be released by an entry which now will
  * never run has nothing to wait for, and nothing else will ever tell
- * it so. Section 9.3 rule 2 already says what a timeline nobody can
+ * it so. A timeline nobody can
  * advance does to its waiters, and this is the same thing arrived at
  * from a different direction: the party that could have satisfied the
  * wait is gone, so the waiter is told rather than left to a timeout.
@@ -335,7 +334,7 @@ timeline_force_error(struct timeline *tl)
  * handle reaps the process and leaves every completion handle pointing
  * at a slot the next spawn takes.
  *
- * Section 10.4 asks for something stronger, which is that the object be
+ * A stronger rule would have the object be
  * reaped and the completion handle keep reporting the exit from a value
  * frozen into the holder's slot. That needs the reap to find its
  * holders, and nothing here can: a handle table is per process and

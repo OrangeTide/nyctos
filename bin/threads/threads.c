@@ -61,8 +61,8 @@ join_thread(sys_handle_t th, int32_t *out_code)
 /*
  * Blocks on a child of its own, so that while the main thread is blocked
  * on this thread's completion the two are waiting on different objects.
- * That is the arrangement section 19.3 calls two threads and no shared
- * state, with a filesystem standing in for a device.
+ * That is two threads and no shared state, with a filesystem standing in
+ * for a device.
  */
 static void
 thread_a(void *arg)

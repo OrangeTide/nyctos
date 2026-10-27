@@ -211,7 +211,7 @@ handle_dup(struct handle_table *ht, sys_handle_t h, uint32_t new_rights,
     }
 
     /*
-     * Section 7.2: duplication may only attenuate. A request for anything
+     * Duplication may only attenuate. A request for anything
      * the source lacks is refused rather than quietly clamped, because a
      * caller that asked for more than it holds has made a mistake worth
      * hearing about.
@@ -255,8 +255,8 @@ handle_move(struct handle_table *from, struct handle_table *to,
 /*
  * Close everything left in a table, for a process being reaped.
  *
- * Section 7 makes a handle the authority, so a table that outlived its
- * process would be authority that outlived it. Every one goes through
+ * A handle is the authority, so a table that outlived its process would be
+ * authority that outlived it. Every one goes through
  * handle_close(), which is what tells the object: a timeline losing its
  * last signal right enters the error state and releases its waiters, a
  * grant gives back its mapping, and a process reference dropping to

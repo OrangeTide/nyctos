@@ -28,8 +28,7 @@
 #include <sys/vm.h>
 
 /*
- * What is running here, and the space it is running in, per section
- * 11.4. Both were globals and both are per core the moment there are
+ * What is running here, and the space it is running in. Both were globals and both are per core the moment there are
  * two: a core cannot be told what it is doing by another one.
  */
 #define current             (cpu_self()->cp_current)
@@ -47,7 +46,7 @@ thread_id(const struct thread *t)
 /*
  * Resolve a reply token. A generation that no longer matches means the
  * thread that sent the request is gone and its slot has been reused, which
- * is exactly the hazard section 12.2 says the generation closes.
+ * is exactly the hazard that the generation closes.
  */
 struct thread *
 thread_by_id(sys_thread_id_t id)
@@ -121,7 +120,7 @@ thread_wake_timeout(struct thread *t)
      *
      * The deadline is withdrawn by whoever wakes up, in time_sleep_cancel,
      * but that happens when the thread runs and the window is until
-     * then. Section 14.3's rule is that whichever of the two happens
+     * then. Whichever of the two happens
      * first leaves the other stale; this is the half that says so from
      * the timer's side.
      */
@@ -139,7 +138,7 @@ thread_wake_timeout(struct thread *t)
     sched_ready(t);
 
     /*
-     * And this dispatch is not section 13.3's second term. That term is
+     * And this dispatch is not part of interrupt latency. That latency is
      * the time from a device interrupt to the thread waiting on it, and
      * a thread woken here was not waiting on an interrupt: the timer is
      * what tells the time, not what it was waiting for. A thread that
@@ -147,8 +146,7 @@ thread_wake_timeout(struct thread *t)
      * instead and is still measured.
      *
      * Excluded by why the thread was woken rather than by what it has
-     * left to do, which is where M15 stage four's review put it and was
-     * wrong: a client giving up on a send has a page to take back and
+     * left to do: a client giving up on a send has a page to take back and
      * two page-table charges to go with it, but a client giving up with
      * nothing lent is the same kind of wake and was still being counted.
      */
@@ -161,8 +159,7 @@ thread_exit(int32_t code)
     struct proc *p = current->t_proc;
 
     /*
-     * Every thread that ends while its process is marked, per M21
-     * stage seven. The count a kill is answerable for is the set of
+     * Every thread that ends while its process is marked. The count a kill is answerable for is the set of
      * threads it had to reach, and this is the other end of that
      * arithmetic: what the kill had to reach against what actually
      * left. Counted here because this is the one place a thread
@@ -219,7 +216,7 @@ thread_fault(uint32_t kind, uintptr_t addr, uintptr_t pc)
     current->t_fault_pc = pc;
 
     /*
-     * A member of a cohort takes its cohort with it, per section 18.2,
+     * A member of a cohort takes its cohort with it,
      * and here rather than where the process ends. A process ends when
      * its last thread does; a domain ends when any thread of any member
      * writes something no one can vouch for, which is now. Reading it
@@ -237,8 +234,8 @@ thread_fault(uint32_t kind, uintptr_t addr, uintptr_t pc)
 }
 
 /*
- * The name of a fault kind, for a message a person reads. Every kind of
- * section 16.1 is here, including the one no port raises yet, so that a
+ * The name of a fault kind, for a message a person reads. Every kind
+ * is here, including the one no port raises yet, so that a
  * kind arriving from a mapping that has been extended prints as itself
  * rather than as a number.
  */
@@ -260,8 +257,7 @@ fault_name(uint32_t kind)
 
 /*
  * Attach a thread to a process, keeping the count of live threads in
- * step. A process finishes when its last thread does, per section
- * 10.4, so the count is what decides that and nothing may set t_proc
+ * step. A process finishes when its last thread does, so the count is what decides that and nothing may set t_proc
  * behind it. A thread created by one process and handed to another
  * passes through both counts, which is why this subtracts before it
  * adds rather than assuming the thread is new.
@@ -324,7 +320,7 @@ thread_bootstrap(const char *name, uint8_t prio, struct proc *p)
     t->t_base_prio = prio;
 
     /*
-     * On the core that made it, per section 11.4. Nothing moves on its
+     * On the core that made it. Nothing moves on its
      * own, so a thread that is never migrated runs where it was
      * created for as long as it exists.
      */
@@ -573,7 +569,7 @@ thread_reap(struct thread *t)
  */
 /*
  * Whether this thread is finished with and nothing can ask about it. A
- * dead thread with handles outstanding stays: section 10.4 keeps its
+ * dead thread with handles outstanding stays: it keeps its
  * status readable through them.
  */
 static bool
@@ -716,7 +712,7 @@ thread_cancel(struct thread *t)
 
     /*
      * Off the object's list first, and off the deadline list with it.
-     * Section 10.6's closed unblock list is what makes this possible
+     * The closed unblock list is what makes this possible
      * without knowing which object it is: whatever blocked the thread
      * left behind the one function that takes it off again.
      *
@@ -730,10 +726,7 @@ thread_cancel(struct thread *t)
      * client cancelled between the rendezvous and the reply has its
      * buffer in the server, and the pages are gone from its own memory
      * until something puts them back: releasing it without that is a
-     * program running again with a hole where its buffer was. M4 left
-     * a panic on the far side of that block saying this is where it
-     * would be found. It is.
-     *
+     * program running again with a hole where its buffer was.     *
      * Before the unwait, because taking a thread off what it was
      * blocked on is what forgets which object that was, and the
      * channel needs to know in order to tell the server at the other

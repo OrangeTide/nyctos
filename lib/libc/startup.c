@@ -20,7 +20,7 @@
 static sys_handle_t ns_table[SYS_NS_WORDS];
 
 /*
- * The system page of section 6.2, from the startup record. Kept because
+ * The system page, from the startup record. Kept because
  * the record itself is not: this library copies what it needs out of it
  * and the record's address is not something a program is given twice.
  *
@@ -32,7 +32,7 @@ static const sys_syspage_t *syspage;
 static uint32_t ns_words;
 
 /*
- * Where each of those handles is mounted, per section 20.4, copied for
+ * Where each of those handles is mounted, copied for
  * the same reason the table is. Fixed slots rather than pointers, so
  * the copy is one memcpy and a name cannot outlive what it names.
  */
@@ -41,7 +41,7 @@ static char ns_names[SYS_NS_NAME_BYTES];
 /*
  * The command line, copied for the same reason the namespace table is.
  * The record lives in loader memory, which at this tier is the process
- * object and at the next one is wherever section 15.2's loader put it;
+ * object and at the next one is wherever the loader put it;
  * either way a program that held pointers into it would be depending on
  * something it does not own. Copying also lets main() do what C programs
  * do to their arguments, which is edit them in place.
@@ -213,7 +213,7 @@ ns_name_of(sys_ns_id_t id)
 /*
  * The system page, or NULL for a process that has none.
  *
- * Section 6.2 has a program reach it through its own description of
+ * A program reaches it through its own description of
  * itself rather than at a fixed address, and this is where that
  * description was read. A caller checks for NULL because a process the
  * kernel built rather than loaded has no page and no record.

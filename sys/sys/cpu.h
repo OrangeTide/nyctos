@@ -25,10 +25,10 @@
 struct thread;
 
 /*
- * A FIFO per priority level, per section 11.2, and one set of them per
- * core. Section 11.4 has each core decide from its own queue and take no
- * lock another core could be holding, which is the whole of why this is
- * here rather than a static in the scheduler.
+ * A FIFO per priority level, and one set of them per core. Each core
+ * decides from its own queue and takes no lock another core could be
+ * holding, which is the whole of why this is here rather than a static
+ * in the scheduler.
  */
 struct runq {
     struct thread  *rq_head;
@@ -61,16 +61,14 @@ struct cpu {
     uint64_t        cp_as_maint;
 
     /*
-     * The deferral of section 11: a short run of readies made atomic.
-     * Per core because that is what it always meant. Its comment said
-     * "one counter for the system, not one per thread", and per system
-     * is per core the moment there are two.
+     * The deferral: a short run of readies made atomic. Kept per core, so
+     * each core defers only its own readies.
      */
     uint32_t        cp_defer;
     bool            cp_defer_pending;
 
     /*
-     * A dead thread waiting to be collected, per M7 stage one: its slot
+     * A dead thread waiting to be collected: its slot
      * holds the stack it was running on, so it cannot be freed until
      * something else is running. Per core because two cores switch at
      * once, and one slot for the system would lose one of them.
@@ -94,10 +92,9 @@ struct cpu {
      * puts each one on the queue its priority names, and that is where
      * the order comes from.
      *
-     * Section 11.4 is the reason this is not simply a lock around the
-     * queues. A core that had to take one to dispatch would be waiting
-     * on a decision another core is making, which is exactly what a
-     * per-core queue is for avoiding.
+     * This is not simply a lock around the queues. A core that had to
+     * take one to dispatch would be waiting on a decision another core is
+     * making, which is exactly what a per-core queue is for avoiding.
      */
     struct thread      *cp_incoming;
 
@@ -123,7 +120,7 @@ struct cpu {
     uint32_t            cp_rearm;
 
     /*
-     * Section 13.3's first term, measured on this core: when the
+     * Time with interrupts disabled, measured on this core: when the
      * current interrupts-disabled region began and who began it, and
      * the longest one seen so far with the same. Per core because a
      * region is disabled on a core and nowhere else.
@@ -146,10 +143,10 @@ struct cpu {
      * And the same again, ignoring the regions the kernel's own
      * console opens. Printing a line to a polled UART with interrupts
      * off is a real region and is reported as one, but it is the debug
-     * facility of section 22 rather than a path a system does work
-     * through, and left alone it is the longest region here: it
-     * displaced the figure section 13.3 asks for the moment the
-     * console started holding a message together. Both are printed,
+     * facility rather than a path a system does work through, and left
+     * alone it is the longest region here: it displaces the latency
+     * figure once the console starts holding a message together. Both
+     * are printed,
      * because hiding either would be answering a different question
      * than the one asked.
      */
@@ -173,8 +170,8 @@ struct cpu {
     /*
      * Which thread was running when this region began, so that a
      * region ending in another one can be recognised as having
-     * spanned a context switch. Section 13.3's first term is about
-     * exactly those, and asking the question here rather than at each
+     * spanned a context switch. Those are the regions that matter for
+     * latency, and asking the question here rather than at each
      * site means every path is covered without any of them opting in.
      */
     struct thread      *cp_intr_thread;
@@ -184,7 +181,7 @@ struct cpu {
      * began in, and where it began. Kept apart from the longest
      * region overall because the two are not always the same one, and
      * a run in which some other path was longer would otherwise say
-     * nothing about the one this milestone is about.
+     * nothing about the cross-thread case.
      */
     uint64_t            cp_cross_worst;
     uintptr_t           cp_cross_site;
@@ -194,7 +191,7 @@ struct cpu {
      * And whether the thread that opened it was one of the kernel's
      * own. At Tier 2 a user thread enters with interrupts already off
      * from the trap, so a region it opens begins at the lock and not
-     * where this milestone has been splitting; saying which kind of
+     * where the other paths begin theirs; saying which kind of
      * thread owns the binding region is how that inference gets
      * checked rather than asserted.
      */
@@ -204,7 +201,7 @@ struct cpu {
      * And the longest crossing region that began while a thread other
      * than one of the kernel's own was current. Kept apart because
      * the worst overall turns out to be a kernel thread's in every
-     * run, so without this the milestone would be reporting the
+     * run, so without this the figure would be reporting the
      * latency of its own checks and calling it the kernel's floor.
      *
      * Which thread was current, and not which code did the work: a
@@ -217,8 +214,8 @@ struct cpu {
     uintptr_t           cp_cross_user_site;
 
     /*
-     * The switch itself, which is what stages two and three have been
-     * separating everything else from. Stamped by the thread about to
+     * The switch itself, kept apart from everything else the fields above
+     * measure. Stamped by the thread about to
      * give up the core and read by whichever thread the core comes
      * back in, so the figure is the distance across the switch rather
      * than the time a thread spent away.
@@ -229,10 +226,8 @@ struct cpu {
      * How much of the region now open was spent inside a switch, so
      * that the binding region can be reported as a whole and a part
      * of itself rather than compared against a figure from somewhere
-     * else. Comparing a mean switch against a worst region is what
-     * this stage did first, and the mean switch is larger than the
-     * mean region, so the comparison flattered the answer by two
-     * orders of magnitude.
+     * else. A mean switch is larger than the mean region, so comparing
+     * the two would flatter the answer by two orders of magnitude.
      */
     uint64_t            cp_intr_switch;
     uint64_t            cp_cross_switch;
@@ -242,9 +237,7 @@ struct cpu {
 
     /*
      * The same, over a window a check has cleared, so that asking what
-     * one batch cost does not throw away what the run cost. They were
-     * one pair of fields, and the run-wide figure survived only
-     * because the largest region happened after the last clearing.
+     * one batch cost does not throw away what the run cost.
      */
     uint64_t            cp_win_worst;
     uintptr_t           cp_win_site;
@@ -261,8 +254,8 @@ struct cpu {
 
     /*
      * Crossings of the trap edge, and checks made on the submission
-     * path. Section 17 exists to reduce the first; whether it reduces
-     * the second is the question nobody had asked.
+     * path. Batching exists to reduce the first; whether it reduces the
+     * second is what these counts show.
      */
     uint64_t            cp_syscalls;
     uint64_t            cp_checks;
@@ -271,7 +264,7 @@ struct cpu {
     bool                cp_intr_open;
 
     /*
-     * Preemption points passed on this core, per section 13.3, and
+     * Preemption points passed on this core, and
      * whether this core is inside an interrupt handler. The second is
      * how a thread made runnable by an interrupt is told apart from
      * one made runnable by another thread.
@@ -287,7 +280,7 @@ struct cpu {
     uint64_t            cp_irq_switches;
 
     /*
-     * Section 13.3's second term, measured on this core: how many
+     * Interrupt dispatch to a user thread, measured on this core: how many
      * interrupts have been dispatched all the way to a user thread,
      * the longest such dispatch, and the points it passed.
      */

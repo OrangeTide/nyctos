@@ -102,7 +102,7 @@ void pool_init(struct pool *p, const char *name, void *objects,
  * Allocate a slot. Returns a pointer to the zeroed object and writes its
  * identifier to out_id, or returns NULL and writes SYS_ID_INVALID when the
  * pool is exhausted. Exhaustion is a configuration error, not a condition to
- * recover from; see design.md section 8.
+ * recover from.
  */
 void *pool_alloc(struct pool *p, sys_id_t *out_id);
 

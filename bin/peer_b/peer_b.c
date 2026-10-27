@@ -47,7 +47,7 @@ main(void)
     message.inline_len = sizeof(*req);
 
     /*
-     * No buffer. Section 6.1's descriptor is what a message carries when
+     * No buffer. A descriptor is what a message carries when
      * the two ends are in different address spaces, and the point of a
      * cohort is that these two are not.
      */

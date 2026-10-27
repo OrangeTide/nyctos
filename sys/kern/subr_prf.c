@@ -51,8 +51,8 @@ console_enter(void)
     /*
      * A message printed with interrupts on is a region of its own, and
      * a long one: a line onto a polled UART is the longest region this
-     * kernel has. It is charged to the console rather than to section
-     * 13.3's figure, and both are reported. Only when this call was the
+     * kernel has. It is charged to the console rather than to the
+     * ordinary interrupts-off figure, and both are reported. Only when this call was the
      * one that turned them off, because a message printed inside
      * somebody else's region belongs to whoever began it.
      */
@@ -405,8 +405,7 @@ panic_reentered(void)
  *
  * A panic is for a broken kernel invariant, and for the death of a process
  * the system cannot run without. An ordinary process failing is not a
- * panic; it terminates that process and the system carries on. Section 16
- * of design.md draws the same line for faults.
+ * panic; it terminates that process and the system carries on.
  *
  * Stopping means powering the machine off rather than spinning. A hang has
  * to be noticed by a human watching a console, whereas an exit is

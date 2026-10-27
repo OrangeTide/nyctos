@@ -58,7 +58,7 @@ main(int argc, char **argv)
         }
 
         /*
-         * Without a deadline. Section 24.3's supervisor waits for its
+         * Without a deadline. The supervisor waits for its
          * child to finish and has nothing useful to do in the
          * meantime, and a deadline here would be a supervisor deciding
          * a child had failed because it was slow.

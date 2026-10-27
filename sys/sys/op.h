@@ -18,7 +18,7 @@
 
 /*
  * A handle is one pointer-width word. The kernel splits it into a slot
- * index and a generation, per section 7.1, but that split is the kernel's
+ * index and a generation, but that split is the kernel's
  * business: to a program a handle is opaque and the only operations on it
  * are passing it and comparing it to SYS_HANDLE_INVALID.
  *
@@ -40,7 +40,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_ERR_TIMEOUT          -1
 #define SYS_ERR_WOULDBLOCK       -2
 #define SYS_ERR_INVALID_ARG      -3
-#define SYS_ERR_NO_MEMORY        -4   /* static pool exhausted; see section 8 */
+#define SYS_ERR_NO_MEMORY        -4   /* static pool exhausted */
 #define SYS_ERR_PERM_DENIED      -5   /* handle lacks the required right */
 #define SYS_ERR_DEADLOCK         -6
 #define SYS_ERR_STALE            -7   /* generation mismatch */
@@ -55,7 +55,7 @@ typedef uintptr_t sys_handle_t;
 
 /*
  * Rights are uniform across object types rather than special-cased per
- * type, per section 7.2. Duplication may only attenuate.
+ * type. Duplication may only attenuate.
  */
 #define SYS_RIGHT_DUPLICATE   (1u << 0)
 #define SYS_RIGHT_TRANSFER    (1u << 1)   /* may be moved over IPC */
@@ -84,7 +84,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OBJ_CONNECTION  9
 
 /*
- * A prepared program, per section 17.7: a batch validated once and
+ * A prepared program: a batch validated once and
  * executed many times. Distinct from SYS_OBJ_PROGRAM, which is a member
  * of the boot archive and was named first.
  */
@@ -104,8 +104,8 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_CHAN_CONNECT      11
 
 /*
- * Obtain the completion timeline of a thread or a process, per section
- * 10.4. The timeline is embedded in the object, so this cannot fail for
+ * Obtain the completion timeline of a thread or a process. The timeline
+ * is embedded in the object, so this cannot fail for
  * want of a pool slot, and the handle it returns carries SYS_RIGHT_WAIT
  * and nothing else: a process able to signal its own completion could
  * fake its own exit and have whatever supervises it reclaim it while it
@@ -121,10 +121,9 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_PROC_STATUS       15
 
 /*
- * Unmask an interrupt the handler silenced, which is sys_irq_unmask in
- * section 26 and is why that call is in the list. Section 13.2 has the
- * handler advance a timeline and return, and a handler that cannot
- * finish with its device masks the source instead; this is the driver
+ * Unmask an interrupt the handler silenced. A handler normally advances
+ * a timeline and returns, and a handler that cannot finish with its
+ * device masks the source instead; this is the driver
  * saying it has drained the device to empty and the source may assert
  * again. Draining first is the driver's obligation: unmasking with
  * bytes still in the device interrupts again at once.
@@ -133,19 +132,18 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_IRQ_UNMASK        16
 
 /*
- * Create a process from a member of the boot archive, per section 10.1,
- * with the handles the caller names moved into it, per section 20.4.
+ * Create a process from a member of the boot archive, with the handles
+ * the caller names moved into it.
  *
- * The image is named rather than handed over, and that is a deviation
- * section 24.1 is explicit about: the kernel parses no image format and
- * root walks the archive. What is missing is a process able to load one,
- * which is the loader of section 15.2, so the walk stays inside the
- * kernel until M4 and this operation is where the debt shows.
+ * The image is named rather than handed over. The kernel parses no
+ * image format, so root walks the archive and this operation is where
+ * that walk is visible. No process exists yet that could load an image
+ * itself.
  */
 #define SYS_OP_PROC_SPAWN        17
 
 /*
- * Add a thread to the calling process, per section 10.2. The creator
+ * Add a thread to the calling process. The creator
  * supplies the stack, because the kernel allocates no user memory at
  * any tier, and the thread begins with none of its own code having
  * run: a first thread has crt1 and a created thread has nothing.
@@ -157,7 +155,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_THREAD_STATUS     19
 
 /*
- * Release a thread from whatever it is blocked on, per section 10.5. Its
+ * Release a thread from whatever it is blocked on. Its
  * pending call returns SYS_ERR_INTERRUPTED. target names the thread and
  * carries SYS_RIGHT_WRITE, because this changes what the thread does
  * rather than asking about it.
@@ -170,7 +168,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_THREAD_CANCEL     21
 
 /*
- * Move a thread to a named core, per section 11.4. target names the
+ * Move a thread to a named core. target names the
  * thread and carries SYS_RIGHT_WRITE, because where a thread runs is
  * something done to it rather than something asked about it. The core
  * is the value in the argument structure.
@@ -187,7 +185,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_THREAD_MIGRATE    24
 
 /*
- * Prepared programs, per section 17.7. Load validates a batch once and
+ * Prepared programs. Load validates a batch once and
  * returns a handle to it; exec runs it again without validating it
  * again. The handles the entries name are looked up at every
  * execution, because a handle is a slot in a table and what it means
@@ -197,7 +195,7 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_PROG_EXEC         26
 
 /*
- * Leave a pulse on a channel, per section 13.1. target names a
+ * Leave a pulse on a channel. target names a
  * connection to it and carries SYS_RIGHT_SEND, which is how a message
  * reaches a channel too. Never blocks and does not fail
  * for want of room: a full user region costs an older user pulse and
@@ -211,12 +209,12 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_PULSE_SEND        22
 
 /*
- * End a process, per section 10.5. target names it and carries
+ * End a process. target names it and carries
  * SYS_RIGHT_WRITE, because this changes what it does rather than asking
  * about it.
  *
  * Every thread of the target is unblocked exactly as if each had been
- * cancelled, which is what the section asks for and includes telling
+ * cancelled, which includes telling
  * every server holding one of their requests. A thread then leaves at
  * its next return from the kernel: unblocking is prompt, and stopping a
  * thread that is running in user mode and never calls in is not
@@ -232,7 +230,7 @@ typedef uintptr_t sys_handle_t;
  * grant given with SYS_RIGHT_READ alone becomes memory that cannot be
  * written.
  *
- * Section 19.2: this is how a driver learns where its registers are. It
+ * This is how a driver learns where its registers are. It
  * is asked for rather than done at spawn because a holder that never
  * maps a grant should not pay for it, and because the address belongs in
  * the answer to a question rather than in a table a program has to know
@@ -248,8 +246,8 @@ typedef uintptr_t sys_handle_t;
 
 /*
  * Write bytes to the kernel console. A debug facility and nothing else,
- * present only in builds that opt into it; see SYS_DEBUG_CONSOLE and
- * section 22.4. Returns SYS_ERR_NOT_SUPPORTED where it is compiled out,
+ * present only in builds that opt into it; see SYS_DEBUG_CONSOLE.
+ * Returns SYS_ERR_NOT_SUPPORTED where it is compiled out,
  * which is the default.
  */
 #define SYS_OP_DEBUG_WRITE       13
@@ -258,7 +256,7 @@ typedef uintptr_t sys_handle_t;
  * The most one call may write. The copy runs in the kernel at the caller's
  * priority, and on Tier 0 with interrupts disabled, so an unbounded write
  * is an unbounded non-preemptible section and lands in the interrupt
- * latency of section 13.3. A caller with more to say makes more calls, and
+ * latency. A caller with more to say makes more calls, and
  * each is a preemption point. This is interface rather than
  * configuration, because a caller has to split against it.
  */
@@ -270,12 +268,12 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_WRITE_ISSUE       10
 
 /*
- * Collect a connection whose peers have all gone, per section 12.5.
+ * Collect a connection whose peers have all gone.
  * target names the channel and carries SYS_RIGHT_RECV, because this is
  * the server's question about its own clients.
  *
  * This is the level half of what a death means to a server. The pulse
- * of section 13.1 says something has happened and may be coalesced or
+ * says something has happened and may be coalesced or
  * lost; this says what, and keeps saying it until the server has
  * collected it. A server that acts on the pulse alone is a server
  * counting edges, and one that acts on this is draining a queue: the
@@ -295,8 +293,8 @@ typedef uintptr_t sys_handle_t;
 #define SYS_OP_CHAN_REAP         27
 
 /*
- * Set how many senders a channel will hold before it turns one away,
- * per M18 stage six. Needs SYS_RIGHT_RECV, so only a side that can
+ * Set how many senders a channel will hold before it turns one away.
+ * Needs SYS_RIGHT_RECV, so only a side that can
  * receive can bound the queue that feeds it: this is `listen`, and the
  * depth is the backlog.
  *
@@ -323,7 +321,7 @@ typedef uintptr_t sys_handle_t;
 
 
 /*
- * Per-entry flags, per section 17.5.
+ * Per-entry flags.
  *
  * SYS_OP_LINK says the entry after this one belongs to the same chain.
  * Linked entries run in order, the first failure cancels the rest of
@@ -333,15 +331,12 @@ typedef uintptr_t sys_handle_t;
  *
  * It means abort-on-error grouping and nothing else. Entries run in
  * submission order whether linked or not, because the engine executes
- * in one thread: chaining does not make anything concurrent, which is
- * the second of the two things section 17.5 says are easily assumed
- * about it and false.
+ * in one thread, so chaining does not make anything concurrent.
  */
 #define SYS_OP_LINK             (1u << 0)
 
 /*
- * Where an entry's target comes from, and where its result goes, per
- * section 17.4.
+ * Where an entry's target comes from, and where its result goes.
  *
  * SYS_OP_TARGET_FROM_REG says the target is not the handle in the
  * descriptor but whatever register `reg_in` names. The register must
@@ -352,7 +347,7 @@ typedef uintptr_t sys_handle_t;
  * the caller chose.
  *
  * SYS_OP_RESULT_TO_REG says the handle this entry produces goes into
- * the register `reg_out` names. Section 17.4 gives two producers: the
+ * the register `reg_out` names. There are two producers: the
  * issuing ops, which are not built, and a send, whose reply may carry
  * a handle that moved with it. A reply that carries none leaves the
  * register empty rather than writing an invalid handle into it, so an
@@ -373,7 +368,7 @@ typedef uintptr_t sys_handle_t;
  * parts it cares about, so a deadline read unconditionally would turn
  * each of them into a poll, and the ones that meant to poll would be
  * indistinguishable from the ones that had never heard of deadlines.
- * Section 14.3 fixes both sentinels' values, so the ambiguity is in the
+ * Both sentinels' values are fixed, so the ambiguity is in the
  * interface and not something a different constant could remove: what
  * removes it is saying whether the field was filled in.
  */
@@ -381,9 +376,9 @@ typedef uintptr_t sys_handle_t;
 
 
 /*
- * How many registers one execution has, per section 17.4.
+ * How many registers one execution has.
  *
- * Four because the chains section 17 describes carry one intermediate
+ * Four because the chains of linked entries carry one intermediate
  * value each, a walk handing a connection to the entry that reads on
  * it, and a batch may hold several independent chains. It is interface
  * rather than configuration: a program names a register by number, so
@@ -413,7 +408,7 @@ typedef struct sys_op {
 } sys_op_t;
 
 /*
- * The message of section 12.4: a small inline payload, a handle that moves
+ * The message: a small inline payload, a handle that moves
  * with it, and a buffer for bulk data.
  *
  * The design allows zero or more handles; this carries at most one, which
@@ -426,7 +421,7 @@ typedef struct sys_op {
  */
 #define SYS_IPC_INLINE_BYTES    64
 
-/* Buffer access the receiver is being given, per section 6.1. */
+/* Buffer access the receiver is being given. */
 #define SYS_BUF_READ            (1u << 0)
 #define SYS_BUF_WRITE           (1u << 1)
 
@@ -434,7 +429,7 @@ typedef uint64_t sys_thread_id_t;
 
 /*
  * The low half of an identifier, which is the index and as much
- * generation as fits beside it, per section 7.1. A pulse value is 32
+ * generation as fits beside it. A pulse value is 32
  * bits and an identifier may be 64, so a pulse that named a thread by
  * bare index would be an ABA hazard: the slot is recycled between the
  * enqueue and the collection and a server matches the notice against
@@ -444,15 +439,15 @@ typedef uint64_t sys_thread_id_t;
 #define SYS_ID_TAG32(id)        ((uint32_t)((id) & 0xffffffffu))
 
 /*
- * A pulse: a code and a value, no payload and no reply, per section
- * 13.1. Sending one never blocks, which is what makes it safe from
+ * A pulse: a code and a value, no payload and no reply. Sending one
+ * never blocks, which is what makes it safe from
  * places where blocking is not permitted.
  */
 #define SYS_PULSE_DEAD_OWNER    1       /* system; uses the reserved slots */
 
 /*
- * A connection on this channel has lost its last peer, per M18 stage
- * four. A hint and nothing more: what says which connection it was is
+ * A connection on this channel has lost its last peer. A hint and
+ * nothing more: what says which connection it was is
  * SYS_OP_CHAN_REAP, so this may be coalesced or lost without costing
  * anything. System, so a program cannot flood it out of the queue.
  */
@@ -471,10 +466,9 @@ typedef struct sys_pulse {
  *
  * SYS_MSG_PULSE_LOST says a pulse was dropped since the last receive.
  * It is reported once and cleared, because it answers "did I miss
- * anything" and not "how much". Until M18 stage five only a user pulse
- * could be dropped and a system pulse with nowhere to go halted the
- * machine; a server that sees this flag has to go and look at whatever
- * a pulse would have told it, which after stage four it can.
+ * anything" and not "how much". A server that sees this flag has to go
+ * and look at whatever a pulse would have told it, and can do that by
+ * collecting with SYS_OP_CHAN_REAP.
  */
 #define SYS_MSG_IS_PULSE        (1u << 0)
 #define SYS_MSG_PULSE_LOST      (1u << 3)
@@ -484,16 +478,16 @@ typedef struct sys_msg {
     uint32_t        inline_len;
 
     /*
-     * What the server made of the request, per section 12.4, and the
-     * one field of a reply the kernel reads.
+     * What the server made of the request, and the one field of a reply
+     * the kernel reads.
      *
      * A transport that succeeded and a request that succeeded are
      * different things, and without this the kernel cannot tell them
      * apart: a walk for a file that does not exist is a completely
      * successful send, and a linked chain carries on to read from a
-     * connection that was never returned. Section 25.6 already makes
-     * servers report failure as sys_err_t and invent no codes of their
-     * own, so this costs a protocol nothing it was not already doing.
+     * connection that was never returned. Servers report failure as
+     * sys_err_t and invent no codes of their own, so this costs a
+     * protocol nothing it was not already doing.
      *
      * The kernel attaches no meaning to it beyond zero and non-zero,
      * in exactly the way it attaches none to the cookie. Zero on a
@@ -505,8 +499,8 @@ typedef struct sys_msg {
     sys_handle_t    handle;     /* moved with the message, or INVALID */
 
     /*
-     * Bulk data, moved for the duration of the call. By section 6.1 the
-     * sender may not touch this memory between send and reply, and the
+     * Bulk data, moved for the duration of the call. The sender may not
+     * touch this memory between send and reply, and the
      * right returns when the reply arrives. Tier 0 does not enforce that
      * and Tier 2 will, which is the whole of the difference between them.
      *
@@ -525,9 +519,8 @@ typedef struct sys_msg {
      * the message is delivered.
      *
      * Only the forward path carries one. A server does not hand back a
-     * buffer of its own memory, per the reply-path caveat in section 6.1,
-     * so a reply larger than the inline area writes into the buffer the
-     * client supplied in the request.
+     * buffer of its own memory, so a reply larger than the inline area
+     * writes into the buffer the client supplied in the request.
      */
     uintptr_t       buf;
     uint32_t        buf_len;
@@ -569,7 +562,7 @@ typedef struct sys_op_send_args {
 
     /*
      * Absolute, on the monotonic timebase, and read only when the entry
-     * carries SYS_OP_DEADLINE. Section 12.1: a client that gives up
+     * carries SYS_OP_DEADLINE. A client that gives up
      * before a server answers is released with SYS_ERR_TIMEOUT, and
      * what the server sees depends on whether it had taken the message
      * yet.
@@ -602,7 +595,7 @@ typedef struct sys_op_fence_args {
     uint64_t        value;
 
     /*
-     * Absolute, on the monotonic timebase. Section 14.3: a relative
+     * Absolute, on the monotonic timebase. A relative
      * timeout restarted after interruption extends its own deadline by
      * however long it had already waited, which is the error real-time
      * code exists to avoid.
@@ -667,12 +660,7 @@ typedef struct sys_op_exit_args {
 #define SYS_COMPLETION_EXITED    1
 
 /*
- * The state a status call reports, per section 10.6, with the names and
- * the values section 26 already gives them. They were SYS_STATUS_LIVE
- * and SYS_STATUS_EXITED here, invented alongside a specification that
- * had already named them, and the second one had a different value from
- * the constant it shared most of a name with. A program written against
- * the document would have read a live thread as an exited one.
+ * The state a status call reports.
  */
 #define SYS_STATE_READY          0
 #define SYS_STATE_RUNNING        1
@@ -680,16 +668,15 @@ typedef struct sys_op_exit_args {
 #define SYS_STATE_EXITED         3
 
 /*
- * The fault kinds of section 16.1. Every synchronous exception a port can
- * raise while a thread is running maps to one of these, because a kind
- * that is not in the list has nowhere to go.
+ * The fault kinds. Every synchronous exception a port can raise while a
+ * thread is running maps to one of these, because a kind that is not in
+ * the list has nowhere to go.
  *
- * SYS_FAULT_PAGE is here and is not yet raised by either port. It is the
- * one recoverable kind, and what makes it recoverable is a pager, which
- * is stage 8 of this milestone. Until then a reference to an address the
- * tables do not describe is SYS_FAULT_ACCESS, because nothing exists that
- * could supply the page: reporting it as recoverable would be reporting a
- * mechanism the system does not have.
+ * SYS_FAULT_PAGE is not yet raised by either port. It is the one
+ * recoverable kind, and what makes it recoverable is a pager. Until a
+ * pager exists, a reference to an address the tables do not describe is
+ * SYS_FAULT_ACCESS, because nothing could supply the page: reporting it
+ * as recoverable would be reporting a mechanism the system does not have.
  */
 #define SYS_FAULT_NONE          0   /* it did not fault */
 #define SYS_FAULT_PAGE          1
@@ -702,7 +689,7 @@ typedef struct sys_op_exit_args {
 
 /*
  * The exit code of a thread the kernel ended for a fault. A fault is an
- * exit with a reason, per section 16.2, so it travels the path an exit
+ * exit with a reason, so it travels the path an exit
  * travels and needs a code to travel with; the reason itself is in the
  * fault fields beside it.
  *
@@ -716,7 +703,7 @@ typedef struct sys_op_exit_args {
 
 /*
  * And what a member of a cohort reports when a peer faulted and it went
- * with it, per section 18.2. Not SYS_EXIT_FAULT, because this process
+ * with it. Not SYS_EXIT_FAULT, because this process
  * did not fault and its fault kind says so: a supervisor reading the
  * status of a torn-down cohort can tell which member was the reason
  * from which one reports a fault.
@@ -735,15 +722,15 @@ typedef struct sys_op_completion_args {
  * Argument structure for SYS_OP_PROC_STATUS and SYS_OP_THREAD_STATUS.
  * target names the process or the thread.
  *
- * The fault fields are section 16.2's: a thread the kernel ended for a
+ * The fault fields describe a thread the kernel ended for a
  * fault has exited, so the state says EXITED and the code says
  * SYS_EXIT_FAULT, and these say which fault, where, and what instruction.
  * They are SYS_FAULT_NONE and zero for everything else, which includes a
  * thread that is still running.
  *
  * A process reports the fault of the thread whose exit finished it, which
- * with one thread per process is the program's own. Section 16.2 leaves
- * open which thread speaks for a process with several, and so does this.
+ * with one thread per process is the program's own. Which thread speaks
+ * for a process with several is left open, and so is this.
  */
 typedef struct sys_op_status_args {
     int32_t         out_code;       /* written by the kernel */
@@ -768,8 +755,8 @@ typedef struct sys_op_grant_args {
 } sys_op_grant_args_t;
 
 /*
- * A page fault, as the message the faulting thread sends. Section 15.3:
- * the address it touched and what it was doing there, in the inline
+ * A page fault, as the message the faulting thread sends: the address
+ * it touched and what it was doing there, in the inline
  * payload, because a fault is small and a grant is what comes back.
  */
 typedef struct sys_fault_msg {
@@ -795,9 +782,8 @@ typedef struct sys_fault_msg {
 #define SYS_PRIO_INHERIT        0xffffffffu
 
 /*
- * What a program may be started with. Section 20.4 has the loader place
- * the strings in the child's memory alongside the record; the kernel is
- * the loader here, so it copies them into the process object, and these
+ * What a program may be started with. The kernel is the loader, so it
+ * copies the strings into the process object alongside the record, and these
  * are the bounds of that copy. Eight arguments and two hundred and
  * fifty-six bytes is a command line, not a configuration file: a
  * program that needs more than this needs a file.

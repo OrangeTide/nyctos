@@ -85,7 +85,7 @@ hex_into(char *out, uintptr_t v)
 
 /*
  * A copy of a handle to give away, keeping the original. Spawn moves what
- * it is given, per section 7.4, so a parent that means to keep something
+ * it is given, so a parent that means to keep something
  * duplicates first; this is that, with the rights the child needs and no
  * more.
  */
@@ -162,7 +162,7 @@ run_flagged(uint16_t opcode, sys_handle_t target, void *args,
      * takes it. Every other entry in the system arrives from a
      * vector, which takes the lock on the way in and drops it on the
      * way out; these arrive from a kernel thread, which holds
-     * nothing, and until now they ran the same operations with the
+     * nothing, so the operations ran with the
      * exclusion missing.
      *
      * What that cost was a join that hung. The wait on a completion
@@ -200,7 +200,7 @@ run_flagged(uint16_t opcode, sys_handle_t target, void *args,
 
 /*
  * The same, with no flags, which is what almost every check wants. The
- * flags exist for M15's deadline, which is read only when the entry
+ * flags carry the deadline, which is read only when the entry
  * says it is there.
  */
 static sys_err_t
@@ -210,7 +210,7 @@ run(uint16_t opcode, sys_handle_t target, void *args, uint32_t arg_len)
 }
 
 /*
- * Everything below goes through the section 23 entry point rather than
+ * Everything below goes through the syscall entry point rather than
  * calling the handle table directly, so what is exercised is the path a
  * user trap will take: opcode dispatch, argument checking, the status
  * write, and the return value agreeing with it.
@@ -307,8 +307,8 @@ handle_checks(void)
 }
 
 /*
- * The four waiters of the figure in section 9.1, which the text says
- * exhaust the cases an implementation must handle.
+ * The four waiter cases on a timeline, which exhaust the cases an
+ * implementation must handle.
  *
  *   A blocks on a value that arrives.
  *   B asks for a value already passed and returns at once.
@@ -323,16 +323,14 @@ handle_checks(void)
  */
 
 /*
- * The boot thread runs below everything it creates. Four stages running,
- * a test hung or silently did nothing because boot sat above a thread it
+ * The boot thread runs below everything it creates. A test hung or
+ * silently did nothing because boot sat above a thread it
  * was waiting for and yielded to itself for ever. Lowest priority means a
  * yield here always hands the core over, and boot only resumes when
  * nothing else can run.
  *
  * It is one rather than a comfortable middle value so that the rule is
- * hard to break by accident. Documenting it was not enough: the fifth
- * occurrence was a thread deliberately created below a boot thread that
- * had been moved down to ten for exactly this reason.
+ * hard to break by accident.
  */
 #define PRIO_BOOT       1
 #define PRIO_WAITER     25
@@ -444,15 +442,15 @@ timeline_checks(void)
 }
 
 /*
- * The interrupt path of section 13.2, end to end: a device raises an
+ * The interrupt path, end to end: a device raises an
  * interrupt, the handler advances a timeline and returns, and a thread
  * waiting on that timeline runs. The handler does no driver work at all,
- * which is the whole of what the section asks for.
+ * which is all this model asks of it.
  *
  * The timeline is advanced to the number of interrupts seen, so a waiter
  * asking for the third interrupt is asking for a value rather than for an
- * event. That is what makes a late waiter safe in the way section 9.1
- * describes: if the interrupt has already happened the value has already
+ * event. That is what makes a late waiter safe: if the interrupt has already
+ * happened the value has already
  * been passed, and the wait returns at once instead of hanging for
  * something that is over.
  */
@@ -495,9 +493,9 @@ interrupt_checks(void)
 
     /*
      * Blocking here leaves nothing runnable at all, so the core has to sit
-     * in the idle state of section 11.6 until the timer ends it. A busy
+     * in the idle state until the timer ends it. A busy
      * wait would keep this thread runnable and never reach that path,
-     * which is exactly the mistake the first version of this test made.
+     * which is exactly the mistake a busy wait makes.
      *
      * Getting past this means the whole chain worked: hardware, vector,
      * handler, timeline, wake, and an idle core that an interrupt left.
@@ -514,9 +512,9 @@ interrupt_checks(void)
 }
 
 /*
- * Timers, and the three properties section 14.2 states precisely enough to
- * check: that activation N happens at first + N * period whatever the
- * delivery delay, that the counter always holds the number of activations
+ * Timers, and the three properties checked precisely: that activation N
+ * happens at first + N * period whatever the delivery delay, that the
+ * counter always holds the number of activations
  * the clock implies, and that catching up after a stall is one update
  * rather than a backlog.
  */
@@ -553,8 +551,8 @@ timer_checks(void)
     /*
      * A periodic timer, waited on activation by activation. Each one is
      * checked against the time it should have happened rather than against
-     * the previous delivery, which is the difference the section insists
-     * on: measuring from the last delivery would let jitter accumulate and
+     * the previous delivery, which is the difference that matters:
+     * measuring from the last delivery would let jitter accumulate and
      * the check would pass anyway.
      */
     period = time_from_ms(5);
@@ -595,7 +593,7 @@ timer_checks(void)
     expect("the next activation after a stall",
       timeline_wait(tl_tick, after + 1, SYS_DEADLINE_NEVER), SYS_OK);
 
-    /* Destroying a timer abandons its timeline, per section 14.2. */
+    /* Destroying a timer abandons its timeline. */
     timer_destroy(tick);
     expect("waiting on a destroyed timer",
       timeline_wait(tl_tick, after + 100, SYS_DEADLINE_NEVER),
@@ -689,8 +687,8 @@ client(void *arg)
 }
 
 /*
- * The run-time gate of section 22.4, which is the half of it that a
- * compile-time switch cannot demonstrate.
+ * The run-time gate, which is the half of it that a compile-time switch
+ * cannot demonstrate.
  *
  * A build carrying the console can have it dormant, so that an image ships
  * with the facility present and unusable and has it turned on to diagnose
@@ -791,15 +789,13 @@ ipc_checks(void)
 }
 
 /*
- * A server that owes two clients at different priorities, per M22
- * stage three.
+ * A server that owes two clients at different priorities.
  *
- * Section 12.3 gives a server the priority of whoever it is serving,
- * and until this stage the way back from that was to the base
- * priority, on the reasoning that a thread which has replied owes
- * nobody. A thread can owe several. Answering one of them says nothing
- * about the rest, and the thread went back to base while a client it
- * still owed waited at a priority it had given away.
+ * A server takes the priority of whoever it is serving, and the way
+ * back from that is to the base priority, on the reasoning that a thread
+ * which has replied owes nobody. A thread can owe several. Answering one
+ * of them says nothing about the rest, so the thread must not go back to
+ * base while a client it still owes waits at a priority it had given away.
  *
  * The construction is two clients queued before the server receives,
  * so that the queue order is the priority order and the higher one is
@@ -812,7 +808,7 @@ ipc_checks(void)
  * yields after the reply. At the priority it owes, the yield comes
  * back to the server and that thread has not run; at base, that thread
  * takes the core and the client waiting for its reply waits behind it,
- * which is the inversion section 12.3 exists to prevent.
+ * which is the inversion that donation exists to prevent.
  */
 static struct channel *ch_owe;
 static sys_handle_t h_owe_recv;
@@ -918,8 +914,8 @@ owe_server(void *arg)
  * They are served in priority order only if both are queued when the
  * first receive happens, and readying a thread does not say when it
  * has reached its send: at Tier 2 it reaches it on the other core.
- * Waited for rather than assumed, which is M21 stage three's review
- * written as a rule, and read under the kernel lock because the queue
+ * Waited for rather than assumed, and read under the kernel lock because the
+ * queue
  * is a list the other core puts threads on.
  *
  * Yielded rather than slept on, because here the boot thread is below
@@ -1018,7 +1014,7 @@ owe_checks(void)
       owe_mid_seen ? "took the core" : "did not run");
 
     /*
-     * The number first, because it is what the stage changes, and then
+     * The number first, because it is the value under test, and then
      * the consequence, because a number nothing depends on is a number
      * that can be wrong quietly.
      */
@@ -1038,8 +1034,7 @@ owe_checks(void)
     /*
      * And the channel goes back, so that a check which exists to say
      * something about priorities does not quietly raise the number of
-     * channels the boot ends holding. M20 made that number mean
-     * something and a check that adds to it is a check taking it away.
+     * channels the boot ends holding.
      */
     expect("giving the channel back",
       handle_close(&p->p_handles, send_h), SYS_OK);
@@ -1048,17 +1043,13 @@ owe_checks(void)
 }
 
 /*
- * A thread inside requests on two channels, per M22 stage four.
+ * A thread inside requests on two channels.
  *
- * The serving entry used to be the server thread, and a thread has one
- * `t_serve_next` between every list it could be on. A server holding a
- * request on one channel and taking one on another wrote the second
- * list into the field the first was using, so the first ran into the
- * second and unlinking took the thread off one of them. `README.md`
- * carried that as worse if it happened, since nothing in the boot did
- * it. This is the boot doing it.
- *
- * The entry is the request now, and a client is served on one channel
+ * A thread has one `t_serve_next` between every list it could be on. A
+ * server holding a request on one channel and taking one on another would
+ * write the second list into the field the first was using, so the first
+ * would run into the second and unlinking would take the thread off one of
+ * them. The entry is the request, and a client is served on one channel
  * at a time, so the two lists are separate and each one ends.
  */
 static struct channel *ch_two_a;
@@ -1097,10 +1088,9 @@ two_busy(struct channel *ch)
  *
  * The clients are blocked and this thread is the only one serving
  * these two channels, so nothing here is racing today. It is read
- * under the lock anyway because that is the rule M20 stage three and
- * M21 stage three both arrived at the hard way: a check that reads a
- * channel's lists with nothing held is a check that can be right about
- * a moment that never existed.
+ * under the lock anyway, because a check that reads a channel's lists
+ * with nothing held is a check that can be right about a moment that
+ * never existed.
  */
 static void
 two_look(struct thread *self)
@@ -1165,10 +1155,9 @@ two_server(void *arg)
     }
 
     /*
-     * Held, and the second request comes from the other channel. This
-     * is the arrangement section 19.3 says a server should not be
-     * written in and nothing refuses, and until this stage it was the
-     * arrangement that corrupted a list.
+     * Held, and the second request comes from the other channel. Nothing
+     * refuses this arrangement, and the lists must stay separate for it
+     * to be safe.
      */
     memset(&msg, 0, sizeof(msg));
     if (channel_recv(ch_two_b, &msg, &peer_b, &cookie) != SYS_OK) {
@@ -1286,15 +1275,14 @@ two_channel_checks(void)
 
 /*
  * A client that dies while its request is held, and a channel that
- * must not go while one is, per M22 stage five.
+ * must not go while one is.
  *
  * Two things follow from the entry being the request. A client that is
  * cancelled between the rendezvous and the reply takes its entry with
  * it, so what the server owes and what the channel is serving both
  * shrink by one and the priority follows the rest. And a channel whose
  * last holder lets go while a request is in flight on it is not free,
- * because the request is standing in it: that is M20's idle test asked
- * about a held request rather than about the thread that took it.
+ * because the request is standing in it.
  */
 static struct channel *ch_held;
 static sys_handle_t h_held_recv;
@@ -1325,8 +1313,7 @@ held_client(void *arg)
 
     /*
      * The error is not checked. One of these is cancelled out of the
-     * rendezvous on purpose and comes back interrupted, which is the
-     * case the stage is about.
+     * rendezvous on purpose and comes back interrupted.
      */
     (void)channel_send(ch, 0, &req, &rep, SYS_DEADLINE_NEVER);
 
@@ -1411,7 +1398,7 @@ held_server(void *arg)
 
     /*
      * And the reply the dead client will never get is refused, which
-     * is how a server finds out per section 12.1. Asked here rather
+     * is how a server finds out. Asked here rather
      * than assumed, because a server that still owed it would be
      * answered instead.
      */
@@ -1587,7 +1574,7 @@ held_death_checks(void)
 
 
 /*
- * A server that dies owing several, per M22 stage six.
+ * A server that dies owing several.
  *
  * The record held one client, so an exit released one client. A
  * server that had taken two requests left the second waiting for a
@@ -1598,8 +1585,7 @@ held_death_checks(void)
  * Both clients set a deadline, which is what tells the two outcomes
  * apart. Released by the death they come back with SYS_ERR_STALE at
  * once; left behind they come back with SYS_ERR_TIMEOUT a second
- * later, which is the shape of the defect and the shape of the
- * falsification.
+ * later. The time each one takes tells the two outcomes apart.
  */
 static struct channel *ch_owing;
 static sys_handle_t h_owing_recv;
@@ -1626,7 +1612,7 @@ owing_client(void *arg)
     memcpy(req.inline_data, "dying", 6);
 
     /*
-     * One flag each, and not one counter, per stage six's review.
+     * One flag each, and not one counter.
      * Both of these are released by the same death and at Tier 2
      * they come back on two cores, so a shared `++` is two threads
      * reading and writing one word: the update that is lost is a
@@ -1725,15 +1711,15 @@ owing_checks(void)
 }
 
 /*
- * What the set costs on a rendezvous, per M22 stage seven.
+ * What the set costs on a rendezvous.
  *
  * Two runs of the same loop, differing in one thing: in the second
  * the server is already holding a request from somebody else, so
  * every rendezvous ends against a set of two rather than a set of
  * one. The difference is what one more entry costs.
  *
- * The server's base is the clients' priority, per this stage's
- * review, and that is the whole reason for it. With a base below
+ * The server's base is the clients' priority, and that is the whole
+ * reason for it. With a base below
  * them the first run gave the donation back on every reply and took
  * it again on every receive, two hundred trips through
  * sched_reprioritise that the second run does not make, because the
@@ -1744,8 +1730,8 @@ owing_checks(void)
  *
  * The count is the answer and the durations are context. Steps taken
  * on the set are a property of the kernel and are the same on every
- * host; microseconds are the host's, and per M9 they are reported
- * above the compared line and asserted against nothing.
+ * host; microseconds are the host's, and they are reported above the
+ * compared line and asserted against nothing.
  */
 static struct channel *ch_cost;
 static sys_handle_t h_cost_recv;
@@ -1935,9 +1921,8 @@ cost_checks(void)
      * client itself: it was pushed at the head by the receive that
      * took it, so the unlink finds it without a step and the walk
      * that reads what is left walks whatever was there before. A
-     * rendezvous against a set of n costs n - 1 steps, which is the
-     * figure this stage exists to state, and it is arithmetic rather
-     * than a measurement, so it is asserted.
+     * rendezvous against a set of n costs n - 1 steps. It is arithmetic
+     * rather than a measurement, so it is asserted.
      */
     if (cost_steps[0] != 0) {
         panic("cost: %lu steps for %u round trips against one",
@@ -1957,9 +1942,9 @@ cost_checks(void)
  * defect this exists to keep out.
  *
  * channel_send hands the message over and then blocks. Where the server
- * outranks the sender, readying it used to dispatch in between: the server
+ * outranks the sender, readying it can dispatch in between: the server
  * ran, replied, and readied a sender that the preemption had already put
- * on a run queue and that had never reached sched_block. Nothing else in
+ * on a run queue and that has not reached sched_block. Nothing else in
  * the system arranges this. Donation cannot, because it raises a server to
  * exactly its client's priority and equal priority does not preempt, so
  * only a base priority above the client's reaches it.
@@ -2053,7 +2038,7 @@ high_priority_server_checks(void)
  *
  * A client process is handed a connection to a directory at spawn, walks
  * it to a file, reads the file, and prints what it read. The file is
- * served by a different process over the protocol of section 25, and
+ * served by a different process over the protocol, and
  * nothing on the path is inside the kernel except the message passing.
  *
  * The client is given exactly one handle and can therefore reach exactly
@@ -2124,20 +2109,20 @@ child_watch(struct child *c, struct proc *p)
  * that crosses a core boundary is slower, and under host load the
  * difference was enough to call a working program hung: the deadline
  * had stopped detecting a failure and started measuring the machine
- * this is running on. Section 14.3 says a deadline is for detecting a
+ * this is running on. A deadline is for detecting a
  * failure, so it is set where only a failure reaches it.
  */
 #define JOIN_MS     30000u
 
 /*
- * How long M15's checks are willing to wait before calling a send
+ * How long the deadline checks are willing to wait before calling a send
  * failed. Long enough that the wait is unmistakably a wait, short
  * enough to spend more than once in a boot.
  */
 #define DEADLINE_MS 50u
 
 /*
- * And how long M17 stage five is willing to wait. Longer than the rest,
+ * And how long the stale check is willing to wait. Longer than the rest,
  * because here the deadline is what the check is measuring against
  * rather than what it is waiting for: it costs nothing when the client
  * is released, and a system that left the client to time out would be
@@ -2162,12 +2147,12 @@ child_watch(struct child *c, struct proc *p)
 #define KILL_CODE 23
 
 /*
- * How many sends give up in a boot, and from which of section 12.1's
- * two states. Three queued sends time out with nobody receiving: one
- * with nobody ever having received, one from M20 stage five with a
+ * How many sends give up in a boot, and in which state each one is.
+ * Three queued sends time out with nobody receiving: one
+ * with nobody ever having received, one with a
  * server that has been killed and no replacement coming, and one
- * from that milestone's stage seven whose channel has no handles
- * left at all, which is the case that proves a sender coming off the
+ * whose channel has no handles left at all, which is the case that proves a
+ * sender coming off the
  * queue gives the slot back. One client gives up while a server
  * holds its message, and one program does the same with a buffer
  * lent. Asserted because they are counts of what the checks ask for
@@ -2187,8 +2172,7 @@ child_join(struct child *c, uint32_t within_ms)
     /*
      * A deadline, because the failure this check is here to catch is
      * an exit that advances nothing, and waiting for ever on one is
-     * a machine that hangs with no cause attached. Section 14.3: a
-     * deadline is for detecting a failure, not for scheduling.
+     * a machine that hangs with no cause attached.
      *
      * How long depends on what the child waits for. A child that only
      * computes is done in milliseconds; a child that reads the console
@@ -2232,12 +2216,12 @@ exiter(void *arg)
 }
 
 /*
- * The frame allocator of section 8's extension, and the memory map the
+ * The frame allocator, and the memory map the
  * port claims.
  *
  * The last frame is written and read back, which is the only part of this
  * that is about the machine rather than about the code. A port states its
- * memory rather than discovering it, per section 27, and a statement can
+ * memory rather than discovering it, and a statement can
  * be wrong: a machine started with less memory than the constant says
  * would otherwise be found out by a page table landing in nothing, a long
  * way from the line that was mistaken.
@@ -2253,10 +2237,9 @@ page_checks(void)
 
     /*
      * The memory a loaded program occupies is not free memory, and the
-     * allocator thought it was until this was written: a page table
-     * would have landed in a running program's text, or the next spawn
-     * would have written over a page table. Nothing had allocated
-     * anything yet, so nothing had noticed.
+     * allocator must not treat it as free: a page table
+     * would land in a running program's text, or the next spawn
+     * would write over a page table.
      */
     if (page_take(boot_first_load())) {
         panic("frames: a loaded program's memory is in the free map");
@@ -2306,7 +2289,7 @@ page_checks(void)
     }
 
     /*
-     * The far end of what the port claims. Section 27 lets a port state
+     * The far end of what the port claims. A port may state
      * its memory map, and this is the line where a wrong statement stops
      * being a comment and starts being a fault.
      */
@@ -2324,7 +2307,7 @@ page_checks(void)
       (void *)top);
 }
 /*
- * Exit, the completion timeline, and join, per section 10.4.
+ * Exit, the completion timeline, and join.
  *
  * The wait that times out is the part worth having. Without it the join
  * below proves only that the wait returned, which a timeline that was
@@ -2360,7 +2343,7 @@ completion_checks(void)
      * A poll rather than a timed wait, because a timed wait would
      * block, and blocking is exactly what lets the child run: the
      * only other runnable thread is the one being asked about. A
-     * deadline already passed is the polling form, per section 14.3.
+     * deadline already passed is the polling form.
      */
     expect("its completion has not been reached",
       run(SYS_OP_FENCE_WAIT, c.c_completion, &fargs, sizeof(fargs)),
@@ -2389,11 +2372,9 @@ completion_checks(void)
 /*
  * The UART interrupt, attached and handed over.
  *
- * Stage 2 of this milestone read the device here, to show that an external
- * interrupt arrives at all on boards whose only interrupt had been a
- * timer. That was scaffolding and said so; the driver of stage 5 owns the
- * device now, and what stays in the kernel is what section 19.2 says a
- * launcher does: attach the interrupt to a timeline and hand the child the
+ * The device is read by the driver, not here. What stays in the kernel
+ * is what a launcher does: attach the interrupt to a timeline and hand the
+ * child the
  * handles, so that the authority to attach an interrupt stays with
  * whatever assembles the system.
  */
@@ -2415,8 +2396,8 @@ console_checks(void)
 
     /*
      * SYS_RIGHT_TRANSFER because both of these are going to a child, and
-     * section 7.4 makes moving a handle a right rather than something a
-     * holder may always do.
+     * moving a handle is a right rather than something a holder may
+     * always do.
      */
     expect("a handle to that interrupt",
       handle_insert(ht, irq_object(irq), SYS_OBJ_IRQ,
@@ -2429,14 +2410,14 @@ console_checks(void)
 }
 
 /*
- * An interrupt taken while a program was running, which no milestone
- * before this one could take at all.
+ * An interrupt taken while a program was running.
  *
  * Both ports entered user mode with interrupts masked, which was
  * deliberate and written down: the AArch64 lower-EL vector was fatal, so
  * unmasking would have panicked rather than delivered. A driver is a
- * program that waits for a device, so both sides had to change, and this
- * is the check that says the change is real.
+ * program that waits for a device, so the interrupt path has to work for user
+ * code, and this
+ * is the check that shows it works.
  *
  * The timer is periodic rather than one-shot, and that is not a
  * detail. Under emulation the virtual clock runs on wall time while
@@ -2469,7 +2450,7 @@ user_interrupt_checks(void)
      * One signal right held across the whole check, because each try
      * makes a timer and destroys it, and destroying the last thing
      * that could signal a timeline puts it in the error state for
-     * good under section 9.3 rule 2. Without this the second try binds
+     * good. Without this the second try binds
      * its timer to a timeline that can no longer be advanced, and
      * every later activation is refused. It ran that way and nothing
      * showed, because what this counts is interrupts and not values,
@@ -2489,8 +2470,7 @@ user_interrupt_checks(void)
      * all, which is a property of the kernel. Whether one arrives
      * inside any particular run is a property of the host, and on two
      * cores under load it stopped being reliable: this failed about
-     * one run in six with the machine busy and never with it quiet,
-     * which is the shape this milestone warned itself about.
+     * one run in six with the machine busy and never with it quiet.
      *
      * Bounded, because a kernel that cannot be interrupted must still
      * fail rather than loop.
@@ -2543,7 +2523,7 @@ user_interrupt_checks(void)
 }
 
 /*
- * Spawn as an operation, per section 10.1: a program starting a program.
+ * Spawn as an operation: a program starting a program.
  *
  * Everything this exercises happens on the far side of the trap edge. The
  * kernel starts one program and reads one status; what that program did
@@ -2572,7 +2552,7 @@ spawn_checks(void)
 }
 
 /*
- * Threads a program created, per section 10.2, and the rule that a process
+ * Threads a program created, and the rule that a process
  * finishes when its last thread does.
  *
  * The status is what makes the second half a check rather than a
@@ -2614,8 +2594,7 @@ static sys_handle_t u_second;
 /*
  * A program with no ambient authority saying something to a person.
  *
- * Every program before this one printed through the debug console of
- * section 22.4, which takes no handle and reaches the device because it
+ * The debug console takes no handle and reaches the device because it
  * exists. greet is built without it, so there is no call to the backdoor
  * anywhere in its image; what it has is a connection to the console
  * service, handed over at spawn. If it says anything at all, output
@@ -2660,7 +2639,7 @@ greet_checks(sys_handle_t conn)
 }
 
 /*
- * The shell, which is what this milestone is for.
+ * The shell.
  *
  * It is spawned exactly as any other program, with two handles and no
  * privilege: a duplicate of the console connection and a duplicate of the
@@ -2691,7 +2670,7 @@ shell_checks(sys_handle_t console, sys_handle_t root)
     ns[0].id = SYS_NS_CONSOLE;
     ns[0].handle = dup.out_handle;
     /*
-     * Unnamed, deliberately. Section 20.4 calls a namespace an array
+     * Unnamed, deliberately. A namespace is an array
      * of named *directory* handles, and the console is not one: it
      * is a service this process reaches by role, and nothing serves
      * walks for it. Naming it would put a thing in the table that
@@ -2709,8 +2688,8 @@ shell_checks(sys_handle_t console, sys_handle_t root)
     strncpy_ns(ns[1].name, "/");
 
     /*
-     * And the same directory again, under a second name. Section 20.4's
-     * clause is that two processes see different views assembled from
+     * And the same directory again, under a second name. The namespace rule
+     * is that two processes see different views assembled from
      * the same underlying handles, and this is what makes that
      * demonstrable rather than a rearrangement of words: one filesystem,
      * reachable as `/` and as `/files`, and a child given one of those
@@ -2726,8 +2705,8 @@ shell_checks(sys_handle_t console, sys_handle_t root)
     strncpy_ns(ns[2].name, "/files");
 
     /*
-     * And both halves of the union, under one name. Section 20.4 makes
-     * this a library feature needing no kernel involvement, and from
+     * And both halves of the union, under one name. This is a
+     * library feature needing no kernel involvement, and from
      * here that is visible as there being nothing to do: two entries,
      * one name, written in the order they are to be tried.
      */
@@ -2756,13 +2735,13 @@ shell_checks(sys_handle_t console, sys_handle_t root)
     }
 }
 /*
- * The console as a service, per section 19 and section 25.
+ * The console as a service.
  *
  * The kernel is the launcher here, which is what root will be: it creates
  * the channel, hands the receive end to the driver along with the
- * interrupt, and keeps a connection to send on. Section 24.5 has exactly
- * this shape, and the readiness protocol it describes is the one this
- * needs, which is none: a client that sends first blocks in the rendezvous
+ * interrupt, and keeps a connection to send on. The launcher has exactly
+ * this shape, and a separate readiness protocol is not needed
+ * here: a client that sends first blocks in the rendezvous
  * until the server receives.
  *
  * Two reads, because a console has two paths and a filesystem has
@@ -2850,7 +2829,7 @@ console_service(void)
     /*
      * Duplicable, because every program that talks to a person gets
      * its console this way and a handle moves rather than copies.
-     * Section 7.4 has attenuation happen before a transfer, so what
+     * Attenuation happens before a transfer, so what
      * this thread holds has to carry more than what it hands out.
      */
     cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
@@ -2861,7 +2840,7 @@ console_service(void)
     h_console = conn;
 
     /*
-     * And a grant over the registers, per section 19.2. The authority to
+     * And a grant over the registers. The authority to
      * make one is here rather than in the driver: what assembles the
      * system reads the platform description and turns it into spawn
      * calls, and this kernel is what assembles the system. The driver
@@ -2882,8 +2861,8 @@ console_service(void)
      * Four handles: what it serves on, the two halves of the
      * interrupt, and the device it drives. The interrupt pair are
      * private identifiers because an interrupt is not something that
-     * means the same in every process, which is what section 20.4
-     * reserves the range above SYS_NS_PRIVATE for.
+     * means the same in every process, which is why they sit in the
+     * range above SYS_NS_PRIVATE.
      */
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_SERVICE;
@@ -2919,10 +2898,9 @@ console_service(void)
     trace_report("console");
 
     /*
-     * Both of the driver's threads blocked, on different objects,
-     * which is the arrangement section 19.3 prescribes and the reason
-     * this milestone is measuring what threads cost. Without this the
-     * stage passes on a driver that never waited for anything.
+     * Both of the driver's threads blocked, on different objects.
+     * Without this the check passes on a driver that never waited for
+     * anything.
      */
     if (!trace_saw(THREAD_WAIT_RECV)) {
         panic("console: its request thread never blocked in receive");
@@ -3021,7 +2999,7 @@ fs_server(void *arg)
 
 
         /*
-         * Section 12.4: the same answer where the kernel can read it.
+         * The same answer where the kernel can read it.
          * A refusal that lives only in the payload is a successful
          * send as far as the kernel is concerned, and a chain linked
          * behind it carries on.
@@ -3226,16 +3204,13 @@ dir_count(sys_handle_t dir)
 }
 
 /*
- * M23 in full: the walk and directory-read semantics the spike once
- * modelled against a static tree, now in a real server over a real
- * rendezvous, with the create and unlink the spike only named. The spike
- * is gone, because its one property that was not yet proved on the wire,
- * that a reader survives a mutation made between its reads, is proved here
- * instead.
+ * The walk and directory-read semantics in a real server over a real
+ * rendezvous, with create and unlink. A reader survives a mutation made
+ * between its reads, which is proved on the wire here.
  *
  * `ramfs` is an ordinary loaded program holding a mutable tree in its own
  * memory, and this drives it across the trap edge: a whole-path walk to a
- * file, a read of that file, the three walk refusals the proposal settled,
+ * file, a read of that file, the three walk refusals,
  * a directory read that pages the `big` directory to its end across an
  * opaque cursor with a foreign cursor refused, and a create and unlink
  * whose effect a listing reflects. A churn longer than the node pool
@@ -3243,7 +3218,7 @@ dir_count(sys_handle_t dir)
  * pages `big` while a second connection unlinks and creates entries
  * between two of its reads, and every surviving entry is read exactly
  * once: the cursor names a position and not a snapshot, carried onto the
- * wire from the function the spike proved it against. Last, a soak returns
+ * wire. Last, a soak returns
  * the live connection count and the root's entry count to where they
  * began, which is the resource exactness the static pools exist to make
  * checkable.
@@ -3468,7 +3443,7 @@ mutable_dir_checks(void)
      * unlinked, it is gone. A create under a connection that names a file
      * is refused. Then a churn of create and unlink longer than the node
      * pool: a create that found the pool full would be a node a prior
-     * unlink had left behind, which is the stage's falsification.
+     * unlink had left behind.
      */
     {
         sys_handle_t made, afile_conn;
@@ -3589,9 +3564,7 @@ mutable_dir_checks(void)
      * past the reader's cursor, all between two of the reader's reads. An
      * entry present and unchanged across the whole read is read exactly
      * once and never skipped, which a cursor naming a count rather than a
-     * key would break the moment the unlink shifted what followed. This is
-     * the property the retired spike proved against a function call, now
-     * proved over the rendezvous.
+     * key would break the moment the unlink shifted what followed.
      */
     {
         static const char *const survive[] = { "b", "c", "d", "f", };
@@ -3730,7 +3703,7 @@ mutable_dir_checks(void)
      * close, each round balanced so the tree and the pools end where they
      * began. The live connection count and the root's entry count are read
      * before and after and must come back to the same number: the static
-     * pools of section 2.7 exist to make exactly this checkable, and a
+     * pools exist to make exactly this checkable, and a
      * count that did not return would be a connection or a node leaked a
      * round at a time.
      */
@@ -3944,7 +3917,7 @@ chain_checks(void)
  * Run one client program to completion and report what it cost.
  *
  * Rendezvous and connection-pool high water are both deterministic, which
- * is why they are the measurement rather than elapsed time: section 25.7's
+ * is why they are the measurement rather than elapsed time. The
  * claim is about round trips and about not touching a statically sized
  * pool, and under emulation a clock would answer a question nobody asked.
  *
@@ -3954,7 +3927,7 @@ chain_checks(void)
  * thread passed through are checked rather than assumed.
  */
 /*
- * What moving a buffer costs at each tier, per section 18.
+ * What moving a buffer costs at each tier.
  *
  * Two entries per page in each half of the move, one invalidation per
  * page in each half, and no whole-TLB flush at all. A crossing is both
@@ -3994,7 +3967,7 @@ boundary_rate(const char *what, const struct vm_cost *c)
     }
 
     /*
-     * And nothing throws the whole cache away any more. This is a
+     * And nothing throws the whole cache away. This is a
      * zero the check has to keep asserting rather than a line that
      * could be deleted: a flush reintroduced here would be invisible
      * in a total that already had thousands of them from address
@@ -4031,10 +4004,9 @@ same_name(const char *a, const char *b)
  *
  * These are counts. They are the same on both ports, at both tiers and
  * in every run, which is what makes them a property of this kernel and
- * of these three programs rather than of the machine underneath. M10
- * settled the rule and the reason: a headline figure that can drift
- * without anything failing is a figure nobody is keeping, and the
- * numbers here are this milestone's product.
+ * of these three programs rather than of the machine underneath. A
+ * headline figure that can drift without anything failing is a figure
+ * nobody is keeping.
  *
  * The entries and invalidations on the same line are not in the table.
  * Those are zero at Tier 0, where there is one address space and a
@@ -4055,7 +4027,7 @@ static const struct {
     { "fs_client", 5, 15, 5, 1 },
 
     /*
-     * The compound request of section 25.7: one message asks for all
+     * The compound request: one message asks for all
      * three, so two round trips go and the server never draws a
      * connection from its pool.
      */
@@ -4200,7 +4172,7 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
     }
 
     /*
-     * Both sides must have blocked on each other. Without this the stage
+     * Both sides must have blocked on each other. Without this the check
      * passes on a run where the server happened to be waiting every time,
      * which never queues a sender and never proves the client can wait for
      * capacity as opposed to for work.
@@ -4219,10 +4191,10 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
      * arrives, and it is both times. One message cannot queue at all: the
      * server is waiting when it arrives, because the client has not given
      * it anything else to do. Fewer sends is fewer chances to wait for
-     * capacity, which is a saving section 25.7 does not mention.
+     * capacity.
      *
-     * About this client and not about the system, since the block store
-     * arrived. The file server sends onward for every block and queues
+     * About this client and not about the system. The file server sends onward
+     * for every block and queues
      * behind the store when it does, so asking whether anything at all
      * send-blocked now answers yes whatever the client did.
      */
@@ -4246,9 +4218,9 @@ run_client(const char *image, sys_handle_t root, uint32_t expect_bytes,
 
 /*
  * The same slice again, with both halves as loaded programs, and then the
- * same read a second way to answer section 25.7.
+ * same read a second way.
  *
- * Stage 8 proved the protocol and the rendezvous with kernel threads
+ * The protocol and the rendezvous are checked above with kernel threads
  * standing in for processes. What it could not reach is the boundary: the
  * trap edge, the startup record as a program reads it, and a scheduler
  * blocking and resuming threads that are in user mode when they block.
@@ -4361,14 +4333,14 @@ two_copies_checks(void)
  * A reply that fails on its way across, and a payload that arrives
  * anyway.
  *
- * Section 7.4 has a handle travel by move, and a move can fail: the
+ * A handle travels by move, and a move can fail: the
  * server may name a handle it does not hold. The reply still happened
  * and the bytes in it are still what the server wrote, so both sides
  * learn the transfer failed and the client gets what it was sent.
  *
- * This exists because the first version of the staged reply path
- * delivered the payload only when the reply reported success, and
- * nothing in the system noticed. A client asking for a file and being
+ * This exists because a reply path that
+ * delivers the payload only when the reply reports success would go
+ * unnoticed. A client asking for a file and being
  * given an error with an empty message instead of the status the server
  * wrote is the shape of the bug that would have followed.
  */
@@ -4448,17 +4420,16 @@ reply_error_checks(void)
  * is in every address space already, so there is nothing to hand over,
  * and it is in none of them reachable from user mode, so a program given
  * the address would fault on it. What the kernel would need to lend a
- * program a page is the grant of section 19.2, which is a handle rather
- * than an address, and which stage 7 builds.
+ * program a page is a grant, which is a handle rather than an address.
  *
  * Both tiers refuse. Tier 0 has one address space and the read would
  * work, and letting it work there would put a difference between the
  * tiers into the interface rather than into the enforcement.
  *
- * The first version of this stage skipped the hand-over for kernel
- * memory instead of refusing it, on the grounds that the kernel is
- * mapped everywhere. It is, without the bit that lets user mode touch
- * it, and the file server faulted on the first byte it wrote.
+ * Kernel memory is refused rather than handed over, although the kernel
+ * is mapped everywhere. It is mapped without the bit that lets user mode
+ * touch it, so a hand-over would fault on the first byte the file server
+ * wrote.
  */
 static void
 kernel_buffer_checks(sys_handle_t root)
@@ -4520,9 +4491,9 @@ kernel_buffer_checks(sys_handle_t root)
  * thread ends with the kind, the address and the instruction in its
  * status, and everything else goes on running.
  *
- * This is section 6.1's argument in two runs of one program, and it is
- * what stage 3 saw and could not check: a fault stopped the machine
- * then, so the difference could be observed and not survived.
+ * This is the difference in two runs of one program. Without the
+ * hardware check a fault stops the machine, so the difference can be
+ * observed but not survived.
  */
 static void
 fault_checks(void)
@@ -4538,8 +4509,8 @@ fault_checks(void)
 
     /*
      * The kernel's first instruction. Nothing about it matters except
-     * that it is not the program's: it is the address the review of
-     * stage 3 used, and the same one the mapping made read-only. The
+     * that it is not the program's: it is the kernel's first address, which the
+     * mapping makes read-only. The
      * other two ends of the image are taken because the port writes all
      * three and has nowhere to put one it is not given.
      */
@@ -4627,7 +4598,7 @@ fault_checks(void)
 /*
  * The move contract, enforced or trusted, from one program.
  *
- * Section 6.1's rule is that a sender loses its buffer between send and
+ * The rule is that a sender loses its buffer between send and
  * reply. `grabber` breaks it with a second thread, which is the only way
  * it can be broken: the thread that sent the message is blocked and has
  * no instruction to execute in between.
@@ -4640,8 +4611,8 @@ fault_checks(void)
  * window every time rather than whenever the timer happens to fall.
  *
  * What the program reports is what happened to that thread, and the two
- * tiers answer differently from one source. This is the milestone's
- * thesis, and the first check here whose expected result is not the same
+ * tiers answer differently from one source. This is the first
+ * check here whose expected result is not the same
  * on both tiers.
  */
 static void
@@ -4757,7 +4728,7 @@ move_checks(void)
  * Two halves, and the driver above is the first: it holds no address of
  * its own, asks the kernel where its grant is, and the console works. If
  * a grant were merely decorative that half would pass anyway, because
- * the registers were mapped into every process for three stages.
+ * the registers were mapped into every process.
  *
  * The second half is a program reading the console's register page
  * without holding anything, and it runs at Tier 2 only. Not because
@@ -4825,8 +4796,7 @@ device_checks(void)
 
         /*
          * And the driver itself, started with nothing. It stops at the
-         * lookup rather than reaching for an address, which is the
-         * change this stage made to it.
+         * lookup rather than reaching for an address.
          *
          * Only at this tier, because starting a second copy of a live
          * image is only possible here. At Tier 0 the same request is
@@ -4870,9 +4840,7 @@ device_checks(void)
  * in flight is a reap: a program that exited a moment ago still holds
  * its slot until the next switch collects its last thread. Its frames
  * then come back inside the window and are counted against whatever the
- * window is named after. M14 stage two is what made that visible, by
- * making a process small enough that the boot reaches the next check
- * before the last one has finished letting go.
+ * window is named after.
  *
  * Both the count and the number of processes waiting to be reaped have
  * to hold still, and the second is the one that matters: a parked
@@ -4920,9 +4888,9 @@ frames_quiet(void)
 }
 
 /*
- * What holds a frame that no process holds, per M13 stage 4.
+ * What holds a frame that no process holds.
  *
- * Stages two and three made a process give back everything it cost, and
+ * A process gives back everything it cost, and
  * the count after a spawn and a reap returns to where it started. That
  * is not the same as the machine giving everything back, because not
  * every frame belongs to a process. Some belong to an object that
@@ -4947,13 +4915,12 @@ frames_quiet(void)
  * figure that changes means something in that run stopped giving a
  * frame back, and not necessarily the thing named.
  *
- * It waits for the number rather than reading it once, because stage
- * two established that the join is not the reap: a program that has
+ * It waits for the number rather than reading it once, because the join
+ * is not the reap: a program that has
  * exited holds its slot until its last thread is collected at the top
  * of some core's next switch, and a count read before that has a whole
- * process in it. Waiting on the figure itself is what this settled on
- * after waiting on a proxy went wrong. The proxy was the process pool's
- * count returning to what it was before the check, which is not this
+ * process in it. The wait is on the figure itself, since the process
+ * pool's count returning to what it was before the check is not this
  * check's business to require: under the paced session the console has
  * input to deal with and a process appears that this never started, and
  * the wait then failed on somebody else's work.
@@ -4966,9 +4933,10 @@ frame_holder(const char *what, uint32_t before, uint32_t expect,
     int64_t held;
 
     /*
-     * Signed, and exact. This used to clamp a count that had fallen to
-     * zero and compare that, which for a row expecting nothing held is
-     * a check that cannot fail: anything else giving memory back inside
+     * Signed, and exact. A count clamped at zero and compared with zero, for a
+     * row
+     * expecting nothing held, is a check that cannot fail: anything else giving
+     * memory back inside
      * the window drives the difference negative, the clamp reads it as
      * nothing held, and a leak of this check's own would be hidden
      * under it. Fewer frames than there were is not nothing held, it is
@@ -4992,7 +4960,7 @@ frame_holder(const char *what, uint32_t before, uint32_t expect,
 
 /*
  * A row of the same table measured against its holder rather than
- * against the machine's free memory, per M14 stage two's review.
+ * against the machine's free memory.
  *
  * The two rows with a named holder can be asked about it directly:
  * grant_frames() is the frames grants describe, so a check that hands a
@@ -5000,7 +4968,7 @@ frame_holder(const char *what, uint32_t before, uint32_t expect,
  * faults should raise it by five. That is the quantity the row is
  * about.
  *
- * The window form these used to have is confounded by anything else
+ * The window form is confounded by anything else
  * giving memory back inside it, and something does: reaping is deferred
  * to a switch, and work inside one of these checks can release the last
  * handle to a process that exited during the check before it. Then a
@@ -5035,7 +5003,7 @@ grant_holder(const char *what, uint32_t before, uint32_t expect,
 
 /*
  * And the same question asked of a page that has been lent away and
- * given back, per M14 stage three's review.
+ * given back.
  *
  * A buffer sent to a server is unmapped from the client, mapped into
  * the server and mapped back when the reply comes. That is the one path
@@ -5126,20 +5094,17 @@ lent_permission_checks(sys_handle_t root)
      * measurements and its sixteen frames came back in the middle of
      * one: the row after it read minus sixteen. Where a check's
      * leavings land is part of the check, and what holds that
-     * reference is a question for a stage that is about references.
+     * reference is a question for a check of its own.
      */
 }
 
 
 /*
- * Where the startup record is, per M14 stage four.
+ * Where the startup record is.
  *
- * Section 20.4 has the loader place the record in the child's memory.
- * Until this milestone that meant the last page of the slot, chosen
- * because it was the one place a program's own layout did not reach
- * while the whole slot was mapped. Nothing maps the whole slot now, so
- * that page is not there, and the record moved to the last page of what
- * the program needs, which the linker script reserves above the stack.
+ * The loader places the record in the child's memory. It sits on the
+ * last page of what the program needs, which the linker script reserves
+ * above the stack.
  *
  * Two things are worth asserting about it and one is not. That a
  * program can read its namespace and its arguments is checked by every
@@ -5151,12 +5116,12 @@ lent_permission_checks(sys_handle_t root)
  * read-only, which is what the loader chose for it.
  */
 /*
- * What must not be freed under somebody, per M20 stage four.
+ * What must not be freed under somebody.
  *
- * Stage three frees a channel when the last thing naming it lets go.
+ * A channel is freed when the last thing naming it lets go.
  * The question this answers is what "nothing names it" leaves out,
- * and the answer is a thread that is already inside. Four things were
- * proposed and three of them turned out to be parties: a thread
+ * and the answer is a thread that is already inside. Of four candidates,
+ * three are parties: a thread
  * queued to send, a thread blocked receiving, and a thread inside a
  * request. The fourth, a pulse nobody has collected, is not.
  *
@@ -5164,8 +5129,7 @@ lent_permission_checks(sys_handle_t root)
  * required to still be there. Then the party is let out and the slot
  * is required to come back. Asserting only the second half would pass
  * on a kernel that freed the channel immediately and got away with
- * it, which is the shape of every check this project has had to throw
- * away.
+ * it.
  */
 static struct channel *hold_ch;
 static volatile bool hold_sent;
@@ -5193,7 +5157,7 @@ hold_sender(void *arg)
 static volatile bool hold_gave_up;
 
 /*
- * A sender that nobody will ever serve, per M20 stage seven's review.
+ * A sender that nobody will ever serve.
  * It queues, its handle is closed under it, and what gets it back is
  * its own deadline rather than a server.
  */
@@ -5358,11 +5322,9 @@ channel_hold_checks(void)
     }
 
     /*
-     * And the same sender, let out the other way, per stage seven's
-     * review. Stage four proved the slot comes back when the sender
-     * is served. A sender that gives up comes off the same queue and
-     * leaves the channel just as empty, and until this check there
-     * was nothing asking on that path: the slot stayed for ever.
+     * And the same sender, let out the other way. A sender that gives up
+     * comes off the same queue and leaves the channel just as empty, so
+     * its slot must come back too.
      *
      * Nobody receives here. What gets the sender back is the
      * deadline it set itself.
@@ -5547,48 +5509,39 @@ channel_hold_checks(void)
 }
 
 /*
- * A server ended, and its channel with it, per M20 stage five.
+ * A server ended, and its channel with it.
  *
- * Sections 18.2 and 18.3 argue from a supervisor that ends a server
- * and starts another, and M18's retrospective listed it as untested.
- * M16 built half of it: a server is killed and a replacement takes
- * its place, with the kernel holding the channel across the gap and
+ * A supervisor ends a server and starts another. A killed server is
+ * replaced, with the kernel holding the channel across the gap and
  * handing a duplicate to each one. That is a restart where the
  * channel never goes.
  *
  * This is the other half. The server is given the only handle there
- * is, so the channel belongs to it in the sense section 12.5 means,
- * and when it dies the channel goes with it. The replacement makes
+ * is, so the channel belongs to it, and when it dies the channel goes with it.
+ * The replacement makes
  * its own. Done more times than the pool has slots, which is the
  * whole point: a system that restarts a server once an hour for a
  * week must not be a system that has run out of channels.
  *
- * And the server is killed before it has ever run, per M21 stage
- * six. This check used to send the server a request and wait for
- * the answer first, because a kill written against a thread that
- * was ready and had never run set the mark and ended nothing: the
- * thread went on into user mode, blocked in a receive, and the
- * join waited out thirty seconds and then ten minutes. The round
- * trip was a workaround written into a check to get past a defect
- * in the kernel, and it is gone. The kill is written inside the
- * same deferred region as the spawn, so on every round the thread
- * has not run, which is the case M21 stage two added a reading
- * for and the one this loop could not survive before it.
+ * The server is killed before it has ever run. The kill is written
+ * inside the same deferred region as the spawn, so on every round the
+ * thread has not run. A kill against a thread that is ready and has
+ * never run must still end it: otherwise the thread goes on into user
+ * mode, blocks in a receive, and the join waits for its timeout.
  */
 #define RESTART_ROUNDS      (SYS_MAX_CHANNELS + 4u)
 
 /*
  * What the loop did, kept for the report at the end of the boot. A
- * count of servers and the one slot they all took, per M20 stage
- * seven.
+ * count of servers and the one slot they all took.
  */
 static uint32_t restarts_done;
 static uint32_t restarts_slot;
 
 /*
  * Entries started by a thread whose process had been killed, summed
- * over the checks that kill one, per M21 stages one and six. The
- * number the milestone is about is zero, and it is a sum rather
+ * over the checks that kill one. The
+ * number that matters is zero, and it is a sum rather
  * than one check's reading because more than one check now ends a
  * process before its thread has run.
  */
@@ -5630,12 +5583,9 @@ restart_checks(void)
 
         /*
          * One handle, and it is the server's as soon as the spawn
-         * has it. That is the arrangement section 18.3 describes: a
-         * supervisor that started a server and is not one of its
-         * clients. The connection a client used to hold is gone
-         * with the round trip it was for, and the case of a client
-         * that outlives its server is the one below rather than
-         * this one.
+         * has it. That is the arrangement where a
+         * supervisor that started a server is not one of its clients.
+         * A client that outlives its server is the case below.
          */
         if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
           SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &give) != SYS_OK) {
@@ -5683,8 +5633,8 @@ restart_checks(void)
 
         /*
          * And killed before it has run, in the region the spawn was
-         * made in, so that nothing dispatched it in between. This
-         * is the sequence M20 could not write. The mark is set on a
+         * made in, so that nothing dispatched it in between. The
+         * mark is set on a
          * process whose only thread is ready and has never been on
          * a core, and what ends that thread is the reading in the
          * trampoline it is about to arrive on.
@@ -5718,7 +5668,7 @@ restart_checks(void)
 
         /*
          * And it started nothing on its way out, which is the same
-         * claim stage one's check makes and the reason this loop
+         * claim the kill checks make, and the reason this loop
          * adds to that count rather than keeping one of its own.
          */
         marked_entries += sc.c_proc->p_dying_entries;
@@ -5728,7 +5678,7 @@ restart_checks(void)
 
         /*
          * And the channel comes back at the reap rather than at the
-         * exit, which is section 15.6's distinction and not a
+         * exit, which is a distinction and not a
          * looseness in this check. A join says the process has
          * ended; its handle table is closed when the last thing that
          * could ask about it lets go, and the collection happens at
@@ -5779,8 +5729,8 @@ restart_checks(void)
 
     /*
      * And a client that was holding a connection when the server
-     * went. Two questions, and the second is the one section 12.5
-     * draws a distinction for.
+     * went. Two questions, and the second is the one the error
+     * values distinguish.
      *
      * The channel does not go with the server here, because the
      * connection names it and a connection is a holder. That is the
@@ -5790,8 +5740,7 @@ restart_checks(void)
      * What the client is told when it sends afterwards is nothing.
      * It queues, and what gets it back is its own deadline.
      *
-     * That is not the answer this stage went looking for and it is
-     * the right one. Section 12.5's two errors say what a client is
+     * That is the right answer. The two errors say what a client is
      * told when the server it was already talking to went:
      * `SYS_ERR_STALE` if the server is still there to be asked
      * again, `SYS_ERR_OWNER_DEAD` if it is not. A client that starts
@@ -5799,7 +5748,7 @@ restart_checks(void)
      * cannot answer it: a channel whose owner is gone is exactly
      * what a channel looks like between a server being killed and
      * its replacement taking the receive right, which is the restart
-     * M16 built and made invisible to clients on purpose. Refusing
+     * that is kept invisible to clients on purpose. Refusing
      * the send would make every restart visible to every client.
      *
      * So the two cases differ and the difference is worth saying.
@@ -5954,10 +5903,10 @@ restart_checks(void)
 }
 
 /*
- * More channels than the pool has, per M20 stage six.
+ * More channels than the pool has.
  *
- * M13's shape, which is the one that actually proves reuse. Stage
- * five spends a channel at a time, fifty-two of them, and that says
+ * Spending a channel at a time is the shape that actually proves reuse.
+ * This spends a channel at a time, fifty-two of them, and that says
  * a slot comes back. It does not say the pool can carry a load: one
  * slot going round is the easiest case there is, and a kernel that
  * leaked a slot for every two it freed would pass it.
@@ -6066,8 +6015,8 @@ channel_endurance_checks(void)
 
         /*
          * The same slots as the first cycle and not merely the same
-         * number of them, which is stage three's rule applied to a
-         * load rather than to one channel. The generation has to
+         * number of them, which applies to a load what holds for
+         * one channel. The generation has to
          * have moved on for every one of them as well: a slot that
          * came back with the generation it went in with would mean
          * an identifier somebody kept still names it.
@@ -6157,9 +6106,9 @@ channel_endurance_checks(void)
     }
 
     /*
-     * The two numbers the stage exists to print beside each other,
+     * The two numbers printed beside each other,
      * and what the count of them cost. How long it took is the
-     * host's and is reported rather than asserted, per M9's rule.
+     * host's and is reported rather than asserted.
      */
     cnprintf("    %-38s %u, of %u slots\n", "channels made and ended",
       (unsigned int)spent, (unsigned int)SYS_MAX_CHANNELS);
@@ -6183,7 +6132,7 @@ channel_endurance_checks(void)
 #define CHANNEL_SCANS_EXPECTED    4
 
 /*
- * The count against a walk, per M20 stage two.
+ * The count against a walk.
  *
  * Run at points through the boot rather than only at the end, because
  * a count that is wrong and then right again is a count that cannot be
@@ -6221,7 +6170,7 @@ channel_checks(void)
     cnputs("channels: what holds one, counted and walked\n");
 
     /*
-     * The slot itself, per M20 stage three. A pool where used falls
+     * The slot itself. A pool where used falls
      * below high-water says slots come back; it does not say which
      * one came back, and a pool that handed out a fresh slot every
      * time while freeing old ones would say the same thing until it
@@ -6232,7 +6181,7 @@ channel_checks(void)
      * the same index, a generation that has moved on, and the pool
      * exactly where it started. The generation is what makes the
      * first channel's identifier name nothing rather than name the
-     * second one, which is section 7.1's rule and the reason a slot
+     * second one, which is the reason a slot
      * can be reused at all.
      */
     {
@@ -6286,7 +6235,7 @@ channel_checks(void)
         /*
          * And it comes back empty, which is `pool_alloc` clearing
          * every object it hands out rather than anything this
-         * milestone does. The check is here because that is the load
+         * check does. The check is here because that is the load
          * bearing part: the day a pool stops clearing a recycled
          * slot, the field that would be felt first is the flag saying
          * a pulse was lost, and a fresh channel would tell its server
@@ -6339,11 +6288,8 @@ channel_checks(void)
     }
 
     /*
-     * What stage one asserted here was that nothing was reachable and
-     * nothing was ever given back, which was the subject of the
-     * milestone. Stage three makes both false, so the assertion is
-     * the other way round now: slots come back, and the pool is
-     * holding fewer than it has handed out at once.
+     * Slots come back, and the pool is holding fewer than it has handed
+     * out at once.
      */
     if (channel_freed == 0) {
         panic("channels: not one slot has gone back, with all the "
@@ -6419,8 +6365,8 @@ startup_record_checks(void)
      * Tier 2 only, because at Tier 0 the record is not in the
      * program's memory at all: there is one address space and the
      * record lives in the process object, which a program can read
-     * because nothing stops it. Section 15.2 is the same division
-     * everywhere else in this milestone.
+     * because nothing stops it. The same division applies
+     * everywhere else.
      */
     if (((struct proc *)obj)->p_startup_va != rec) {
         panic("startup: the loader put the record at 0x%lx, not 0x%lx",
@@ -6475,7 +6421,7 @@ static struct channel *dl_ch;
  */
 static struct timeline dl_tl;
 
-/* And one for M17's checks to wait on, signalled by nothing. */
+/* And one for the checks to wait on, signalled by nothing. */
 static struct timeline kill_tl;
 
 /*
@@ -6515,8 +6461,8 @@ static sys_err_t dl_slow_reply = SYS_ERR_INTERRUPTED;
  * A server that takes a message and answers too late.
  *
  * It waits past the client's deadline before replying, which is the
- * whole of section 12.1's second case: the client abandons work in
- * progress, and the server discovers it when the reply is refused.
+ * case where the client abandons work in progress: the server discovers
+ * it when the reply is refused.
  */
 static void
 dl_slow_server(void *arg)
@@ -6601,7 +6547,7 @@ static volatile uint64_t dl_race_until;
  * client outranks nothing here: it is below this thread, so it does not
  * run until this one blocks, and the timer fires in between.
  *
- * That is the race of M15 stage five, arranged rather than waited for.
+ * That is the race, arranged rather than waited for.
  * The reply happens first and the deadline arrives second, on a thread
  * that has its answer and has not yet been back to collect it.
  */
@@ -6641,10 +6587,10 @@ dl_race_server(void *arg)
 }
 
 /*
- * A deadline on a send, per M15 stage one.
+ * A deadline on a send.
  *
- * Section 14.3 has every blocking call take an absolute deadline and
- * gives SYS_DEADLINE_NOW as the one that polls. Section 12.1 says what
+ * Every blocking call takes an absolute deadline and
+ * gives SYS_DEADLINE_NOW as the one that polls. The protocol says what
  * a send does with it: a client that finds no server and will not wait
  * was never queued, so the server never learns it existed.
  *
@@ -6712,10 +6658,10 @@ deadline_checks(void)
     }
 
     /*
-     * And a deadline that has to actually arrive, per M15 stage two.
+     * And a deadline that has to actually arrive.
      * The poll above never blocked, so nothing so far has armed a timer
-     * or taken a thread off a queue: this is the first send in this
-     * system that waits and then stops waiting.
+     * or taken a thread off a queue: this is the first send that waits
+     * and then stops waiting.
      *
      * How long it waited is read as well as what it returned. A
      * deadline already past, or a timer that fired at once, gives the
@@ -6751,15 +6697,15 @@ deadline_checks(void)
         /*
          * The floor is asserted and the figure is printed. That it
          * waited at least as long as it said is the kernel's; how long
-         * after its deadline it ran again is the host's, which is M9's
-         * rule.
+         * after its deadline it ran again is the host's and is not
+         * asserted.
          */
         cnprintf("    %-38s %lu ms asked for, %lu ticks waited\n",
           "it waited before giving up", (unsigned long)DEADLINE_MS,
           (unsigned long)waited);
 
         /*
-         * And nothing was left behind. Section 12.1 calls this the
+         * And nothing was left behind. This is the
          * clean case: the client was taken off the queue, nothing was
          * delivered, and nothing was allocated on its behalf, so a
          * server arriving afterwards would find an empty channel rather
@@ -6778,10 +6724,10 @@ deadline_checks(void)
 
     /*
      * And a deadline on something that cannot wait, which is a caller
-     * saying what the operation does not do. Section 14.3 has every
-     * blocking call take one; a fence wait carries its own and a
+     * saying what the operation does not do. Every
+     * blocking call takes one; a fence wait carries its own and a
      * receive deliberately has none, so today the list is one operation
-     * long. Refused rather than ignored, for the reason section 17.4's
+     * long. Refused rather than ignored, for the reason the
      * result register is.
      */
     {
@@ -6828,7 +6774,7 @@ deadline_checks(void)
      * It is what makes the cancel after the block matter. A served
      * sender that kept its registered deadline would have it fire later
      * against a thread that is running, or blocked on something else,
-     * and section 14.3's own rule is that whichever of the two happens
+     * and the rule is that whichever of the two happens
      * first leaves the other stale.
      */
     {
@@ -6855,8 +6801,8 @@ deadline_checks(void)
     }
 
     /*
-     * And the other case, per M15 stage three: a client whose message a
-     * server is already holding. Section 12.1 has it abandon work in
+     * And the other case: a client whose message a
+     * server is already holding. The client abandons work in
      * progress rather than withdraw a request nobody saw, so the server
      * is not told and finds out when it replies.
      */
@@ -6876,8 +6822,7 @@ deadline_checks(void)
          * arrives. That is what makes this the REPLY-blocked case: at a
          * lower priority it would not have run yet, the send would
          * queue, and the timer would be armed on the way through
-         * THREAD_WAIT_SEND instead. The first version of this check did
-         * exactly that and tested stage two twice.
+         * THREAD_WAIT_SEND instead.
          */
         srv = thread_create("dl-slow", PRIO_BOOT + 1, dl_slow_server, NULL);
         sched_ready(srv);
@@ -6898,7 +6843,7 @@ deadline_checks(void)
 
         /*
          * That the server had it is the difference between this case
-         * and the last one. Without it this would be stage two again
+         * and the last one. Without it this would be the last case again
          * with a slower server.
          */
         if (dl_slow_took == 0) {
@@ -6946,8 +6891,8 @@ deadline_checks(void)
     }
 
     /*
-     * And a client that lent memory, per M15 stage four. Section 6.1
-     * hands the buffer to the server for the length of the call, which
+     * And a client that lent memory. The buffer
+     * is handed to the server for the length of the call, which
      * at Tier 2 is a real mapping: the pages leave the client's address
      * space. A client that gives up has to get them back with the
      * permissions they had, and the program is what says it did, by
@@ -6955,7 +6900,7 @@ deadline_checks(void)
      *
      * A user program rather than a thread here, because a kernel thread
      * shares the kernel's address space and there is nothing to take
-     * away from it: what this stage is about only exists between two
+     * away from it: what this check is about only exists between two
      * address spaces.
      */
     {
@@ -6977,7 +6922,7 @@ deadline_checks(void)
         sched_ready(srv);
 
         /*
-         * Nothing is handed over any more, per M16 stage four. The
+         * Nothing is handed over any more. The
          * program computes its own instant from the counter and the
          * frequency in its system page, and the check's part is to
          * know how long that instant is meant to be and to say that
@@ -7030,8 +6975,7 @@ deadline_checks(void)
          * only thing that tells the two apart is that one of them
          * waited. Measured around the spawn as well as the run, so the
          * floor is the deadline and not a tight bound on it: what is
-         * asserted is that it did not return sooner, per M9 and per
-         * M15's own send.
+         * asserted is that it did not return sooner.
          */
         if (took < time_from_ms(DEADLINE_MS)) {
             panic("deadline: the program was back in %lu ticks, inside "
@@ -7069,7 +7013,7 @@ deadline_checks(void)
     }
 
     /*
-     * And the race, per M15 stage five: the reply and the deadline
+     * And the race: the reply and the deadline
      * arriving together. Arranged rather than waited for. The server
      * outranks this thread, so it replies, this thread becomes runnable
      * without running, and the server then holds the core past the
@@ -7109,7 +7053,7 @@ deadline_checks(void)
         /*
          * And the deadline really did arrive while this thread held its
          * answer. Without that the check is a send that was answered,
-         * which stage two already makes.
+         * which the earlier check already makes.
          */
         if (time_now() < args.deadline) {
             panic("deadline: it returned before its own deadline");
@@ -7162,7 +7106,7 @@ syspage_tick(void)
     code = child_join(&c, JOIN_MS);
 
     /*
-     * And wait for the reap, per M13: the join says the process has
+     * And wait for the reap: the join says the process has
      * exited and closing the handles says nothing can ask about it,
      * but its last thread is parked rather than collected until the
      * top of the next switch. The slot going back is the reap exactly,
@@ -7180,7 +7124,7 @@ syspage_tick(void)
 }
 
 /*
- * The system page of section 6.2, per M16 stage two.
+ * The system page.
  *
  * Two questions, and the second is the one that makes the first mean
  * anything. A program reads a field and gets what the kernel put there,
@@ -7292,7 +7236,7 @@ syspage_checks(void)
      * Flat memory permits it, and says so rather than being left out.
      * There is one frame and every process sees the same one, so at
      * Tier 0 a program really can move the clock everything else
-     * reads. Section 13.3 already names the tier as the tier without
+     * reads. Tier 0 is already the tier without
      * protection, and this is one more thing it does not protect.
      */
     if (sargs.out_fault != SYS_FAULT_NONE) {
@@ -7318,7 +7262,7 @@ syspage_checks(void)
 
         /*
          * Put it back. The check broke a page the rest of this boot
-         * reads, and leaving it broken would make every later stage
+         * reads, and leaving it broken would make every later check
          * measure the damage rather than the system.
          */
         syspage_build();
@@ -7351,7 +7295,7 @@ syspage_checks(void)
      * again is not enough and the break test is what showed it: a frame
      * that has been freed still holds what it held until something else
      * takes it, so the read passed with the page on the free list and
-     * the failure surfaced stages later as a double free. page_take
+     * the failure surfaced later as a double free. page_take
      * answers false for a frame that is held, which is the answer
      * wanted here.
      */
@@ -7380,7 +7324,7 @@ clock_why(int32_t code)
 }
 
 /*
- * The clock a program can read, per M16 stage three.
+ * The clock a program can read.
  *
  * The kernel reads the counter, runs a program that reads it twice, and
  * reads it again. What the program returns is its second reading
@@ -7406,7 +7350,7 @@ clock_read_checks(void)
 
     /*
      * One reading, handed to the program and kept for the comparison.
-     * It was two at first, taken a few instructions apart, which made
+     * Two readings taken a few instructions apart would make
      * the program measure from one instant and the kernel bound it
      * with another: not a bracket, and tighter than either end meant,
      * so an interrupt landing between the two reads would have failed
@@ -7471,7 +7415,7 @@ clock_read_checks(void)
 
     /*
      * Both numbers are durations and neither is asserted against a
-     * figure, per M9. What is asserted is that one fell inside the
+     * figure. What is asserted is that one fell inside the
      * other, which is an ordering and is the same on every host.
      */
     cnprintf("    %-38s %lu of the kernel's %lu ticks\n",
@@ -7482,11 +7426,11 @@ clock_read_checks(void)
       (unsigned long)(span * 1000000ULL / time_hz()));
 }
 /*
- * What reading the clock costs, per M16 stage five.
+ * What reading the clock costs.
  *
- * Section 6.2's whole claim for the page and the counter is that a
+ * The whole claim for the page and the counter is that a
  * program tells the time without asking the kernel. A count of
- * crossings is what says so, and M11 already keeps one per process:
+ * crossings is what says so, and the kernel already keeps one per process:
  * p_submits is every time this process entered the kernel with work.
  *
  * So the same program is run twice, reading the clock once and reading
@@ -7509,8 +7453,8 @@ clock_submits(uint64_t reads, uint64_t *took, int32_t *said)
     int32_t code;
 
     /*
-     * One reading, handed over and kept, for the reason stage three's
-     * check has one: the program compares its own first reading with
+     * One reading, handed over and kept, for the reason the
+     * check needs one: the program compares its own first reading with
      * what it was given, and a second reading taken here would make
      * that comparison a different question from the one it looks like.
      */
@@ -7586,7 +7530,7 @@ clock_cost_checks(void)
     /*
      * One, and named rather than left as whatever came back. A program
      * that reads the clock and exits enters the kernel to exit and for
-     * nothing else, which is M11's kind of number: the same on both
+     * nothing else, which is a kind of number that is the same on both
      * ports, at both tiers and in every run.
      */
     if (once != 1) {
@@ -7617,7 +7561,7 @@ clock_cost_checks(void)
       (long)n_once, (long)n_many);
 
     /*
-     * The durations are printed and not asserted, per M9: how much
+     * The durations are printed and not asserted: how much
      * longer that many reads take is the host's business.
      */
     cnprintf("    %-38s %lu ticks against %lu\n",
@@ -7625,13 +7569,13 @@ clock_cost_checks(void)
       (unsigned long)t_once);
 }
 /*
- * What a kill reaches, per M17 stages one and two.
+ * What a kill reaches.
  *
  * `spin` computes for eighty milliseconds and makes one submission in
  * its life, to exit. Between those it is a program doing arithmetic,
- * which is the case section 10.5's promptness is written for.
+ * which is the case the promptness rule is written for.
  *
- * Stage one asserted the defect here: the program was killed and
+ * The defect was that the program was killed and
  * finished its loop anyway, because the mark a kill leaves was read in
  * one place, the entry boundary inside a submission, and this program
  * reaches one only on its way out. It ran on for 59 to 68 milliseconds
@@ -7690,7 +7634,7 @@ kill_reach_checks(void)
     (void)timeline_wait(&kill_tl, 1, time_now() + time_from_ms(10));
 
     /*
-     * Not blocked and not gone, which is what this stage is about: a
+     * Not blocked and not gone, which is what this check is about: a
      * thread waiting on something would be released by the kill and
      * prove nothing. It does not say the program has run, because a
      * thread that has never been dispatched is READY too, and that
@@ -7760,9 +7704,9 @@ kill_reach_checks(void)
       (unsigned long)(killed - before));
 }
 /*
- * What a kill does not reach, per M21 stage one.
+ * What a kill does not reach.
  *
- * Section 10.5 says a kill unblocks every thread of its target
+ * A kill unblocks every thread of its target
  * exactly as if each had been cancelled. `proc_kill` does that and
  * leaves the rest to the mark, on the assumption its own comment
  * states: a thread that is ready "has already stopped somewhere in
@@ -7775,15 +7719,13 @@ kill_reach_checks(void)
  *
  * So this spawns a server, kills it before the scheduler can dispatch
  * it, and reports what happened, which is nothing. What is asserted
- * is the wrong answer: if a kill at this moment worked, this
- * milestone has no subject and should be abandoned rather than built.
- * Stage two is what turns the assertion over.
+ * is the wrong answer: if a kill at this moment worked, the case
+ * would have no subject.
  *
  * The process was not left wedged either. A second kill reached it,
  * because by then it was blocked in a receive and a blocked thread
- * is what cancellation was built for, which is the shape of M20
- * stage five's workaround. That recovery is gone with the defect:
- * the first kill ends it now, and a second would be refused by a
+ * is what cancellation was built for.
+ * The first kill ends it, and a second would be refused by a
  * process that has already exited.
  */
 /*
@@ -7795,8 +7737,7 @@ kill_reach_checks(void)
  * thread that exits is taken off its process's list and its slot goes
  * back to the pool, and the whole point of the check below is that it
  * runs while a thread may be doing exactly that. Reading it any other
- * way is reading a pointer in the one case the check is about, which
- * is the mistake M20 made three times.
+ * way is reading a pointer in the one case the check is about.
  *
  * A copy comes out and no pointer does, so nothing here is held once
  * the lock is put down.
@@ -7892,7 +7833,7 @@ kill_unrun_checks(void)
      * And it has never been anywhere. Ready is not the same claim:
      * a thread that ran and was preempted is ready too, and that one
      * returns to user mode through a trap path which reads the mark,
-     * so it is not the case this stage is about. A preemption point
+     * so it is not the case this check is about. A preemption point
      * is passed on the way into every entry, so a thread that has
      * passed none has not been in the kernel on its own account.
      */
@@ -7915,8 +7856,8 @@ kill_unrun_checks(void)
      *
      * The reading above says what was true when the check looked; the
      * kill is a separate operation and the thread could have been
-     * dispatched on the other core in between. That window is what
-     * this milestone's *Watch for* is about: a check that kills too
+     * dispatched on the other core in between. That window is the
+     * subject of this check: a check that kills too
      * late measures the case that already works and looks exactly
      * like one that passes. It is asserted rather than hoped for, at
      * the only moment where the answer means anything.
@@ -7937,8 +7878,7 @@ kill_unrun_checks(void)
      * receive and stays there.
      */
     /*
-     * And now it ends without ever having run, which is what stage
-     * two built and what stage one asserted the opposite of. The join
+     * And now it ends without ever having run. The join
      * is the statement: a supervisor that asked for this process to
      * stop is told it has, inside a deadline this check names rather
      * than inside however long the program felt like waiting.
@@ -7954,7 +7894,7 @@ kill_unrun_checks(void)
      * And nothing was poked, because nothing of it was running.
      * `proc_kill` pokes a thread that is running and leaves a ready
      * one to find the mark on its way out, which is the assumption
-     * this whole stage is about. Asserted here so that a change which
+     * this whole check is about. Asserted here so that a change which
      * started poking ready threads would have to say so: it would not
      * fix this, since a ready thread is on no core to be poked, and
      * it would move a number in the compared report.
@@ -7964,8 +7904,7 @@ kill_unrun_checks(void)
           "run", (unsigned long)c.c_proc->p_kill_pokes);
     }
     /*
-     * It made no entry, which is the second half of stage one's
-     * finding gone. The count is of entries a marked thread started,
+     * It made no entry. The count is of entries a marked thread started,
      * and a thread stopped before user mode starts none.
      */
     marked_entries += c.c_proc->p_dying_entries;
@@ -7990,10 +7929,9 @@ kill_unrun_checks(void)
 }
 
 /*
- * A kill read before an entry rather than after one, per M21 stage
- * three.
+ * A kill read before an entry rather than after one.
  *
- * M17 read the mark at the end of an entry and gave the reason for
+ * The mark is read at the end of an entry, which gives the reason for
  * reading it at all: a killed thread must not run fifteen more
  * operations. What that placement cannot do is stop an entry which
  * blocks, because nothing follows it, and it cannot be ordered
@@ -8007,15 +7945,15 @@ kill_unrun_checks(void)
  * entry comes back interrupted, and the second entry is the one that
  * must never begin.
  *
- * That boundary is one the old placement also covered, from the
- * other side, and the count is what tells them apart. What the new
- * placement adds and this cannot reach is the boundary before the
+ * That boundary is also covered, from the
+ * other side, and the count is what tells them apart. The placement before
+ * an entry adds, and this cannot reach, is the boundary before the
  * first entry of a submission, which needs a thread that arrived
  * already marked. Nothing in this boot produces one: it takes a mark
  * written while the thread is in user mode on another core and a
  * trap of its own within the few microseconds before the kill's
- * interrupt lands, which was hit once in sixteen attempts while this
- * was being built and is not something to hold a boot to.
+ * interrupt lands, which was hit once in sixteen attempts and is not something
+ * to hold a boot to.
  */
 /*
  * Receive a request, and not a pulse.
@@ -8025,7 +7963,7 @@ kill_unrun_checks(void)
  * request. This check kills two clients and then waits for a third
  * to ask, so what came back first was `SYS_PULSE_DEAD_OWNER` and
  * the check read the makings of a thread out of it. Pulses are what
- * they are and M18 measures them; here they are in the way, and are
+ * they are and are measured elsewhere; here they are in the way, and are
  * dropped. There is a sender queued by the time this is called, so
  * the receive that follows a pulse has something waiting for it.
  */
@@ -8120,7 +8058,7 @@ kill_boundary_checks(void)
     /*
      * A handle of this check's own, kept until the end.
      *
-     * The other one is handed to the program, and since M20 that is
+     * The other one is handed to the program, and that is
      * the only thing holding the channel: a program that exits early
      * takes the slot back with it, and the queue read below would be
      * read out of a slot something else has taken. One handle here
@@ -8188,14 +8126,13 @@ kill_boundary_checks(void)
 }
 
 /*
- * A kill that finds every state at once, per M21 stage four.
+ * A kill that finds every state at once.
  *
- * Section 10.5 says a kill unblocks every thread of its target
+ * A kill unblocks every thread of its target
  * exactly as if each had been cancelled. Four different mechanisms
- * make that true and until now each was checked on a process with
- * one thread in one state. A supervisor ending a driver cohort is
- * not in that position: it ends a process whose threads are wherever
- * they happened to be, and nothing had asked whether the four work
+ * make that true. Each is checked on a process with one thread in one
+ * state. A supervisor ending a driver cohort ends a process whose
+ * threads are wherever they happened to be, so the four must work
  * together.
  *
  * `fourways` puts one thread in each. The states and what reaches
@@ -8205,11 +8142,10 @@ kill_boundary_checks(void)
  *   inside a request       thread_cancel, and the server is told
  *   running                the poke, and the mark read on the way
  *                          back from the interrupt it causes
- *   ready and never run    the mark read in the trampoline, per
- *                          stage two
+ *   ready and never run    the mark read in the trampoline.
  *
- * The last of those is why this stage is here rather than in M17.
- * Before stage two a process arranged like this could not be killed
+ * The last of those is the case that needs the read in the trampoline.
+ * Without that read a process arranged like this could not be killed
  * at all: three threads would end and the fourth would go on to user
  * mode and run for ever, and the join would never return.
  */
@@ -8219,7 +8155,7 @@ kill_boundary_checks(void)
  * What the four threads are doing, counted in one walk.
  *
  * Counted twice: once before the kill, to say the arrangement the
- * stage is about was actually reached, and once if the kill fails
+ * check is about was actually reached, and once if the kill fails
  * to end them, to say which state was left behind. The second is
  * the reason this is a function. A join that times out can only
  * report that the process did not finish, and the thing worth
@@ -8286,7 +8222,7 @@ count_states(struct proc *p, struct fourways_states *out)
 }
 
 /*
- * A reference on each of the four, per M21 stage four's review.
+ * A reference on each of the four.
  *
  * Taken while all four are still there, because what each one exits
  * with can only be read from the thread, and a thread is collected
@@ -8354,7 +8290,7 @@ thread_ended(struct thread *t, int32_t *code)
 static volatile bool nudge_ran;
 
 /*
- * Something for the other core to dispatch, per M21 stage four.
+ * Something for the other core to dispatch.
  *
  * A thread that ends leaves itself parked for the next dispatch on
  * the core it ran on to collect, and a core with nothing to run
@@ -8599,7 +8535,7 @@ kill_states_checks(void)
 
     /*
      * Each of the four, waited for and read here rather than left
-     * to the join, because what this stage has to say when it fails
+     * to the join, because what this check has to say when it fails
      * is which of the four states was left behind, and what it has
      * to say when it passes is what each thread exited with. The
      * join can say only that the process did not finish, and only
@@ -8650,16 +8586,16 @@ kill_states_checks(void)
      * answer is refused rather than delivered, and refusing it is
      * what takes this thread off the list. Left there it would be a
      * boot thread serving one channel for the rest of the run,
-     * which is the cross-channel case of section 19.3's unenforced
-     * rule and the one thing this boot has never done.
+     * which is the cross-channel case that nothing
+     * enforces, and the one thing this boot has never done.
      */
     if (channel_reply(peer, &msg) != SYS_ERR_STALE) {
         panic("states: the answer to a dead client was not refused");
     }
 
     /*
-     * One poke per thread that was running, which is the rule M17
-     * stated and the number that says the fourth mechanism was the
+     * One poke per thread that was running, and the number that says the fourth
+     * mechanism was the
      * one used. On one core nothing of the target is running when
      * the killer is, so the count is zero and the state it stands
      * for is not tested there.
@@ -8707,14 +8643,13 @@ kill_states_checks(void)
 }
 
 /*
- * A thread asked for in a process that is already dying, per M21
- * stage five.
+ * A thread asked for in a process that is already dying.
  *
- * Everything before this stage is about threads that existed when
+ * The check above is about threads that existed when
  * the kill was written. This is about one that does not. Nothing
  * stopped a thread being made in a marked process: the kill's walk
  * had been and gone, so the new thread was not cancelled by it, and
- * what ended the thread was stage two's reading in the trampoline
+ * what ended the thread was the reading in the trampoline
  * it arrived on. That works, and it is not enough. It leaves the
  * set of threads a kill has to reach open after the kill, so a
  * supervisor waiting for a process to be over is waiting on
@@ -8734,7 +8669,7 @@ kill_states_checks(void)
 /*
  * One `lastborn`, started and asked for the makings of a thread.
  *
- * Twice, because the stage asks the same question of a process that
+ * Twice, because the check asks the same question of a process that
  * was killed and of one that ended on its own, and the second is
  * not a variation on the first: nothing marked it, and what makes
  * it over is that its last thread has gone.
@@ -8914,11 +8849,11 @@ kill_newborn_checks(void)
     }
 
     /*
-     * And one that nothing killed, per the review of this stage. A
+     * And one that nothing killed. A
      * process is over when its last thread has gone, whether that
      * was a kill's doing or its own, and both leave a completion
      * that has been advanced. The mark is only one of the two ways
-     * to get there, and the reading that was written first saw only
+     * to get there, and a reading that checks only the mark sees only
      * that one.
      *
      * This one is answered rather than killed: the reply lets its
@@ -8975,11 +8910,11 @@ kill_newborn_checks(void)
 }
 
 /*
- * A kill that has to cause the entry, per M17 stage three.
+ * A kill that has to cause the entry.
 
 
  *
- * Stage two put the mark where a trap returns to user mode, and found
+ * The mark is set where a trap returns to user mode, and it is found
  * that on one core it is enough for a reason that is not the hook: a
  * killer has to be running for a kill to happen, so the thread being
  * killed is not running, and it is sitting in the kernel where it was
@@ -8987,8 +8922,8 @@ kill_newborn_checks(void)
  *
  * On two cores that reasoning stops. The thread is running in user mode
  * on the other core, taking no traps, and this kernel arms nothing that
- * would make it take one: M16 stage one measured stretches of over a
- * hundred milliseconds with no kernel in them at all. Something has to
+ * would make it take one. Stretches of over a
+ * hundred milliseconds with no kernel in them at all occur. Something has to
  * make it enter, and that is the poke.
  */
 static void
@@ -9006,7 +8941,7 @@ kill_other_core_checks(void)
          * One core, and nothing to poke. Said rather than left out: the
          * tier where this cannot happen is the tier where the kill
          * always lands on a thread that is already in the kernel, and
-         * that is section 13.3's single core rather than an accident.
+         * that is the single core rather than an accident.
          */
         cnputs("a kill: the other core, where there is one\n");
         cnprintf("    %-38s %s\n", "a kill on one core pokes",
@@ -9026,8 +8961,7 @@ kill_other_core_checks(void)
 
     /*
      * The other core, before it has run. The defer is what makes the
-     * move legal, which is M16 stage three's arrangement for the same
-     * reason: a thread that is running cannot be moved.
+     * move legal: a thread that is running cannot be moved.
      */
     t = proc_threads(c.c_proc);
     expect("the program moved to the second core",
@@ -9089,11 +9023,11 @@ static volatile uint32_t hold_notices;
 static volatile bool hold_stop;
 
 /*
- * A pager that takes a fault and does not answer it, per M17 stage four.
+ * A pager that takes a fault and does not answer it.
  *
  * The faulting thread is inside a rendezvous it did not choose: section
  * 15.3 sends the fault as a message from the thread, and this one keeps
- * it. That is the state the stage is about, and the only way to get a
+ * it. That is the state the check is about, and the only way to get a
  * program to sit in it long enough to be killed.
  */
 static void
@@ -9109,7 +9043,7 @@ hold_pager(void *arg)
             break;
         }
         /*
-         * A pulse is not a request. Section 10.5 tells a server that
+         * A pulse is not a request. The kernel tells a server that
          * its client has gone, and the kernel is the client here, so
          * the notice arrives on this channel like any other: counting
          * it as a second fault was the first thing this check did,
@@ -9139,7 +9073,7 @@ hold_pager(void *arg)
 }
 
 /*
- * A program killed while it waits for a page, per M17 stage four.
+ * A program killed while it waits for a page.
  *
  * Its thread is blocked in a send it did not write, and the kill
  * releases it the way it releases any other client: the send returns an
@@ -9204,8 +9138,7 @@ kill_faulting_checks(void)
     /*
      * Above the boot thread, because this check waits for it to fault
      * and a program below the waiter never runs: the wait is a spin at
-     * a higher priority, which is a lesson stage one paid for once
-     * already.
+     * a higher priority, which is a lesson already learned.
      */
     sched_defer();
     child_watch(&c, proc_spawn_image("paged", 20, ns, 1, argv, 3));
@@ -9257,7 +9190,7 @@ kill_faulting_checks(void)
     }
 
     /*
-     * And it was told. Section 10.5 has a server hear that its client
+     * And it was told. A server hears that its client
      * has gone rather than discover it at reply time, and a pager is a
      * server whose client is the kernel: the notice arrives here for a
      * fault nobody will ever answer.
@@ -9304,7 +9237,7 @@ kill_faulting_checks(void)
 #endif /* SYS_TIER == 2 */
 
 /*
- * The channel M17 stage five sends on, and the server thread that takes
+ * The channel the check sends on, and the server thread that takes
  * a message from it and ends without answering.
  */
 static struct channel *stale_ch;
@@ -9316,7 +9249,7 @@ static volatile uint32_t stale_took;
  * Not a cancellation and not a fault: it takes the request and returns,
  * which is the ordinary way a thread of a live server ends. The process
  * it belongs to is this one, the kernel, and it goes on running, so
- * nothing section 12.5 does for the death of an owner applies here.
+ * nothing that is done for the death of an owner applies here.
  */
 static void
 stale_server(void *arg)
@@ -9344,7 +9277,7 @@ static struct timeline stale_done;
  * that never comes, so that it can be cancelled while holding it.
  *
  * It ends when the wait ends, whatever ended it. That is what a thread
- * of a server does when it is cancelled: section 10.5 releases it with
+ * of a server does when it is cancelled: the kernel releases it with
  * an error and the mark, if there is one, stops it at the next return
  * to user mode. This one is a kernel thread and stops here.
  */
@@ -9478,8 +9411,8 @@ chain_head(void *arg)
 }
 
 /*
- * The middle of a chain outlives the end of it, per this stage's
- * review. Releasing a client used to take it off whatever list it was
+ * The middle of a chain outlives the end of it. Releasing a client
+ * must not take it off whatever list it is
  * serving on, which for the middle of a chain is a call it still owes
  * an answer to and nothing to do with the one that ended.
  */
@@ -9500,8 +9433,7 @@ chain_stale_checks(void)
      * Held by a handle each, so that giving the handles back is what
      * releases them. A channel created and never handed to anything is
      * a channel nothing can free, and thirty-two of those is the whole
-     * pool: the first version of this leaked both and the cohort check
-     * further down the boot was the one that ran out.
+     * pool.
      */
     expect("a handle for the head of the chain",
       handle_insert(ht, chain_x, SYS_OBJ_CHANNEL, SYS_RIGHT_RECV, &hx),
@@ -9555,18 +9487,16 @@ chain_stale_checks(void)
 }
 
 /*
- * A server with a record per client, and what it is left holding, per
- * M18 stage one.
+ * A server with a record per client, and what it is left holding.
  *
- * Sections 12.5 and 13.1 both argue from a server that allocates
+ * A server that allocates
  * something for a client and would leak it if it never heard the client
- * had gone. Nothing here has ever had anything to leak, so the argument
- * has never been tested. `ledger` has: a slot out of a fixed table per
+ * had gone. `ledger` tests that: a slot out of a fixed table per
  * client, taken on request and given back only when asked.
  *
- * The number this stage produces is the leak. Every client that takes a
+ * The number this check produces is the leak. Every client that takes a
  * record and dies leaves it taken, and the check asserts that count so
- * that the stages which fix it have something to be measured against.
+ * that a fix has something to be measured against.
  */
 static sys_handle_t h_ledger_recv;
 static sys_handle_t h_ledger_ask;
@@ -9726,16 +9656,16 @@ ledger_client(const char *how, bool ends_itself, uint32_t want_taken,
     }
 
     /*
-     * Only the process handle. The other two travelled: section 7.4 has
-     * a handle in a namespace move, so this table no longer has them
+     * Only the process handle. The other two travelled, since moving a
+     * handle leaves this table, so it no longer has them
      * and closing one is closing something that is not there.
      */
     expect("giving the client back", handle_close(ht, keep), SYS_OK);
 
     /*
-     * And what the server was told about this death, per M18 stage two.
+     * And what the server was told about this death.
      *
-     * One round trip is enough, and the reason is section 13.1: a pulse
+     * One round trip is enough, because a pulse
      * is collected before a message, so a notice enqueued by the kill
      * above has already been taken by the time the server answers the
      * question below. A settling period would be a check that waits
@@ -9789,7 +9719,7 @@ ledger_leak_checks(void)
      * A second handle for the same channel, to hand to the server. It
      * is a fresh insert rather than a duplicate because this table's
      * own handle was not made duplicable, and the last insert is what
-     * says whose channel it is: section 12.5 has a channel belong to
+     * says whose channel it is: a channel belongs to
      * whoever may receive on it, and that is about to be the server.
      */
     if (handle_insert(ht, ch, SYS_OBJ_CHANNEL,
@@ -9852,7 +9782,7 @@ ledger_leak_checks(void)
     /*
      * And the server had nothing before it, and nothing after it
      * either: this client died inside a request, so a notice arrived
-     * and stage three released its record. One record was taken and
+     * and its record was released. One record was taken and
      * none is held.
      */
     ledger_ask(LEDGER_OP_COUNT, &rep);
@@ -9878,10 +9808,10 @@ ledger_leak_checks(void)
      * Four clients took a record and none of them is still held. One
      * gave its record back and one was announced dead inside a
      * request, and the other two were never announced at all: those
-     * two are the leak stages one to three measured, and what closed
+     * two are the leak, and what closes
      * it is the server collecting connections whose clients have gone.
      *
-     * Asserted and not printed, because a stage that only printed this
+     * Asserted and not printed, because a check that only printed this
      * would pass for a server whose table had emptied for any reason.
      */
     if (rep.lp_taken != 5) {
@@ -9953,8 +9883,7 @@ ledger_leak_checks(void)
       "the client killed inside a request");
 
     /*
-     * And what the hints cost when nobody collects them, which is the
-     * review's finding turned into a check.
+     * And what the hints cost when nobody collects them.
      *
      * On a channel of its own with nothing receiving on it, because
      * that is the state that matters: a server busy elsewhere while
@@ -10063,12 +9992,12 @@ ledger_leak_checks(void)
       handle_close(ht, h_ledger_recv), SYS_OK);
 
     /*
-     * And the server's slot goes back, per M13: the join says it has
+     * And the server's slot goes back: the join says it has
      * exited and closing the handle says nothing can ask about it, but
      * the slot returning is the reap and is a separate event. A check
      * that spawns six processes and asserts none of them is left is
-     * cheap here and is the thing that would catch a server this
-     * milestone forgot to end.
+     * cheap here and is the thing that would catch a server the
+     * boot forgot to end.
      */
     waited = time_now() + time_from_ms(JOIN_MS);
     while (pool_lookup(proc_pool(), sid) != NULL) {
@@ -10079,10 +10008,10 @@ ledger_leak_checks(void)
     }
 
     /*
-     * And the connection pool is where it started, per M18 stage four.
+     * And the connection pool is where it started.
      * A connection kept back for a server to collect is a slot out of a
-     * fixed pool, and one the server never collected is the same leak
-     * this stage closed, moved into the kernel. The four the clients
+     * fixed pool, and one the server never collected is the same leak, moved
+     * into the kernel. The four the clients
      * used were collected; the check's own went with its handle, and
      * anything still kept for this server went when the server did.
      */
@@ -10094,7 +10023,7 @@ ledger_leak_checks(void)
 }
 
 /*
- * Two clients that share one connection, for M18 stage three. Kernel
+ * Two clients that share one connection. Kernel
  * threads rather than programs, because what a record is keyed on is
  * the question and a thread is what the notice names: the server cannot
  * tell these from any other client, which is the point of using them.
@@ -10168,7 +10097,7 @@ ledger_holds(sys_thread_id_t who)
 }
 
 /*
- * Releasing the right record, per M18 stage three.
+ * Releasing the right record.
  *
  * A count is not enough. A server that released whichever record it
  * looked at first would end holding the right number of them and the
@@ -10304,7 +10233,7 @@ ledger_identity_checks(void)
      * that dies below is a client of the connection the other is still
      * using. Without that the pair is set up and never exercised: a
      * server keyed by the connection would behave identically, which
-     * is what the first version of this check did.
+     * is what a check of this kind would do.
      */
     ident_b = thread_create("ident-b", PRIO_BOOT + 1, ident_client,
       (void *)2);
@@ -10390,7 +10319,7 @@ ledger_identity_checks(void)
     }
 
     /*
-     * One round trip, per stage two: a pulse is collected before a
+     * One round trip: a pulse is collected before a
      * message, so the notice has been acted on by the time this is
      * answered.
      */
@@ -10406,7 +10335,7 @@ ledger_identity_checks(void)
 
     /*
      * And the three it holds are the three that are still there. This
-     * is the assertion the stage exists for: the count above would pass
+     * is the assertion this check exists for: the count above would pass
      * for a server that released whichever record it saw first, and the
      * first is the held client's.
      */
@@ -10423,7 +10352,7 @@ ledger_identity_checks(void)
     /*
      * And the sibling case, which is what the shared connection is for.
      * `ident-b` is held on the connection `ident-c` is also using, and
-     * cancelling it out of that rendezvous is a death section 12.5
+     * cancelling it out of that rendezvous is a death the kernel
      * announces exactly as it announced the program's. A server keyed
      * by the connection would drop both records here.
      */
@@ -10489,19 +10418,18 @@ ledger_identity_checks(void)
 }
 
 /*
- * A death the server is never told about, per M18 stage five.
+ * A death the server is never told about.
  *
- * Stage two found the notice strictly edge triggered and found the edge
- * unable to fail safely: a system pulse arriving at a full queue halted
- * the machine, on section 13.1's argument that losing one leaks a dead
- * client's resources for good. Stage four made that argument false, so
- * this stage loses one on purpose and asks whether the server is still
- * right.
+ * The notice is strictly edge triggered, and the edge cannot fail safely:
+ * a system pulse arriving at a full queue would halt the machine, because
+ * losing one leaks a dead client's resources for good. The reservation
+ * keeps user traffic from taking the notice's place, so this check loses
+ * one on purpose, by overflowing the queue, and asks whether the server is
+ * still right.
  *
- * The queue is filled with notices rather than with user pulses, which
- * is a departure from the plan and is what the plan was wrong about. A
+ * The queue is filled with notices rather than with user pulses. A
  * client flooding a channel cannot make a notice drop, because that is
- * exactly what the reservation prevents and stage two confirmed it
+ * exactly what the reservation prevents, and an earlier check confirmed it
  * works. The only way to lose a notice is more outstanding deaths than
  * the queue holds, so that is what this arranges, by enqueueing the
  * notices itself: eight deaths nobody has collected, and then a real
@@ -10569,7 +10497,7 @@ notice_loss_checks(void)
 
     /*
      * One client, killed inside a request, which is the one death
-     * section 12.5 does announce. That is deliberate: the case where
+     * kernel does announce. That is deliberate: the case where
      * losing the notice costs something is the case where the notice
      * was the only thing that would have said anything.
      */
@@ -10667,7 +10595,7 @@ notice_loss_checks(void)
 
     /*
      * The eight it could take, and not the ninth. This is the
-     * assertion the stage exists for: a check where the notices
+     * assertion this check exists for: a check where the notices
      * received equal the deaths has lost nothing and tested nothing.
      */
     if (rep.lp_notices != before.lp_notices + SYS_PULSE_SLOTS) {
@@ -10707,8 +10635,8 @@ notice_loss_checks(void)
       "released when the connection was collected");
 
     /*
-     * And which of them a full queue gives up, per this stage's
-     * review. A notice and a hint are not worth the same. The hint says
+     * And which of them a full queue gives up. A notice and a hint are not
+     * worth the same. The hint says
      * there is something to collect and the connection says so too; a
      * notice names a thread, and for a thread that dies with a live
      * sibling on its connection it is the only thing that does. So the
@@ -10796,8 +10724,7 @@ notice_loss_checks(void)
 }
 
 /*
- * A queue with a depth, and the clients it turns away, per M18 stage
- * six and section 12.1.
+ * A queue with a depth, and the clients it turns away.
  *
  * A channel's sender queue was unbounded, so a server that fell behind
  * accumulated clients until the machine ran out of threads: every
@@ -10838,7 +10765,7 @@ depth_client(void *arg)
 
     /*
      * And its message is still its own. A queued sender lends nothing:
-     * section 12.1 hands the buffer over when a server takes the
+     * the kernel hands the buffer over when a server takes the
      * message, and nothing here ever took one. So the request reads
      * back as it was written and the reply was never filled in.
      */
@@ -11031,15 +10958,15 @@ depth_checks(void)
     depth_wait(4);
 
     /*
-     * And the lowest is not always the last, which is this stage's
-     * review. The queue is ordered when a sender is inserted and not
-     * afterwards, and section 12.3's chain raises a queued sender where
+     * And the lowest is not always the last. The queue is ordered when a sender
+     * is inserted and not
+     * afterwards, and a chain raises a queued sender where
      * it stands: a client that took a request and sent on is raised by
      * whoever arrives behind it, and its position does not move. A
      * queue that gave up its tail would give up exactly that client.
      *
      * The raise is done here by hand rather than by building the chain,
-     * because a chain that reaches a queued sender is M12's check and
+     * because a chain that reaches a queued sender is a check of its own and
      * putting one inside this one would be two checks in the place of
      * either.
      */
@@ -11101,8 +11028,8 @@ depth_checks(void)
     }
 
     /*
-     * And a channel nobody bounded, which is every channel before this
-     * stage. It queues, which is what says the depth is something a
+     * And a channel nobody bounded. It queues, which is what says the depth is
+     * something a
      * server asks for rather than something the kernel now does.
      */
     open_ch = channel_create("depth-open", self);
@@ -11147,10 +11074,10 @@ depth_checks(void)
 #if SYS_TIER == 2
 
 /*
- * What a whole-TLB flush costs, per M19 stage one.
+ * What a whole-TLB flush costs.
  *
- * Measured before anything changes, because a milestone that removes a
- * cost it never measured is a milestone reporting a number rather than
+ * Measured before anything changes, because a change that removes a
+ * cost it never measured is a change reporting a number rather than
  * an improvement. The boot prints how many address space switches it
  * makes and says each one is a flush; this says what one of those is
  * worth.
@@ -11158,8 +11085,8 @@ depth_checks(void)
  * Tier 2 only, and that is the measurement rather than a gap in it.
  * There is one address space at Tier 0 and nothing to throw away.
  *
- * A flush does not have one price, and the first version of this check
- * reported as though it did. What it costs is a fixed part, which is
+ * A flush does not have one price, and a check that reported one number
+ * would be wrong. What it costs is a fixed part, which is
  * the flush itself, and a part that grows with how much the next thread
  * touches before it blocks, because every translation it wants back it
  * has to walk for again. So the walk is timed at two lengths and the
@@ -11176,7 +11103,7 @@ depth_checks(void)
  * price rather than any machine's, and the reason to keep them anyway
  * is that a user address space is page granular, so what is measured
  * has the shape of what a program pays even though the absolute numbers
- * are the host's. Every later stage is compared against this same
+ * are the host's. Every later measurement is compared against this same
  * arrangement on this same host, which is what the baseline is for.
  */
 #define FLUSH_PAGES     256u
@@ -11187,8 +11114,8 @@ depth_checks(void)
 /*
  * Walk the chain and add up what each page holds. The sum is what says
  * the reads happened: a walk the compiler decided to skip, or one that
- * stopped early, cannot produce it. M11's clock check found the hard
- * way that timing two runs and asserting one took longer passes with
+ * stopped early, cannot produce it. Timing two runs and asserting one took
+ * longer passes with
  * the work taken out, so every timed thing here answers with a count
  * as well.
  *
@@ -11256,8 +11183,8 @@ chain_build(uint32_t n, uint32_t *want)
  * And take it apart, answering with how many frames went back.
  *
  * That count and not page_used() before against page_used() after: the
- * frame count is the whole machine's, the other core is running, and
- * M13 stage four already settled that asserting such a count is
+ * frame count is the whole machine's, the other core is running, so
+ * asserting that such a count is
  * unchanged is asserting that nothing else moved a frame in the instant
  * this looked.
  */
@@ -11278,7 +11205,7 @@ chain_free(uintptr_t head)
 }
 
 /*
- * Whether a switch keeps what it learned, per M19 stage two.
+ * Whether a switch keeps what it learned.
  *
  * Two spaces, one virtual address, two frames behind it. The address is
  * the base of the window programs live in, which is the one range no
@@ -11298,7 +11225,7 @@ chain_free(uintptr_t head)
  * it came from.
  */
 /*
- * A name handed on, per M19 stage four.
+ * A name handed on.
  *
  * There are more spaces in a boot than there are identifiers to give
  * them, because SYS_ASID_LIMIT says so and says why. So a space is
@@ -11308,12 +11235,12 @@ chain_free(uintptr_t head)
  * cannot simply be a number handed out twice.
  *
  * Read from the kernel, in one region with interrupts off, the same way
- * stage two's two spaces were read: what is being tested is what
+ * the two spaces above were read: what is being tested is what
  * happens to a translation cache, and a program would prove it through
  * five other mechanisms and be suspected of them first.
  */
 /*
- * And what happens when there are none left, per M19 stage four.
+ * And what happens when there are none left.
  *
  * A name is a scarce thing and this system caps it well below what the
  * hardware offers, so a machine with enough spaces alive at once runs
@@ -11327,11 +11254,11 @@ chain_free(uintptr_t head)
  * what a check should cost is the check.
  */
 /*
- * What the other core is still holding, per M19 stage five.
+ * What the other core is still holding.
  *
  * riscv64's fences reach only the core that issues them and aarch64's
  * are inner-shareable and reach both. That is a claim each port makes,
- * and until now nothing had asked the machine whether it was true. It
+ * and nothing has asked the machine whether it is true. It
  * is asked here in the only way that means anything: this core changes
  * what an address maps to, invalidates it, and the other core reads the
  * address without having been dispatched in between. What comes back
@@ -11402,9 +11329,7 @@ stale_first(void *arg)
      *
      * What the window holds is a handshake with a core that is already
      * spinning for it, and one entry written into a page table that
-     * already exists. It used to hold the other core noticing, which is
-     * a scheduler away, and that made this the longest region in the
-     * boot by an order of magnitude. Section 13.3 counts these.
+     * already exists. These are counted.
      */
     is = md_intr_disable();
 
@@ -11434,7 +11359,7 @@ stale_first(void *arg)
 }
 
 /*
- * And the second reader, which has never run before this and is made
+ * And the second reader, which has not run yet and is made
  * ready only after the change. Its first instruction is reached by
  * being dispatched, so what it reads is what the address means to a
  * core that has just been given work.
@@ -11452,9 +11377,9 @@ stale_second(void *arg)
 }
 
 /*
- * One broad invalidation against two narrow ones, per M19 stage six.
+ * One broad invalidation against two narrow ones.
  *
- * M6's review said that once entries are tagged, one call would stop
+ * Once entries are tagged, one call would stop
  * covering both spaces and the buffer path would need two. It does not:
  * both ports have a by-address form that names no identifier and
  * reaches every space, and it is what the buffer path has always used.
@@ -11468,10 +11393,9 @@ stale_second(void *arg)
  * invalidation naming a space nothing holds is not the work being
  * priced.
  *
- * Counts asserted and durations reported, per M9. An empty run of the
+ * Counts asserted and durations reported. An empty run of the
  * same length is timed beside them, because a loop of calls the
- * compiler decided to drop would be the fastest of all of them, and
- * M11's clock check found that out the hard way.
+ * compiler decided to drop would be the fastest of all of them.
  */
 #define INVAL_ROUNDS    8u
 #define INVAL_TRIALS    16u
@@ -11509,11 +11433,11 @@ invalidate_cost_checks(void)
 
         /*
          * One trial at a time with interrupts off, and the shortest of
-         * all of them, which is M19 stage one's discipline and its
+         * all of them, which is the discipline and its
          * reasons.
          *
-         * Eight rounds and not two hundred and fifty-six, which is M19
-         * stage five's lesson about what a check may cost: an
+         * Eight rounds and not two hundred and fifty-six, which is the
+         * lesson about what a check may cost: an
          * invalidation is ten microseconds here, so the longer run
          * held interrupts off for eight milliseconds and became the
          * longest region in the boot by a factor of fifteen. Eight is
@@ -11597,7 +11521,7 @@ invalidate_cost_checks(void)
 
     /*
      * And whether the narrow call does anything, which the timings
-     * cannot say and the first version of this stage never asked. A
+     * cannot say. A
      * call that dropped its argument on the floor would cost the same,
      * come out of the comparison the same way, and invalidate nothing.
      *
@@ -11618,7 +11542,7 @@ invalidate_cost_checks(void)
      *
      * Both reads are in one region with interrupts off, because a
      * thread dispatched between them takes the translation away by
-     * itself on this emulator, which is M19 stage five's finding.
+     * itself on this emulator.
      * Rewriting the entry does not: with the invalidation taken out,
      * the second read still shows the frame the first one cached.
      */
@@ -11680,7 +11604,7 @@ invalidate_cost_checks(void)
      * version of this check did. The frame count is the whole machine's
      * and the other core is running, so an assertion that it is exactly
      * what it was is an assertion that nothing else moved a frame in
-     * the instant this looked, which M13 stage four ruled out. What
+     * the instant this looked, which is not a sound thing to assert. What
      * would catch a leak is the boot's own frame ledger, which accounts
      * for every frame still held when the run is over.
      */
@@ -11826,7 +11750,7 @@ cross_core_stale_checks(void)
      * A port that says they are shareable must not, because the
      * hardware carried the invalidation across without being asked. A
      * port that is wrong about itself fails here, and this is the only
-     * check in M19 the emulator will let fail: everywhere else it
+     * check the emulator will let fail: everywhere else it
      * throws every translation away on its own and hides the answer.
      */
     if (local && stale_during != 0xF1) {
@@ -12176,7 +12100,7 @@ asid_checks(void)
     /*
      * What the leaves say, before anything is run in either space.
      *
-     * This is the half of the stage the two ports do in opposite
+     * This is the half the two ports do in opposite
      * directions, and the half a working system does not notice is
      * missing. An identifier written into the root register while the
      * entries call themselves global is a number nothing reads: every
@@ -12185,8 +12109,8 @@ asid_checks(void)
      * answers with the right page until two spaces disagree. So the
      * descriptor is read back rather than inferred.
      *
-     * The kernel's own address as well as the program's, because M19
-     * stage two decided that nothing is global and a grant is the
+     * The kernel's own address as well as the program's, because
+     * nothing is global and a grant is the
      * reason. An entry the kernel put in every space is exactly the one
      * somebody would be tempted to mark shared.
      */
@@ -12235,7 +12159,7 @@ asid_checks(void)
     /*
      * What the hardware was told, read back out of the register rather
      * than taken from the structure that was written into it. This is
-     * the half of the stage that can fail on this host: the reads below
+     * the half that can fail on this host: the reads below
      * cannot, and the number further down says why.
      */
     if (told_one != one.as_asid || told_two != two.as_asid) {
@@ -12258,7 +12182,7 @@ asid_checks(void)
 
     /*
      * And what it cost to be right about it, which is the half of this
-     * stage the reads cannot show. All four threw everything away
+     * check the reads cannot show. All four threw everything away
      * before, and none of them does now.
      */
     if (flushed != (bits == 0 ? 4u : 0u)) {
@@ -12279,7 +12203,7 @@ asid_checks(void)
      * and the difference is 2546 flushes in a boot against 7. What this
      * cannot check is the direction that matters, which is the other
      * core's maintenance reaching this one; that needs two cores
-     * arranged on purpose and is M19 stage five's.
+     * arranged on purpose and is left to another check.
      */
     {
         uint64_t seen = vm_maint_epoch();
@@ -12362,7 +12286,7 @@ asid_checks(void)
      * Zero means the absence of an identifier, and a space holding it
      * is entered by throwing every translation away. That is what a
      * port with none to give does for every space and what this system
-     * will do when it runs out, which is M19 stage four. Both ports
+     * will do when it runs out. Both ports
      * answer sixteen bits now, so nothing reaches that path in a boot
      * and it would sit unrun until the day it mattered. One space is
      * asked to hold zero here, and what is checked is that entering it
@@ -12506,7 +12430,7 @@ flush_cost_checks(void)
              * reported a warm walk eleven times slower than the paced
              * one, because a console with input waiting gets
              * dispatched in between and the warm sample was not warm.
-             * That is the cost this stage is measuring, arriving
+             * That is the cost this check is measuring, arriving
              * uninvited in the measurement of it.
              *
              * One pass at a time and the shortest of all of them,
@@ -12610,12 +12534,12 @@ flush_cost_checks(void)
 #endif /* SYS_TIER == 2 */
 
 /*
- * The deaths a server is not told about, per M18 stage two.
+ * The deaths a server is not told about.
  *
- * Section 12.5 announces one death and is explicit about which: a
+ * The kernel announces one death and is explicit about which: a
  * client whose request a server is holding. A client that dies on the
- * queue is taken off a queue nobody looked at, and section 12.1 has a
- * client that gives up at its deadline abandon work in progress with
+ * queue is taken off a queue nobody looked at, and a
+ * client that gives up at its deadline abandons work in progress with
  * the server finding out when its reply is refused. Neither is a
  * notice, and both are cases a server keeping records has to survive.
  *
@@ -12683,7 +12607,7 @@ notice_absence_checks(void)
 
     /*
      * Queued, and not being served. The state is what says which of
-     * section 12.1's two cases this is, and a check that killed a
+     * the two cases this is, and a check that killed a
      * client which had not reached the queue would be testing nothing.
      */
     waited = time_now() + time_from_ms(JOIN_MS);
@@ -12722,7 +12646,7 @@ notice_absence_checks(void)
 
     /*
      * And a client that gives up at its deadline while this thread
-     * holds its request. Section 12.1: it abandons work in progress,
+     * holds its request. The client abandons work in progress,
      * the server is not told, and the reply is what discovers it.
      */
     memset(&cargs, 0, sizeof(cargs));
@@ -12750,8 +12674,8 @@ notice_absence_checks(void)
 
     /*
      * This thread becomes the server, and owes a reply from here until
-     * the end of this block. It may not receive again while it does,
-     * which is stage one's review, and it does not.
+     * the end of this block. It may not receive again while it does, and it
+     * does not.
      */
     memset(&msg, 0, sizeof(msg));
     expect("taking the request it will not answer",
@@ -12769,7 +12693,7 @@ notice_absence_checks(void)
 
     /*
      * And this is how the server finds out, which is the whole of what
-     * section 12.1 offers it: a refused reply, after the fact.
+     * the protocol offers it: a refused reply, after the fact.
      */
     memset(&rep, 0, sizeof(rep));
     rep.handle = SYS_HANDLE_INVALID;
@@ -12785,9 +12709,9 @@ notice_absence_checks(void)
 }
 
 /*
- * A server thread that dies holding a message, per M17 stage five.
+ * A server thread that dies holding a message.
  *
- * M15 left this: the client waited until its own deadline, because the
+ * Otherwise the client waits until its own deadline, because the
  * only thing that released a client early was the death of the whole
  * server process. The reply that would release it can no longer come
  * from anywhere, and the deadline is the wrong length of time to find
@@ -12831,8 +12755,7 @@ kill_server_stale_checks(void)
      * Above this thread, so it is already blocked in receive when the
      * send arrives and the send goes straight to the rendezvous. Below
      * it the message would queue instead and the client would be
-     * SEND-blocked, which is a different state and not this one: M15
-     * stage three paid for that mistake once.
+     * SEND-blocked, which is a different state and not this one.
      */
     stale_took = 0;
     srv = thread_create("stale-srv", PRIO_BOOT + 1, stale_server, NULL);
@@ -12866,7 +12789,7 @@ kill_server_stale_checks(void)
 
     /*
      * And it came back before its deadline rather than at it. This is
-     * the assertion the stage exists for: the error says what happened
+     * the assertion this check exists for: the error says what happened
      * and the clock says the client did not sit through the wait to
      * find out.
      */
@@ -12896,13 +12819,12 @@ kill_server_stale_checks(void)
 
 
     /*
-     * And the same thing reached the other way, per this stage's
-     * review: a server thread that is cancelled and then ends. The
-     * cancel takes it off the channel's serving list on the way past,
-     * so the first version of this recognised its client by a channel
-     * pointer that was already NULL and released nobody. Cancellation
+     * And the same thing reached the other way: a server thread that is
+     * cancelled and then ends. The
+     * cancel takes it off the channel's serving list on the way past.
+     * Cancellation
      * is how a kill reaches a blocked thread, which makes this the
-     * shape M17 actually produces.
+     * shape a kill actually produces.
      *
      * The client is a thread of its own here, because this one has to
      * still be running in order to do the cancelling.
@@ -12953,13 +12875,10 @@ kill_server_stale_checks(void)
 
 
 /*
- * What the two regions of a program permit, per M14 stage three.
+ * What the two regions of a program permit.
  *
  * A program's text is read and executed and never written; everything
- * else it has is read and written and never executed. Until this stage
- * one region held all of it with all three permissions, because the
- * loader could not see where text ended, and the comment on VM_PROGRAM
- * said as much.
+ * else it has is read and written and never executed.
  *
  * Both checks need a program that does the thing, and neither existed:
  * every program here reads addresses it is handed and jumps only where
@@ -13030,7 +12949,7 @@ permission_checks(void)
 #else
     /*
      * Flat memory permits it, and says so rather than being left out.
-     * Section 13.3 buys Tier 0 no MMU, and this is the price named:
+     * Tier 0 has no MMU, and this is the price named:
      * the same program, the same store, and nothing to refuse it.
      */
     if (sargs.out_fault != SYS_FAULT_NONE) {
@@ -13119,7 +13038,7 @@ permission_checks(void)
  * A grant over ordinary memory, given and then taken away.
  *
  * The console driver above holds a grant over a device, which is what
- * section 19.2 is about, and a device is an awkward thing to make an
+ * a grant over a device is about, and a device is an awkward thing to make an
  * argument with: a register cannot be read twice without meaning
  * something, and which register is safe differs by board. A page of RAM
  * is the same object with none of that. The kernel allocates one,
@@ -13216,7 +13135,7 @@ grant_checks(void)
  * A page fault as a message, and a program whose text arrives one page
  * at a time.
  *
- * This thread is the root pager of section 15.4: it has no pager of its
+ * This thread is the root pager: it has no pager of its
  * own and is memory-locked, which is what a terminator is. It knows the
  * boot archive because the kernel is the loader, so what it supplies is
  * the image bytes for the page that was asked about.
@@ -13232,7 +13151,7 @@ grant_checks(void)
  * priority the pager runs at is a fact about scheduling rather than a
  * field somebody set.
  *
- * Section 15.3's claim is that a fault is serviced at the faulting
+ * A fault is serviced at the faulting
  * thread's priority, because the thread donates to its pager exactly as
  * a client donates to a server. The pager's own priority is below this
  * thread's. If the donation did not happen, this thread would be the
@@ -13262,7 +13181,7 @@ static uint32_t pager_pages;
 
 /*
  * The end of the highest page the pager has been asked for, as an offset
- * into the image. Section 15.1 has it supply read-only pages only, so
+ * into the image. The pager supplies read-only pages only, so
  * this must stay at or below where the archive says writable memory
  * begins.
  */
@@ -13278,7 +13197,7 @@ static uint32_t frames_at_start;
 static uint32_t kernel_tables_at_start;
 #endif
 
-/* One reading of the channel pool, per M20 stage one. */
+/* One reading of the channel pool. */
 static struct channel_scan channel_report;
 
 static uint8_t pager_prio_seen;
@@ -13347,7 +13266,7 @@ root_pager(void *arg)
         pager_pages++;
 
         /*
-         * And where it was asked for, per M14 stage five's review. A
+         * And where it was asked for. A
          * count of pages says how many arrived and not which, so a
          * pager that supplied a data page while some text page went
          * untouched would give the same number. The offset of the
@@ -13414,9 +13333,9 @@ paging_checks(void)
       SYS_OK);
 
     /*
-     * The pager runs below the program, deliberately. Section 15.3's
-     * claim is that a fault is serviced at the faulting thread's
-     * priority because the thread donates to its pager, and a pager that
+     * The pager runs below the program, deliberately. A fault is serviced
+     * at the faulting thread's priority because the thread donates to its
+     * pager, and a pager that
      * already outranked its client would prove nothing.
      */
     t = thread_create("pager", 5, root_pager, NULL);
@@ -13464,10 +13383,10 @@ paging_checks(void)
 
 #if SYS_TIER == 2
     /*
-     * And that what arrived was text and only text, per M14 stage five.
+     * And that what arrived was text and only text.
      * The program carries a word of initialised data above the boundary
-     * the archive records, and section 15.1 has a page supplied to a
-     * fault mapped read-only, so a data page left to the pager would
+     * the archive records, and a page supplied to a
+     * fault is mapped read-only, so a data page left to the pager would
      * arrive read-only and the program would fault writing it. It
      * returns -3 or -4 if its word is wrong or will not take a write,
      * which the comparison above would catch, and this says the same
@@ -13483,7 +13402,7 @@ paging_checks(void)
     /*
      * And that they were the low ones. The count alone would match a
      * pager that had supplied a data page while a text page went
-     * untouched, which is the failure this stage removed rather than
+     * untouched, which is a failure this check guards against rather than
      * one it can assume gone.
      */
     if (pager_high > m->bm_rw) {
@@ -13526,7 +13445,7 @@ paging_checks(void)
       (unsigned int)pager_prio_seen);
 #else
     /*
-     * Section 15.3 is Tier 2 only, and this is what that means from the
+     * Fault service is Tier 2 only, and this is what that means from the
      * outside: the same program, given the same pager, runs without ever
      * asking it for anything, because a flat address space has nothing
      * absent to fault on. It still adds up to the same number.
@@ -13542,7 +13461,7 @@ paging_checks(void)
       (unsigned int)want);
 
     /*
-     * And a pager that does not terminate, per section 15.4 rule 1.
+     * And a pager that does not terminate.
      *
      * The channel is owned by an ordinary program, which has no pager of
      * its own and is not memory-locked, so a chain ending there ends at
@@ -13620,16 +13539,15 @@ paging_checks(void)
 /*
  * What a process was given, with names on it.
  *
- * Section 20.4 has a namespace arrive at launch as an array of named
- * directory handles. Until now the array carried numbers, which is what a
+ * A namespace arrives at launch as an array of named directory handles.
+ * The array carries numbers, which is what a
  * role is; a name is what a mount point is, and a parent that cannot say
  * where to mount a handle cannot compose a namespace at all.
  *
  * Three things are checked here and the last is the one with teeth. That
  * a child sees the names its parent chose, that a child given nothing
  * sees nothing, and that a name the caller does not own is refused rather
- * than read, which is section 23.2 applied to the array this milestone
- * added rather than to the arrays the last one did.
+ * than read, which applies to the namespace array.
  */
 static void
 namespace_checks(sys_handle_t root, sys_handle_t console)
@@ -13647,14 +13565,14 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
     /*
      * Two names for one directory, and a grant with no name at all.
      *
-     * The two names are the composition this milestone is about. The
+     * The two names are the composition under test. The
      * grant is there because a namespace is not all one kind of thing: a
      * driver holds one by role, and a composer that hands on connection
-     * rights cannot hand it on, which is section 7.2 refusing to clamp a
+     * rights cannot hand it on, which is the kernel refusing to clamp a
      * duplication rather than a defect. The program says which happened.
      *
      * Neither the grant nor the console is named, and that is the rule
-     * rather than an omission: section 20.4's array is of named
+     * rather than an omission: the namespace array is of named
      * *directory* handles, and a thing that answers no path below it has
      * no business being a mount point.
      */
@@ -13693,7 +13611,7 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
       code);
 
     /*
-     * And a child given nothing. Section 20.3: there is no ambient root,
+     * And a child given nothing. There is no ambient root,
      * so a process handed no entries can name nothing at all, and the
      * check is that it says so rather than finding something anyway.
      */
@@ -13731,7 +13649,7 @@ namespace_checks(sys_handle_t root, sys_handle_t console)
      * directory at `/`, which is what `resolve` is written against.
      *
      * It is a unit test in a program because that is where the library
-     * runs. Nothing here sends a message: section 20.2's claim is that
+     * runs. Nothing here sends a message: the claim is that
      * resolution costs no syscall, and a check that needed a server
      * would not be checking that.
      */
@@ -13795,8 +13713,7 @@ never_replies(void *arg)
         }
         /*
          * And that is all. The client is now reply-blocked with its
-         * buffer here, which is the state section 10.5 calls the
-         * interesting case.
+         * buffer here, which is the interesting case.
          */
     }
 }
@@ -13804,9 +13721,9 @@ never_replies(void *arg)
 
 
 /*
- * Killing a server, and putting one back, per sections 10.5 and 24.3.
+ * Killing a server, and putting one back.
  *
- * The kernel holds no restart policy and section 18.3 says it must not,
+ * The kernel holds no restart policy and it should not,
  * so what is checked here is in two pieces. The mechanism is a kill and
  * a completion timeline. The policy is a program, and one that gives up
  * after a bound rather than relaunching for ever, because a child that
@@ -13905,10 +13822,9 @@ kill_checks(void)
      * as release the thread.
      *
      * Waited for rather than assumed. The server runs at this thread's
-     * own priority, so readying it does not run it, and the first
-     * version of this killed a server that had never received: the
-     * client was queued with its buffer still its own and the case it
-     * was written for never happened.
+     * own priority, so readying it does not run it. A server that has
+     * not yet received is the case this exercises: the client is queued
+     * with its buffer still its own.
      */
     {
         struct thread *ct = proc_threads(cc.c_proc);
@@ -13926,7 +13842,7 @@ kill_checks(void)
     /*
      * The client is being served by the server. Ending the server
      * releases it with an error rather than leaving it there, which is
-     * section 12.5 reached by a kill rather than by a cancel.
+     * the same release reached by a kill rather than by a cancel.
      */
     memset(&kargs, 0, sizeof(kargs));
     kargs.code = 9;
@@ -14030,7 +13946,7 @@ kill_checks(void)
       code);
 }
 /*
- * The two sides of a rendezvous fail differently, per section 12.5,
+ * The two sides of a rendezvous fail differently,
  * because they are waiting on different things.
  *
  * A server is at a receive point, so it can be told: it collects a
@@ -14083,8 +13999,8 @@ attentive(void *arg)
     }
 
     /*
-     * A server that replies anyway is told the client has moved on,
-     * per section 10.5 step 3. A server that ignored this would be one
+     * A server that replies anyway is told the client has moved on.
+     * A server that ignored this would be one
      * that never learned, which is what the pulse is for.
      */
     memset(&reply, 0, sizeof(reply));
@@ -14276,7 +14192,7 @@ death_checks(void)
 }
 /*
  * Pulses, and the reservation that is the whole reason they are
- * specified rather than assumed, per section 13.1.
+ * specified rather than assumed.
  *
  * The queue is bounded because the pools are, so a policy is needed
  * when it fills, and the policy has to distinguish two kinds. A user
@@ -14409,11 +14325,10 @@ pulse_checks(void)
     }
 
     /*
-     * And that the receiver was told, which the comment below has
-     * claimed since this check was written and nothing asserted. The
-     * negative half was here, that a loss is not reported twice, and
-     * it passes just as well when a loss is never reported at all:
-     * making the flag always read false broke nothing until this.
+     * And that the receiver was told. The negative half is here, that a
+     * loss is not reported twice, and it passes just as well when a loss
+     * is never reported at all: a flag that always reads false would
+     * pass it too, so the positive half must be checked as well.
      */
     if (told != 1) {
         panic("pulse: the loss was reported %u times, expected once",
@@ -14441,8 +14356,8 @@ pulse_checks(void)
 
     /*
      * And a pulse to a receiver that is already blocked, which is the
-     * other half of the queue and the one the first version of this
-     * check did not have. Everything above enqueues first and receives
+     * other half of the queue and the one this check
+     * needs. Everything above enqueues first and receives
      * afterwards, so the receiver is never waiting when a pulse
      * arrives, and a wake that handed it a stale message would have
      * gone unnoticed.
@@ -14524,12 +14439,12 @@ pulse_checks(void)
 /*
  * Every way this system can block, and a thread broken out of each.
  *
- * Section 10.6 closes the list of ways to block, and section 10.5 says
- * a supervisor never has to know which of them a wedged thread is in.
+ * The list of ways to block is closed, and a
+ * supervisor never has to know which of them a wedged thread is in.
  * The four cases below are that list, and one call answers all of them
  * because each wait left behind the function that takes a thread off
- * again. That hook has existed since M1 stage 7, put there by
- * deadlines; this is the second caller it was written for.
+ * again. That hook was put there for
+ * deadlines, and this is its second caller.
  */
 static void
 cancel_checks(void)
@@ -14633,7 +14548,7 @@ cancel_checks(void)
 
             /*
              * Not share(), which duplicates with a connection's
-             * rights. Section 7.2 only attenuates, so asking for SEND
+             * rights. Attenuation only narrows rights, so asking for SEND
              * on a handle that carries WAIT is refused rather than
              * quietly given whatever is left.
              */
@@ -14719,7 +14634,7 @@ cancel_checks(void)
             }
 
             /*
-             * Section 10.5 step 3: a server that replies anyway is
+             * A server that replies anyway is
              * told the client has moved on. Here rather than after
              * the join, because the thread is runnable and has not
              * run: it is alive, so this is the reply being refused
@@ -14748,8 +14663,7 @@ cancel_checks(void)
      * And the connections those four runs were given have gone back.
      * Each was moved into the program at spawn and closed with its
      * handle table when it was reaped, which is the only thing that
-     * frees one: nothing did before stage four, and the pool was a
-     * count of connections ever made rather than open at once.
+     * frees one.
      */
     if (connection_pool()->used != conns_before) {
         panic("cancel: %u connections in use, started with %u",
@@ -14763,11 +14677,9 @@ cancel_checks(void)
 /*
  * Slots come back, and a name for one does not follow it.
  *
- * Nothing was ever reaped before this stage, so nothing had ever reused
- * a pool slot, and the generation counters of section 7.1 had only been
- * tried against slots freed by hand. This is the first time the system
- * recycles one itself, which is the hazard those counters are for and
- * the thing the milestone said nothing had yet tried.
+ * The generation counters stop an old name for a slot from naming the
+ * new occupant. The system recycles slots itself here, which is the hazard
+ * those counters are for.
  */
 static void
 reap_checks(void)
@@ -14817,8 +14729,8 @@ reap_checks(void)
     /*
      * And the hazard itself. The old name now indexes a live thread,
      * and speaking to it by that name has to be refused rather than
-     * reaching whoever inherited the slot. Before this stage nothing
-     * could reach this line, because no slot was ever handed back.
+     * reaching whoever inherited the slot. Only a reused slot can
+     * reach this line.
      */
     memset(&reply, 0, sizeof(reply));
     reply.handle = SYS_HANDLE_INVALID;
@@ -14829,8 +14741,8 @@ reap_checks(void)
     sched_yield();
 
     /*
-     * A process, which is not reaped when it exits. Section 10.4 keeps
-     * its status readable through a handle, so what makes it a thing
+     * A process, which is not reaped when it exits. The status stays
+     * readable through a handle, so what makes it a thing
      * nobody can ask about is the last handle going, which is what the
      * join does.
      */
@@ -14909,7 +14821,7 @@ reap_checks(void)
 
     /*
      * And a completion handle held past everything else, which is
-     * section 10.4: what reports an exit outlives the object that
+     * this: what reports an exit outlives the object that
      * exited. A completion timeline lives inside its process, so the
      * handle is a pointer into a pool slot, and without something
      * holding the object this would be reading whatever spawned next.
@@ -14956,7 +14868,7 @@ reap_checks(void)
     }
 }
 /*
- * Two processes in one protection domain, per section 18.
+ * Two processes in one protection domain.
  *
  * The check is the smallest thing a cohort can be shown to do that a
  * pair of ordinary processes cannot: one member is handed the address
@@ -14982,13 +14894,13 @@ static struct child peer_a_child;
 
 /*
  * A member faults, the cohort goes with it, and a supervisor puts it
- * back. Sections 18.2 and 18.3.
+ * back.
  *
- * M6 built the domain and stopped at the fault, printing what was
+ * The domain stops at the fault, printing what was
  * missing. This is the missing part, and the interesting half of it is
  * not the restart: it is that the peer which did nothing wrong is ended
  * too. A survivor left running would be the per-process recovery
- * section 18.2 forbids, and the reason it forbids it is that a member
+ * that is forbidden, and the reason it is forbidden is that a member
  * that faulted may have written anything into any peer before it did.
  */
 static void
@@ -15057,8 +14969,8 @@ recovery_checks(struct channel *ch)
     cnputs("    no member of it is running any more\n");
 
     /*
-     * And a supervisor puts it back. The kernel is root here, per
-     * section 24.5, and section 18.3 is clear that what it does with
+     * And a supervisor puts it back. The kernel is root here, and what it does
+     * with
      * the fact is not the kernel's business: this is one policy, which
      * is to start the members again once.
      */
@@ -15150,7 +15062,7 @@ cohort_checks(void)
     /*
      * Watched, which it was not before. A server that never exits
      * needs nobody to be waiting; a member of a cohort does, because
-     * section 18.2 has it end when a peer faults and an exit nobody
+     * a peer's fault can end it, and an exit nobody
      * asked about halts the machine.
      */
     sched_defer();
@@ -15206,8 +15118,8 @@ cohort_checks(void)
      * And a second copy of a member that is still running is refused.
      * peer_a is blocked in receive with its slot mapped in the shared
      * space; loading another at the address it was linked for would
-     * write over it. This was not refused when the stage was first
-     * built, and the loader duly moved the running peer_a's slot base
+     * write over it. Without that refusal, the loader moves the
+     * running peer_a's slot base
      * from one frame to another underneath it.
      *
      * At Tier 0 the loader's own one-copy rule answers first and this
@@ -15228,7 +15140,7 @@ cohort_checks(void)
      * place is free and a second one may have it. Without this the
      * refusal above would pass just as well if a member could never be
      * spawned twice at all, which is a different rule and the wrong
-     * one: M7 restarts a cohort by spawning its members again.
+     * one: a supervisor restarts a cohort by spawning its members again.
      *
      * It is given nothing, so it stops at its first lookup and exits.
      * What is being checked is that it was allowed to start.
@@ -15256,7 +15168,7 @@ cohort_checks(void)
         panic("cohort check: the second spawn handle was already gone");
     }
     /*
-     * And what M6 left for this milestone: a member faults, the whole
+     * And what the cohort needs: a member faults, the whole
      * cohort goes, and a supervisor starts it again. Here rather than
      * in a check of its own because it needs the pair that is already
      * running and the handles they were given.
@@ -15270,7 +15182,7 @@ cohort_checks(void)
  * until then the kernel is what assembles the system. */
 
 /*
- * Section 13.3 wants figures. Before any of them mean anything, the
+ * Figures are wanted. Before any of them mean anything, the
  * clock they come from has to be one clock, shared by both cores, and
  * monotonic; and there has to be a unit that does not move when the
  * host does.
@@ -15331,7 +15243,7 @@ clk_thread(void *arg)
 
 
 /*
- * Section 12.3's bound, and the deadlock it names.
+ * The chain bound, and the deadlock it names.
  *
  * A cycle of one: a server that takes a request and then sends into the
  * channel it serves. It is now waiting for itself, and nothing will
@@ -15397,9 +15309,9 @@ cyc_client_thread(void *arg)
  * blocked further down. Everything below that server is running at the
  * priority of the client it is serving, and the new client outranks all
  * of it. Without the walk the new client waits behind a chain nobody
- * raised, which is the inversion section 12.3 exists to prevent.
+ * raised, which is the inversion that donation exists to prevent.
  *
- * The stage that built the walk reported that it raises nobody. That is
+ * The walk reported that it raises nobody. That is
  * true of the workload this tree had, and it meant the raising half of
  * the mechanism was never once executed. This is that workload.
  */
@@ -15615,7 +15527,7 @@ chain_bound_checks(void)
 
 
 /*
- * Section 17: the count exceeds one.
+ * Batches: the count exceeds one.
  *
  * Signals on a timeline are what the entries do, because a timeline is
  * a counter that only goes up: after a batch of three the value says
@@ -15666,7 +15578,7 @@ batch_fill(sys_op_t *ops, sys_op_fence_args_t *args, uint32_t n,
 
 
 /*
- * Section 17.3, and the half of it this tree can reach.
+ * Issuing operations, and the half of them this tree can reach.
  *
  * An issuing op starts work and hands back a timeline, so that a batch
  * can start three things and then wait on all three with one thread
@@ -15679,7 +15591,7 @@ batch_fill(sys_op_t *ops, sys_op_fence_args_t *args, uint32_t n,
  * them in one submission is built, and hardware that finishes on its
  * own schedule is built: a timer advances a timeline at a deadline
  * without the thread doing anything. Arming three of them and waiting
- * on all three in one batch is section 17.3's shape with the issuing
+ * on all three in one batch is the batch shape with the issuing
  * op cut out of it, and it says which part is missing by showing the
  * part that is not.
  */
@@ -15707,7 +15619,7 @@ inflight_checks(void)
      *
      * All three, where the dispatch check tries one. That check is
      * about the entry point telling the two apart; this is about the
-     * premise of this stage, and a premise resting on two opcodes
+     * premise here, and a premise resting on two opcodes
      * nobody has ever called is not one to leave untested.
      */
     {
@@ -15785,8 +15697,8 @@ inflight_checks(void)
     }
 
     /*
-     * Asserted as a count and reported as a duration, per the rule
-     * this plan keeps arriving at. What is countable is that one
+     * Asserted as a count and reported as a duration. What is countable is that
+     * one
      * submission waited on three things and all three arrived.
      *
      * And what the two durations below do not show, which matters more
@@ -15801,7 +15713,7 @@ inflight_checks(void)
      * What they do show is the engine's shape: that several
      * completions can be outstanding at once and waited for in one
      * submission by one thread with no worker pool. That is the half
-     * of section 17.3 this tree has. The half it does not have is a
+     * of the engine this tree has. The half it does not have is a
      * device, and no arrangement of what is here would demonstrate
      * concurrent work, because there is no work to make concurrent.
      */
@@ -15866,7 +15778,7 @@ inflight_checks(void)
 }
 
 /*
- * Section 17.5's last line: what an aborted batch signals.
+ * What an aborted batch signals.
  *
  * A chain that fails partway leaves the entries after it unrun, and a
  * thread waiting on a timeline one of them was going to signal has
@@ -15971,9 +15883,9 @@ abort_checks(void)
 }
 
 /*
- * Section 17.4: an entry whose target is what an earlier entry produced.
+ * An entry whose target is what an earlier entry produced.
  *
- * The pair is the one the design uses to explain itself. A walk answers
+ * A walk answers
  * with a connection in the message handle, and a read is sent on that
  * connection: two operations where the second cannot be written down
  * until the first has answered. Before this the second call had to be
@@ -16048,7 +15960,7 @@ substitution_checks(void)
      * And the descriptor came back as it went in. The kernel writes
      * one field of an entry, which the interface says in as many
      * words, so a substituted target lives on a copy and never in the
-     * caller's array. A prepared program of section 17.7 is the case
+     * caller's array. A prepared program is the case
      * that makes this more than tidiness: it is validated once and
      * executed many times from one stored copy, and a kernel that
      * edits it has made the second execution a different program.
@@ -16059,17 +15971,17 @@ substitution_checks(void)
     cnputs("    the entry is unchanged but for status    OK\n");
 
     /*
-     * A walk for a name that is not there, which is now two things at
-     * once and used to be one.
+     * A walk for a name that is not there, which is two things at
+     * once.
      *
      * The send succeeds as transport and the server refuses the
-     * request, and section 12.4's status field is what lets the kernel
-     * tell those apart. The entry fails with what the server said,
-     * which it could not do before this stage: the refusal lived in
+     * request, and the status field is what lets the kernel
+     * tell those apart. The entry fails with what the server said.
+     * The refusal lives in
      * the payload and the kernel does not read payloads.
      *
      * And no handle moved, so the register is still empty, which is
-     * section 17.4's rule holding underneath. The entry that depends
+     * the rule holding underneath. The entry that depends
      * on it is refused on the tag rather than looking up handle zero.
      * These two protections are independent and both are wanted: the
      * second is what held while the first did not exist.
@@ -16095,8 +16007,8 @@ substitution_checks(void)
 
     /*
      * And a refusal that is not about a name. The server answers an
-     * operation it does not implement with INVALID_ARG, per section
-     * 25.3, and the kernel sees that the same way it sees a missing
+     * operation it does not implement with INVALID_ARG, and the kernel sees
+     * that the same way it sees a missing
      * file: what it reads is the field, not the reason.
      */
     req->fr_op = 0xffff;
@@ -16107,8 +16019,8 @@ substitution_checks(void)
     req->fr_name[0] = 'm';
 
     /*
-     * And the same walk at the head of a chain, which is section
-     * 17.5's abort-on-failure and needed the field above to exist.
+     * And the same walk at the head of a chain, which is the
+     * abort-on-failure case and needs the field above to exist.
      *
      * The walk fails, so everything linked behind it is cancelled
      * rather than run and refused one at a time. The difference is
@@ -16153,7 +16065,7 @@ substitution_checks(void)
      * refused before the message goes rather than sending on a handle
      * that was never there.
      *
-     * This is also the end of what stage one could only check
+     * This is also the end of what the earlier check could only check
      * directly: that an execution starts with nothing in it, seen
      * through the batch path rather than through the initialiser.
      */
@@ -16178,7 +16090,7 @@ substitution_checks(void)
 
     /*
      * And an operation that produces no handle to put anywhere.
-     * Section 17.4 names the producers; the rest are refused by name
+     * The producers are named; the rest are refused by name
      * rather than handed whatever they left in their arguments.
      */
     {
@@ -16198,32 +16110,30 @@ substitution_checks(void)
 /*
  * What a process costs in frames, and how many of them come back.
  *
- * Section 1 has said since M9 that memory is never reclaimed, and no
- * milestone has said how much. The frame allocator reports how many are
- * in use and attributes none of them, so "a process holds frames" has
- * been a sentence rather than a number.
+ * The frame allocator reports how many are in use and attributes none of
+ * them, so "a process holds frames" is a sentence rather than a number.
  *
  * Read either side of a spawn and either side of the reap, which are
  * different moments: a process that has exited still exists while
- * anything can ask about it, and M11 made the reference count what
- * decides. What this stage establishes is the first number, and that
+ * anything can ask about it, and the reference count decides. What this check
+ * establishes is the first number, and that
  * the second is zero.
  *
- * The two tiers give different first numbers, and the difference is the
- * milestone's shape. At Tier 0 an image is copied to the address it was
+ * The two tiers give different numbers, and the difference is the
+ * shape of each tier. At Tier 0 an image is copied to the address it was
  * linked for and runs there, in memory the archive already occupies, so
  * a process costs no frames and there is nothing about it to reclaim. At
  * Tier 2 the loader allocates and maps the whole slot, which is a
  * megabyte whatever the program's size, and the tables to reach it.
- * Every frame this milestone can give back is a Tier 2 frame.
+ * Every frame this check can give back is a Tier 2 frame.
  *
  * The program is brief, which needs no namespace and does nothing at
  * all: what is being measured is what a process costs, so a process
  * that had to be handed connections first would be measuring the
  * handing as well, and one that computed for eighty milliseconds would
- * be measuring the computing. It was spin until M14 stage five found
- * nine of those spins between the last check and the shell, which is
- * most of a second in front of a session that feeds a line every two.
+ * be measuring the computing. It does not spin, since nine such spins
+ * between the last check and the shell would be most of a second in front
+ * of a session that feeds a line every two.
  */
 static uint32_t
 frame_cost_once(const char *image, uint32_t *returned)
@@ -16249,7 +16159,7 @@ frame_cost_once(const char *image, uint32_t *returned)
 
 #if SYS_TIER == 2
     /*
-     * The same number reached the other way, per M14 stage six. What
+     * The same number reached the other way. What
      * the allocator says a spawn took and what the process is holding
      * are two measurements of one thing, taken through the frame count
      * and through a walk of the process's own address space, and
@@ -16337,7 +16247,7 @@ frame_cost_checks(void)
      * between a number that was measured and a number that was read
      * once.
      *
-     * It is also the count/duration rule of M9 applied to itself. A
+     * It is also the count/duration rule applied to itself. A
      * count is asserted because it is the same in every run; measuring
      * it twice in one run is the cheapest test of that claim there is.
      */
@@ -16381,10 +16291,8 @@ frame_cost_checks(void)
      * architecture because the table shapes do, which is why the floor
      * is read from the archive and not written down here.
      *
-     * The floor was a slot until M14 stage two, which is what a process
-     * cost when the loader mapped one whatever the image was. Comparing
-     * against the image is the same check asking the same question of a
-     * loader that now knows the answer.
+     * Comparing against the image checks the loader
+     * against what the image needs.
      */
 #if SYS_TIER == 0
     if (first != 0) {
@@ -16412,9 +16320,8 @@ frame_cost_checks(void)
      * which is a shape that cannot fail on the thing it is for: with
      * the freeing taken out it measures a residue of 264, finds 264 of
      * them eight times over, and says nothing. This is the assertion
-     * that does fail. A slot's worth is the claim stage two makes, and
-     * the frames beyond it are the address space, which is stage
-     * three's and not returned yet.
+     * that does fail. A slot's worth is the claim the loader makes, and
+     * the frames beyond it are the address space and its tables.
      */
 #if SYS_TIER == 0
     if (back != 0) {
@@ -16437,11 +16344,11 @@ frame_cost_checks(void)
  * not the one behind would pass the check above and still be a system
  * bounded by how many processes it has ever started. What says
  * otherwise is the count after a run of them: it climbs by what a
- * process holds that this stage does not return yet, once per process,
+ * process holds that the reap does not return, once per process,
  * and by nothing else.
  *
  * The residue is measured rather than written down, because it is the
- * address space and its tables, which stage three returns and which
+ * address space and its tables, which the reap returns and which
  * differ between the two ports. What is asserted here is that the
  * residue is all there is: at Tier 0 it is zero because a process
  * costs nothing, and at Tier 2 it is the same small number every time
@@ -16450,7 +16357,7 @@ frame_cost_checks(void)
 #define FRAME_ROUNDS    8u
 
 /*
- * How many times stage five spawns and reaps. Chosen so that the frames
+ * How many times this spawns and reaps. Chosen so that the frames
  * the run asks for exceed the frames the machine has, which is the
  * claim, and so that the check still fits in a boot.
  */
@@ -16493,7 +16400,7 @@ frame_return_checks(void)
      * Zero, and not the residue this run measured. Checking a run
      * against its own measurement is the shape that cannot fail: with
      * the freeing taken out it measures a residue of 264 and finds 264
-     * of them eight times over. Since stage three there is no residue
+     * of them eight times over. With frames returned there is no residue
      * to allow for, so the number to assert is the one the system does
      * not get to choose.
      */
@@ -16504,26 +16411,26 @@ frame_return_checks(void)
 }
 
 /*
- * Whether the system can now run indefinitely, per M13 stage 5.
+ * Whether the system can run indefinitely.
  *
- * The question the milestone opened with was how long this system can
+ * The question is how long this system can
  * run, and the answer was that it is bounded by how many processes it
  * has ever started: a process took frames and nothing gave them back,
- * so the machine had a lifetime measured in spawns. Stages two and
- * three made the frames come back. This is the stage that spends them.
+ * so the machine had a lifetime measured in spawns. The reap makes
+ * the frames come back. This check spends them.
  *
  * A program is spawned and reaped more times than the machine has
  * frames, and the count is read at either end. What that demonstrates
- * is not that the arithmetic in the earlier stages was right, which the
+ * is not that the arithmetic in the earlier checks was right, which the
  * earlier checks already assert, but that it stays right: a reclamation
  * that returned all but one frame each time round would pass every
- * check before this one and still be a machine with a lifetime.
+ * check before it and still be a machine with a lifetime.
  *
  * The program is brief, which does nothing. What a cycle costs is then
  * what a spawn and a reap cost, and the figure below is about this
  * mechanism rather than about how long some program takes to run.
  *
- * The duration is reported and not asserted, per M9's rule: how long
+ * The duration is reported and not asserted: how long
  * this takes is a property of the host. The count of iterations, the
  * frames each one moves, and the count at either end are properties of
  * the kernel, and those are asserted.
@@ -16551,8 +16458,8 @@ frame_endurance_checks(void)
     t1 = time_now();
 
     /*
-     * Waited for rather than snapped, for the reason stage four's
-     * review settled on: the count is the whole machine's, and an
+     * Waited for rather than snapped, because the count is the whole machine's,
+     * and an
      * assertion that it is exactly what it was is an assertion that
      * nothing else moved a frame in the instant this looked. The last
      * cycle's reap is the one thing certain to be in flight, since
@@ -16577,8 +16484,7 @@ frame_endurance_checks(void)
       (unsigned int)page_count());
     /*
      * Above the compared line and never asserted, because how long a
-     * run of spawns takes is a property of the host: M9's rule, and
-     * M12 had to relearn it.
+     * run of spawns takes is a property of the host.
      */
     cnprintf("    took %lu ms, a number of the host and not of the "
       "kernel\n", (unsigned long)((t1 - t0) * 1000ULL / time_hz()));
@@ -16593,7 +16499,7 @@ frame_endurance_checks(void)
      * And that the run was worth making. A cycle that cost nothing
      * would leave the count where it started for the wrong reason, and
      * at Tier 0 that is exactly what happens: a process costs no frames
-     * there, so what this stage proves is a Tier 2 claim and the tier
+     * there, so what this check proves is a Tier 2 claim and the tier
      * with flat memory has nothing to prove.
      */
 #if SYS_TIER == 2
@@ -16606,15 +16512,15 @@ frame_endurance_checks(void)
 }
 
 /*
- * Section 17.4: the registers one execution has, and what they refuse.
+ * The registers one execution has, and what they refuse.
  *
  * Checked directly rather than through a submission, because at this
- * stage nothing writes a register from an entry: the file exists and
+ * point nothing writes a register from an entry: the file exists and
  * the entries that use it come next. What can be established here is
- * every property the rest of the milestone will rest on, and the
+ * every property the rest of the batch work will rest on, and the
  * refusals are the properties. A file that returns a value for a
  * register nobody wrote, or hands back an integer as a handle, is the
- * whole of what section 17.4 says must not happen.
+ * whole of what the register rules say must not happen.
  */
 static void
 register_checks(void)
@@ -16702,7 +16608,7 @@ register_checks(void)
 
     /*
      * And an execution starts with nothing from the one before it.
-     * This is the property that makes the abort rule of section 17.5
+     * This is the property that makes the abort rule
      * enumerable: a register is either written by an entry of this
      * batch or it is empty, with no third case where it holds
      * something older.
@@ -16719,10 +16625,10 @@ register_checks(void)
 }
 
 /*
- * Section 17.5: chaining, and what a chain does when an entry fails.
+ * Chaining, and what a chain does when an entry fails.
  *
- * The entries signal a timeline for the same reason as the stage
- * before: a counter that only goes up says exactly which of them ran.
+ * The entries signal a timeline for the same reason as the earlier
+ * check: a counter that only goes up says exactly which of them ran.
  */
 static void
 link_checks(void)
@@ -16749,7 +16655,7 @@ link_checks(void)
     /*
      * Five entries: a chain of three whose middle one fails, then one
      * unlinked entry, then another. The middle one fails by signalling
-     * a value the timeline has already passed, which section 9.1 makes
+     * a value the timeline has already passed, which the rules make
      * an error and which needs no broken handle to arrange.
      */
     for (i = 0; i < 5; i++) {
@@ -16803,7 +16709,7 @@ link_checks(void)
       (unsigned long)timeline_value(tl));
 
     /*
-     * Section 17.5 says chains are not graphs and that a join is
+     * Chains are not graphs, and a join is
      * expressed with a fence instead. Two producers advancing a
      * timeline and a consumer waiting on the final value is that join,
      * and it is a thing LINK cannot say: there is no flag arrangement
@@ -16820,7 +16726,7 @@ link_checks(void)
      * the value is already reached when this entry runs, so the wait
      * returns at once and the deadline is only reached if the entries
      * ran out of order. Waiting for ever would make that failure a
-     * hang, and this milestone has said twice that a check whose
+     * hang, and a check whose
      * failure mode is a hang is a check nobody has read.
      */
     args[2].deadline = time_now() + time_from_ms(30000);
@@ -16839,22 +16745,22 @@ link_checks(void)
 
 
 /*
- * Section 13.3 on batches: the bound does not appear in interrupt
+ * On batches: the bound does not appear in interrupt
  * latency and the cost of one entry does.
  *
- * That sentence has been in the design since before there was a batch,
+ * That claim was made before there was a batch,
  * and until the count could exceed one there was no way to find out
  * whether it was true. It rests entirely on the batch being
  * interruptible at every entry boundary.
  */
 
 /*
- * The milestone's question: does expressing a set of operations as one
+ * The question: does expressing a set of operations as one
  * submission beat submitting them one at a time?
  *
  * Answered in counts. A duration comparing two ways of doing the same
- * work would be a figure about this host, and M9 spent six stages
- * establishing that. The same eight signals go through the same entry
+ * work would be a figure about this host.
+ * The same eight signals go through the same entry
  * point both ways, so the work either side of the comparison is the
  * same work and the check can say why: the timeline advances by eight
  * whichever form is used.
@@ -16863,12 +16769,12 @@ link_checks(void)
 
 
 /*
- * Section 17.7: a program validated once and executed many times.
+ * A program validated once and executed many times.
  *
  * A different claim from batching. Batching amortises the cost of a
  * call over several operations; this amortises the cost of validating
  * over several executions of the same operations. The two save
- * different things and stage four measured only the first.
+ * different things, and the batch measurement covered only the first.
  */
 #define PREP_N      4
 #define PREP_TIMES  4
@@ -16967,7 +16873,7 @@ prepared_checks(void)
      * for the array, and one per entry, paid once. Each execution
      * costs one for the operation and one per entry as they run. The
      * operation asking is itself an entry and pays like one, which is
-     * section 17.7's point about there being one implementation.
+     * the point about there being one implementation.
      */
     if (prepared != (2 + PREP_N) + PREP_TIMES * (1 + PREP_N)) {
         panic("prepared: %lu checks for load and executions, not %u",
@@ -17084,7 +16990,7 @@ pays_checks(void)
       (unsigned long)few_checks);
 
     /*
-     * The obvious column and the one M6 said to look at as well. A
+     * The obvious column and the one to look at as well. A
      * batch saves crossings, which is what it is for. What it does not
      * save is the per-entry checking, because every entry is still
      * checked before it runs and again when it runs, whichever form
@@ -17093,7 +16999,7 @@ pays_checks(void)
     /*
      * Both columns asserted and not only printed. These are counts, so
      * they are the same on every host and in all four configurations,
-     * and the milestone's product is the numbers: a headline figure
+     * and the product is the numbers: a headline figure
      * that can drift without anything failing is a figure nobody is
      * keeping. Changing how entries are validated changes the second
      * column, and it should have to be looked at and written down
@@ -17184,16 +17090,13 @@ batch_latency_checks(void)
      * Nothing else on this core inside the window.
      *
      * The window is the core and not the batch: anything else this
-     * core does between the clearing and the reading is in it. That
-     * was written down as making the figure an upper bound rather
-     * than the batch's cost, and left at that. It was worth more.
-     * With the dispatch held off, twelve runs of the sixteen-entry
-     * figure on one port sit between 275 and 301 ticks; without it,
-     * two of the twelve read 1030 and 1143, which is another thread's
-     * work inside the window and nothing to do with the batch. That
-     * is what used to push the old assertion against its threshold.
+     * core does between the clearing and the reading is in it. With the
+     * dispatch held off, twelve runs of the sixteen-entry figure on one
+     * port sit between 275 and 301 ticks; without it, two of the twelve
+     * read 1030 and 1143, which is another thread's work inside the
+     * window and nothing to do with the batch.
      *
-     * It matters more now than it did, because the count below is
+     * It matters because the count below is
      * asserted exactly: one thread dispatched in here would add its
      * regions to these and fail a check about the batch for a reason
      * that has nothing to do with the batch.
@@ -17232,8 +17135,7 @@ batch_latency_checks(void)
      * No measurement is not a result. A count of zero means nothing
      * was recorded, which happens if this runs before the instrument
      * is armed, and reporting that as the claim holding is how a check
-     * comes to pass on no data at all. It did, the first time this was
-     * run.
+     * comes to pass on no data at all.
      */
     if (n_one == 0 || n_many == 0) {
         panic("latency: nothing was measured, %lu and %lu regions",
@@ -17250,11 +17152,11 @@ batch_latency_checks(void)
      * has one region however many entries are in it. Both figures are
      * the same on every host and in every run.
      *
-     * It used to be asserted as a ratio of the two durations, that
+     * A ratio of the two durations, asserting that
      * sixteen entries held interrupts off no more than four times as
-     * long as one. That is a duration compared against a threshold,
-     * which section 13.3's own rule says never to do, and it was not
-     * safe: with eight machines running at once the one-entry figure
+     * long as one, is a duration compared against a threshold, which the
+     * interrupt rule says never to do, and it is not safe: with eight machines
+     * running at once the one-entry figure
      * ranges from 48 to 86 ticks and the sixteen-entry figure from 45
      * to 204, and a run at 231 against 54 failed the build. The
      * comment that stood here claimed the margin was an order of
@@ -17366,8 +17268,8 @@ batch_checks(void)
     /*
      * A null argument pointer with a length is a malformed descriptor
      * and not an unreachable one, so the operation answers it rather
-     * than the validator. Pinned here because the validator of stage
-     * one tested the length instead of the pointer and turned this
+     * than the validator. Pinned here because the validator
+     * tested the length instead of the pointer and turned this
      * answer into FAULT, which is a decision that was already made and
      * written down where it was made.
      */
@@ -17377,8 +17279,8 @@ batch_checks(void)
       (sys_err_t)run_batch(ops, 1), SYS_ERR_INVALID_ARG);
 
     /*
-     * And the full bound, which is the case section 13.3 has something
-     * to say about and the next stage measures.
+     * And the full bound, which is the case the interrupt rule has something
+     * to say about, and a later check measures it.
      */
     batch_fill(ops, args, SYS_BATCH_MAX_ENTRIES, BATCH_N);
     expect("a batch of the largest size allowed",
@@ -17389,8 +17291,8 @@ batch_checks(void)
 
     /*
      * Given back, because a later and unrelated check asserts this
-     * table is empty. M8 stage three left one behind and failed that
-     * check rather than its own.
+     * table is empty. A leftover from an earlier check
+     * would fail that check rather than its own.
      */
     expect("giving the handle back",
       handle_close(&p->p_handles, h_batch), SYS_OK);
@@ -17401,10 +17303,10 @@ batch_checks(void)
  * The reference counts that decide when an object is freed, taken and
  * let go from both cores at once.
  *
- * M8 listed these as unsafe the moment there were two cores, M9 listed
- * them again, and M10 listed them a third time. Nothing ever checked
+ * These were listed as unsafe the moment there were two cores.
+ * Nothing ever checked
  * them, which is most of why nothing ever fixed them: the hazard was a
- * sentence in three retrospectives rather than a line of output.
+ * sentence in the notes rather than a line of output.
  *
  * A thread is the object, because a thread carries a count and can be
  * referenced by a handle without being run. The count is put back
@@ -17427,7 +17329,7 @@ ref_hammer(void)
 }
 
 /*
- * The other core's half. Tier 0 has no other core, per section 13.3,
+ * The other core's half. Tier 0 has no other core,
  * so this and the two flags it waits on exist only where there is one.
  */
 #if SYS_TIER == 2
@@ -17646,7 +17548,7 @@ clock_checks(void)
 
 #if SYS_TIER == 2
 /*
- * Section 11.4: a thread runs on the core it was put on, and nothing
+ * A thread runs on the core it was put on, and nothing
  * puts it anywhere else.
  */
 static volatile uint32_t migrant_core = 0xffffffffu;
@@ -17814,7 +17716,7 @@ core_checks(void)
 
 #if SYS_TIER == 2
 /*
- * Section 11.4: donation crosses a core boundary. The server is pinned
+ * Donation crosses a core boundary. The server is pinned
  * to the second core and the client runs on the first, so the priority
  * the server serves at had to travel with an inter-processor interrupt
  * to get there.
@@ -17891,8 +17793,8 @@ xc_client(void *arg)
  *
  * The pool the system runs on is reached from both cores already, but
  * twice in a whole session, which is a lock needed by construction and
- * tested by nothing. This is the same argument the kernel lock got in
- * stage two and the same answer: a pool of its own, hammered from both
+ * tested by nothing. This is the same argument the kernel lock got and the same
+ * answer: a pool of its own, hammered from both
  * sides, so that the exclusion is exercised rather than assumed.
  *
  * What breaks without it is the free list rather than the counters. Two
@@ -17908,7 +17810,7 @@ struct ps_obj {
      * so that the reading back actually happens: a plain member
      * written and then compared against what was just written is a
      * comparison the compiler is entitled to delete, and it does, so
-     * the first version of this check could not fail.
+     * a check written that way could not fail.
      */
     volatile uint64_t   ps_mark;
 };
@@ -18106,12 +18008,12 @@ cross_core_donation_checks(void)
 #if SYS_TIER == 2
 
 /*
- * The milestone's own question, asked of the storage stack.
+ * The placement question, asked of the storage stack.
  *
  * A read goes from a client into the filesystem and from there into the
  * block store, which is two boundaries and a donation chain across
  * them. Putting the store on the other core makes every one of those
- * crossings a real one, and what it costs is the number this stage is
+ * crossings a real one, and what it costs is the number this check is
  * for: pokes sent between cores, and donations raised on a thread the
  * raising core does not own. Both are zero on one core by construction.
  */
@@ -18167,7 +18069,7 @@ pinned_storage_checks(struct proc *store, sys_handle_t root,
     /*
      * That the crossing happened at all. A read that never left the
      * first core would cost nothing extra and pass every other check
-     * here, which is the shape of failure this milestone keeps
+     * here, which is the shape of failure this check keeps
      * finding.
      *
      * The donations are what prove it and the pokes are not. A poke is
@@ -18216,7 +18118,7 @@ user_slice(void)
 
     /*
      * SYS_RIGHT_TRANSFER because this handle is going to be handed to the
-     * server, and section 7.4 makes moving a handle a right rather than
+     * server, and moving a handle is a right rather than
      * something a holder may always do.
      */
     err = handle_insert(&self->p_handles, ch, SYS_OBJ_CHANNEL,
@@ -18225,13 +18127,13 @@ user_slice(void)
 
     /*
      * Two root connections, minted here while this process still holds the
-     * receive right, because section 12.1 lets only a holder of that right
-     * mint one and handing it to the server moves it away. One per client,
+     * receive right, because only a holder of that right may
+     * mint one, and handing it to the server moves it away. One per client,
      * since a handle moves rather than copies.
      *
      * The cookie is the server's own per-connection state, so this is the
      * one place the kernel has to know a convention that belongs to a
-     * program. It is what root does at boot, per section 24.5.
+     * program. It is what root does at boot.
      */
     memset(&cargs, 0, sizeof(cargs));
     cargs.cookie = FS_NODE_ROOT;
@@ -18297,7 +18199,7 @@ user_slice(void)
     h_fs_root = cargs.out_handle;
 
     /*
-     * And a union: two directories under one name, per section 20.4.
+     * And a union: two directories under one name.
      * Both are this filesystem, reached through connections whose cookie
      * says which directory the server should show, so what is joined is
      * two directories rather than two servers. The order is the order
@@ -18340,7 +18242,7 @@ user_slice(void)
      *
      * Two processes and one more boundary. What a client asks for now
      * crosses into the filesystem and then into the store, which is
-     * the stack section 18 is about and the thing this tree did not
+     * the full storage stack and the thing this tree did not
      * have. Nothing above notices, which is the check.
      */
     blk = channel_create("blk-store", self);
@@ -18381,9 +18283,9 @@ user_slice(void)
     (void)proc_spawn_image("fs_server", 15, ns, 2, NULL, 0);
 
     /*
-     * The same file, read two ways. Section 25.7 says one message should
+     * The same file, read two ways. One message should
      * cost a third of the round trips and none of the connection pool; if
-     * it does not, the section is deleted and section 12.7 with it.
+     * it does not, the claim is wrong.
      */
     {
         uint32_t a = frames_quiet();
@@ -18391,7 +18293,7 @@ user_slice(void)
         kernel_buffer_checks(h_fs_root);
 
         /*
-         * Nothing, which the plan for this stage did not expect. A
+         * Nothing. A
          * buffer lent across a rendezvous is the client's own memory
          * mapped into the server for the length of the call, so there
          * is no frame to hold. The tables that describe it where the
@@ -18437,7 +18339,7 @@ user_slice(void)
 
     /*
      * Memory given back, and then the same file read again through a
-     * process spawned after it was. M13 stage 3 frees page tables, and
+     * process spawned after it was. The reclamation frees page tables, and
      * a table freed while something could still reach it is a frame
      * handed to the next caller with a live mapping pointing into it.
      * The read is what would find that: it spawns a program into
@@ -18467,10 +18369,9 @@ user_slice(void)
 }
 
 /*
- * What is still held when the boot is over, and what holds it, per M13
- * stage 6.
+ * What is still held when the boot is over, and what holds it.
  *
- * The milestone's other stages each measured one mechanism. This is the
+ * The other checks each measured one mechanism. This is the
  * one that has to add up: every frame the machine has spent is either
  * something named here or a number this cannot account for, and the
  * last line is what says which.
@@ -18485,13 +18386,13 @@ user_slice(void)
  * What live processes hold is their slots and the tables that reach
  * them. These are not a leak: they belong to programs that have not
  * finished, which at the end of this boot is every server the checks
- * started and never stopped. Section 15 has them returned when their
- * owner is gone, and stages two and three are what does that.
+ * started and never stopped. They are returned when their
+ * owner is gone.
  *
  * What cohorts hold is one address space each, counted against the
  * cohort because that is whose it is.
  *
- * What the named holders of stage four hold is a grant's page and the
+ * What the named holders hold is a grant's page and the
  * pages a pager supplied. Both belong to an object that outlives the
  * process they were lent to, and neither is a frame a process could
  * give back.
@@ -18549,7 +18450,7 @@ frame_ledger(void)
     /*
      * Asserted, because every part of it is a count. What it asserts is
      * not that the remainder is zero, which it is not: it is that the
-     * remainder is what it was when this was written, so that a change
+     * remainder is what it is in this run, so that a change
      * to it is something a reader is told about rather than something
      * they would have to go looking for.
      */
@@ -18564,11 +18465,11 @@ frame_ledger(void)
 }
 
 /*
- * What a server thread owes against what it records, per M22 stage one.
+ * What a server thread owes against what it records.
  *
  * `t_client` is one identifier and a receiving thread may owe several
- * replies. Section 12.6 describes a server that hands the client id to
- * a worker and keeps receiving, section 12.2 says any thread of the
+ * replies. A server may hand the client id to
+ * a worker and keeps receiving, and any thread of the
  * server may answer, and the console does both: it takes a read with no
  * line behind it, holds the request, goes back to receive, and the
  * thread that has the bytes replies.
@@ -18605,10 +18506,10 @@ owed_checks(void)
      * This runs on the boot thread after the session, and the session
      * does not take everything with it: the console and `wedged` are
      * still there, and at Tier 2 the other core can be inside a
-     * rendezvous writing the two fields this reads. M20 stage three's
-     * review found the same thing about the walk that checks channel
-     * holds, and this is that finding arriving again rather than a new
-     * one.
+     * rendezvous writing the two fields this reads. The walk that checks
+     * channel
+     * holds has the same exposure, and this is that exposure again
+     * rather than a new one.
      */
     held = klock_held();
     if (!held) {
@@ -18669,7 +18570,7 @@ owed_checks(void)
 
     /*
      * And the two totals, which is what an inner walk of every thread
-     * used to say and this says in one pass instead of thirty-two.
+     * would say, in one pass instead of thirty-two.
      *
      * Each thread's list holds exactly as many clients as it owes, and
      * every one of them names that thread, both checked above. So the
@@ -18710,9 +18611,9 @@ owed_checks(void)
     /*
      * Asserted above zero rather than at a value, because it counts
      * something the recorded session does and the session is paced by
-     * the host. What the milestone needs from it is that it happens at
+     * the host. What the check needs from it is that it happens at
      * all: a boot where no thread ever holds a request and goes back to
-     * receive is a boot this milestone has nothing to say about.
+     * receive is a boot this check has nothing to say about.
      */
     if (channel_owed_cleared == 0) {
         panic("owed: no thread held a request and blocked receiving");
@@ -18735,8 +18636,8 @@ owed_checks(void)
      * does not.
      *
      * Against the blocks that had a record to give away, and not
-     * against every block by a thread that owed something, per M22
-     * stage seven. The two were the same number until a check held
+     * against every block by a thread that owed something. The two were the
+     * same number until a check held
      * one request across two hundred round trips: after each reply
      * the field is empty and the thread still owes the held one, so
      * it blocks receiving with nothing to hand over. There is
@@ -18760,10 +18661,9 @@ owed_checks(void)
      * An assertion above zero would hold in the paced run and stop the
      * burst one, which is a check that measures the harness.
      *
-     * Stage one counted two more numbers here and stage four took
-     * both away. One was threads left on a serving list by another
-     * thread's reply and the other was threads standing on a list
-     * owing nobody, and neither can happen now: the entry is the
+     * Two more numbers, threads left on a serving list by another
+     * thread's reply and threads standing on a list owing nobody, are
+     * gone: neither can happen now. The entry is the
      * request, it goes when the request is answered, and a thread on
      * a list with nobody owing it is the panic in the walk above.
      */
@@ -18779,7 +18679,7 @@ kernel_main(void)
       (unsigned int)SYS_TIER, md_mode());
 #if SYS_DEBUG_CONSOLE
     /*
-     * Section 22.4 requires that a build carrying the debug console say
+     * A build carrying the debug console must say
      * so. It is ambient authority: any process can print without holding
      * anything, which is the one thing the rest of the system does not
      * allow. A production image compiles it out and this line goes with it.
@@ -18831,7 +18731,7 @@ kernel_main(void)
 
 #if SYS_TIER == 2
     /*
-     * And the poke one core sends another, per section 11.4. It is a
+     * And the poke one core sends another. It is a
      * kernel handler and not a timeline for the same reason the timer
      * is: nothing waits for it, and what it means is decide again.
      */
@@ -18850,7 +18750,7 @@ kernel_main(void)
      * The other cores, once there is a kernel process for each of them
      * to bootstrap a thread of its own in. A core arriving before that
      * has queues but nothing to be: dispatching means switching away
-     * from something, and section 11.6 has idle be a state of the core
+     * from something, and idle is a state of the core
      * rather than a thread, which is a state something has to be in.
      */
     cpu_start_others();
@@ -18880,7 +18780,7 @@ kernel_main(void)
     page_checks();
 
     /*
-     * The system page of section 6.2, before the count below is taken,
+     * The system page, before the count below is taken,
      * so the ledger counts it among what the port had spent rather than
      * as a frame nobody claims.
      */
@@ -19000,13 +18900,14 @@ kernel_main(void)
     kill_server_stale_checks();
 
     /*
-     * Everything M18 does, between two readings of the connection
+     * Everything the connection checks do, between two readings of the
+     * connection
      * pool. Each of these checks accounts for its own, and this is the
      * one that says so about all of them together: five servers, a
      * dozen clients and two channels of departed peers later, the pool
      * holds what it held. The number in the boot report at the end of
      * the run is larger than this because the shell session opens
-     * files, and none of that is this milestone's.
+     * files, and none of that is covered here.
      */
     {
         uint32_t before = connection_pool()->used;
@@ -19069,7 +18970,7 @@ kernel_main(void)
          * The pages the pager answered faults with, still held after the
          * program that faulted has been reaped. They are its grants'
          * frames, mapped into the program at an address the pager did
-         * not choose, and p_pager_bytes is what keeps stage two's reap
+         * not choose, and p_pager_bytes is what keeps the reap
          * off them. This is that boundary measured: what is held is what
          * was supplied, and it is nothing at Tier 0, where a flat
          * address space never faults.
@@ -19123,14 +19024,12 @@ kernel_main(void)
          * reasons no change caused. What does not move is that there
          * are far more of these than there are buffer moves.
          *
-         * How many of them threw the whole translation cache away used
-         * to be all of them, and the line used to say so. Since M19
-         * stage two a port with identifiers keeps what it learned, and
+         * A port with identifiers keeps what it learned across a switch, so
          * what is printed is the pair: a number that moves with the
          * host beside a number that does not, since a port either tags
          * its translations or does not.
          *
-         * If a later stage ever makes this false, that is a result
+         * If a later change ever makes this false, that is a result
          * rather than a broken check, and it should be read as one.
          */
         cnprintf("address space switches: %u, of which %u threw every "
@@ -19149,8 +19048,8 @@ kernel_main(void)
          * a port with identifiers flushes on fewer. Not on none: a
          * switch also throws everything away when another core has
          * invalidated something this one may be holding, which is the
-         * guarantee every switch used to give by accident and now
-         * gives on purpose. How many that is depends on how much the
+         * guarantee every switch gives on purpose. How many that is depends on
+         * how much the
          * two cores did, so what is asserted is the relation.
          */
         if (md_asid_bits() == 0) {
@@ -19187,7 +19086,7 @@ kernel_main(void)
             uint32_t i;
 
             /*
-             * And where they happened. Section 11.4 makes this a
+             * And where they happened. This is a
              * question worth asking: a switch is something a core
              * does, so the number above is a sum, and a sum whose
              * parts nobody looks at is a number that would go on
@@ -19231,8 +19130,8 @@ kernel_main(void)
 
 
     /*
-     * And how stale a stored uptime would be, per M16 stage one.
-     * Section 6.2 has the system page carry a field the kernel writes
+     * And how stale a stored uptime would be.
+     * The system page carries a field the kernel writes
      * and a program reads; this says what the writing would look like
      * in a kernel that arms the hardware for the next event and for
      * nothing else.
@@ -19254,8 +19153,7 @@ kernel_main(void)
          * The count is asserted and the gap is not. How many times the
          * kernel ran is a property of what the checks ask it to do; how
          * long the longest gap was is a property of the host, which is
-         * M9's rule and the reason this stage reports a duration rather
-         * than checking one.
+         * the reason this reports a duration rather than checking one.
          */
         if (marks == 0) {
             panic("the clock: the kernel never ran, which cannot be");
@@ -19263,9 +19161,9 @@ kernel_main(void)
     }
 
     /*
-     * And what the deadlines did, per M15 stage six. Counts rather than
-     * durations: how many sends gave up, and which of section 12.1's
-     * two states each was in, are properties of what the checks asked
+     * And what the deadlines did. Counts rather than
+     * durations: how many sends gave up, and which of the two states
+     * each was in, are properties of what the checks asked
      * for and are the same in every run. How long any of them waited is
      * the host's and is printed where it is measured.
      */
@@ -19338,12 +19236,12 @@ kernel_main(void)
     owed_checks();
 
     /*
-     * The one pool nothing gives back, per M20 stage one, read once
+     * The one pool nothing gives back, read once
      * under the kernel lock so that all of it describes one moment.
      *
      * The walk's own duration goes here, above the compared line,
      * where a duration belongs. It is also the only place it can go:
-     * the interrupts-off regions of section 13.3 are reported a few
+     * the interrupts-off regions are reported a few
      * lines above this, so a region opened after that report is one
      * the boot's own instrument cannot see, and printing how long it
      * held the lock is what stands in for being measured.
@@ -19371,8 +19269,8 @@ kernel_main(void)
     }
 
     /*
-     * Which boundary each marked thread was stopped at, per M21
-     * stage three. Above the line because the split moves: the one
+     * Which boundary each marked thread was stopped at.
+     * Above the line because the split moves: the one
      * construction that reaches the first-entry boundary is a race
      * against an inter-processor interrupt, run a fixed number of
      * times, and how many of those land is the host's answer. Their
@@ -19390,7 +19288,7 @@ kernel_main(void)
      * Inside the compared part of the report, because it is a count.
      * The durations these regions also produced are above the line,
      * where they are free to differ between one host and the next.
-     * This line is the milestone's rule made visible: what is compared
+     * This line makes the rule visible: what is compared
      * is a property of this kernel, and what moves with the machine is
      * reported and not compared.
      */
@@ -19400,7 +19298,7 @@ kernel_main(void)
       (unsigned long)meas_count(&meas_shared));
 
     /*
-     * And what stopping a thread that will not stop cost, per M17.
+     * And what stopping a thread that will not stop cost.
      * Inside the compared part of the report because all three are
      * counts: a kill written, an interrupt a kill had to send to reach
      * a core, and a client told that the one thread which could have
@@ -19412,17 +19310,14 @@ kernel_main(void)
       (unsigned long)channel_stale_clients);
 
     /*
-     * And what a kill did not reach, per M21 stage one. Counts, so
+     * And what a kill did not reach. Counts, so
      * they belong here: a kill written against a thread that had
      * never run and did not end it, and the entries such a thread
      * went on to start with the mark already set. Both are what the
      * checks ask for and neither moves with the host.
      *
-     * Stage one asserted the opposite of all of this, and said so:
-     * a kill that reached nothing and an entry started after it were
-     * the subject of the milestone. Stage two turns them over. The
-     * two trampolines are counted apart because only one of them is
-     * reached by anything before stage five, and a check that added
+     * The two trampolines are counted apart because only one of them is
+     * reached by anything earlier in the boot, and a check that added
      * them together would not notice the other going missing.
      */
     cnprintf("  killed before ever running: %lu a program and "
@@ -19434,8 +19329,8 @@ kernel_main(void)
       (unsigned long)proc_unrun_locked);
 
     /*
-     * And where a marked thread was stopped at an entry boundary,
-     * per M21 stage three. Before an entry is the point M17's
+     * And where a marked thread was stopped at an entry boundary.
+     * Before an entry is the point the earlier
      * placement did not have, and it is the one that keeps a marked
      * thread from beginning an operation that would block. After a
      * batch catches a mark written while the last entry ran.
@@ -19449,21 +19344,19 @@ kernel_main(void)
       proc_stopped_before_later + proc_stopped_after_batch));
 
     /*
-     * And the whole of it as one sum, per M21 stage seven.
+     * And the whole of it as one sum.
      *
      * A kill closes the set of threads it has to reach at the moment
      * it writes the mark. Every thread in that set leaves by one of
      * three doors: the trampoline it had not been dispatched to, the
      * boundary between two entries, or the return from a trap. The
      * three counts above are the doors. This line is the claim that
-     * they are all of the doors there are, which is what section
-     * 10.5 says in words.
+     * they are all of the doors there are.
      *
      * The sum is the assertion with teeth. Each of the three can be
      * right on its own with a thread having left some other way, and
-     * a fourth way out is exactly what the milestone was about: for
-     * M17 and M20 there was one door, and a thread that arrived at
-     * none of them was a thread a kill did not reach.
+     * a fourth way out is exactly what the check is about: a thread that
+     * arrives at none of the doors is a thread a kill does not reach.
      *
      * The last number is not a door. It is a thread that was already
      * on its way out when the mark went down, which is what a thread
@@ -19472,8 +19365,7 @@ kernel_main(void)
      * a thread that is inside `thread_exit` already.
      *
      * Counted where it happens rather than by taking the doors away
-     * from the total, which was how this read first and was no
-     * check at all: a remainder adds back up to the total whatever
+     * from the total: a remainder adds back up to the total whatever
      * either of them is. The five numbers come from five places
      * now, and the line above is the arithmetic between them.
      */
@@ -19507,7 +19399,7 @@ kernel_main(void)
 
     /*
      * And the threads a process that was over asked for and did not
-     * get, per M21 stage five. A count, and the one that says the
+     * get. A count, and the one that says the
      * set of threads a kill has to reach is closed at the moment
      * the mark is written rather than open afterwards.
      *
@@ -19540,12 +19432,12 @@ kernel_main(void)
     }
 
     /*
-     * And what a server outliving its clients cost, per M18. Counts
+     * And what a server outliving its clients cost. Counts
      * again, and the same rule: a peer collected, a pulse that found
      * no slot, a sender a bounded queue would not hold. What any of it
      * took is above the line.
      *
-     * The connections are the milestone's own measurement rather than
+     * The connections are measured here rather than
      * a cost. A departed client's connection is kept until its server
      * asks for it, so the number in use at the end of a boot is the
      * number nobody collected, and it has to be the number the boot
@@ -19563,7 +19455,7 @@ kernel_main(void)
       (unsigned int)connection_pool()->highwater);
 
     /*
-     * And what telling address spaces apart cost, per M19.
+     * And what telling address spaces apart cost.
      *
      * Counts, so they belong below the line with the rest of them: a
      * name given out, a name given out that somebody had already had,
@@ -19576,8 +19468,8 @@ kernel_main(void)
      * flushes, are on its own line further up and are not repeated.
      *
      * Neither the count of switches nor the count of them that flushed
-     * is here. The first moves with the host, for the reason M6's
-     * review gave: it depends on when console input arrives, and the
+     * is here. The first moves with the host: it depends on when console input
+     * arrives, and the
      * same kernel gives 5472 burst against 5476 paced. The second does
      * not move in either mode, but it differs by port, ten on riscv64
      * and none on aarch64, and there is one compared file for both
@@ -19586,7 +19478,7 @@ kernel_main(void)
      * between them is what is checked.
      */
     /*
-     * And what a boot spends on channels, per M20 stage one.
+     * And what a boot spends on channels.
      *
      * In the compared part of the report because all four are counts.
      * What a boot spends is what its checks ask for and is the same in
@@ -19594,7 +19486,7 @@ kernel_main(void)
      *
      * Every other pool here ends a boot below its own high-water
      * mark, because a process, a thread, a connection, a prepared
-     * program and a timer all go back. Since stage three a channel
+     * program and a timer all go back. A channel
      * does too, and the fourth number is what the free could not
      * take: slots nothing names with somebody still standing in them.
      */
@@ -19612,8 +19504,8 @@ kernel_main(void)
       (unsigned int)channel_pulses_discarded,
       (unsigned int)channel_notices_discarded);
     /*
-     * What a server thread owes against what it records, per M22 stage
-     * one. Counts, and the four here are the ones that do not move with
+     * What a server thread owes against what it records.
+     * Counts, and the four here are the ones that do not move with
      * when console input arrives: the others are above the line with
      * the walk that reads them.
      *
@@ -19629,9 +19521,8 @@ kernel_main(void)
      * owes a client on it leaves a client blocked on a reply with
      * nothing representing it.
      *
-     * Stage one asserts the wrong answer on purpose. If a thread never
-     * owes more than the record holds, the milestone has no subject and
-     * should be abandoned rather than built.
+     * If a thread never
+     * owes more than the record holds, the check has no subject.
      */
     cnprintf("  a server thread owed more than one reply: %lu, and at "
       "most %u at once\n", (unsigned long)channel_owed_walks,
@@ -19657,7 +19548,7 @@ kernel_main(void)
 
     /*
      * What the set costs a rendezvous, from the two runs of one loop
-     * that stage seven measures. A count and not a duration, so it
+     * that the check measures. A count and not a duration, so it
      * belongs here: the same two runs report their microseconds
      * above, where a number that is the host's belongs.
      */
@@ -19677,7 +19568,7 @@ kernel_main(void)
     }
     /*
      * And every identifier the record lost was still named by the set,
-     * which is stage one's assertion turned over.
+     * which is the reverse of the assertion above.
      *
      * The two are counted in different ways at the same place. One
      * tests the record and finds that it names a client this thread no
@@ -19717,7 +19608,7 @@ kernel_main(void)
     }
 
     /*
-     * And the two halves of stage five. A client that died with its
+     * And the two halves of the held case. A client that died with its
      * request being served, and a slot the free could not take
      * because a request was standing in it. Zero for either would
      * mean the boot never built the case.
@@ -19730,14 +19621,14 @@ kernel_main(void)
     }
 
     /*
-     * And stage six. One death reaching two clients is the whole of
-     * what the stage added, and the boot builds it on purpose, so it
-     * is the same number on any host.
+     * And the death that reaches two clients. One death reaching two
+     * clients is the whole of what that adds, and the boot builds it on
+     * purpose, so it is the same number on any host.
      *
-     * The clients left for section 12.5 are compared and not
+     * The clients left for the owner are compared and not
      * asserted. Nothing in the boot builds that case on purpose: it
      * comes out of where a supervisor's kills fall against a server
-     * thread's exit, so an assertion here would be this stage
+     * thread's exit, so an assertion here would be this check
      * claiming something another part of the boot happens to
      * produce. The compared file is the right place for it, and it
      * has read the same in every paced and burst run so far, which
@@ -19751,15 +19642,11 @@ kernel_main(void)
     /*
      * Asserted as well as compared, because the compared file covers
      * the paced run and the burst run is only read for a panic. A
-     * number this milestone turns on should fail in both.
+     * number this check turns on should fail in both.
      *
-     * Stage one asserted the opposite of both of these, and said so:
-     * a pool where nothing was reachable and nothing was ever given
-     * back was the subject of the milestone, and stage three is what
-     * makes the assertions turn over. What is asserted now is that
-     * slots come back and that the pool holds fewer than it has had
-     * out at once, which is the sentence every other pool here could
-     * already say.
+     * What is asserted is that slots come back and that the pool holds
+     * fewer than it has had out at once, which is the sentence every
+     * other pool here could already say.
      */
     if (channel_freed == 0) {
         panic("channels: not one slot went back in the whole boot");
@@ -19782,7 +19669,7 @@ kernel_main(void)
     }
 
     /*
-     * And the figure the milestone exists for. `SYS_MAX_CHANNELS`
+     * And the figure that matters here. `SYS_MAX_CHANNELS`
      * bounded how many channels a machine could ever make; what it
      * bounds now is how many exist at one time. The assertion is
      * that the boot has passed the old bound, because on the day it
@@ -19816,8 +19703,8 @@ kernel_main(void)
 
     /*
      * And nothing is waiting for a departure that will not come.
-     * Stage three left one of these a boot, a channel holding a pulse
-     * nobody could collect, and stage four decided that a pulse is
+     * A boot could leave one of these, a channel holding a pulse
+     * nobody could collect, and the reservation decided that a pulse is
      * not somebody. What is left in this state now is a channel a
      * thread is inside, and the thread leaving is what frees it, so
      * at the end of a boot there should be none.

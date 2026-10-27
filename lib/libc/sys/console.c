@@ -39,7 +39,7 @@ console_handle(void)
 
 /*
  * The most a request can carry inline. Bulk data belongs in the message
- * buffer, per section 25.5, and a console line is not bulk data; a caller
+ * buffer, and a console line is not bulk data; a caller
  * with more to say makes more calls, exactly as the debug console makes
  * it split at its own bound.
  */

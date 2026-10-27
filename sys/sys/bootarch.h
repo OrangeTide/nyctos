@@ -38,7 +38,7 @@ struct boot_header {
  * entry point. Recording it here rather than at spawn keeps the archive
  * the single description of what an image is.
  *
- * bm_rw and bm_mem are the layout, added at version 2 for M14. A flat
+ * bm_rw and bm_mem are the layout, added at version 2. A flat
  * binary is a run of bytes and says nothing about which of them may be
  * written or how much memory the program needs beyond the bytes it
  * carries, so a loader given only bm_size has to map the whole slot,

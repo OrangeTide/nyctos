@@ -28,21 +28,16 @@ static uint32_t frame_used;
 static uint32_t frame_highwater;
 
 /*
- * Exclusion, which this did not have.
+ * Exclusion.
  *
  * Every other shared structure in the kernel takes a lock at Tier 2:
  * the pools, the object references, the timer list and the console.
- * The frame allocator did not, and disabling interrupts is exclusion on
- * one core and nothing at all on two. It was very nearly true that
- * nothing noticed, because until M13 stage 2 the only caller that freed
- * a frame was a boot check running on one core.
- *
- * That stage is what made it matter. A process is reaped from
+ * The frame allocator takes one too. Disabling interrupts is exclusion on
+ * one core and nothing at all on two. A process is reaped from
  * thread_reap_parked at the top of a switch, which happens on whichever
- * core the switch is on, so freeing a slot now runs on either core
- * while the other may be loading a program. Two cores in this bitmap at
- * once lose a bit, which is one frame handed to two owners, or lose a
- * count, which is the number this whole milestone is measured in.
+ * core the switch is on, so freeing a frame can run on either core while
+ * the other is loading a program. Two cores in this bitmap at once can
+ * lose a bit, which is one frame handed to two owners, or lose a count.
  *
  * A leaf, like the pool lock and for the same reason: nothing under it
  * takes another lock, so it cannot be half of a cycle.
@@ -79,8 +74,8 @@ page_leave(intr_state_t s)
 #else
 
 /*
- * Section 13.3 buys Tier 0 a kernel with no internal locking at all,
- * and one core is what makes disabling interrupts exclusion again.
+ * Tier 0 is a kernel with no internal locking at all, and one core is
+ * what makes disabling interrupts exclusion again.
  */
 static intr_state_t
 page_enter(void)
@@ -336,11 +331,10 @@ page_last(void)
  * Which cores have taken frames and given them back.
  *
  * The same question the pools answer about themselves, and here it has
- * a second use. M13 stage 2 freed a process's memory from the reap, and
- * a reap runs at the top of whichever core's switch collects the parked
- * thread. Whether that is really both cores is not something the design
- * can assert on its own, and a lock nothing contends is a lock that has
- * never been tried.
+ * a second use: a process's memory is freed from the reap, which runs at
+ * the top of whichever core's switch collects the parked thread. Whether
+ * that is really both cores is not something the code can assert on its
+ * own, and a lock nothing contends is a lock that has never been tried.
  *
  * It says so rather than insisting. pool_report_cores halts a boot in
  * which a core never touched a pool, and the same rule here would halt

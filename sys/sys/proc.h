@@ -38,16 +38,15 @@ struct proc {
     struct handle_table p_handles;
 
     /*
-     * The startup record of section 20.4, and the table it points at.
-     * Both live in the process rather than in the child's memory because
-     * Tier 0 has no address space to place them in; section 15.2 is where
-     * that changes and the loader starts writing them into the image.
+     * The startup record, and the table it points at. Both live in the
+     * process rather than in the child's memory because Tier 0 has no
+     * address space to place them in.
      */
     sys_startup_t       p_startup;
     sys_handle_t        p_ns[SYS_NS_WORDS];
 
     /*
-     * Where each of those handles is mounted, per section 20.4. Copied
+     * Where each of those handles is mounted. Copied
      * for the same reason the command line is: the array a caller builds
      * is a stack frame in a program, and the child reads it after that
      * frame is gone. An entry that is only a role has an empty slot.
@@ -55,9 +54,8 @@ struct proc {
     char                p_ns_names[SYS_NS_NAME_BYTES];
 
     /*
-     * The command line, copied. Section 20.4 has the loader place the
-     * strings in the child's memory; the kernel is the loader here, so
-     * they live in the process object beside the record that points at
+     * The command line, copied. The kernel is the loader, so the strings
+     * live in the process object beside the record that points at
      * them. Copied rather than pointed at for the reason every other
      * copy here exists: the array a caller passed is a stack frame in
      * a program, and the child reads it after that frame is gone.
@@ -66,8 +64,8 @@ struct proc {
     uintptr_t           p_argv[SYS_MAX_ARGS + 1];
 
     /*
-     * The cohort this process is in, or NULL for a process in none,
-     * per section 18.1. Fixed when the process is created, from a
+     * The cohort this process is in, or NULL for a process in none.
+     * Fixed when the process is created, from a
      * table the kernel was built with, and never afterwards: there is
      * no operation that joins one.
      *
@@ -87,8 +85,8 @@ struct proc {
     struct addrspace    p_as;
 
     /*
-     * How much of the slot the loader left to the pager, per section
-     * 15.1: the leading pages that hold the image, which a process with
+     * How much of the slot the loader left to the pager: the leading
+     * pages that hold the image, which a process with
      * a pager is given from a grant on a fault rather than at load.
      *
      * A boundary and not a flag, because a reap needs the inverse of
@@ -102,9 +100,8 @@ struct proc {
     /*
      * How many frames the loader mapped for this process. Recorded
      * because the number cannot always be recovered later: a cohort
-     * member whose place moved on has had its mappings written over,
-     * and M13 stage 6 still has to say how many frames that lost. Since
-     * M14 the answer is what the image needed rather than a slot, so
+     * member whose place moved on has had its mappings written over.
+     * The answer is what the image needed rather than a slot, so
      * counting it here is the only place it is known.
      */
     uint32_t            p_own_pages;
@@ -120,7 +117,7 @@ struct proc {
     uint32_t            p_mem_bytes;
 
     /*
-     * Where the system page of section 6.2 is mapped in this process,
+     * Where the system page is mapped in this process,
      * as an offset into its slot, or zero for a process that has none.
      *
      * Kept because the reap has to skip it. One frame serves every
@@ -132,12 +129,12 @@ struct proc {
     uintptr_t           p_startup_va;
 
     /*
-     * The completion timeline of section 10.4, embedded rather than
-     * drawn from the pool, and the status a joiner reads once it has
-     * advanced. A process finishes when its last thread does, and the
-     * code it reports is that thread's: with one thread per process
-     * that is the program's exit status, and section 10.4 says nothing
-     * about which thread speaks for a process with several.
+     * The completion timeline, embedded rather than drawn from the
+     * pool, and the status a joiner reads once it has advanced. A
+     * process finishes when its last thread does, and the code it
+     * reports is that thread's: with one thread per process that is the
+     * program's exit status. Which thread speaks for a process with
+     * several is not settled.
      */
     struct timeline     p_completion;
     uint32_t            p_nthreads;
@@ -145,7 +142,7 @@ struct proc {
 
     /*
      * What ended the thread whose exit finished this process, if the
-     * hardware did, per section 16.2. A supervisor holding a process
+     * hardware did. A supervisor holding a process
      * handle reads the fault here rather than having to have held a
      * thread handle it never saw.
      */
@@ -155,20 +152,20 @@ struct proc {
 
 
     /*
-     * The pager this process faults to, per section 15.3, and what it
+     * The pager this process faults to, and what it
      * has cost. The connection is resolved at spawn from the handle the
      * namespace carried, because the kernel is what sends the fault and
      * a handle means something only in the table that holds it.
      *
      * NULL is the ordinary case and means a fault is fatal: there is
-     * nobody to ask, which is what section 16.2 assumes about every
-     * process that is not on a paging path.
+     * nobody to ask, which is the case for every process that is not on
+     * a paging path.
      */
     struct connection  *p_pager;
     uint64_t            p_faults;
 
     /*
-     * Killed, per section 10.5. Its threads are unblocked at once and
+     * Killed. Its threads are unblocked at once and
      * each leaves at its next return from the kernel, because that is
      * the point where a thread can be stopped without unwinding it
      * from wherever it happens to be.
@@ -177,7 +174,7 @@ struct proc {
     int32_t             p_kill_code;
 
     /*
-     * Cores poked by the kill, per M17 stage three: one per thread of
+     * Cores poked by the kill: one per thread of
      * this process that was running when it was killed. Zero for a
      * kill of something that is not running, which is every kill on a
      * single core.
@@ -186,18 +183,17 @@ struct proc {
 
     /*
      * Entries into the kernel this process made while marked for
-     * death, per M17 stage one. The chances a kill had to take
+     * death. The chances a kill had to take
      * effect, counted from every way in and not only the one that
      * looks for the mark.
      */
     uint64_t            p_dying_entries;
 
     /*
-     * Memory-locked, per section 15.4 rule 2. Everything on a paging
-     * path is locked, and rule 3 makes a fault in one fatal rather than
-     * recoverable: it is a configuration mistake, and a system that
-     * deadlocks in the field is worse than one that stops at
-     * integration.
+     * Memory-locked. Everything on a paging path is locked, so a fault in
+     * one is fatal rather than recoverable: it is a configuration
+     * mistake, and a system that deadlocks in the field is worse than
+     * one that stops at integration.
      */
     bool                p_locked;
 
@@ -209,8 +205,8 @@ struct proc {
     /*
      * Whether anything took this process's completion timeline. An exit
      * nobody asked about halts the system rather than passing unnoticed,
-     * which is what stands in for supervision until section 24.3 has a
-     * parent to make the decision properly.
+     * which is what stands in for supervision until a parent process can
+     * make the decision.
      */
     bool                p_watched;
 
@@ -220,23 +216,23 @@ struct proc {
      * reaped. The slot goes back to the pool when this reaches zero
      * and the process has finished, and not when it finishes.
      *
-     * Section 10.4 is why the exit is not the event. A status stays
+     * The exit is not the event. A status stays
      * readable through a handle after the object has ended, so a
      * process that ended is not a process nobody can ask about; it
      * becomes one when the last thing that could ask lets go.
      */
     /*
      * How many times this process has crossed the trap edge, which is
-     * what section 17 is about saving. Per process because that is the
-     * unit a comparison of two clients needs: the machine-wide count
+     * the cost a submission batch exists to reduce. Per process because
+     * that is the unit a comparison of two clients needs: the machine-wide count
      * includes whatever else was running, and on two cores that is not
      * a small difference.
      */
     uint64_t            p_submits;
 
     /*
-     * And how much checking those crossings cost it, per section 23.2.
-     * The pair is what section 17 is weighed on: a form that makes
+     * And how much checking those crossings cost it. The pair is what a
+     * submission form is weighed on: a form that makes
      * fewer calls but validates more per call has moved the cost
      * rather than removed it.
      */
@@ -245,13 +241,8 @@ struct proc {
     uint32_t            p_refs;
 
     /*
-     * Its threads, newest first. A process has had a count of them
-     * since M2 and never a way to reach one, because nothing needed
-     * to: they were started at spawn and nothing outside ever spoke
-     * to them again.
-     *
-     * Cancellation is what needs it, and killing a process needs it
-     * more: section 10.5 has termination unblock every thread of the
+     * Its threads, newest first. Cancellation needs this, and killing a
+     * process needs it more: termination unblocks every thread of the
      * target exactly as if each had been cancelled, and there is no
      * way to do that to a set nothing can enumerate.
      */
@@ -259,9 +250,7 @@ struct proc {
 };
 
 /*
- * Build the process the kernel's own threads belong to. Section 26 has the
- * root process holding every capability at boot and handing subsets to its
- * children; this is the degenerate case of that, with no children yet.
+ * Build the process the kernel's own threads belong to, with no children yet.
  */
 struct proc *proc_bootstrap(const char *name);
 
@@ -294,13 +283,13 @@ struct proc *proc_spawn_image(const char *image, uint8_t prio,
   uint32_t argc);
 
 /*
- * The completion timeline of section 10.4, and the record that someone
- * is watching. Taking the timeline is what marks the process watched:
- * an exit nobody asked about still halts the machine, but the question
+ * The completion timeline, and the record that someone is watching.
+ * Taking the timeline is what marks the process watched: an exit nobody
+ * asked about still halts the machine, but the question
  * is now answered by whether anyone holds the thing that reports it
  * rather than by a flag the kernel sets on its own behalf.
  *
- * It cannot fail. The timeline is part of the process, per section 8.
+ * It cannot fail. The timeline is part of the process.
  */
 /*
  * Spawn on behalf of a program. Everything that can fail happens before
@@ -308,7 +297,7 @@ struct proc *proc_spawn_image(const char *image, uint8_t prio,
  * has a table and a set of pools exactly as they were.
  */
 /*
- * Add a thread to a process, per section 10.2. The stack is the
+ * Add a thread to a process. The stack is the
  * caller's, because the kernel allocates no user memory at any tier.
  */
 sys_err_t proc_thread_create(struct proc *p, uintptr_t entry,
@@ -322,7 +311,7 @@ sys_err_t proc_spawn_op(struct proc *parent, const char *image,
 void proc_watch(struct proc *p);
 
 /*
- * End a process, per section 10.5: unblock every thread of it exactly
+ * End a process: unblock every thread of it exactly
  * as if each had been cancelled, and have each leave at its next return
  * from the kernel. Returns SYS_ERR_WOULDBLOCK for a process that has
  * already finished, which is not the same as having ended one.
@@ -337,18 +326,16 @@ sys_err_t proc_kill(struct proc *p, int32_t code);
 void proc_exit_if_dying(void);
 
 /*
- * What section 10.5 cost, as counts. See the definitions.
+ * What killing a process costs, as counts. See the definitions.
  */
 extern uint64_t proc_kills;
 extern uint64_t proc_kill_pokes;
 
 /*
- * Threads ended on the way into user mode for the first time, per M21
- * stage two, split by which trampoline they were on: a program's own
- * first thread, and a thread the program made. Both paths run the
- * same check and only the first is reached by anything before M21
- * stage five, which is why the two are counted apart rather than
- * together.
+ * Threads ended on the way into user mode for the first time, split by
+ * which trampoline they were on: a program's own first thread, and a
+ * thread the program made. Both paths run the same check, and the two
+ * are counted apart rather than together.
  */
 extern uint64_t proc_unrun_programs;
 extern uint64_t proc_unrun_threads;
@@ -362,22 +349,18 @@ extern uint64_t proc_unrun_threads;
 extern uint64_t proc_unrun_locked;
 
 /*
- * Threads asked for in a process that was already over, per M21
- * stage five, and refused. A count of the times the set of threads
- * a kill has to reach was stopped from growing after the kill was
- * written, and of the times a process that had ended on its own was
- * stopped from gaining a thread it could not report.
- *
- * The second is counted apart because the reading was written for
- * the first and did not see it. A boot with nothing in it is a boot
- * where only half the rule is exercised.
+ * Threads asked for in a process that was already over, and refused.
+ * A count of the times the set of threads a kill has to reach was
+ * stopped from growing after the kill was written, and of the times a
+ * process that had ended on its own was stopped from gaining a thread
+ * it could not report.
  */
 extern uint64_t proc_creates_refused;
 extern uint64_t proc_creates_unmarked;
 
 /*
  * The threads a kill had to reach, and the ones that left by the
- * third of the three doors, per M21 stage seven.
+ * third of the three doors.
  *
  * A kill closes the set of threads it has to reach at the moment it
  * writes the mark, and every thread in that set leaves the system by
@@ -394,23 +377,21 @@ extern uint64_t proc_ended_at_trap;
 
 /*
  * Threads stopped at an entry boundary because their process had
- * been killed, per M21 stage three, split by which boundary.
+ * been killed, split by which boundary.
  *
- * Before the first entry of a submission is the point M17's
- * placement did not have: a thread that arrived at the kernel
- * already marked, which is a mark written while it was in user mode
- * on another core. Before a later entry is the same point M17 read
- * after the entry before it, and after a batch the same point it
- * read after the last entry, so those two are the old coverage
- * under new names.
+ * Before the first entry of a submission is the point where a thread
+ * that arrived at the kernel already marked is caught, which is a mark
+ * written while it was in user mode on another core. Before a later
+ * entry is the point after the entry before it, and after a batch is
+ * the point after the last entry.
  */
 extern uint64_t proc_stopped_before_first;
 extern uint64_t proc_stopped_before_later;
 extern uint64_t proc_stopped_after_batch;
 
 /*
- * Whether a range of addresses is memory this process owns, per section
- * 23.2. A buffer descriptor a program passes is checked against this
+ * Whether a range of addresses is memory this process owns. A buffer
+ * descriptor a program passes is checked against this
  * before anything reads it: a number is not a right, and the kernel
  * dereferencing whatever it is handed is the hole that tier of
  * protection is supposed to close.
@@ -472,7 +453,7 @@ struct thread *proc_threads(struct proc *p);
 
 /*
  * How many bytes from this address the caller can reach, and whether it
- * can reach a whole range, per section 23.2 step 2. A process the kernel
+ * can reach a whole range. A process the kernel
  * built reaches everything; a loaded program reaches its own image.
  *
  * This is a wider question than proc_owns: a program may name any of its
@@ -492,7 +473,7 @@ struct timeline *proc_completion(struct proc *p);
 
 /*
  * A thread of this process has exited. The last one out advances the
- * process completion timeline and records the status, per section 10.4.
+ * process completion timeline and records the status.
  */
 void proc_thread_exited(struct proc *p, int32_t code);
 

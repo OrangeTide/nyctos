@@ -61,8 +61,7 @@ split(char *s, char **out, int max)
 
 
 /*
- * The name of a fault kind. Section 16.1's list, in the words a person
- * reading a shell reads.
+ * The name of a fault kind, in the words a person reading a shell reads.
  */
 static const char *
 fault_name(uint32_t kind)
@@ -94,7 +93,7 @@ run(int argc, char **argv, int32_t *status)
 
     /*
      * Two words in front of a command choose what it is launched with.
-     * Section 20.4 says composition is a choice about what array to
+     * Composition is a choice about what array to
      * pass, and this is a shell making that choice out loud: `alone`
      * hands over nothing, `only <name>` hands over one entry, and a bare
      * command hands over everything this shell holds.
@@ -115,7 +114,7 @@ run(int argc, char **argv, int32_t *status)
     }
 
     /*
-     * Attenuated on the way down, per section 7: a child may send on
+     * Attenuated on the way down: a child may send on
      * these connections and hand them to its own children, and may
      * not mint another. What it cannot do is duplicate one, which
      * means it cannot compose a namespace of its own from them.
@@ -158,7 +157,7 @@ run(int argc, char **argv, int32_t *status)
     }
 
     /*
-     * A program the machine stopped, per section 16.2. The status alone
+     * A program the machine stopped. The status alone
      * says a number a program never returns, which is true and useless;
      * what a person needs is which fault, where, and on what
      * instruction. Printed here rather than left to the caller because

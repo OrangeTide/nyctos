@@ -65,8 +65,8 @@ op_fence(struct proc *p, struct sys_op *op, bool signalling)
  * The field is read only when the entry says so. SYS_DEADLINE_NOW is
  * zero, and zero is what a program's memset leaves in a structure it
  * has not thought about, so a deadline read unconditionally would turn
- * every existing client into one that polls and never blocks. Section
- * 14.3 fixes both sentinels' values, so this is not something a
+ * every existing client into one that polls and never blocks. Both
+ * sentinels' values are fixed, so this is not something a
  * different constant could fix: what fixes it is the caller saying
  * whether it filled the field in.
  */
@@ -283,7 +283,7 @@ op_handle_dup(struct proc *p, struct sys_op *op)
 }
 
 /*
- * The debug console of section 22.4.
+ * The debug console.
  *
  * A write that takes no handle, checks nothing about its caller, and goes
  * straight to the kernel's console. It is ambient authority, which is the
@@ -309,7 +309,7 @@ static bool debug_console_live = SYS_DEBUG_CONSOLE_INIT;
 /*
  * The switch. It is a kernel-internal call and not an operation, because
  * an operation that opened this would be a hole any process could open for
- * itself, which is not a gate. Section 24.3's supervisor is what should
+ * itself, which is not a gate. A supervisor is what should
  * eventually drive it; until root exists, the kernel does.
  */
 void
@@ -347,7 +347,7 @@ op_debug_write(struct proc *p, struct sys_op *op)
     }
 
     /*
-     * And the bytes themselves, per section 23.2. The debug console
+     * And the bytes themselves. The debug console
      * takes no handle, so this pointer is the only thing it is given
      * and the only thing there is to check.
      */
@@ -367,12 +367,12 @@ op_debug_write(struct proc *p, struct sys_op *op)
 }
 
 /*
- * Exit, per section 10.4. The thread advances its own completion
+ * Exit. The thread advances its own completion
  * timeline and the last thread of a process advances the process one,
  * both inside thread_exit, and the status stays readable through a
  * handle to the object because nothing is reaped.
  *
- * TODO: milestone 7 is where this becomes death. A thread that exits
+ * TODO: exit does not end the process yet. A thread that exits
  * keeps its pool slot for ever, nothing is killed and nothing is
  * cancelled, which is deliberate: what a shell needs is a program
  * that stops and a parent that hears about it.
@@ -391,8 +391,8 @@ op_thread_exit(struct proc *p, struct sys_op *op)
 
     /*
      * Every exit says so, because for most of this boot an exit is
-     * something a check is watching for. M13 stage 5 is the exception:
-     * it runs one program a few hundred times and the two hundredth
+     * something a check is watching for. The exception is a stretch that
+     * runs one program a few hundred times and the two hundredth
      * exit says nothing the first did not. exit_quiet is how that
      * stretch asks for silence, and it is off everywhere else.
      */
@@ -404,7 +404,7 @@ op_thread_exit(struct proc *p, struct sys_op *op)
 }
 
 /*
- * The completion timeline of a thread or a process, per section 10.4.
+ * The completion timeline of a thread or a process.
  *
  * The handle carries SYS_RIGHT_WAIT and nothing else, and the kernel keeps
  * the only means of advancing one: a process able to signal its own
@@ -414,7 +414,7 @@ op_thread_exit(struct proc *p, struct sys_op *op)
  * SYS_RIGHT_WAIT is what this asks for, and spawn is what hands it out.
  * A parent that passes a child on to something that should be able to
  * hear about the exit but not to read its status duplicates the handle
- * with one right and not the other, which is section 7.2 working
+ * with one right and not the other, which is ordinary handle behaviour
  * normally rather than a rule about processes.
  */
 static sys_err_t
@@ -450,8 +450,8 @@ op_object_completion(struct proc *p, struct sys_op *op)
 }
 
 /*
- * The exit code, which a monotonic counter cannot carry. Section 10.4 has
- * it read from the object rather than from the timeline that reports the
+ * The exit code, which a monotonic counter cannot carry. It is read from the
+ * object rather than from the timeline that reports the
  * finishing, and the object keeps it because nothing is reaped.
  */
 static sys_err_t
@@ -484,7 +484,7 @@ op_proc_status(struct proc *p, struct sys_op *op)
       : SYS_STATE_RUNNING;
 
     /*
-     * Section 16.2: a fault is an exit with a reason, and this is
+     * A fault is an exit with a reason, and this is
      * where the reason is read. A process that ended any other way
      * reports SYS_FAULT_NONE, which is what its fields already hold.
      */
@@ -519,8 +519,8 @@ op_irq_unmask(struct proc *p, struct sys_op *op)
 }
 
 /*
- * Create a process, per section 10.1, with the handles the caller names
- * moved into it, per section 20.4.
+ * Create a process, with the handles the caller names
+ * moved into it.
  *
  * The name is copied out of the caller's structure and terminated here
  * rather than trusted to be terminated there. Nothing else in this
@@ -564,7 +564,7 @@ op_proc_spawn(struct proc *p, struct sys_op *op)
 }
 
 /*
- * A thread the program created, per section 10.2.
+ * A thread the program created.
  */
 static sys_err_t
 op_thread_create(struct proc *p, struct sys_op *op)
@@ -604,19 +604,19 @@ op_thread_create(struct proc *p, struct sys_op *op)
  * from the object rather than from the timeline that reports the finish.
  */
 /*
- * Release a thread from whatever it is blocked on, per section 10.5.
+ * Release a thread from whatever it is blocked on.
  *
  * SYS_RIGHT_WRITE and not SYS_RIGHT_STAT, because this changes what the
  * thread does rather than asking about it. A supervisor that may look
  * at a wedged driver is not thereby a supervisor that may break it out.
  *
  * No arguments. There is nothing to say beyond which thread, and
- * section 10.6 is what lets that be enough: whatever the thread is
+ * the closed unblock list is what lets that be enough: whatever the thread is
  * blocked on left behind the one function that takes it off again, so
  * the caller never has to know which of the waits it is sitting in.
  */
 /*
- * Leave a pulse on a channel, per section 13.1.
+ * Leave a pulse on a channel.
  *
  * A program may only send user pulses. Letting it send a system one
  * would let it reach the reserved slots, which exist to keep a death
@@ -624,14 +624,14 @@ op_thread_create(struct proc *p, struct sys_op *op)
  * user base is refused rather than quietly renumbered.
  */
 /*
- * End a process, per section 10.5.
+ * End a process.
  *
  * SYS_RIGHT_WRITE and not SYS_RIGHT_STAT, for the reason cancelling a
  * thread needs it: a supervisor that may look at a process is not
  * thereby one that may end it.
  *
  * A supervisor holds a handle to the process and none at all to the
- * threads inside it, which the section is explicit about, and is why
+ * threads inside it, which is stated outright, and is why
  * this is a process operation rather than a loop of thread ones in the
  * caller.
  */
@@ -673,8 +673,7 @@ op_pulse_send(struct proc *p, struct sys_op *op)
     }
 
     /*
-     * Through a connection, the way a message goes. Section 13.1 says
-     * a pulse is delivered to a channel, and the way a program reaches
+     * Through a connection, the way a message goes. A pulse is delivered to a channel, and the way a program reaches
      * one is the same way it reaches one to send a message: a channel
      * handle carries the right to receive, and a program that could
      * name a channel directly to pulse it could pulse any channel it
@@ -830,7 +829,7 @@ op_thread_status(struct proc *p, struct sys_op *op)
 }
 
 /*
- * Map a grant into the caller, per section 19.2. The rights on the
+ * Map a grant into the caller. The rights on the
  * handle are both the permission to do this and the permission the
  * mapping ends up with, which is the whole of what a right on a grant
  * means.
@@ -882,7 +881,7 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
      * runs. Substituting a register into the target means writing a
      * handle the caller did not put there, and writing it back into
      * the caller's array would be a program editing itself: a prepared
-     * program of section 17.7 is executed many times from one copy,
+     * program is executed many times from one copy,
      * and the second execution would find the first one's answer
      * already in place. So the substitution happens on a copy and only
      * the status goes back.
@@ -890,7 +889,7 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
     entry = op;
 
     /*
-     * Where the target comes from, per section 17.4, decided before
+     * Where the target comes from, decided before
      * the operation runs and not by the operation. Failing here rather
      * than inside means an entry that names an empty register has had
      * no effect at all when it reports why.
@@ -923,7 +922,7 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
         }
         if (op->opcode != SYS_OP_IPC_SEND) {
             /*
-             * Section 17.4 names two kinds of producer and one of them
+             * There are two kinds of producer, and one of them
              * is the issuing ops, which are not built. Refusing the
              * rest by name is better than writing whatever an
              * operation happened to leave in its arguments.
@@ -936,11 +935,11 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
     p = proc_current();
 
     /*
-     * Section 23.2 step 2 again, for the memory the descriptor points at
+     * Checked again, for the memory the descriptor points at
      * rather than the descriptor itself. Every operation below reads its
      * arguments through this pointer and most write results back through
-     * it, so one check here is the "once, before execution" the section
-     * asks for: the alternative is the same check written into thirty
+     * it, so one check here is the "once, before execution" rule:
+     * the alternative is the same check written into thirty
      * operations, twenty-nine of which would have it right.
      *
      * A null pointer with a length is a malformed descriptor rather than
@@ -1064,7 +1063,7 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
     }
 
     /*
-     * What the server made of it, per section 12.4 and section 17.5.
+     * What the server made of it.
      *
      * A send whose message was delivered and answered has succeeded as
      * transport and may still have been refused as a request, and the
@@ -1093,7 +1092,7 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
     /*
      * The handle the reply moved, into the register the entry named.
      *
-     * Only on success, and only if one arrived. Section 17.4 says a
+     * Only on success, and only if one arrived. A
      * reply carrying no handle leaves the register empty, so that an
      * entry depending on it fails on the tag rather than on a value
      * that looks like a handle. Writing SYS_HANDLE_INVALID here would
@@ -1113,7 +1112,7 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
     }
 
     /*
-     * Section 23.3: the status goes into the descriptor and is also
+     * The status goes into the descriptor and is also
      * returned. The duplication is deliberate, because the register is what
      * a C wrapper returns and the field is what survives when the
      * descriptor is one of many.

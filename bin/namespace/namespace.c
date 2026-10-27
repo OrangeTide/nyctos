@@ -44,9 +44,9 @@ main(void)
 
 
     /*
-     * And what handing this namespace on would do. Section 7.2
-     * refuses a duplication asking for a right the source lacks,
-     * and refuses one at all where the right to duplicate was not
+     * And what handing this namespace on would do. Duplication is refused
+     * when it asks for a right the source lacks, and refused at all where the
+     * right to duplicate was not
      * given, so a composer meets two different walls with one
      * answer behind them. Reported rather than worked around: what
      * a process may pass on is its parent's decision, and a
@@ -70,8 +70,8 @@ main(void)
              * Two situations answer the same way and this program
              * cannot tell them apart: an entry that is not the kind
              * of thing those rights describe, and an entry this
-             * process may not duplicate at all. Both are section
-             * 7.2 refusing to hand on more than is held, so the
+             * process may not duplicate at all. Both are refusals
+             * to hand on more than is held, so the
              * message says that rather than guessing which.
              */
             printf("namespace: cannot hand these on with those "

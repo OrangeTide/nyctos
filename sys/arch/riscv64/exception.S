@@ -108,7 +108,7 @@ trap_entry:
     bne     t0, t1, trap_bad
 
     /*
-     * Section 23.1 register mapping for this port: a0 carries the pointer
+     * Register mapping for this port: a0 carries the pointer
      * to the operation descriptor and a1 the count, which is where the C
      * calling convention already wants them. Nothing else is passed.
      */
@@ -241,7 +241,7 @@ trap_interrupt:
  * A synchronous trap that is not a system call.
  *
  * SPP in the saved sstatus says which mode it came from. A program
- * loses its thread and the machine carries on, per section 16.2; the
+ * loses its thread and the machine carries on; the
  * kernel taking one is a kernel bug and stops the machine. Neither
  * call returns, so the frame is never restored.
  */

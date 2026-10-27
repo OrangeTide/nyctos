@@ -57,8 +57,8 @@ sys_uptime_hz(void)
 }
 
 /*
- * A deadline, from now, in ticks. Section 14.3 names this
- * sys_deadline_in() and puts it in libc rather than in the kernel: the
+ * A deadline, from now, in ticks. This is
+ * sys_deadline_in(), which is in libc rather than in the kernel: the
  * kernel takes an absolute instant on the monotonic timebase and has no
  * business converting one, because a relative deadline converted inside
  * a system call would start counting from whenever the call got there.
@@ -73,7 +73,7 @@ sys_deadline_in(uint64_t ticks)
  * The same in milliseconds, which is what a program has in mind.
  *
  * The frequency comes from the system page, so this is the one place a
- * program needs both halves of section 6.2: the counter for the instant
+ * program needs both the counter for the instant
  * and the page for the scale. Without the page there is no scale, and
  * the answer is SYS_DEADLINE_NOW: a call given it returns at once
  * rather than waiting, which is a program failing where it can be seen

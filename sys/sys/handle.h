@@ -50,7 +50,7 @@ struct handle_table {
 /*
  * Called when a handle is created or destroyed, so an object that cares who
  * still holds authority over it can find out. A timeline that loses its
- * last signal-righted handle enters the error state, per section 9.3.
+ * last signal-righted handle enters the error state.
  */
 void handle_object_retain(const struct handle_table *ht, uint32_t type,
   void *obj, uint32_t rights);
@@ -60,15 +60,15 @@ void handle_object_release(const struct handle_table *ht, uint32_t type,
 void handle_table_init(struct handle_table *ht, struct proc *owner);
 
 /*
- * Close everything left in a table, for a process being reaped. Section
- * 7 makes a handle the authority, so a table outliving its process
+ * Close everything left in a table, for a process being reaped. A
+ * handle is the authority, so a table outliving its process
  * would be authority outliving it.
  */
 void handle_table_close_all(struct handle_table *ht);
 
 /*
  * Put an object in the table and return a handle naming it. The kernel
- * chooses the slot arbitrarily: section 7.3 keeps lowest-first allocation
+ * chooses the slot arbitrarily, and lowest-first allocation is kept
  * out of the kernel, because it serialises a hot path and makes handle
  * values predictable.
  */
@@ -96,7 +96,7 @@ sys_err_t handle_rights(const struct handle_table *ht, sys_handle_t h,
 sys_err_t handle_close(struct handle_table *ht, sys_handle_t h);
 
 /*
- * Move a handle from one table to another, per section 7.4. The value
+ * Move a handle from one table to another. The value
  * changes, the source slot is invalidated, and the rights travel
  * unchanged: attenuation happens before a transfer, not during one, so a
  * sender that wants to give less duplicates with fewer rights first.

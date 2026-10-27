@@ -63,7 +63,7 @@ ns_compose(ns_how_t how, const char *const *only, unsigned int nonly,
 
     /*
      * Nothing at all, which is not an empty case to be skipped over. A
-     * process given no entries can name nothing, per section 20.3, and
+     * process given no entries can name nothing, and
      * that is a thing a parent may want to hand out on purpose.
      */
     if (how == NS_NEW) {
@@ -99,8 +99,8 @@ ns_compose(ns_how_t how, const char *const *only, unsigned int nonly,
         }
 
         /*
-         * Section 7.2 refuses a duplication that asks for anything
-         * the source lacks, rather than clamping it, and that is
+         * A duplication that asks for anything
+         * the source lacks is refused rather than clamped, and that is
          * deliberate: a caller asking for more than it holds has
          * made a mistake worth hearing about. It means the rights
          * passed here have to be rights every entry being composed

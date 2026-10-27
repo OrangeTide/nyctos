@@ -27,11 +27,9 @@
  * every core: a thread on any core can arm a timer, destroy one or
  * sleep, and the core that owns the hardware walks them when it fires.
  *
- * Section 11.4 forbids a global scheduler lock and this is not one.
+ * This is not a global scheduler lock.
  * Nothing under it decides what runs. What it does hold together is a
- * pair of ordered lists, which is the same argument the pools got, and
- * this stage locked those while leaving these because they are counted
- * by nothing.
+ * pair of ordered lists.
  *
  * Held across the walk and put down before anything can switch away.
  * The deferral in time_interrupt is what makes that possible: a waiter
@@ -92,13 +90,13 @@ time_hz(void)
 }
 
 /*
- * The system page of section 6.2, built once at boot.
+ * The system page, built once at boot.
  *
  * A frame like any other, filled in before anything is loaded and never
  * written again. What it carries is in sys/syspage.h; what it does not
  * carry, and why, is there too.
  *
- * Allocated early on purpose, so that the frame ledger of section 15.6
+ * Allocated early on purpose, so that the frame ledger
  * counts it among what the port had spent before anything ran. It
  * belongs to the system rather than to any process, and a process being
  * reaped must not give it back: proc_free_slot skips the page the
@@ -211,7 +209,7 @@ arm_here(void)
 
 /*
  * Arm the hardware for the earliest pending event, or for nothing. This is
- * the whole of section 14.1: every change to what is pending comes back
+ * the only place that arms it: every change to what is pending comes back
  * here, and a core with nothing pending leaves the timer disarmed.
  */
 static void
@@ -224,7 +222,7 @@ reprogram(void)
         /*
          * Asked, not done. The list has already changed, so what that
          * core has to be told is only that it changed, and the poke
-         * this milestone already has is what tells it.
+         * is what tells it.
          */
         __atomic_store_n(&owner->cp_rearm, 1u, __ATOMIC_RELEASE);
         cpu_self()->cp_ipi++;
@@ -309,9 +307,8 @@ timer_create(const char *name, struct timeline *tl, sys_time_t first,
     tm->tm_next = NULL;
 
     /*
-     * The timer holds a signal right for as long as it exists, which is
-     * what section 14.2 relies on: destroying it drops the last one and
-     * the timeline enters the error state under section 9.3 rule 2,
+     * The timer holds a signal right for as long as it exists. Destroying
+     * it drops the last one, and the timeline enters the error state,
      * releasing anyone waiting for an activation that will never come.
      */
     timeline_add_signaler(tl);
@@ -325,8 +322,8 @@ timer_create(const char *name, struct timeline *tl, sys_time_t first,
 }
 
 /*
- * Section 14.2: destroying a timer closes the kernel's signal right, which
- * force-signals the timeline in error state under section 9.3 rule 2. No
+ * Destroying a timer closes the kernel's signal right, which
+ * force-signals the timeline in error state. No
  * new rule is needed, which is the point of having only one.
  */
 void
@@ -382,7 +379,7 @@ time_sleep_cancel(struct thread *t)
  * The counter is set to the activation number the current time implies,
  * in one update. After a stall there is no backlog to deliver and no queue
  * to drain: a task that wanted activation N+1 and finds N+3 has missed two
- * and knows it, which is the overrun detection section 14.2 gets for free.
+ * and knows it, which is the overrun detection for free.
  */
 static void
 timer_fire(struct timer *tm, sys_time_t now)

@@ -23,8 +23,8 @@
 #include <stdbool.h>
 
 /*
- * The queues and the bitmap belong to the core reading them, per
- * section 11.4. They were one set for the system, which was the same
+ * The queues and the bitmap belong to the core reading them. They were
+ * one set for the system, which was the same
  * thing while there was one core and is not now: a core dispatching
  * from a queue another core is enqueueing to would be taking the
  * decision jointly, and a jointly taken decision needs a lock.
@@ -90,7 +90,7 @@ queue_link(struct thread *t)
  * A thread this core does not own, left where the core that owns it
  * will find it. One compare and exchange and no lock, because a lock
  * here is a lock the other core would have to take to dispatch, and
- * section 11.4 is precisely that it should not have to.
+ * the other core should not have to.
  */
 static void
 push_arriving(struct thread *t)
@@ -104,7 +104,7 @@ push_arriving(struct thread *t)
         if (__atomic_compare_exchange_n(&target->cp_incoming, &head, t,
               false, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
             /*
-             * And told, per section 11.4. Leaving it on the list is
+             * And told. Leaving it on the list is
              * leaving it until that core happens to decide again for
              * some other reason, and a donation that arrives when the
              * core next feels like it is a donation that did not work.
@@ -130,8 +130,7 @@ push_arriving(struct thread *t)
  * simply starts a new one and nothing waits for anything.
  *
  * The order threads arrived in is not preserved and is not a scheduling
- * decision. Each one goes on the queue its priority names, and section
- * 11.2 is where the order comes from.
+ * decision. Each one goes on the queue its priority names.
  */
 static void
 take_arriving(void)
@@ -158,7 +157,7 @@ dequeue_specific(struct thread *t)
     /*
      * This core's queues, because those are the only ones it may
      * touch. A thread queued on another core is reached by asking that
-     * core, which is what the stage after this one builds.
+     * core.
      */
     if (t->t_core != cpu_self()->cp_index) {
         panic("sched: %s is queued on core %u and this is core %u",
@@ -290,7 +289,7 @@ dequeue_highest(void)
 /*
  * Nothing is runnable.
  *
- * Section 11.6 makes idle a state of the core rather than a thread: there
+ * Idle is a state of the core rather than a thread: there
  * is no idle thread occupying a priority level and no thread id meaning
  * "nothing". A core is either running a thread or it is idle.
  *
@@ -306,8 +305,8 @@ sched_idle(void)
     bool had;
 
     /*
-     * There is no current thread while the core idles. That is section
-     * 11.6 taken literally, and it is load-bearing rather than tidy: the
+     * There is no current thread while the core idles. That is the idle
+     * state taken literally, and it is load-bearing rather than tidy: the
      * interrupt that ends the idle may ready the very thread whose
      * blocking caused it, and a thread cannot be made runnable while it is
      * still marked as the one running.
@@ -362,7 +361,7 @@ sched_idle(void)
          * an interrupt that is pending and masked, and say so.
          */
         /*
-         * The measurement of section 13.3's first term stops here and
+         * The interrupts-off measurement stops here and
          * starts again on the other side. Interrupts really are masked
          * across the wait, but a core asleep with an empty queue is
          * not withholding one from anybody: the instruction wakes on a
@@ -407,8 +406,7 @@ dispatch(void)
 
     /*
      * The decision itself, with a count around it of every lock taken
-     * that another core could be holding. Section 11.4 requires that
-     * number to be zero: a core waiting on a lock to find out what to
+     * that another core could be holding. This number must be zero: a core waiting on a lock to find out what to
      * run next is a core waiting on a decision another core is making,
      * and the queues are per core precisely so that it does not.
      *
@@ -457,7 +455,7 @@ dispatch(void)
 /*
  * Everything below takes an interrupts-disabled critical section, because
  * the run queues are now reached by interrupt handlers as well as by
- * threads. Section 13.3 makes that the Tier 0 answer rather than locking,
+ * threads. Disabling interrupts is the answer here rather than locking,
  * which is what buys a kernel with no internal locking at all.
  *
  * The saved state is restored rather than interrupts simply re-enabled, so
@@ -481,7 +479,7 @@ sched_ready(struct thread *t)
     enqueue(t);
 
     /*
-     * Section 11.3: a thread becoming runnable at a higher priority takes
+     * A thread becoming runnable at a higher priority takes
      * the core immediately rather than waiting for a quantum. Equal
      * priority does not preempt, because within a level the policy is FIFO
      * and the running thread got there first.
@@ -489,7 +487,7 @@ sched_ready(struct thread *t)
      * The core it belongs to, and not simply its priority. A thread made
      * runnable on the other core is nothing to do with what runs here:
      * preempting for it would stop this core for a thread that is not
-     * going to run on it. Section 11.4 makes preemption a per-core
+     * going to run on it. Preemption is a per-core
      * question because the queue it competes for is a per-core queue.
      */
     if (cur != NULL && t->t_prio > cur->t_prio &&
@@ -622,8 +620,8 @@ sched_block(void)
 /*
  * Give a thread a new effective priority.
  *
- * If it is queued it moves queue, which is the whole of what section 11.2
- * means by the scheduler seeing only the donated value: there is no second
+ * If it is queued it moves queue, which is the whole of how donation reaches
+ * the scheduler: there is no second
  * base-priority queue and no re-sorting pass, so the dispatch decision
  * never has to know that donation exists.
  */
@@ -655,10 +653,10 @@ sched_reprioritise(struct thread *t, uint8_t prio)
  * back here.
  *
  * It spins rather than waiting for an interrupt, which is temporary and
- * is the shape of the hole the next stage fills. A core waiting on
+ * is a placeholder. A core waiting on
  * md_cpu_wait is woken by an interrupt, and the interrupt that would say
- * "something arrived for you" is the inter-processor one that section
- * 11.4 has donation use and that this stage does not have yet. Until
+ * "something arrived for you" is the inter-processor one that donation
+ * will use. Until
  * then a core with nothing to do looks at its arriving list rather than
  * sleeping, and the count it reports says how many times it looked.
  */
@@ -668,7 +666,7 @@ sched_secondary(void)
     /*
      * It leaves the run set and nothing ever makes it runnable again,
      * so the core drops into the idle wait and stays there until
-     * something arrives. That is section 11.6 exactly: idle is a state
+     * something arrives. That is idle: a state
      * of the core, and this context exists only to be the thing the
      * core dispatches away from.
      *
@@ -681,7 +679,7 @@ sched_secondary(void)
 }
 
 /*
- * Move a thread to a named core, per section 11.4.
+ * Move a thread to a named core.
  *
  * Explicit, and the only way anything moves. Nothing balances, nothing
  * steals, and no thread drifts: where a thread runs is a fact about the
@@ -691,7 +689,7 @@ sched_secondary(void)
  * A running thread cannot be moved from under itself, and a thread
  * running on another core cannot be moved at all yet: doing that means
  * telling that core to stop running it, which is the inter-processor
- * interrupt the next stage builds.
+ * interrupt, which is not built yet.
  */
 sys_err_t
 sched_migrate(struct thread *t, uint32_t core)
@@ -756,7 +754,7 @@ sched_decisions(void)
  * The interrupt itself is the whole message: there is nothing to read,
  * because what arrived is on the list and the list is what is looked
  * at. What this adds over waiting is promptness, which is the entire
- * point of section 11.4 sending one.
+ * point of sending one.
  */
 void
 sched_ipi(void)
@@ -768,14 +766,14 @@ sched_ipi(void)
 
     /*
      * And the hardware, if the poke was another core saying that what
-     * is pending has changed. Section 14.1 has one place decide what to
-     * arm, and section 11.4 has one core own the hardware it arms.
+     * is pending has changed. One place decides what to
+     * arm, and one core owns the hardware it arms.
      */
     time_rearm_if_asked();
 
     /*
      * Preempt only for something that outranks what is running, which
-     * is section 11.3 applied to a thread that arrived rather than to
+     * is the same rule applied to a thread that arrived rather than to
      * one this core made runnable. A core running nothing is already on
      * its way to a decision and needs no help from here.
      */

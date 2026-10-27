@@ -144,7 +144,7 @@ irq_unmask(struct irq *ir)
  *
  * The count is what the timeline is advanced to, so the value a waiter
  * asks for is the number of interrupts it wants to have seen. That makes a
- * waiter that arrives late safe in the way section 9.1 describes: the
+ * waiter that arrives late safe: the
  * counter has already passed the value and the wait returns at once,
  * rather than the interrupt having been missed.
  */
@@ -155,7 +155,6 @@ irq_dispatch(unsigned long from_user)
 {
     intr_state_t s = klock_enter();
 
-    /* And here, for the same reason. M16 stage one. */
     clock_mark();
 
     /*
@@ -167,8 +166,7 @@ irq_dispatch(unsigned long from_user)
 
     /*
      * Marked so that a thread made runnable in here is known to have
-     * been made runnable by an interrupt, which is what section 13.3's
-     * second term is measured from.
+     * been made runnable by an interrupt.
      */
     cpu_self()->cp_in_irq = true;
     irq_dispatch_body();

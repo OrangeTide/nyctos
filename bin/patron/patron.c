@@ -74,8 +74,8 @@ main(int argc, char **argv)
     if (same(how, "giveup")) {
         /*
          * A send with a deadline, to a server that has the request and
-         * will not answer. Section 12.1 has the client abandon work in
-         * progress and the server find out when its reply is refused,
+         * will not answer. The client abandons work in
+         * progress and the server finds out when its reply is refused,
          * so this death is not a death at all and the server hears
          * nothing about it: that is the case this mode is for.
          */

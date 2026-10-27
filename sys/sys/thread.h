@@ -28,7 +28,7 @@
 #define THREAD_GUARD    ((uint64_t)0x9e3779b97f4a7c15ULL)
 
 /*
- * A subset of the states in section 10.6, carrying only what exists.
+ * A subset of the thread states, carrying only what exists.
  *
  * READY means specifically "on a run queue", which is what lets the
  * scheduler reject a thread being made runnable twice. That distinction is
@@ -46,16 +46,15 @@ enum thread_state {
 };
 
 /*
- * What a blocked thread is waiting for, per section 12.1.
+ * What a blocked thread is waiting for.
  *
  * THREAD_BLOCKED says a thread is off the run queues and t_blocked_on says
  * which object it is off them for, but neither distinguishes the two sides
- * of a rendezvous, and section 12.1 makes that distinction load-bearing. A
- * client accumulating time in SEND is waiting for server capacity and the
- * answer is more receiving threads; a client accumulating time in REPLY is
- * waiting for the work itself and more threads will not help. Section 22.2
- * reports the two separately or it reports nothing useful about a
- * saturated server.
+ * of a rendezvous, and that distinction matters. A client accumulating
+ * time in SEND is waiting for server capacity and the answer is more
+ * receiving threads; a client accumulating time in REPLY is waiting for
+ * the work itself and more threads will not help. The two are reported
+ * separately, or nothing useful is said about a saturated server.
  */
 enum thread_wait {
     THREAD_WAIT_NONE = 0,
@@ -81,14 +80,14 @@ struct thread {
 
     /*
      * The effective priority, which is the donated one once donation
-     * exists: section 11.2 has the scheduler see that value and nothing
+     * exists. The scheduler sees that value and nothing
      * else, so there is no second base-priority field to keep in step.
      */
     uint8_t             t_prio;
 
     /*
-     * What this thread would run at with nothing donated to it. Section
-     * 11.2 has the scheduler see only the effective priority above, so
+     * What this thread would run at with nothing donated to it. The
+     * scheduler sees only the effective priority above, so
      * there is no second queue and no re-sorting pass: donation moves a
      * thread between queues when it happens, and the dispatch decision
      * never learns that donation exists.
@@ -99,7 +98,7 @@ struct thread {
     struct thread      *t_qnext;
 
     /*
-     * Which core this thread runs on, per section 11.4. Fixed when the
+     * Which core this thread runs on. Fixed when the
      * thread is created and changed only by an explicit migration:
      * nothing moves on its own, so where a thread runs is a fact about
      * the program rather than about load.
@@ -116,7 +115,7 @@ struct thread {
 
     /*
      * Which cores this thread has ever been queued on, one bit each.
-     * Section 11.4 has nothing move on its own, and the way to check
+     * Nothing moves on its own, and the way to check
      * that is to ask where a thread has been rather than where it is.
      */
     uint32_t            t_linked_on;
@@ -124,15 +123,15 @@ struct thread {
     /*
      * When an interrupt handler made this thread runnable, and how
      * many preemption points had been passed by then. Zero means it
-     * was made runnable by something else. Section 13.3's second term
-     * is the distance from here to this thread running in user mode.
+     * was made runnable by something else. What is measured is the
+     * distance from here to this thread running in user mode.
      */
     uint64_t            t_irq_stamp;
     uint64_t            t_irq_points;
 
     /*
      * Preemption points this thread has passed, as opposed to the core
-     * it is on. Section 13.3's second term is the length of one path,
+     * it is on, and what matters is the length of one path,
      * and a per-core count includes whatever else that core ran in the
      * interval: a batch executing in another thread put sixteen points
      * into a figure that was supposed to be about a dispatch.
@@ -142,7 +141,7 @@ struct thread {
     /*
      * When a client raised this thread's priority at a rendezvous, how
      * many preemption points had been passed by then, and whether the
-     * client was on another core. Section 12.3's donation, timed from
+     * client was on another core. Priority donation, timed from
      * the raise to this thread running.
      */
     uint64_t            t_don_stamp;
@@ -152,21 +151,18 @@ struct thread {
 
     /*
      * The channel this thread's own request is being served on, and
-     * the next request being served on the same one. Section 12.3's
-     * chain is walked along these.
+     * the next request being served on the same one. The donation chain
+     * is walked along these.
      *
-     * Client-side since M22 stage four. These used to be the server's,
-     * one channel and one link for a thread that can be inside
-     * requests on several, and the lists ran into each other. A client
-     * is served on one channel at a time, so one of each per thread is
-     * a full account of the entries.
+     * A client is served on one channel at a time, so one of each per
+     * thread is a full account of the entries.
      */
     struct channel     *t_serve_ch;
     struct thread      *t_serve_next;
 
     /*
-     * Wait state. A thread is blocked on at most one object at a time per
-     * section 5, so one link and one awaited value is all any of this ever
+     * Wait state. A thread is blocked on at most one object at a time, so
+     * one link and one awaited value is all any of this ever
      * needs, however many kinds of thing become waitable.
      */
     struct thread      *t_wnext;
@@ -178,7 +174,7 @@ struct thread {
      * Deadline, and the link for the list ordered by it. A thread can be
      * on a waiter list and on that list at once, which is not a second
      * thing it is blocked on: the deadline is when to give up on the one
-     * thing it is blocked on, per section 14.4.
+     * thing it is blocked on.
      */
     struct thread      *t_dnext;
     uint64_t            t_deadline;
@@ -211,7 +207,7 @@ struct thread {
 
     /*
      * The range of this thread's memory that is mapped into another
-     * process for the duration of a call, per section 6.1, and which
+     * process for the duration of a call, and which
      * process has it. Zero when this thread has no call outstanding that
      * carried a buffer, and at Tier 0 always, where a buffer needs no
      * mapping because there is only one memory.
@@ -262,7 +258,7 @@ struct thread {
      * The client of the receive that has just completed on this
      * thread, and not the record of what it owes.
      *
-     * The two were one field until M22 stage two. This one is read
+     * This one is read
      * after a block to say which kind of wake it was, a sender having
      * filled it in and a pulse having left it zero, and it is what a
      * receive hands back as the peer. What is owed is the list below,
@@ -275,9 +271,9 @@ struct thread {
      * cannot say because it is one identifier.
      *
      * A receiving thread may hold a request and receive another:
-     * section 12.6 describes a server that hands the client id to a
-     * worker and keeps receiving, section 12.2 lets any thread of the
-     * server send the reply, and the console does it in every session
+     * a server may hand the client id to a worker and keep receiving,
+     * and any thread of the server may send the reply, and the console
+     * does it in every session
      * with a line typed at it. Each of those clients is blocked with
      * `t_donee` pointing here, so this is the count of threads in that
      * state and is checked against a walk of them.
@@ -292,8 +288,8 @@ struct thread {
      * And the clients themselves, newest first.
      *
      * No pool and no bound of its own: a client waiting for a reply is
-     * blocked and is its own record, which is section 12's principle
-     * that the blocked sender is the queue slot. A thread is on at most
+     * blocked and is its own record, so the blocked sender is the queue
+     * slot. A thread is on at most
      * one of these lists at a time, so one link per thread is enough
      * for every server in the machine, and the length of the longest
      * is bounded by the thread pool.
@@ -322,9 +318,8 @@ struct thread {
     bool                t_replied;
 
     /*
-     * What this thread is blocked on, per the invariant in section 5. It
-     * stays NULL until there is something to block on; the field is here
-     * now because section 28 asks for exactly one of them and adding it
+     * What this thread is blocked on. It stays NULL until there is
+     * something to block on; the field is here now because adding it
      * later would mean revisiting every path that sets a state.
      */
     void               *t_blocked_on;
@@ -339,20 +334,18 @@ struct thread {
     void              (*t_unwait)(void *obj, struct thread *t);
 
     /*
-     * The completion timeline of section 10.4, and the code a monotonic
-     * counter cannot carry. The timeline is part of the thread rather
-     * than an entry in the timeline pool, per section 8, so obtaining
-     * it cannot fail and the accounting for it is exact.
+     * The completion timeline, and the code a monotonic counter cannot
+     * carry. The timeline is part of the thread rather than an entry in
+     * the timeline pool, so obtaining it cannot fail and the accounting
+     * for it is exact.
      *
      * Nothing here is reaped. The object keeps its slot after exit,
-     * which is what makes the status readable afterwards and is also
-     * why M7 rather than this milestone owns the freezing of a
-     * completion timeline into the handle slots that still hold it.
+     * which is what makes the status readable afterwards.
      */
     /*
      * Where this thread starts in user mode, for one the program
-     * created. Section 10.2 has the creator supply the stack, so the
-     * kernel installs all three and the thread begins with no code of
+     * created. The creator supplies the stack and the kernel installs all
+     * three, so the thread begins with no code of
      * its own having run: a first thread has crt1 to set its stack up,
      * and a created thread has nothing.
      */
@@ -362,7 +355,7 @@ struct thread {
 
 
     /*
-     * What ended this thread, if the hardware did, per section 16.2. The
+     * What ended this thread, if the hardware did. The
      * kind is SYS_FAULT_NONE for a thread that exited by asking to, which
      * is what makes the two tellable apart by a joiner that reads the
      * status rather than by one that knows what the program was doing.
@@ -371,9 +364,8 @@ struct thread {
 
     /*
      * Whether this thread has ever reached user mode, set by the
-     * trampoline that takes it there. A thread that has not is the
-     * one a kill could not reach before M21 stage two, and it is
-     * not the same as a thread that has not entered the kernel: a
+     * trampoline that takes it there. Not having reached it is not the
+     * same as not having entered the kernel: a
      * program that computes and calls nothing has run and has no
      * preemption points to show for it.
      */
@@ -382,7 +374,7 @@ struct thread {
     /*
      * Whether this thread is ending because it read the kill mark,
      * set by each of the three places that read it and by nothing
-     * else, per M21 stage seven's review.
+     * else.
      *
      * It exists so that a thread which ended while its process was
      * marked but for a reason of its own can be counted where that
@@ -432,8 +424,8 @@ void thread_bootstrap(const char *name, uint8_t prio, struct proc *p);
 
 /*
  * Attach a thread to a process, keeping the count of live threads in
- * step. A process finishes when its last thread does, per section 10.4,
- * so nothing may write t_proc behind this.
+ * step. A process finishes when its last thread does, so nothing may
+ * write t_proc behind this.
  */
 void thread_set_proc(struct thread *t, struct proc *p);
 
@@ -454,17 +446,16 @@ struct proc;
 /*
  * Leave the run set for good, recording code as the exit status.
  *
- * Section 10.4 has exit advance a completion timeline that a joiner
- * reads, and it now does: the thread advances its own, and the last
- * thread of a process advances the process one as well. Nothing is
- * reaped and no slot is reused, which is M7 and is what keeps the
- * status readable through a handle held afterwards.
+ * Exit advances a completion timeline that a joiner reads: the thread
+ * advances its own, and the last thread of a process advances the
+ * process one as well. Nothing is reaped and no slot is reused, which
+ * keeps the status readable through a handle held afterwards.
  */
 void thread_exit(int32_t code) __attribute__((noreturn));
 
 /*
- * End the running thread because the hardware raised something, per
- * section 16.2. It is thread_exit with a reason attached: the same
+ * End the running thread because the hardware raised something. It is
+ * thread_exit with a reason attached: the same
  * timeline advances, the same joiner is released, the same donated
  * priority unwinds. A fault is an exit whose code the thread did not
  * choose.
@@ -495,18 +486,18 @@ void thread_park_if_dead(struct thread *t);
 void thread_wake_timeout(struct thread *t);
 
 /*
- * Release a thread from whatever it is blocked on, per section 10.5, so
- * that its pending call returns SYS_ERR_INTERRUPTED.
+ * Release a thread from whatever it is blocked on, so that its pending
+ * call returns SYS_ERR_INTERRUPTED.
  *
- * SYS_ERR_WOULDBLOCK if it is not blocked. Prompt, in the sense the
- * section means: the thread is off the object's list and runnable when
- * this returns, and nothing is left for it to be released from twice.
+ * SYS_ERR_WOULDBLOCK if it is not blocked. The thread is off the
+ * object's list and runnable when this returns, and nothing is left for
+ * it to be released from twice.
  */
 sys_err_t thread_cancel(struct thread *t);
 
 /*
  * The context switch itself. Called by the scheduler and by nothing else:
- * choosing the next thread is the dispatch decision of section 11.2, and a
+ * choosing the next thread is the dispatch decision, and a
  * caller naming its own successor would be going around it.
  */
 void thread_switch_to(struct thread *next);
@@ -514,7 +505,7 @@ void thread_switch_to(struct thread *next);
 struct thread *thread_current(void);
 
 /*
- * The reply token of section 5: an identity that confers nothing, as
+ * The reply token: an identity that confers nothing, as
  * opposed to a handle, which is authority. A server learns this by serving
  * a client and acquires no power over it by doing so.
  */
@@ -525,7 +516,7 @@ struct thread *thread_by_id(sys_thread_id_t id);
 void sched_reprioritise(struct thread *t, uint8_t prio);
 
 /*
- * Used only by the idle path. Section 11.6 has a core either running a
+ * Used only by the idle path. A core is either running a
  * thread or idle, so while it idles there is no current thread, and an
  * interrupt handler that readies the thread which just blocked must not
  * find it still marked as running.

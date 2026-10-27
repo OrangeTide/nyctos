@@ -35,7 +35,7 @@ struct meas {
     /*
      * The fewest and the most preemption points any single visit
      * passed. Kept as a range rather than a total because the question
-     * this milestone asks of a count is whether it is the same every
+     * asked of a count is whether it is the same every
      * time: a range that has not widened is a number about this
      * kernel, and one that has is a number about the run.
      */
@@ -100,21 +100,21 @@ void meas_report_clock(void);
 struct thread;
 
 /*
- * A preemption point, per section 13.3. Counts rather than yields: what
- * this milestone needs first is the number.
+ * A preemption point. Counts rather than yields: what is needed first
+ * is the number.
  */
 void preempt_point(void);
 
 /*
  * Mark a moment the kernel could refresh a stored uptime, and read back
  * how many there were and the longest gap between two. See
- * kern_measure.c and M16 stage one.
+ * kern_measure.c.
  */
 void clock_mark(void);
 
 /*
  * Count an entry into the kernel by a thread whose process is marked
- * for death, per M17 stage one: the chances a kill had to take effect.
+ * for death: the chances a kill had to take effect.
  * The count is on the process, in p_dying_entries.
  */
 void dying_entry_mark(void);
@@ -123,7 +123,8 @@ uint64_t clock_mark_count(uint64_t *worst, const char **who);
 struct thread;
 
 /*
- * Leave this thread's dispatch out of section 13.3's second term. For a
+ * Leave this thread's dispatch out of the second term of interrupt
+ * latency. For a
  * thread woken by its own deadline with work to do on the way out; see
  * kern_measure.c.
  */
@@ -131,9 +132,9 @@ void irq_dispatch_forget(struct thread *t);
 uint64_t preempt_points(void);
 
 /*
- * Section 13.3's second term. The first is called where an interrupt
- * handler makes a thread runnable, the second where a user thread
- * returns to its program.
+ * The second term of interrupt latency. The first is called where an
+ * interrupt handler makes a thread runnable, the second where a user
+ * thread returns to its program.
  */
 void irq_dispatch_stamp(struct thread *t);
 void irq_dispatch_arrived(struct thread *t);
@@ -161,7 +162,7 @@ void meas_check_clock_across(void);
 void meas_clock_secondary(void);
 
 /*
- * Section 13.3's first term. The ports call these at the transition
+ * The first term of interrupt latency. The ports call these at the transition
  * into and out of interrupts being disabled, which is where a region
  * begins and ends however deeply the calls nest inside it.
  */

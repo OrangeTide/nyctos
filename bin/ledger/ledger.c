@@ -23,7 +23,7 @@ struct record {
     /*
      * The connection the request arrived on, which is what says the
      * client is gone after nobody said anything. A record is keyed on
-     * the client and not on this, per stage three: two clients may
+     * the client and not on this: two clients may
      * share a connection, and one of them dying does not end it.
      */
     uint64_t            conn;
@@ -55,11 +55,10 @@ static uint32_t hints;
 static uint32_t losses;
 
 /*
- * Release the record belonging to the client the notice names, per M18
- * stage three.
+ * Release the record belonging to the client the notice names.
  *
  * The notice carries `SYS_ID_TAG32` of the dead thread, which is the
- * index and twelve bits of generation, per section 10.5. That is what
+ * index and twelve bits of generation. That is what
  * this server has to match on, so it keeps the same 32 bits beside each
  * record rather than the whole identifier: matching on what arrives is
  * the point, and a server that stored something else would be answering
@@ -89,12 +88,12 @@ static sys_handle_t chan;
 
 /*
  * Let go of every record taken on a connection whose peers have all
- * gone, per M18 stage four.
+ * gone.
  *
  * Every record, and not one: a connection is not a client, and two
- * clients that shared one are both gone when it is. That is the same
- * fact stage three used from the other side, where one of two clients
- * on a connection died and the other kept its record.
+ * clients that shared one are both gone when it is. The same holds from
+ * the other side: when one of two clients on a connection dies, the other
+ * keeps its record.
  */
 static void
 release_on(uint64_t conn)
@@ -112,7 +111,7 @@ release_on(uint64_t conn)
 }
 
 /*
- * Collect what has gone, per M18 stage four.
+ * Collect what has gone.
  *
  * Called before every request is answered rather than when a pulse
  * arrives, which is the whole point of the arrangement: the pulse is a
@@ -167,8 +166,8 @@ held(void)
 
 /*
  * The record this client already has, or a new one. A client that asks
- * twice has one record and not two: what this milestone is about is a
- * client that never comes back, not a client that comes back often.
+ * twice has one record and not two. The concern is a client that never
+ * comes back, not a client that comes back often.
  */
 static struct record *
 record_for(sys_thread_id_t who, uint64_t conn)
@@ -197,7 +196,7 @@ record_for(sys_thread_id_t who, uint64_t conn)
 /*
  * The request loop, which is every request after the first one. It owes
  * nobody anything across a receive: each request is answered before the
- * next is taken, which is the shape section 19.3 asks for.
+ * next is taken.
  */
 static void serve(void *arg);
 
@@ -222,8 +221,7 @@ serve(void *arg)
 
         /*
          * A pulse is not a request. Counted and otherwise ignored,
-         * which is the whole of what a server here has ever done with
-         * one and is the behaviour this stage is measuring.
+         * which is the whole of what a server here does with one.
          */
         if ((message.flags & SYS_MSG_PULSE_LOST) != 0) {
             losses++;
@@ -282,7 +280,7 @@ serve(void *arg)
                 /*
                  * The record is taken and this client is not answered.
                  * This thread cannot receive again while it owes a
-                 * reply, per section 19.3, so it starts a replacement
+                 * reply, so it starts a replacement
                  * and stops: a held request costs a thread, and the
                  * stack array is the bound on how many there can be.
                  *
@@ -324,7 +322,7 @@ serve(void *arg)
                 /*
                  * And it stops here, still owing that reply. The handle
                  * went first: a process that keeps a thread handle can
-                 * never be reaped, which stage one's review measured.
+                 * never be reaped.
                  */
                 (void)sys_fence_wait(hold_never, 1, SYS_DEADLINE_NEVER);
                 sys_thread_exit(5);

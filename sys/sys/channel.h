@@ -34,7 +34,7 @@ struct channel {
     struct proc    *c_owner;
 
     /*
-     * What holds this channel, per M20 stage two: one for every handle
+     * What holds this channel: one for every handle
      * in any process's table that names it, and one for every
      * connection minted on it.
      *
@@ -48,9 +48,7 @@ struct channel {
      * head is cheaper to test than to keep a number for.
      *
      * So nothing may take this slot back while c_holds is above zero
-     * or any of the three lists has anything on it. Stage two
-     * maintains the count and checks it; stage three is what acts on
-     * it.
+     * or any of the three lists has anything on it.
      */
     uint32_t        c_holds;
 
@@ -65,26 +63,22 @@ struct channel {
      * newest first, each one the client waiting for its reply and
      * linked through that client's t_serve_next.
      *
-     * Section 12.3 wants a link from a blocked sender to whoever is
-     * serving it, and this is that link: the thread serving an entry
+     * A blocked sender needs a link to whoever is serving it, and this
+     * is that link: the thread serving an entry
      * is the entry's t_donee. Without it a client queued on a busy
      * server can raise nothing, because there is no way from the
      * channel to the thread that is inside a request on it.
      *
-     * The entry was the server until M22 stage four. A thread has one
-     * t_serve_next between every list it can be on, so a server
-     * inside requests on two channels put the second list into the
-     * field the first was using; and a thread that held one request
-     * and answered another left the list while a client was still
-     * blocked here. One entry per request removes both, because a
-     * client is served on one channel at a time.
+     * Each entry is one request, so a thread serving requests on two
+     * channels has a link per request and not one shared field. A client
+     * is served on one channel at a time.
      */
     struct thread  *c_serving;
 
     /*
      * The connections minted on this channel, and whether their
-     * departed peers are kept for the server to collect, per M18 stage
-     * four. Off by default: keeping every connection anybody ever made
+     * departed peers are kept for the server to collect. Off by default:
+     * keeping every connection anybody ever made
      * would spend the pool on servers that were never going to ask.
      */
     struct connection *c_conns;
@@ -92,7 +86,7 @@ struct channel {
 
     /*
      * How many senders this channel will hold, and whether anybody
-     * said. Per M18 stage six: a queue nobody bounded grows until the
+     * said. A queue nobody bounded grows until the
      * machine runs out of threads, because every queued sender is one.
      * Zero is a depth like any other and refuses everything, which is
      * why the bound needs a flag of its own rather than a reserved
@@ -102,7 +96,7 @@ struct channel {
     bool            c_bounded;
 
     /*
-     * Pulses waiting to be collected, per section 13.1, oldest first.
+     * Pulses waiting to be collected, oldest first.
      *
      * One array with a reservation rather than two queues, so that
      * order between a system pulse and the user pulses around it is
@@ -123,7 +117,7 @@ extern uint64_t channel_rendezvous;
 /*
  * Sends that gave up at their deadline: one count for a client still on
  * the queue, which no server had seen, and one for a client whose
- * message a server was holding. Section 12.1 has the two differ in what
+ * message a server was holding. The two differ in what
  * the server learns, so they are counted apart.
  */
 extern uint64_t channel_gave_up_queued;
@@ -131,24 +125,22 @@ extern uint64_t channel_gave_up_working;
 
 /*
  * Clients released because the one thread that could have answered them
- * ended, per section 10.5. Not the same as a client released by the
- * death of a whole server, which is section 12.5 and says so with a
- * different error.
+ * ended. Not the same as a client released by the death of a whole
+ * server, which is reported with a different error.
  */
 extern uint64_t channel_stale_clients;
 
 /*
  * Pulses that did not fit, counted by which of the two happened. One
  * queued pulse displaced to make room for an arriving one, which is
- * what a channel has always done to a user pulse at the cap; and one
- * arriving pulse with nowhere to go at all, which halted the machine
- * before M18 stage five.
+ * what a channel does to a user pulse at the cap; and one arriving
+ * pulse with nowhere to go at all.
  */
 extern uint64_t channel_pulses_evicted;
 extern uint64_t channel_pulses_dropped;
 
 /*
- * Senders a bounded queue would not hold, per M18 stage six. Counted
+ * Senders a bounded queue would not hold. Counted
  * apart by which of the two it was, because the client cannot tell them
  * apart and the boot should be able to: one arrived at a full queue and
  * was turned away, and one was already waiting when somebody who
@@ -157,12 +149,12 @@ extern uint64_t channel_pulses_dropped;
 extern uint64_t channel_senders_refused;
 extern uint64_t channel_senders_displaced;
 
-/* Departed peers a server collected, per M18 stage four. */
+/* Departed peers a server collected. */
 extern uint64_t channel_peers_collected;
 
 /*
- * What a receiving thread owes against what it records, per M22 stage
- * one. `t_client` is one identifier and a thread may owe several
+ * What a receiving thread owes against what it records. `t_client` is
+ * one identifier and a thread may owe several
  * replies, so these say how often the two differ and what that costs.
  */
 extern uint32_t channel_owed_most;
@@ -200,7 +192,7 @@ bool channel_owned_by(const struct proc *p);
 void channel_thread_cancelled(struct thread *t);
 
 /*
- * Leave a pulse for whoever receives on this channel, per section 13.1.
+ * Leave a pulse for whoever receives on this channel.
  * Never blocks and never fails: a full user region costs an older user
  * pulse, and the reserved slots keep a system pulse from being the one
  * that is lost.
@@ -212,7 +204,7 @@ void channel_pulse(struct channel *ch, uint16_t code, uint32_t value);
 /*
  * A process that owned channels has terminated, so anything blocked
  * sending to one of them is released with SYS_ERR_OWNER_DEAD rather
- * than left waiting for a server that is gone. Section 12.5.
+ * than left waiting for a server that is gone.
  */
 void channel_owner_died(struct proc *p);
 
@@ -229,7 +221,7 @@ struct channel *channel_create(const char *name, struct proc *owner);
 /*
  * Send, and block until a reply. The message is copied into the receiving
  * thread rather than shared, so neither side holds a pointer into the
- * other; see section 12.4 on why the inline payload exists at all.
+ * other.
  */
 /*
  * Send and wait for the reply. The deadline is absolute, on the
@@ -270,11 +262,11 @@ void channel_thread_exited(struct thread *t);
  */
 sys_err_t channel_reap(struct channel *ch, bool enable, uint64_t *out);
 
-/* How many senders this channel will hold, per M18 stage six. */
+/* How many senders this channel will hold. */
 void channel_listen(struct channel *ch, uint32_t depth);
 
 /*
- * One reading of the channel pool, per M20 stage one, taken under the
+ * One reading of the channel pool, taken under the
  * kernel lock with interrupts off so that all of it describes one
  * moment. cs_unreachable is how many slots in use nothing can reach:
  * no handle names them, no connection was minted on them, and no
@@ -300,8 +292,7 @@ struct channel_scan {
 
     /*
      * Slots nothing names that the free could not take back, because
-     * somebody is standing in them or a pulse is waiting. Per M20
-     * stage three; stage four is what deals with them.
+     * somebody is standing in them or a pulse is waiting.
      */
     uint32_t    cs_stuck;
     const char *cs_stuck_name;
@@ -319,14 +310,12 @@ void channel_scan(struct channel_scan *out);
 /* How many times the walk has been made and has agreed. */
 extern uint32_t channel_scans;
 
-/* How many slots have gone back to the pool, per M20 stage three. */
+/* How many slots have gone back to the pool. */
 extern uint32_t channel_freed;
 
 /*
- * How many channels the machine has made since it started, which is
- * the number `SYS_MAX_CHANNELS` used to bound and no longer does.
- * Against it, the pool's high-water mark says what the bound is on
- * now: how many exist at one time.
+ * How many channels the machine has made since it started. The pool's
+ * high-water mark says how many exist at one time.
  */
 extern uint32_t channel_created;
 
@@ -344,16 +333,15 @@ extern uint64_t channel_scan_first_ns;
 
 /*
  * A reference naming this channel was taken, or let go. One per handle
- * in a process's table and one per connection minted on it, per M20
- * stage two. Nothing is freed by either: stage three is what acts on
- * the count reaching zero.
+ * in a process's table and one per connection minted on it. Nothing is
+ * freed by either: the slot is freed when the count reaches zero.
  */
 void channel_hold(struct channel *ch);
 void channel_drop(struct channel *ch);
 
 /*
  * A thread has left this channel, so the slot may now be free even
- * though nothing let go of a reference. Per M20 stage four.
+ * though nothing let go of a reference.
  */
 void channel_maybe_free(struct channel *ch);
 
@@ -367,7 +355,7 @@ uint32_t channel_holds(const struct channel *ch);
  */
 extern uint32_t channel_pulses_discarded;
 
-/* And how many of those were section 13.1's reserved kind. */
+/* And how many of those were the reserved kind. */
 extern uint32_t channel_notices_discarded;
 
 /* Link and unlink a connection, which the connection code calls. */

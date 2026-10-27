@@ -40,19 +40,13 @@
  * Not global: file this translation under whatever identifier was
  * current when it was made, and consult it only under that one.
  *
- * Set on every leaf this port writes, per M19 stage three. The other
- * port had to be given an identifier and its entries were tagged
- * already; here the entries are what had to change, and an identifier
- * written into the root register was a number nothing read. That is the
- * whole of the difference between the two ports, and it runs in
- * opposite directions: there, marking an entry global would be an
- * optimisation, and here it is what every entry already was.
+ * Set on every leaf this port writes, so an entry is only ever consulted
+ * under the identifier it was made with.
  *
- * None of them is left global, for M19 stage two's reason. The kernel's
- * identity map looks like the one thing that is the same in every
- * space, and it is not: a grant rewrites the kernel's own entry for the
- * address it covers, with user access, in the holder's space and no
- * other.
+ * None of them is left global. The kernel's identity map looks like the
+ * one thing that is the same in every space, and it is not: a grant
+ * rewrites the kernel's own entry for the address it covers, with user
+ * access, in the holder's space and no other.
  */
 #define ATTR_NG         (1ULL << 11)
 #define ATTR_PXN        (1ULL << 53)
@@ -207,11 +201,11 @@ md_as_create(struct addrspace *as)
 }
 
 /*
- * Give an address space's tables back, per M13 stage 3.
+ * Give an address space's tables back.
  *
  * What is freed is tables and only tables. Every leaf under this root
- * points at memory somebody else owns: a process's slot, which stage
- * two returned before this runs, or the kernel's own image and devices,
+ * points at memory somebody else owns: a process's slot, which has
+ * already been returned, or the kernel's own image and devices,
  * which map_kernel_into wrote into every space and which freeing would
  * take out from under the kernel itself.
  *
@@ -262,7 +256,7 @@ md_as_destroy(struct addrspace *as)
 }
 
 /*
- * How many frames the tables under this root are, per M13 stage 6.
+ * How many frames the tables under this root are.
  *
  * The same walk md_as_destroy makes, counting where that one frees, and
  * level-aware for the same reason: this format gives a table and a page
@@ -359,16 +353,12 @@ md_map_devices(struct addrspace *as)
     }
 
     /*
-     * The PL011, one page, which is what it is. It was two megabytes
-     * because that was the size the identity map liked, and a block is
-     * exactly what a grant cannot refine: section 19.2 has a driver
-     * given this page with user access in its own space, and a mapping
-     * the size of a block would have to be split to allow it.
+     * The PL011, one page, which is what it is. A block is exactly what
+     * a grant cannot refine: a driver is given this page with user access
+     * in its own space, and a mapping the size of a block would have to
+     * be split to allow it.
      *
-     * Not reachable from user mode. It was, for three stages, because
-     * the driver held the address as a constant and would have faulted
-     * on the first register it touched; it holds a grant now, and this
-     * is the deviation those stages were carrying.
+     * Not reachable from user mode except through a grant.
      */
     return md_map(as, 0x09000000UL, 0x09000000UL, 0x1000UL,
       VM_READ | VM_WRITE | VM_DEVICE);
@@ -580,7 +570,7 @@ md_tlb_invalidate_asid(uint32_t asid)
      * bits of the operand that it occupies in the root register.
      *
      * It reaches only entries whose leaf said nG, which is every entry
-     * this port writes and is what M19 stage three made true. Leave one
+     * this port writes. Leave one
      * leaf global and this call stops covering it, and what is left
      * behind is a translation belonging to a space that no longer
      * exists, under a name somebody else is about to be given.

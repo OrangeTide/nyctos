@@ -108,7 +108,7 @@ main(void)
     }
 
     /*
-     * A buffer that grants no access at all. Section 6.1 has the flags
+     * A buffer that grants no access at all. The flags
      * say what the receiver may do, so this describes nothing, and there
      * is no mapping that means it: on one port it becomes a page nobody
      * may touch, and on the other the encoding for "no access" is the
@@ -132,7 +132,7 @@ main(void)
 
 
     /*
-     * A descriptor array that is not ours. Section 23.2 step 2: this is
+     * A descriptor array that is not ours. This is
      * the first address the kernel dereferences on a program's word, so
      * it is the one that halts the machine when nothing checks it, and
      * that is what it did.
@@ -158,12 +158,12 @@ main(void)
     /*
      * A batch whose second entry names a register that does not exist.
      *
-     * Section 17.2 says every entry is checked before any entry runs,
+     * Every entry is checked before any entry runs,
      * and which register a number names is a property of the entry
      * rather than of the execution, so this has to be caught before
      * the first entry does anything. The first entry's status is how
      * that is visible: an entry never considered is left as the caller
-     * wrote it, per section 17.6, so finding it untouched is finding
+     * wrote it, so finding it untouched is finding
      * that the batch did not half-run.
      */
     {
@@ -193,7 +193,7 @@ main(void)
      * And a walk that climbs out of the subtree the connection stands
      * for, sent by hand rather than through the library.
      *
-     * Section 20.3 puts `..` in two places for two reasons. The library
+     * `..` is handled in two places for two reasons. The library
      * reduces it lexically before choosing a handle, so that a path
      * crossing a namespace boundary reaches the server that can answer
      * it; that is about correctness and not about confinement. The
@@ -212,7 +212,7 @@ main(void)
     req->fr_op = FS_OP_WALK;
     memcpy(req->fr_name, "..", sizeof(".."));
     /*
-     * The send now reports what the server said, per section 12.4, so
+     * The send reports what the server said, so
      * a refusal arrives as the return value and not only in the
      * payload. Both are checked: they are the same answer in two
      * places and a protocol that let them differ would be lying to

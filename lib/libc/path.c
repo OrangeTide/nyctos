@@ -169,7 +169,7 @@ ns_resolve_at(const char *path, unsigned int nth, sys_handle_t *out_dir,
      * A relative path is relative to what this process calls its working
      * directory, which is an entry like any other. A process without one
      * cannot write a relative path, and there is no root to fall back on:
-     * section 20.3 removed the ambient root, and falling back to the
+     * the ambient root is gone, and falling back to the
      * shortest entry would put it back.
      */
     if (path[0] != '/') {
@@ -198,8 +198,8 @@ ns_resolve_at(const char *path, unsigned int nth, sys_handle_t *out_dir,
 
     /*
      * The longest name that matches, and then the nth entry carrying
-     * that name. Several entries at one name is a union directory, per
-     * section 20.4: they are tried in the order the parent wrote them,
+     * that name. Several entries at one name is a union directory: they are
+     * tried in the order the parent wrote them,
      * and only entries at the *same* name are in it. An entry with a
      * shorter name is a different mount and not a fallback, because
      * falling through to it would let a name reach a place the parent

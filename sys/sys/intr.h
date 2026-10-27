@@ -40,7 +40,7 @@ void md_intr_init(void);
 void md_intr_init_core(void);
 
 /*
- * Poke another core, per section 11.4: donation across a boundary
+ * Poke another core: donation across a boundary
  * raises the target thread's priority and tells the core running it to
  * decide again. md_cpu_ipi_irq names the interrupt that arrives.
  */
@@ -77,14 +77,14 @@ unsigned int md_irq_claim(void);
 void md_irq_eoi(unsigned int irq);
 
 /*
- * The timer. Section 14.1 has no tick: the hardware is programmed one-shot
+ * The timer has no tick: the hardware is programmed one-shot
  * to the earliest event the core knows about, and a core with nothing
  * pending programs no timer at all.
  */
 void md_timer_init(void);
 unsigned int md_timer_irq(void);
 
-/* The monotonic counter everything is defined against. Section 14.5. */
+/* The monotonic counter everything is defined against. */
 uint64_t md_time_now(void);
 uint64_t md_time_hz(void);
 
@@ -93,26 +93,25 @@ void md_timer_at(uint64_t when);
 void md_timer_disarm(void);
 
 /*
- * Bind an interrupt to a timeline. Section 13.2 has this take a handle
- * carrying SYS_RIGHT_SIGNAL; it is kernel-internal here because there is
- * still no opcode for attaching, which section 13.2 calls an omission
- * rather than a decision. Unmasking is an operation, because a driver
- * has to reach it; attaching is what section 19.2 wants the launcher to
- * do, and here the launcher is the kernel.
+ * Bind an interrupt to a timeline. This takes a handle carrying
+ * SYS_RIGHT_SIGNAL; it is kernel-internal here because there is still no
+ * opcode for attaching. Unmasking is an operation, because a driver has
+ * to reach it. Attaching belongs to the launcher, and here the launcher
+ * is the kernel.
  */
 sys_err_t irq_attach(unsigned int irq, struct timeline *tl);
 
 /*
  * Bind an interrupt to a kernel function instead of a timeline. The timer
- * is the kernel scheduling mechanism of section 14.1 rather than a device
+ * is the kernel scheduling mechanism rather than a device
  * a driver waits on, so it is the one interrupt that does not land on a
  * timeline of its own.
  */
 sys_err_t irq_attach_handler(unsigned int irq, void (*fn)(void));
 
 /*
- * The interrupt as an object a program can hold a handle to, per section
- * 13.2, and the acknowledgement that unmasks it.
+ * The interrupt as an object a program can hold a handle to, and the
+ * acknowledgement that unmasks it.
  *
  * A handler that advances a timeline has not finished with the device: the
  * bytes are still in the UART and only the driver knows what to do with
@@ -150,9 +149,9 @@ void irq_init(void);
  * It is two instructions on a path that is already the slow one, and it is
  * the only way to tell the two apart from above: an interrupt that arrives
  * in user mode and one that arrives in the kernel run the same handler and
- * leave the same trace. Section 22.2 wants a system that can say what it
- * did, and "no program has ever been interrupted" was true for two
- * milestones without anything being able to notice.
+ * leave the same trace. A system should be able to say what it did, and
+ * "no program has ever been interrupted" could stay true without anything
+ * being able to notice.
  */
 extern unsigned long md_user_irqs;
 

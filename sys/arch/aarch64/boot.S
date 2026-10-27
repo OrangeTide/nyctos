@@ -78,9 +78,7 @@ zero_done:
      * And EL0 may read the counter. Bit 0 of CNTKCTL_EL1 is EL0PCTEN,
      * the physical counter this kernel tells the time with, so a
      * program reads the same counter the kernel does rather than one
-     * offset from it. Section 6.2 wants the clock read without a
-     * system call, and this is the whole of what the port has to
-     * permit. The timer registers stay out of reach: a program may
+     * offset from it. The timer registers stay out of reach: a program may
      * see what time it is and may not arm anything.
      */
     mov     x0, #1

@@ -19,7 +19,7 @@ void sched_init(void);
 
 /*
  * Make t runnable. If it outranks the running thread, it takes the core
- * before this returns: section 11.3 says a thread becoming runnable at a
+ * before this returns: a thread becoming runnable at a
  * higher priority preempts rather than waiting for a quantum.
  */
 void sched_ready(struct thread *t);
@@ -44,7 +44,7 @@ void sched_block(void);
 
 /*
  * Move a thread to a new effective priority. If it is queued it changes
- * queue, which is what section 11.2 means by donation moving a thread
+ * queue. Donation moves a thread
  * rather than the dispatch decision knowing about donation.
  */
 void sched_reprioritise(struct thread *t, uint8_t prio);
@@ -64,9 +64,9 @@ void sched_defer(void);
 void sched_undefer(void);
 
 /*
- * Move a thread to a named core, per section 11.4. Refuses a thread
- * that is running, because stopping a thread on another core is the
- * inter-processor interrupt of the stage after this one.
+ * Move a thread to a named core. Refuses a thread that is running,
+ * because stopping a thread on another core needs an inter-processor
+ * interrupt, which is not sent.
  */
 sys_err_t sched_migrate(struct thread *t, uint32_t core);
 

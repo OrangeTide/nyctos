@@ -118,7 +118,7 @@ main(int argc, char **argv)
 
     /*
      * And writable, which is the half a pager could get wrong: a page
-     * supplied to a fault is mapped read-only by section 15.1, so a
+     * supplied to a fault is mapped read-only, so a
      * data page that arrived that way would fault here rather than a
      * page earlier.
      */

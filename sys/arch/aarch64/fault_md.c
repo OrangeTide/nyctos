@@ -64,7 +64,7 @@ abort_kind(unsigned long esr)
         /*
          * Translation fault: no descriptor for the address. This is
          * the recoverable kind, because a pager can supply what is
-         * not there and section 15.3 says how. Whether one exists
+         * not there. Whether one exists
          * for the faulting process is the kernel's question and not
          * this port's: what the hardware said is that nothing
          * describes the address.
@@ -167,8 +167,8 @@ md_fault_kind(unsigned long cause)
     case EC_MSR_TRAP:
         /*
          * An instruction that is undefined, privileged, or trapped by a
-         * control this kernel did not set. Section 16.1 puts all three
-         * in one kind, because what a program can do about any of them
+         * control this kernel did not set. All three are in one kind,
+         * because what a program can do about any of them
          * is the same nothing.
          */
         return SYS_FAULT_INSTRUCTION;

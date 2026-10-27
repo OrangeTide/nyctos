@@ -82,7 +82,7 @@ main(int argc, char **argv)
     /*
      * The frequency as well, because a program that can read the
      * counter and cannot say how fast it runs still cannot build a
-     * deadline. Stage four is what uses it; this says it is there.
+     * deadline.
      */
     if (sys_uptime_hz() == 0) {
         return CLOCK_NO_PAGE;

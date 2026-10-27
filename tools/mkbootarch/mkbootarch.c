@@ -32,7 +32,7 @@ die(const char *what, const char *detail)
     exit(1);
 }
 
-/* Round up to the payload granularity of section 24.4. */
+/* Round up to the payload granularity. */
 static uint32_t
 align_up(uint32_t n)
 {
@@ -93,7 +93,7 @@ pad_to(FILE *out, uint32_t from, uint32_t to)
  * arguments would let the archive rule and the link disagree without
  * anything noticing. Required rather than defaulted: an image whose
  * layout is missing is a build that has half changed, and guessing a
- * whole slot is what M14 exists to stop.
+ * whole slot is not something to risk.
  */
 static void
 read_layout(const char *bin, uint32_t *rw, uint32_t *mem)

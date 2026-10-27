@@ -45,8 +45,7 @@ vm_user_window(uintptr_t *base, size_t *len)
  *
  * AArch64 refuses to execute at EL1 from a page user mode can write, so
  * the split is forced rather than tidy. The writable half is reachable
- * from user mode at this stage only because a program's startup record is
- * still inside it, and stage 4 is where that stops being true.
+ * from user mode only because a program's startup record is still inside it.
  */
 static sys_err_t
 map_kernel_into(struct addrspace *as)
@@ -106,12 +105,9 @@ map_kernel_into(struct addrspace *as)
 /*
  * The next identifier nobody has had.
  *
- * Handed out and never handed back, which is the whole of the policy
- * this stage needs and none of the policy a long-running system needs.
- * A boot builds a few dozen spaces and the field is wide enough for
- * thousands, so what this cannot do is not reached here; what it cannot
- * do is give one out twice, and M19 stage four is where running out
- * stops being hypothetical and reuse gets a mechanism.
+ * Handed out and never handed back. A boot builds a few dozen spaces and
+ * the field is wide enough for thousands, so running out is not reached
+ * here. Reuse is not implemented, so a long-running system would run out.
  *
  * Zero is never handed out. It means the absence of an identifier, and
  * a space holding it is activated by throwing every translation away,
@@ -233,12 +229,7 @@ vm_as_needs_entry(const struct addrspace *as, uintptr_t root,
      * back, before any space can be built with it. See
      * as_release_asid().
      *
-     * There used to be a third term, a count of how many spaces had
-     * been destroyed, and it was what actually cleared a stale cache:
-     * it forced an activation and an activation flushed. M19 stage two
-     * took the flush out and left it a comparison that did nothing.
-     *
-     * And the maintenance count, which is what a port with core-local
+     * The maintenance count, which is what a port with core-local
      * fences moves when another core invalidates something this core
      * may still be holding. Passed in as two values, what the core has
      * heard and what there is to hear, rather than read here: the
@@ -401,7 +392,7 @@ vm_kernel_init(void)
 
 
 /*
- * What the buffer path costs, per section 18's question.
+ * What the buffer path costs.
  *
  * The numerator is counted in the ports, because what matters is what
  * the hardware description actually had written to it and not what the
@@ -416,14 +407,12 @@ vm_kernel_init(void)
  * fifty-six per process, and a total that included those would be a
  * number about the loader with the buffer path lost in the noise.
  *
- * Charged to the thread and not to a global flag. The first version
- * used a global and said in this comment that nothing else could run
- * between the begin and the end, because neither half of the move can
- * block. Blocking is not the only way something else runs: the timer
- * interrupt calls sched_undefer() on its way out, which dispatches if
- * something better became runnable, so a thread can be preempted in the
- * middle of the move and whatever ran next would have been charged to
- * it. Per thread, the preempting thread is not charging and its work is
+ * Charged to the thread and not to a global flag. Nothing else may run
+ * between the begin and the end, and blocking is not the only way
+ * something else runs: the timer interrupt calls sched_undefer() on its
+ * way out, which dispatches if something better became runnable, so a
+ * thread can be preempted in the middle of the move and whatever ran
+ * next would have been charged to it. Per thread, the preempting thread is not charging and its work is
  * its own.
  *
  * A depth rather than a flag on the thread as well, because the failure
@@ -477,10 +466,9 @@ void
 vm_charge_leaf(void)
 {
     /*
-     * A page table walk boundary, per section 13.3: one entry written
-     * is one step of the walk. The ports call this, and both write the
-     * same number of entries for the same work, which is what the
-     * compared report has said since M6.
+     * A page table walk boundary: one entry written is one step of the
+     * walk. The ports call this, and both write the same number of
+     * entries for the same work.
      */
     preempt_point();
 

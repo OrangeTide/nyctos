@@ -43,8 +43,8 @@
  * core and given a priority the CPU interface will accept.
  */
 /*
- * The software generated interrupt a core is poked with. Section 11.4
- * has donation cross a boundary this way, and on this port the
+ * The software generated interrupt a core is poked with. Donation crosses
+ * a boundary this way, and on this port the
  * distributor sends one core an interrupt on behalf of another.
  */
 #define IPI_SGI         0
@@ -92,7 +92,7 @@ md_intr_disable(void)
     /*
      * Only the call that actually turns them off begins a region. The
      * I bit clear means they were on, which makes this the one that
-     * started the contiguous region section 13.3 asks about.
+     * started the contiguous region.
      */
     if ((daif & DAIF_I) == 0) {
         intr_region_begin((uintptr_t)__builtin_return_address(0));
@@ -276,9 +276,9 @@ md_idle_wait(void)
 }
 
 /*
- * The monotonic counter the whole system is defined against. Section 14.5
- * makes everything here uptime, never calendar time, which is what makes a
- * clock correction structurally unable to disturb a deadline.
+ * The monotonic counter the whole system is defined against. Everything
+ * here is uptime, never calendar time, which is what makes a clock
+ * correction structurally unable to disturb a deadline.
  */
 uint64_t
 md_time_now(void)
@@ -298,7 +298,7 @@ md_time_hz(void)
 }
 
 /*
- * Program the one-shot for an absolute instant. Section 14.1 has no tick:
+ * Program the one-shot for an absolute instant. There is no tick:
  * the hardware is armed for the earliest thing the core knows about and
  * for nothing else, so an idle core with nothing pending arms nothing.
  */

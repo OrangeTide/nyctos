@@ -23,9 +23,8 @@
 #include <stdint.h>
 
 /*
- * What a mapping permits. These are the permissions section 6.1 talks
- * about, in the form the hardware wants them: what may be done, and by
- * whom.
+ * What a mapping permits. These are the permissions, in the form the
+ * hardware wants them: what may be done, and by whom.
  */
 #define VM_READ         (1u << 0)
 #define VM_WRITE        (1u << 1)
@@ -37,21 +36,18 @@
  * than an attribute of the address because getting it wrong does not
  * fault: a device mapped as ordinary memory is a device whose registers
  * are cached, reordered and speculated, which produces corruption that
- * looks like a driver bug. Section 27 names it for that reason.
+ * looks like a driver bug.
  */
 #define VM_DEVICE       (1u << 4)
 
 /*
- * What a loaded program's own memory is mapped as. Its text, its data
- * and its stack were one slot and nothing above the loader knew where
- * one ended, so all of it was everything.
+ * What a loaded program's own memory is mapped as.
  *
- * M14 is where that stopped being true. proc_prot() answers what a page
- * of a program may be used for, from where it sits: text read and
- * executed, everything else read and written, the startup record read
- * only. What is left for this name is the pages that are not a
- * program's own, which the loader does not place and nothing knows the
- * shape of.
+ * proc_prot() answers what a page of a program may be used for, from
+ * where it sits: text read and executed, everything else read and
+ * written, the startup record read only. What is left for this name is
+ * the pages that are not a program's own, which the loader does not place
+ * and nothing knows the shape of.
  */
 #define VM_PROGRAM      (VM_READ | VM_WRITE | VM_EXEC | VM_USER)
 
@@ -98,7 +94,7 @@ struct vm_cost {
      * thrown away, which happens when a space stops existing and its
      * name goes back to be given to another. Counted always rather than
      * inside the buffer path's bracket, because it is not the buffer
-     * path: a name being recycled is what M19 stage four is about.
+     * path: recycling a name is a separate event.
      */
     uint64_t    vc_asid_inval;
 
@@ -118,7 +114,7 @@ struct vm_cost {
      * How many of those had to throw the whole translation cache away,
      * which is every one of them on a port with no identifiers and
      * none of them on a port with some. The two counted separately
-     * because the difference is what M19 is for.
+     * because the difference between them is what is being measured.
      */
     uint64_t    vc_switch_flush;
 };
@@ -279,15 +275,14 @@ void md_tlb_flush_all(void);
  * Coarser than it looks, and still far narrower than throwing the whole
  * cache away.
  *
- * M19 stage two expected this to be where identifiers cost something.
- * It is not, or not yet. Once riscv64 tags its translations an entry
- * does carry the space it came from, but the instruction this uses
- * names no identifier and every space is still covered by one call, so
- * nothing here had to change. What is left for M19 stage six is whether
- * one call across every space is dearer than two that name the two
- * spaces that matter, which is a measurement and not an argument. The
- * signature would grow the space if the answer said so, so it is left
- * out today rather than carried as a parameter nothing reads.
+ * Identifiers do not cost anything here yet. Once riscv64 tags its
+ * translations an entry does carry the space it came from, but the
+ * instruction this uses names no identifier and every space is still
+ * covered by one call, so nothing here had to change. Whether one call
+ * across every space is dearer than two that name the two spaces that
+ * matter is a measurement and not an argument. The signature would grow
+ * the space if the answer said so, so it is left out today rather than
+ * carried as a parameter nothing reads.
  */
 void md_tlb_invalidate(uintptr_t va);
 
@@ -313,8 +308,7 @@ void md_tlb_invalidate_asid(uint32_t asid);
  * The broad call removes an address from every space at once, which for
  * a page being handed between two of them is the two entries that
  * changed and nothing else. This removes one of them. Whether two of
- * these are cheaper than one of those is a measurement, and M19 stage
- * six is where it was made.
+ * these are cheaper than one of those is a measurement.
  */
 void md_tlb_invalidate_in(uint32_t asid, uintptr_t va);
 
@@ -348,14 +342,9 @@ void vm_as_destroy(struct addrspace *as);
  * core-local and say this; aarch64's are inner-shareable and reach the
  * other core themselves, so that port says nothing.
  *
- * What it is for is the guarantee this kernel used to get by accident.
- * Every dispatch into a different address space threw the whole
- * translation cache away, so a core's stale entries lasted at most
- * until its next switch. M19 stage two removed that flush, and with it
- * the accident, leaving entries another core had already invalidated
- * alive on this one for as long as nothing else cleared them. The
- * counter restores the old rule exactly: a core flushes at its first
- * switch after maintenance happened anywhere, and not otherwise.
+ * Entries that another core has invalidated must not survive on this core
+ * past its next switch. A core flushes at its first switch after
+ * maintenance happened anywhere, and not otherwise.
  *
  * Not a substitute for cross-core maintenance, which this kernel still
  * does not have. It is the difference between an entry that survives a

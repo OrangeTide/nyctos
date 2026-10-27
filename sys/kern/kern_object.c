@@ -121,11 +121,10 @@ object_report(void)
 }
 
 /*
- * Check at boot that the pool machinery does what sections 7.1 and 8 say it
- * does. This is a handful of allocations against the smallest pool, and it
- * runs once. It exists because every later stage builds on these invariants,
- * so the cheapest place to discover they are broken is here, before anything
- * depends on them.
+ * Check at boot that the pool machinery keeps its invariants. This is a
+ * handful of allocations against the smallest pool, and it runs once. It
+ * exists because everything built later depends on these invariants, so
+ * the cheapest place to discover that they are broken is here.
  */
 void
 object_check(void)
@@ -180,12 +179,9 @@ object_check(void)
 /*
  * What the run actually used, as opposed to what it was configured for.
  *
- * Milestone 3 exists partly to answer whether one thread per event source
- * is affordable, and section 8's answer to every question like it is a
- * number rather than an impression. The high-water mark is the number: it
- * says how many of each object were live at once, which is what a build
- * has to size for, and nothing here is reaped before M7 so it is also the
- * total ever created.
+ * The high-water mark is the number: it says how many of each object were
+ * live at once, which is what a build has to size for. Objects are not
+ * reaped, so it is also the total ever created.
  */
 void
 object_report_usage(void)
@@ -199,8 +195,8 @@ object_report_usage(void)
       (unsigned int)(threads->highwater * SYS_KSTACK_SIZE));
 
     /*
-     * And what remapping buffers between address spaces cost, per
-     * section 18. In the compared part of the report because a number
+     * And what remapping buffers between address spaces cost. In the
+     * compared part of the report because a number
      * nobody would notice changing is a number that stops meaning
      * anything.
      *

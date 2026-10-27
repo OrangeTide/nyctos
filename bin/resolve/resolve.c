@@ -38,7 +38,7 @@ static const struct probe probes[] = {
     { "/",                  AT_ROOT,    "" },
 
     /*
-     * The case section 20.3 says forces the order. Selecting the entry
+     * The case that forces the order. Selecting the entry
      * first would match `/dev` and send `../motd` to a server that
      * cannot see the boundary above itself; reducing first sends `motd`
      * to the handle mounted at `/`, which is where the file is.

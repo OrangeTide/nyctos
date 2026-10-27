@@ -86,8 +86,8 @@ connection_destroy(struct connection *cn)
 
 /*
  * The process that serves this connection. A connection names a channel
- * and a channel has an owner, so the pager chain of section 15.4 is a
- * walk through two indirections and no new field.
+ * and a channel has an owner, so the pager chain is a walk through two
+ * indirections and no new field.
  */
 struct proc *
 connection_owner(const struct connection *cn)
@@ -124,12 +124,7 @@ connection_unheld(const struct connection *cn)
 
 /*
  * A reference naming this connection was taken, or dropped, and by
- * whom. Nothing freed a connection before this pair existed in some
- * form: the kernel destroyed one only when the handle it was going
- * into could not be made, so every connection anybody held leaked its
- * slot, and the pool counted connections ever made rather than
- * connections open at once. Section 25.2 says that pool is a
- * build-time bound on every file open at once, which it could not be.
+ * whom.
  *
  * Who matters because a connection has two sides and only one of them
  * is a peer. The process that owns the channel is the server: a handle
@@ -137,8 +132,8 @@ connection_unheld(const struct connection *cn)
  * one. Everything else is a peer, and a connection whose peers have all
  * closed is one nobody is going to send on again.
  *
- * That is the level state section 12.5 was missing. The pulse says
- * something happened and may be coalesced or lost; this is what it
+ * This is the level state. The pulse says something happened and may be
+ * coalesced or lost; this is what it
  * happened to, and it keeps saying so until the server collects it.
  */
 void

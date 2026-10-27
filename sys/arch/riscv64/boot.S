@@ -28,9 +28,7 @@ _start:
      * No per-core state yet, and the register that finds it says so.
      * The kernel reads this core's own structure through tp, and
      * anything that does so before cpu_init has claimed one would be
-     * reading whatever reset happened to leave here. It became worth
-     * saying when the measurement of section 13.3 put that read inside
-     * the function every critical section in this kernel calls.
+     * reading whatever reset happened to leave here.
      */
     mv      tp, zero
 
@@ -111,8 +109,8 @@ zero_done:
      * The PMP covers all of memory, permitting everything. It is not a
      * protection mechanism here and never was: supervisor and user mode
      * are both subject to it, so without an entry supervisor mode could
-     * reach nothing at all. Section 6 puts protection in the MMU, and this
-     * is what gets out of its way.
+     * reach nothing at all. Protection is left to the MMU, and this is
+     * what gets out of its way.
      */
     li      t0, -1
     srli    t0, t0, 10              /* NAPOT range covering all of memory */
@@ -130,11 +128,10 @@ zero_done:
 
     /*
      * And the one counter user mode may read: bit 1 of scounteren is
-     * TM, which is rdtime. Section 6.2 wants the clock read without a
-     * system call and this is the whole of what the port has to
-     * permit. Not the cycle or instruction counters, which say what a
-     * program did rather than what time it is, and which section 22
-     * would rather hand out deliberately than leave open.
+     * TM, which is rdtime, and that is the whole of what the port
+     * permits. Not the cycle or instruction counters, which say what a
+     * program did rather than what time it is, and which stay withheld
+     * from user mode.
      */
     li      t0, 2
     csrw    scounteren, t0
@@ -359,8 +356,8 @@ machine_ipi_setup:
  * A machine-mode trap, which is a trap nothing expected.
  *
  * It cannot use the kernel's panic path: that runs in supervisor mode and
- * this is not it. What it can do is the one thing section 27 promises is
- * always available, which is the polled UART, and then stop. The message
+ * this is not it. What it can do is write to the polled UART, which is
+ * always available, and then stop. The message
  * is written a byte at a time from here because a formatter is more than
  * this is entitled to assume.
  */

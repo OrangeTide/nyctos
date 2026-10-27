@@ -25,7 +25,7 @@ sys_err_t file_open(const char *path, sys_handle_t *out);
 /*
  * Bytes at an offset. What comes back is what fitted in one message,
  * which may be less than was asked for and is zero at the end of the
- * file: section 25.5 makes a short count a protocol outcome rather than
+ * file: a short count is a protocol outcome rather than
  * an error.
  */
 sys_err_t file_read(sys_handle_t file, void *buf, uint32_t len,

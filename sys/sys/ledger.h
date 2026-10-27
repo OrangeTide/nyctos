@@ -31,13 +31,13 @@
 #define LEDGER_OP_TAKE      1u
 
 /*
- * Take a record and do not answer, per M18 stage three. The thread that
+ * Take a record and do not answer. The thread that
  * takes this request keeps it: it starts a replacement to go on serving
  * and then stops, still owing the reply, which is how a client is left
- * inside the rendezvous section 12.5 announces a death from.
+ * inside the rendezvous that announces a death.
  *
- * A server thread may not receive again while it owes a reply, per
- * section 19.3, so holding a request costs a thread. That is the price
+ * A server thread may not receive again while it owes a reply, so
+ * holding a request costs a thread. That is the price
  * of the arrangement and it is why the number of them is bounded.
  */
 #define LEDGER_OP_HOLD      2u
@@ -72,7 +72,7 @@ typedef struct ledger_reply {
     uint32_t    lp_released;    /* records a notice released, for COUNT */
 
     /*
-     * What collecting found, per M18 stage four. `lp_reaped` counts
+     * What collecting found. `lp_reaped` counts
      * connections whose clients had all gone and this server
      * collected; `lp_drained` counts the records it let go because one
      * was collected; `lp_hints` counts the pulses that said there was
@@ -84,7 +84,7 @@ typedef struct ledger_reply {
     uint32_t    lp_hints;
 
     /*
-     * Receives that came with SYS_MSG_PULSE_LOST, per M18 stage five.
+     * Receives that came with SYS_MSG_PULSE_LOST.
      * A server that acts on what it is told would have to care; this
      * one collects before every answer and does not.
      */

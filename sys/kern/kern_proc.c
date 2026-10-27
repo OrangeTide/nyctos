@@ -32,10 +32,10 @@
 
 #include <stdint.h>
 
-/* Resolve and validate a pager, per section 15.3 and 15.4 rule 1. */
+/* Resolve and validate a pager. */
 static sys_err_t proc_set_pager(struct proc *p, sys_handle_t h);
 
-/* Copy the name a namespace entry was mounted at, per section 20.4. */
+/* Copy the name a namespace entry was mounted at. */
 static sys_err_t proc_copy_ns_name(char *dst, const char *name);
 static sys_err_t pager_chain_check(struct proc *server);
 
@@ -91,10 +91,9 @@ proc_bootstrap(const char *name)
     p->p_cohort = NULL;
 
     /*
-     * Section 15.4 rule 1: the chain ends here. The kernel's own
-     * process has no pager and never faults recoverably, which is
-     * what a terminator is, and rule 2 has everything on a paging
-     * path locked.
+     * The chain ends here. The kernel's own process has no pager and
+     * never faults recoverably, which is what a terminator is. Everything
+     * on a paging path is locked, so the flag is set here as well.
      */
     p->p_locked = true;
 
@@ -115,9 +114,9 @@ proc_current(void)
 
 /*
  * Fill in a process object that has just come out of the pool. Split
- * out because the operation of section 10.1 allocates and initialises
- * in a different order from the kernel's own spawn: it has to be able
- * to give the slot back.
+ * out because the program-facing spawn allocates and initialises in a
+ * different order from the kernel's own spawn: it has to be able to
+ * give the slot back.
  */
 static void
 proc_init(struct proc *p, const char *name)
@@ -145,7 +144,7 @@ proc_init(struct proc *p, const char *name)
 /*
  * The part of spawning that does not care whether the child is a kernel
  * thread or a loaded program: a process, a handle table, and the startup
- * record of section 20.4 filled in from the parent's handles.
+ * record filled in from the parent's handles.
  */
 static struct proc *
 proc_create(const char *name, const sys_ns_spec_t *ns, uint32_t nns)
@@ -166,7 +165,7 @@ proc_create(const char *name, const sys_ns_spec_t *ns, uint32_t nns)
     proc_init(p, name);
 
     /*
-     * Moved rather than copied, per section 7.4. The parent gives up what
+     * Moved rather than copied. The parent gives up what
      * it hands over unless it deliberately duplicated first, which is what
      * makes the child's authority describable by looking at one list.
      *
@@ -191,8 +190,8 @@ proc_create(const char *name, const sys_ns_spec_t *ns, uint32_t nns)
 
         /*
          * A pager is a handle like any other and is also the one the
-         * kernel has to keep hold of, per section 15.3. Resolved after
-         * the move, because it is resolved in the child's table.
+         * kernel has to keep hold of. Resolved after the move, because
+         * it is resolved in the child's table.
          */
         if (ns[i].id == SYS_NS_PAGER &&
           proc_set_pager(p, p->p_ns[i * 2 + 1]) != SYS_OK) {
@@ -221,10 +220,10 @@ proc_spawn(const char *name, uint8_t prio, void (*entry)(void *),
 /*
  * Frames lost because a cohort place moved on before its holder was
  * reaped, so the load that placed the replacement mapped over the only
- * entries that named them. See proc_free_slot() and M13 stage 2.
+ * entries that named them. See proc_free_slot().
  *
- * Outside the tier guard because the ledger of stage 6 asks at both
- * tiers, and the answer at Tier 0 is a truthful nothing rather than a
+ * Outside the tier guard because the ledger asks at both tiers, and
+ * the answer at Tier 0 is a truthful nothing rather than a
  * function that is not there.
  */
 static uint32_t frames_orphaned;
@@ -242,9 +241,9 @@ proc_frames_orphaned(void)
  * still holds everything it was given until its last thread is
  * collected, and the collection happens at the top of some core's next
  * switch, so a count of free memory taken while one is pending will see
- * that memory come back at a moment nothing chose. M14 stage two is
- * what made it matter: processes became small enough that the boot
- * reaches the next check before the last one has finished letting go.
+ * that memory come back at a moment nothing chose. Processes are small
+ * enough that the boot can reach the next check before the last one has
+ * finished letting go.
  *
  * Not all of them go. A process whose handles are deliberately held
  * stays exited and unreaped for the rest of the boot, which is why
@@ -341,8 +340,7 @@ proc_place_startup(struct proc *p, uintptr_t page_pa, uintptr_t page_va)
 /*
  * The address space this process's threads will run in.
  *
- * A process in no cohort gets one of its own, which is what every
- * process got before section 18 was built. A member gets its cohort's,
+ * A process in no cohort gets one of its own. A member gets its cohort's,
  * built when the first member is placed and shared by every one after
  * it. Nothing else in the loader has to know which happened, because
  * proc_as() answers the same question afterwards either way.
@@ -385,9 +383,8 @@ proc_space_create(struct proc *p)
  * memory and what it buys is not having to know how much of the slot a
  * program uses: the archive carries the size of the image and not the size
  * of the memory it needs, and the difference is its zeroed data and its
- * stack. A size in the archive would fix it, and so would the demand
- * paging of stage 8, which is where the frames stop being spent in
- * advance.
+ * stack. A size in the archive would fix it, and so would demand
+ * paging, which is where the frames stop being spent in advance.
  */
 static sys_err_t
 proc_load(struct proc *p, const struct boot_member *m)
@@ -401,10 +398,9 @@ proc_load(struct proc *p, const struct boot_member *m)
     /*
      * Before the loop, all three, because proc_prot asks proc_slot
      * where this process's memory is and proc_slot answers from
-     * p_entry. Set after the loop, as it was, every page is mapped
-     * while the process has no slot yet, proc_prot falls back to
-     * permitting everything, and the stage passes its own check by
-     * doing nothing.
+     * p_entry. Set after the loop, every page is mapped while the
+     * process has no slot yet, proc_prot falls back to permitting
+     * everything, and the check passes by doing nothing.
      */
     p->p_entry = (uintptr_t)m->bm_load;
     p->p_rw_bytes = m->bm_rw;
@@ -416,20 +412,16 @@ proc_load(struct proc *p, const struct boot_member *m)
 
         /*
          * A page of the image, in a process that has a pager, is left
-         * for the pager to supply. Section 15.1: what demand paging is
-         * for is read-only text, and what is inside the image is text
+         * for the pager to supply. Demand paging is for read-only text,
+         * and what is inside the image is text
          * and rodata; everything writable a program has is beyond the
          * end of the image, which is its zeroed data and its stack, and
          * that is mapped here as it always was.
          *
-         * Only below the boundary, which is what M14 taught the archive
-         * to carry. Section 15.1 has writable segments copied eagerly
-         * and read-only ones supplied on demand, and until the loader
-         * could see where text ended it could not obey that: the
-         * condition was "has bytes", so a program with initialised data
-         * would have had its data left to the pager, to arrive
-         * read-only at the first write. Now it is "has bytes and is
-         * below where writable memory begins".
+         * Only below the boundary of writable memory. Writable segments
+         * are copied eagerly and read-only ones are supplied on demand.
+         * The condition is "has bytes and is below where writable memory
+         * begins", so a writable page is never left to the pager.
          */
         if (n > 0 && done < m->bm_rw && p->p_pager != NULL) {
             p->p_pager_bytes = done + PAGE_SIZE;
@@ -470,17 +462,13 @@ proc_load(struct proc *p, const struct boot_member *m)
     /*
      * The startup record goes in the last page of what the program
      * needs, which the linker script reserves above the stack for it.
-     * Section 20.4 has the loader place the record in the child's
-     * memory, and this is a loader.
+     * The loader places the record in the child's memory.
      *
      * The loop above has already mapped that page, because it is inside
      * bm_mem, so `last` is the frame behind it and nothing more has to
-     * be allocated. Until M14 the record went in the last page of the
-     * slot, which was the one place a program's own layout did not
-     * reach while the whole slot was mapped; nothing maps the whole
-     * slot now, so the place it went is a place that does not exist.
+     * be allocated.
      *
-     * The system page of section 6.2 goes above all of it, one page
+     * The system page goes above all of it, one page
      * further out, mapped read-only. One frame serves the whole
      * machine, so a reap must not give it back: see p_syspage_off.
      */
@@ -495,8 +483,7 @@ proc_load(struct proc *p, const struct boot_member *m)
      * And the address of it goes in the record, which is how a program
      * finds it. Set before the record is written out and not after:
      * place_startup copies p_startup into the page, so a field written
-     * afterwards is a field the program never sees. It was written
-     * afterwards first, and the program read a null pointer.
+     * afterwards is a field the program never sees.
      */
     p->p_startup.syspage = va + m->bm_mem;
 
@@ -506,10 +493,9 @@ proc_load(struct proc *p, const struct boot_member *m)
      * And that the program can reach it. The record is the one thing
      * the loader hands a program by address rather than by register,
      * so a record placed where nothing is mapped is a program that
-     * faults on its first instruction with nothing saying why. It was
-     * placed at the end of the slot until M14, and moving the loader's
-     * bound without moving the record is exactly the mistake this
-     * refuses.
+     * faults on its first instruction with nothing saying why. Moving
+     * the loader's bound without moving the record is exactly the
+     * mistake this refuses.
      */
     {
         uintptr_t pa;
@@ -544,19 +530,18 @@ proc_load(struct proc *p, const struct boot_member *m)
 #endif /* SYS_TIER == 2 */
 
 /*
- * The mark, read on the way into user mode for the first time, per
- * M21 stage two.
+ * The mark, read on the way into user mode for the first time.
  *
- * Section 10.5 says a kill unblocks every thread of its target, and
- * leaves a thread that is not blocked to find the mark on its way
- * back out. Every way back out reads it: the interrupt path, the
- * fault path and the system call path all call
+ * A kill unblocks every thread of its target, and leaves a thread that
+ * is not blocked to find the mark on its way back out. Every way back out
+ * reads it: the interrupt path, the fault path and the system call path all
+ * call
  * `proc_exit_if_dying`. There is a third way into user mode that is
  * not a way back out of anything, and it is this one. A thread that
  * has never run has no trap to return from, so nothing looked, and a
  * process killed between its spawn and its first instruction ran
- * anyway. M21 stage one measured it: the thread reached user mode,
- * made one system call and blocked in it for ever.
+ * anyway. In a measurement, the thread reached user mode, made one
+ * system call and blocked in it for ever.
  *
  * The lock is the part that is not obvious. `proc_exit_if_dying` is
  * documented as being called with the kernel lock held, because
@@ -566,8 +551,7 @@ proc_load(struct proc *p, const struct boot_member *m)
  * dispatch is made with interrupts off and not with the lock. That
  * is not something to rely on, since a thread can be first dispatched
  * by a core that is inside the kernel, so the lock is taken when this
- * core does not already hold it, which is the arrangement M20 stage
- * three used for the same reason.
+ * core does not already hold it.
  *
  * What is not restored is the interrupt state `klock_enter` returns.
  * Nothing comes back from here to restore it: the thread ends, and
@@ -662,9 +646,8 @@ proc_user_start(void *arg)
  *
  * The startup record the child is given points into this process
  * structure, which is kernel memory the program can read because Tier 0
- * has no protection to stop it. That is the tier's bargain, per section
- * 6.1, and section 15.2 is where a loader places the record in the image
- * instead.
+ * has no protection to stop it. That is the tier's bargain. A loader
+ * places the record in the image instead.
  */
 struct proc *
 proc_spawn_image(const char *image, uint8_t prio,
@@ -680,7 +663,7 @@ proc_spawn_image(const char *image, uint8_t prio,
     }
     p = proc_create(image, ns, nns);
 
-    /* Section 18.1, and see proc_spawn_op for why it is read here. */
+    /* See proc_spawn_op for why it is read here. */
     p->p_cohort = cohort_of_image(image);
     if (p->p_cohort != NULL &&
       cohort_place(p->p_cohort, image, p) != SYS_OK) {
@@ -690,7 +673,7 @@ proc_spawn_image(const char *image, uint8_t prio,
 
     /*
      * The command line, if there is one. The kernel spawning at boot
-     * is the loader of section 20.4 as much as the operation a
+     * is the loader as much as the operation a
      * program calls is, and a program started here that wants
      * arguments has nowhere else to get them.
      */
@@ -711,7 +694,7 @@ proc_spawn_image(const char *image, uint8_t prio,
 
     /*
      * The system page at the address it really is, because flat memory
-     * has no other. Section 6.2 has a program find the page through
+     * has no other. A program finds the page through
      * its record rather than at an address it assumes, and that is
      * what makes one program work on both tiers: the number differs
      * and the way of learning it does not.
@@ -732,10 +715,9 @@ proc_spawn_image(const char *image, uint8_t prio,
 /*
  * What a page of this process's memory may be used for, by where it is.
  *
- * Section 15.1 wants text read and executed and never written, and
- * everything else written and never executed. Until M14 the loader
- * could not tell them apart, so every page was all three and the
- * comment on VM_PROGRAM said what would fix it. This is that.
+ * Text is read and executed and never written. Everything else is
+ * written and never executed, and this function gives each page its
+ * side of that split.
  *
  * A function rather than two constants at the mapping site, because the
  * loader is not the only thing that maps a program's page: a buffer
@@ -744,8 +726,8 @@ proc_spawn_image(const char *image, uint8_t prio,
  * permissions it had. Asking where the page is gives the same answer
  * every time it is asked.
  *
- * The startup record is read-only. Section 20.4 has the loader place it
- * in the child's memory, and the loader writes it through the physical
+ * The startup record is read-only. The loader places it in the child's
+ * memory, and the loader writes it through the physical
  * address before any of this is mapped, so nothing in the program ever
  * needs to write it.
  */
@@ -783,19 +765,16 @@ proc_prot(const struct proc *p, uintptr_t va)
 
     /*
      * Above everything the image asked for, which is where the system
-     * page of section 6.2 is: read-only, because it is the machine's
-     * and is mapped into every process, and a program able to write it
-     * could move every other program's clock. An explicit arm for the
-     * page was written here first and did nothing, because the page
-     * sits at p_mem_bytes exactly and this is already the answer.
+     * page is: read-only, because it is the machine's and is mapped
+     * into every process, and a program able to write it could move
+     * every other program's clock.
      */
     return VM_READ | VM_USER;
 #else
     /*
      * Flat memory has no permissions to set, so there is nothing here
      * to answer with but everything. Tier 0 is the tier where a program
-     * can write its own text, and section 13.3 says so as the price of
-     * having no MMU.
+     * can write its own text, which is the price of having no MMU.
      */
     (void)p;
     (void)va;
@@ -805,7 +784,7 @@ proc_prot(const struct proc *p, uintptr_t va)
 }
 
 /*
- * What this process is holding, per M13 stage 6.
+ * What this process is holding.
  *
  * The slot pages still mapped to it, and the tables of the space it
  * owns. A cohort member owns none: it runs in its cohort's, which
@@ -908,10 +887,10 @@ proc_slot(const struct proc *p, uintptr_t *base, size_t *len)
  * How many bytes from this address the process can reach, or zero if it
  * cannot reach the address at all.
  *
- * This is the question of section 23.2 step 2, and it is not the same
- * question as proc_owns below. A program may name any of its own memory
- * in a descriptor; what it may hand to another process is narrower,
- * because handing memory over needs memory that can be mapped somewhere
+ * This is not the same question as proc_owns below. A program may name
+ * any of its own memory in a descriptor; what it may hand to another
+ * process is narrower, because handing memory over needs memory that can
+ * be mapped somewhere
  * else. The kernel reaches everything, since an address it names is one
  * it could have dereferenced without asking.
  *
@@ -955,22 +934,22 @@ proc_reaches(const struct proc *p, uintptr_t va, size_t len)
 
 /*
  * Whether a range of addresses is memory this process may hand to
- * another, per section 23.2: a descriptor a program gives the kernel
- * names memory, and the kernel checks that the process naming it is the
- * one it belongs to rather than reading whatever the number points at.
+ * another. A program gives the kernel a descriptor that names the memory,
+ * and the kernel checks that the process naming it is the one it belongs
+ * to rather than reading whatever the number points at.
  *
  * A process with no slot owns nothing here, and that is not a way of
  * saying the kernel has no memory. It is that kernel memory cannot be
  * lent: it is in every address space already, so there is nothing to
  * map, and it is in none of them reachable from user mode, so a program
  * given the address would fault on it. What the kernel would need to
- * lend a program a page of its own is the grant of section 19.2, which
- * is a handle and not an address.
+ * lend a program a page of its own is a grant, which is a handle and
+ * not an address.
  *
  * Refusing on both tiers is deliberate. Tier 0 has one address space and
  * the lend would work, and a rule that holds only where the hardware
- * happens to allow it is the kind of difference section 2.1 exists to
- * keep out of the interface.
+ * happens to allow it is the kind of difference the interface must not
+ * expose.
  */
 bool
 proc_owns(const struct proc *p, uintptr_t va, size_t len)
@@ -1001,9 +980,9 @@ proc_completion(struct proc *p)
 }
 
 /*
- * A thread of this process has exited. Section 10.4 has the process
- * completion timeline advance when the process finishes, and a process
- * finishes when its last thread does.
+ * A thread of this process has exited. The process completion timeline
+ * advances when the process finishes, and a process finishes when its
+ * last thread does.
  *
  * The status is written before the advance, because a joiner released by
  * it can outrank the exiting thread and read the status before that thread
@@ -1036,7 +1015,7 @@ proc_thread_exited(struct proc *p, int32_t code)
 
     /*
      * Anything blocked on a channel this process owned is released
-     * now, per section 12.5. A server that has gone is not going to
+     * now. A server that has gone is not going to
      * receive or reply, and a client waiting on one is waiting for
      * something that cannot happen.
      */
@@ -1044,10 +1023,10 @@ proc_thread_exited(struct proc *p, int32_t code)
 
     /*
      * An exit nobody was waiting for stops the system, named. This is the
-     * placeholder for supervision that M2 introduced, now asking a better
+     * placeholder for supervision, now asking a better
      * question: not whether the kernel remembered to set a flag, but
      * whether anything holds the completion timeline that would report
-     * this. Section 24.3 is where a parent makes the decision properly.
+     * this.
      */
     if (!p->p_watched) {
         if (p->p_fault != SYS_FAULT_NONE) {
@@ -1066,7 +1045,7 @@ proc_thread_exited(struct proc *p, int32_t code)
 }
 
 /*
- * Whether a pager chain terminates, per section 15.4 rule 1.
+ * Whether a pager chain terminates.
  *
  * The chain is the processes that serve one another's faults, and it has
  * to end at one that cannot fault: memory-locked, with no pager of its
@@ -1093,7 +1072,7 @@ pager_chain_check(struct proc *server)
 }
 
 /*
- * Resolve the pager a namespace named, per section 15.3.
+ * Resolve the pager a namespace named.
  *
  * The handle has already moved into the child, which is where a handle
  * belongs; what the kernel keeps is the object, because the kernel is
@@ -1123,8 +1102,7 @@ proc_set_pager(struct proc *p, sys_handle_t h)
      * it was given would leave this naming a freed slot, and the next
      * page fault would send its message through whatever took it.
      *
-     * Nothing before stage four could reach that, because nothing
-     * freed a connection. This is the same shape as the completion
+     * This is the same shape as the completion
      * timeline and the channel owner: a pointer that no generation
      * protects, made reachable by something being reclaimed.
      */
@@ -1138,7 +1116,7 @@ proc_set_pager(struct proc *p, sys_handle_t h)
 }
 
 /*
- * Copy the name a namespace entry was mounted at, per section 20.4.
+ * Copy the name a namespace entry was mounted at.
  *
  * The name is inside the caller's array rather than pointed at from it,
  * so there is nothing further to follow and nothing further to check: the
@@ -1169,7 +1147,7 @@ proc_copy_ns_name(char *dst, const char *name)
  *
  * The strings and the array both land in the process object, because the
  * child reads them after the caller's frame is gone and there is nowhere
- * else to put them until section 15.2's loader is writing images. What
+ * else to put them. What
  * this refuses is a line that does not fit: truncating a command line
  * silently is how a program ends up doing something close to what it was
  * asked.
@@ -1195,7 +1173,7 @@ proc_set_args(struct proc *p, const struct proc *from,
         }
 
         /*
-         * How far the caller's memory goes from here, per section 23.2.
+         * How far the caller's memory goes from here.
          * A string with no terminator would otherwise be read until the
          * length bound below stopped it, which bounds the damage at two
          * hundred and fifty-six bytes rather than preventing it: those
@@ -1239,7 +1217,7 @@ proc_set_args(struct proc *p, const struct proc *from,
  * member was linked to be. Scanning the pool is sixteen comparisons and
  * needs no bookkeeping that could go stale; a process that has exited does
  * not count, because nothing of it is still executing even though its slot
- * is kept until M7 reaps it.
+ * is kept until it is reaped.
  */
 static bool
 image_in_use(uintptr_t load)
@@ -1266,7 +1244,7 @@ image_in_use(uintptr_t load)
 #endif /* SYS_TIER == 0 */
 
 /*
- * Spawn on behalf of a program, per section 10.1 and section 20.4.
+ * Spawn on behalf of a program.
  *
  * The difference from proc_spawn_image is not what it builds but what it
  * does when it cannot. A kernel caller assembling the system has nowhere
@@ -1302,7 +1280,7 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
     }
 
     /*
-     * Two more addresses a program chose, per section 23.2: the namespace
+     * Two more addresses a program chose: the namespace
      * array and the argument vector both live in the caller's memory and
      * are read here. The descriptor check above them says nothing about
      * either, because a pointer inside a structure is not the structure.
@@ -1313,7 +1291,7 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
     }
 
     /*
-     * A child may not outrank its parent. Nothing in section 11 says who
+     * A child may not outrank its parent. Nothing says who
      * chooses a priority, and the answer that follows from the rest of the
      * design is that authority flows downward: a program that could start
      * something above itself would be granting time it was not given, and
@@ -1326,8 +1304,8 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
 
     /*
      * The array is copied before it is looked at, and everything below
-     * reads the copy. Section 23.2 has validation happen once before
-     * anything executes, and once means once: the caller's array is
+     * reads the copy. Validation happens once, before anything executes,
+     * and once means once: the caller's array is
      * memory a program owns, so a check against it and a use of it are
      * two reads of something that can change between them the moment a
      * process has a second thread.
@@ -1352,12 +1330,11 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
      * Tier 2 is where the restriction goes rather than where the check
      * gets better. The address a program runs at is virtual there and the
      * memory behind it is frames nobody else has, so two copies of one
-     * image are two processes that cannot reach each other. Section 15.2
-     * said a loader would end this, and an address space per process is
-     * what a loader needed.
+     * image are two processes that cannot reach each other. An address
+     * space per process is what a loader needs.
      *
-     * Section 18 brings it back for cohort members, which share a space
-     * and therefore share the address. cohort_place() is where that half
+     * Cohort members bring the shared address back, since they share a
+     * space and therefore share the address. cohort_place() is where that half
      * lives, and it returns this same error for this same reason. A
      * member is the only thing at Tier 2 that this rule still applies
      * to, and at Tier 0 the line below already covers it.
@@ -1385,7 +1362,7 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
 
         /*
          * A pager is checked here rather than after the move, because
-         * section 15.4 rule 1 is a reason to refuse the spawn and a
+         * an unterminated pager chain is a reason to refuse the spawn and a
          * refusal has to happen while there is nothing to undo.
          */
         if (spec[i].id == SYS_NS_PAGER) {
@@ -1420,8 +1397,8 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
     proc_init(p, image);
 
     /*
-     * Section 18.1: which domain this image runs in is a property of
-     * the build, so it is read here and not asked for. A program that
+     * Which domain this image runs in is a property of the build, so it
+     * is read here and not asked for. A program that
      * spawns a member gets a member, whether or not it knows that is
      * what the image is, because membership is not the spawner's to
      * decide.
@@ -1458,12 +1435,11 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
      */
     /*
      * With the right to end it. A parent that started a process is
-     * what section 24.3 calls a supervisor, and section 10.5 says a
-     * supervisor holds a handle to the process and none at all to the
+     * a supervisor, which holds a handle to the process and none at all to the
      * threads inside it, so the process handle is the only thing it
      * could use. Without this a parent could watch a child wedge and
-     * do nothing about it, and section 7.2 would not let it add the
-     * right afterwards: duplication only attenuates.
+     * do nothing about it, and it could not add the right afterwards:
+     * duplication only attenuates.
      */
     err = handle_insert(&parent->p_handles, p, SYS_OBJ_PROCESS,
       SYS_RIGHT_WAIT | SYS_RIGHT_STAT | SYS_RIGHT_WRITE, &h);
@@ -1489,8 +1465,8 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
         /*
          * The chain was checked before anything moved, so what is
          * left here is resolving the connection in the table it now
-         * lives in. Section 15.3 has the kernel hold the object,
-         * because the kernel is what sends a fault message.
+         * lives in. The kernel holds the object, because the kernel is what
+         * sends a fault message.
          */
         if (spec[i].id == SYS_NS_PAGER) {
             (void)proc_set_pager(p, p->p_ns[i * 2 + 1]);
@@ -1518,8 +1494,8 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
     /*
      * An operation cannot panic on a failure a program can provoke.
      * Both of these run out of frames rather than out of anything the
-     * caller controls, but the caller is a program and section 8 has
-     * exhaustion be an error rather than a stop.
+     * caller controls, but the caller is a program, so exhaustion is an
+     * error rather than a stop.
      */
     err = proc_space_create(p);
     if (err == SYS_OK) {
@@ -1541,7 +1517,7 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
 
     /*
      * The system page at the address it really is, because flat memory
-     * has no other. Section 6.2 has a program find the page through
+     * has no other. A program finds the page through
      * its record rather than at an address it assumes, and that is
      * what makes one program work on both tiers: the number differs
      * and the way of learning it does not.
@@ -1582,7 +1558,7 @@ proc_thread_start(void *arg)
 }
 
 /*
- * Add a thread to a process, per section 10.2.
+ * Add a thread to a process.
  *
  * The stack is the caller's, at any address it likes, because the kernel
  * allocates no user memory at any tier. What it checks is alignment, since
@@ -1608,7 +1584,7 @@ proc_thread_create(struct proc *p, uintptr_t entry, uintptr_t uarg,
     }
 
     /*
-     * And not into a process that is over, per M21 stage five.
+     * And not into a process that is over.
      *
      * Over is two things. A kill has been written, which is the
      * statement that this process is finished: the set of threads
@@ -1625,8 +1601,7 @@ proc_thread_create(struct proc *p, uintptr_t entry, uintptr_t uarg,
      * carries on living in a process that has already ended, which
      * is a reap that never comes. Both have been measured.
      *
-     * Read under the kernel lock with the mark, for the reason
-     * stage two's review gives. Asked after the arguments are
+     * Read under the kernel lock with the mark. Asked after the arguments are
      * checked and before anything is allocated: a caller that got
      * the arguments wrong is told so whichever state the process is
      * in, and a caller that did not gets nothing built for it.
@@ -1669,8 +1644,7 @@ proc_thread_create(struct proc *p, uintptr_t entry, uintptr_t uarg,
      * this call made from a thread of p, which is the only way it
      * was ever made. It is not what the signature says, and a
      * caller that is not a thread of p got a thread in its own
-     * process with a handle to it in p's table. Found by M21 stage
-     * five, whose supervisor makes the thread its target asked for.
+     * process with a handle to it in p's table.
      */
     if (t->t_proc != p) {
         thread_set_proc(t, p);
@@ -1732,11 +1706,11 @@ proc_as(struct proc *p)
 /*
  * Give back the frames the loader spent on this process.
  *
- * M13 stage 1 counted them: at Tier 2 a process costs its whole slot,
- * 256 pages, plus one leaf table to reach them, plus the address space
- * it runs in. This returns the first two. The address space is stage
- * three's, and is what a cohort's members share, so it cannot go back
- * when any one of them is reaped.
+ * At Tier 2 a process costs its whole slot, 256 pages, plus one leaf
+ * table to reach them, plus the address space it runs in. This returns
+ * the first two. The address space is what a
+ * cohort's members share, so it cannot go back when any one of them is
+ * reaped.
  *
  * Two pages of the slot are deliberately not touched. One is a page the
  * loader never allocated, which md_lookup reports as unmapped and this
@@ -1773,8 +1747,6 @@ proc_free_slot(struct proc *p)
      *
      * The frames this process had are lost in that case, orphaned by
      * the load that mapped over them rather than by anything here.
-     * Section 18.2 is where that would be fixed, by making a place
-     * something a reap gives back rather than something an exit does.
      * Losing them is the safe half of the mistake.
      */
     if (p->p_cohort != NULL && !cohort_holds(p->p_cohort, p)) {
@@ -1782,11 +1754,10 @@ proc_free_slot(struct proc *p)
          * Counted, because nothing else can find them. They are not
          * reachable through the address space any more: the load that
          * put the replacement here mapped over the entries that named
-         * them. M13 stage 6 reports the total, since a frame nothing
-         * can reach is exactly the kind that would otherwise go
-         * unnamed in the ledger. The loader counted them as it mapped
-         * them, which since M14 is the only place the number exists:
-         * it is what the image needed and not a slot.
+         * them. The ledger reports the total, since a frame nothing can
+         * reach is exactly the kind that would otherwise go unnamed. The
+         * loader counts them as it maps them, and that is the only place
+         * the number exists: it is what the image needed and not a slot.
          */
         frames_orphaned += p->p_own_pages;
 
@@ -1835,9 +1806,8 @@ proc_free_slot(struct proc *p)
      * Locally, which is all any port here can do. A cohort peer running
      * on another core shares this space and may hold a translation to a
      * page just freed, and nothing in this kernel can reach across to
-     * tell it. Section 13.3 has no shootdown and M13 does not add one:
-     * what it means is that reclaiming a cohort member's memory while a
-     * peer runs is not yet safe, which is why the check below reaps a
+     * tell it. There is no shootdown, so reclaiming a cohort member's memory
+     * while a peer runs is not yet safe, which is why the check below reaps a
      * process that is in no cohort.
      */
     md_tlb_flush_all();
@@ -1848,7 +1818,7 @@ proc_free_slot(struct proc *p)
 #endif /* SYS_TIER == 2 */
 
 /*
- * Reaping a process, per section 10.4 read the other way round.
+ * Reaping a process.
  *
  * A status stays readable through a handle after the object has ended,
  * so a process that has ended is not yet a process nobody can ask
@@ -1870,8 +1840,7 @@ proc_reap(struct proc *p)
 
     /*
      * Its place in its cohort, before anything else can spawn into it.
-     * M6 left this pointer for whatever made process slots reusable,
-     * which is this.
+     * This is the pointer that makes process slots reusable.
      */
     if (channel_owned_by(p)) {
         panic("proc %s: reaped while a channel still says it owns one",
@@ -1888,7 +1857,7 @@ proc_reap(struct proc *p)
     (void)proc_free_slot(p);
 
     /*
-     * And the space its slot was in, which is stage three. A member has
+     * And the space its slot was in. A member has
      * none of its own: it runs in its cohort's, and that space outlives
      * every one of them, so this is asked rather than left to as_root
      * being zero.
@@ -1980,7 +1949,7 @@ proc_threads(struct proc *p)
 }
 
 /*
- * What section 10.5 cost, as counts rather than as durations. A kill
+ * What a kill costs, as counts rather than as durations. A kill
  * that is written, a poke it had to send to reach a core, and a client
  * that had to be told its server thread had gone are each a property of
  * this kernel and the same on any machine that runs it. How long any of
@@ -2020,9 +1989,8 @@ proc_kill(struct proc *p, int32_t code)
      * core it is running on, which is a question about a state
      * another core owns.
      *
-     * M21 stage two's review recorded this as the residue left for a
-     * caller that is a kernel thread and closed it for the reading
-     * side only. This is the writing side.
+     * A caller that is a kernel thread may run this without the lock.
+     * This is the writing side, which always takes it.
      */
     if (!held) {
         s = klock_enter();
@@ -2040,8 +2008,8 @@ proc_kill(struct proc *p, int32_t code)
 
     /*
      * The mark first, so that a thread released below and running
-     * before this returns finds it. Section 10.5 makes the unblocking
-     * prompt and this is what makes the leaving certain: without the
+     * before this returns finds it. The unblocking is prompt, and this is
+     * what makes the leaving certain: without the
      * mark a cancelled thread would come back with an error and carry
      * on with whatever it was doing.
      */
@@ -2060,10 +2028,9 @@ proc_kill(struct proc *p, int32_t code)
         /*
          * Counted, because this is the set the kill has to reach
          * and the set is closed here: nothing can be added to it
-         * afterwards, per M21 stage five. Every one of them leaves
-         * by one of three doors, and M21 stage seven asks at the
-         * end of the boot whether those and the threads that were
-         * already leaving add up to this.
+         * afterwards. Every one of them leaves by one of three doors,
+         * and the end of the boot checks whether those and the threads
+         * that were already leaving add up to this.
          *
          * Not one that has already ended. A thread stays on this
          * list until it is collected, and one that is dead is not
@@ -2077,20 +2044,19 @@ proc_kill(struct proc *p, int32_t code)
         }
 
         /*
-         * Exactly as if each had been cancelled, which is the
-         * section's phrase and also the implementation: a thread that
+         * Exactly as if each had been cancelled, which is also the
+         * implementation: a thread that
          * is not blocked has nothing to be released from and will find
          * the mark on its own.
          */
         (void)thread_cancel(t);
 
         /*
-         * And a thread that is running is made to enter the kernel,
-         * per M17 stage three. It is running on another core, because
-         * this one is running the killer, and it may take no trap of
-         * its own for as long as it likes: section 14.2 arms the
-         * hardware for the next event and a computing program is not
-         * one. The poke is that event.
+         * And a thread that is running is made to enter the kernel. It is
+         * running on another core, because this one is running the killer,
+         * and it may take no trap of its own for as long as it likes: the
+         * hardware is armed for the next event and a computing program is
+         * not one. The poke is that event.
          *
          * Only for a running thread. One that is ready is one that
          * has already stopped somewhere in this kernel, and it finds
@@ -2153,7 +2119,7 @@ proc_exit_if_dying(void)
     t->t_left_by_door = true;
 
     /*
-     * Section 10.5's promptness, for a thread that was never blocked.
+     * Prompt leaving for a thread that was never blocked.
      * Called where a trap is about to go back to user mode, which is
      * the one place a thread is certainly in this kernel with nothing
      * of its own left on the stack: the frame below is the program's
@@ -2162,7 +2128,7 @@ proc_exit_if_dying(void)
      * path holds, and this knows that it holds nothing.
      *
      * Called with the kernel lock held, like the entry boundary in a
-     * submission that has done this since M10. thread_exit does not
+     * submission that does this on every path. thread_exit does not
      * return, and the thread that runs next releases the lock on its
      * own way out, which is what the lock is built to allow.
      */

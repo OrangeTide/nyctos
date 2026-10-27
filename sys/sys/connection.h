@@ -35,12 +35,11 @@ struct connection {
 
     /*
      * Handles naming this connection. It goes back to its pool when
-     * the last one closes, which is the rule stage one gave processes
-     * and threads and did not give this: a connection is named by
-     * nothing else, so a handle going is the whole of its lifetime.
+     * the last one closes: a connection is named by nothing else, so a
+     * handle going is the whole of its lifetime.
      *
-     * Unless the channel behind it collects its departed peers, per
-     * M18 stage four, in which case the last close is not the end: the
+     * Unless the channel behind it collects its departed peers, in which
+     * case the last close is not the end: the
      * connection is kept, marked gone, and returned to its pool when
      * the server collects it.
      */
@@ -78,7 +77,7 @@ struct connection *connection_create(struct channel *ch, uint64_t cookie);
 
 /*
  * The process that serves this connection, which is the one that owns
- * the channel behind it. Section 15.4 walks the pager chain through
+ * the channel behind it. The pager chain is walked through
  * this: a pager is a process, and what names one here is a connection.
  */
 struct proc *connection_owner(const struct connection *cn);

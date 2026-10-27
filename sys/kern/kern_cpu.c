@@ -154,8 +154,8 @@ cpu_report(void)
     /*
      * And that they disagree about what they are doing, which is what
      * per-core state is for. One core is running this; every other one
-     * is in the idle loop with an empty queue, because section 11.4
-     * puts nothing anywhere until somebody puts it there.
+     * is in the idle loop with an empty queue, because nothing is queued
+     * there until somebody queues something.
      */
     for (i = 1; i < ncores; i++) {
         if (cpus[i].cp_current != NULL) {
@@ -169,8 +169,8 @@ cpu_report(void)
      * cannot be found is not used, which is the right thing to do and
      * the wrong thing to do quietly: the emulator and the kernel are
      * configured together here, so fewer than expected is a build
-     * mistake, and a milestone about two cores that quietly ran on one
-     * would pass every check it has.
+     * mistake, and a two-core run that quietly ran on one would pass every
+     * check it has.
      */
     if (ncores != SYS_MAX_CORES) {
         panic("cores: %u answered, and this build is for %u",
@@ -211,8 +211,8 @@ cpu_idle_report(void)
  * It claims its entry before anything else, because everything below
  * that reads what this core is doing reads it through the register that
  * claim sets. Then it enters the address space the kernel is in, which
- * every space contains, and idles: section 11.4 gives it a run queue of
- * its own and nothing has been put in it.
+ * every space contains, and idles with a run queue of its own and nothing
+ * put in it.
  */
 void
 cpu_secondary_entry(void)
@@ -249,8 +249,8 @@ cpu_secondary_entry(void)
 
     /*
      * Its own queues, and something to be while it has nothing to run.
-     * Section 11.6 has idle be a state of the core rather than a
-     * thread, and this is not a thread in that sense: it is the
+     * Idle is a state of the core rather than a thread, and this is not a
+     * thread in that sense: it is the
      * context the core dispatches away from and comes back to.
      */
     sched_init();

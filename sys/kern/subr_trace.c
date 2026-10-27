@@ -38,8 +38,8 @@ trace_reset(void)
 /*
  * Called from the blocking paths with interrupts already disabled, which
  * is what makes a bare increment safe here and would not on a second core.
- * Section 11.4 partitions the scheduler per core, so a ring per core is
- * the shape this takes when there is one.
+ * The scheduler is partitioned per core, so a ring per core is the shape
+ * this takes.
  */
 void
 trace_wait(const struct thread *t, enum thread_wait wait)
@@ -117,10 +117,9 @@ trace_saw(enum thread_wait wait)
 /*
  * The same question about one thread rather than about the system.
  *
- * It exists because a second layer under a server made the system-wide
- * answer stop meaning what it used to. A client sending one message
- * cannot queue behind a busy server, which is the saving section 25.7
- * claims and the thing worth checking; but the server it sends to now
+ * It exists because a second layer under a server means the system-wide
+ * answer no longer says what it seems to. A client sending one message
+ * cannot queue behind a busy server, but the server it sends to now
  * sends onward to a block store, and queues there. Asking whether
  * anything at all send-blocked answers yes either way, and stops being
  * a statement about the client.

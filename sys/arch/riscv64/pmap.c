@@ -52,7 +52,7 @@
 /*
  * Accessed and dirty are set here rather than left to the hardware. Some
  * parts update them and some raise a fault instead, and a kernel that does
- * not track either has nothing to gain from being told: section 15.1 has
+ * not track either has nothing to gain from being told. This kernel has
  * no swap and no dirty tracking, so a page that is mapped is a page that
  * is used.
  */
@@ -142,11 +142,11 @@ md_as_create(struct addrspace *as)
 }
 
 /*
- * Give an address space's tables back, per M13 stage 3.
+ * Give an address space's tables back.
  *
  * What is freed is tables and only tables. Every leaf under this root
- * points at memory somebody else owns: a process's slot, which stage
- * two returned before this runs, or the kernel's own image and devices,
+ * points at memory somebody else owns: a process's slot, which has
+ * already been returned, or the kernel's own image and devices,
  * which map_kernel_into wrote into every space and which freeing would
  * take out from under the kernel itself. PTE_LEAF is what tells them
  * apart, and it has to be asked at every level, because the identity
@@ -194,7 +194,7 @@ md_as_destroy(struct addrspace *as)
 }
 
 /*
- * How many frames the tables under this root are, per M13 stage 6.
+ * How many frames the tables under this root are.
  *
  * The same walk md_as_destroy makes, counting where that one frees. It
  * exists so the ledger at the end of the boot can say what an address
@@ -312,14 +312,11 @@ md_map_devices(struct addrspace *as)
 
     /*
      * The 16550, one page. A block is exactly what a grant cannot
-     * refine: section 19.2 has a driver given this page with user access
-     * in its own space, and a mapping the size of a block would have to
-     * be split to allow it.
+     * refine: a driver is given this page with user access in its own
+     * space, and a mapping the size of a block would have to be split to
+     * allow it.
      *
-     * Not reachable from user mode. It was, for three stages, because
-     * the driver held the address as a constant and would have faulted
-     * on the first register it touched; it holds a grant now, and this
-     * is the deviation those stages were carrying.
+     * Not reachable from user mode except through a grant.
      */
     return md_map(as, 0x10000000UL, 0x10000000UL, 0x1000UL,
       VM_READ | VM_WRITE | VM_DEVICE);
@@ -417,13 +414,12 @@ md_as_current_asid(void)
  * they were made with, and the ones belonging to somewhere else stay
  * where they are without being consulted. What would need a fence is an
  * identifier handed to a second space while the first one's entries are
- * still filed under it, which is M19 stage four's problem and is why
- * nothing hands one out twice yet.
+ * still filed under it. Nothing hands one out twice yet.
  *
  * A space with no identifier is a space the hardware cannot tell from
  * any other space with none, so activating it means throwing every
- * translation away. That is what this port did for every space until
- * now, and it is still what a port with no identifiers to give does.
+ * translation away. That is what this port does for a space with no
+ * identifier, and so does any port with no identifiers to give.
  */
 bool
 md_as_activate(const struct addrspace *as)
@@ -451,7 +447,7 @@ md_mmu_enable(const struct addrspace *as)
      * operation's arguments out of a program's memory and copies a
      * message payload. It is a permission the kernel gives itself,
      * not a check it skips; what says an address belongs to the
-     * caller is the validation of section 23.2.
+     * caller is the argument validation.
      */
     __asm__ volatile ("csrs sstatus, %0" :: "r" (1UL << 18) : "memory");
 
@@ -536,8 +532,8 @@ md_tlb_invalidate_asid(uint32_t asid)
      * be handed on at all.
      *
      * It leaves global mappings alone, which is only safe because there
-     * are none. M19 stage two decided that and a grant is the reason: a
-     * grant rewrites the kernel's own entry for the address it covers,
+     * are none. A grant is the reason: a grant rewrites the kernel's own
+     * entry for the address it covers,
      * in the holder's space and no other, so an entry marked as the
      * same everywhere would be a claim a grant makes false. Mark one
      * global and this call stops covering it, and what is left behind

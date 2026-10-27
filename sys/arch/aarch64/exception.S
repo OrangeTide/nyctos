@@ -47,7 +47,7 @@ vectors:
 
 /*
  * The system call convention: x0 carries the pointer to the operation
- * descriptor and x1 the count, per section 23.1, and x0 the result. Only
+ * descriptor and x1 the count, and x0 the result. Only
  * the caller-saved registers are in the frame, because the C handler
  * preserves the rest and a system call is a call.
  */
@@ -139,7 +139,7 @@ el0_fatal:
 /*
  * An SError while a program was running. It has no frame because it
  * needs none: an external abort is a report that the memory is not
- * trustworthy, per section 16.1, and the thread it names is ending.
+ * trustworthy, and the thread it names is ending.
  */
 el0_serror:
     mrs     x0, esr_el1
@@ -197,14 +197,6 @@ el1_irq:
      * el0_sync gives: restoring elr and spsr needs two registers as
      * scratch, and doing it after the general restore hands the
      * interrupted code its own program counter in place of x9.
-     *
-     * That is what this did until milestone 4. Any kernel code using
-     * x9 or x10 across an interrupt resumed with a code address in
-     * them, and memset uses x9 as its destination: an interrupt
-     * during a long memset made it write into the kernel's own
-     * instructions, a few bytes below wherever it had been
-     * interrupted. Tier 0 hit it too rarely to notice; Tier 2 zeroes
-     * a megabyte of frames per spawn and hits it every time.
      */
     ldp     x9, x10, [sp, #168]
     msr     elr_el1, x9

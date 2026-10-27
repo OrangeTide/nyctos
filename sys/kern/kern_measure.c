@@ -220,7 +220,7 @@ meas_longest(const struct meas *m)
     /*
      * The largest of the per-core figures and not their sum. Two cores
      * each spending a microsecond in a region did not spend two
-     * microseconds in it, and the question section 13.3 asks is how
+     * microseconds in it, and the question is how
      * long the worst visit was.
      */
     for (i = 0; i < SYS_MAX_CORES; i++) {
@@ -299,7 +299,7 @@ meas_check_clock(void)
  * at all about the other core reading the same one. That distinction
  * is not academic here: every figure that crosses a core is a
  * subtraction of one core's reading from another's. The donation
- * across cores is measured that way, and section 13.3's dispatch term
+ * across cores is measured that way, and the dispatch time
  * is stamped in a handler on one core and closed when the thread runs,
  * which may be another. A per-core counter, or two counters started at
  * each core's own bring-up, would pass every other check in this file
@@ -397,11 +397,11 @@ meas_check_clock_across(void)
 }
 
 /*
- * Section 13.3's first term: the longest region with interrupts
+ * The longest region with interrupts
  * disabled.
  *
  * Measured at the transition rather than at every call, because the
- * term the section defines is a contiguous region and this kernel nests
+ * region is a contiguous span and this kernel nests
  * these freely. A call that finds interrupts already off is inside a
  * region somebody else began; the one that turns them off is the one
  * that starts the clock, and the restore that turns them back on is the
@@ -489,8 +489,8 @@ intr_region_console(void)
  * A thread about to give up the core stamps the clock; the thread the
  * core comes back in reads that stamp on its first instruction after
  * its own switch returned. The difference is the distance from one
- * thread stopping to another starting, which is what stages two and
- * three have been separating the rest of the rendezvous from.
+ * thread stopping to another starting, which is what the stamps separate
+ * from the rest of the rendezvous.
  *
  * Timing around `thread_switch_to` instead would measure how long the
  * outgoing thread was away, which is a property of the workload and
@@ -598,13 +598,13 @@ intr_region_end(uintptr_t site)
      */
     /*
      * And the longest region that ended in a thread other than the one
-     * it began in, which is section 13.3's first term: the region that
+     * it began in, which is the region that
      * spans a context switch and therefore contains no preemption
      * point that could break it.
      *
      * Asked of every region rather than marked by the paths that
      * expect to switch, because a path that switches without meaning
-     * to is exactly what this milestone would want to know about.
+     * to is exactly what would be worth knowing about.
      */
     if (thread_current() != c->cp_intr_thread &&
       took > c->cp_cross_worst) {
@@ -650,8 +650,7 @@ intr_region_report(void)
 
         /*
          * The mean beside the longest, because a bound drawn from one
-         * sample is a bound drawn from one sample. Section 13.3 asks
-         * for the worst case and the worst case is the right figure;
+         * sample is a bound drawn from one sample. The worst case is the right figure;
          * knowing whether it is typical or a single outlier is what
          * says whether it describes the kernel or an accident.
          */
@@ -669,8 +668,8 @@ intr_region_report(void)
           (unsigned long)md_time_now());
 
         /*
-         * And the same without the console, which is what section
-         * 13.3 is asking about. Printing a line with interrupts off is
+         * And the same without the console, which is the quantity in
+         * question. Printing a line with interrupts off is
          * a real region and the line above says so; it is also the
          * longest one here, and a figure about the kernel that is
          * really a figure about a UART is a figure nobody can use.
@@ -695,7 +694,7 @@ intr_region_report(void)
           (unsigned long)c->cp_intr_worst_kern_site);
 
         /*
-         * The region section 13.3's first term is about, split at the
+         * The region that is measured, split at the
          * moment the reply stops manipulating state and starts
          * dispatching. Everything before the mark is the reply's own
          * work; everything after is the context switch and whatever
@@ -730,7 +729,7 @@ intr_region_report(void)
          * And the switch on its own, which is what the region above
          * was being separated down to. Reported beside it because the
          * comparison is the point: if the switch is a small part of
-         * the region that spans it, then what section 13.3 calls the
+         * the region that spans it, then the
          * floor is mostly not the switch.
          */
         if (c->cp_switch_count != 0) {
@@ -771,7 +770,7 @@ intr_region_report(void)
         }
 
         /*
-         * And the same of the figure section 13.3 actually asks for.
+         * And the same of the worst case.
          * A core with regions but none outside the console has been
          * printing and doing nothing else, which is not a state this
          * system reaches, and reporting a zero as though it were a
@@ -784,7 +783,7 @@ intr_region_report(void)
     }
 
     /*
-     * And that the region this milestone is about was seen at all. It
+     * And that the region on the reply path was seen at all. It
      * is the reply path, which every run walks hundreds of times, so a
      * report with no marked region is an instrument that stopped
      * measuring rather than a run that did not reply. Across cores,
@@ -821,9 +820,9 @@ intr_region_report(void)
 
 
 /*
- * How stale a stored uptime would be, per M16 stage one.
+ * How stale a stored uptime would be.
  *
- * Section 6.2 has the system page carry a 64-bit uptime the kernel
+ * The system page carries a 64-bit uptime the kernel
  * writes and a program reads under a seqlock. A kernel writes such a
  * field at the moments it is already running: a system call, an
  * interrupt, a context switch. This kernel is tickless, so between two
@@ -833,13 +832,12 @@ intr_region_report(void)
  *
  * What this measures is the gap. Every moment the kernel could refresh
  * such a field is counted, and the longest interval between two of them
- * is kept. If that interval is short, the field section 6.2 describes
- * is a clock; if it is long, it is a description of a design this
+ * is kept. If that interval is short, the field
+ * is a clock; if it is long, it describes a system this
  * kernel is not.
  *
  * The count is a count and is asserted where it is reported. The
- * interval is a duration, so it is reported and never asserted, per
- * M9's rule.
+ * interval is a duration, so it is reported and never asserted.
  */
 static uint64_t clock_marks;
 static uint64_t clock_last;
@@ -884,14 +882,14 @@ clock_mark_count(uint64_t *worst, const char **who)
 }
 
 /*
- * A preemption point, per section 13.3: a place where the kernel could
+ * A preemption point: a place where the kernel could
  * be preempted, and therefore a boundary on how long it cannot be.
  *
- * The section names three of them, at batch entry boundaries, at
+ * There are three of them, at batch entry boundaries, at
  * message copy chunk boundaries and at page table walk boundaries, and
- * until now the tree had none: the Tier 0 latency argument rested on a
- * placement that existed only in the section. These count rather than
- * yield, because what this milestone needs first is the number, and a
+ * until now the tree had none, so the Tier 0 latency argument rested on a
+ * placement that was not in the code. These count rather than
+ * yield, because what is needed first is the number, and a
  * point that yields is a scheduling change rather than a measurement.
  */
 void
@@ -929,7 +927,7 @@ preempt_points(void)
  * Do not measure this thread's dispatch as an interrupt reaching a
  * program.
  *
- * Section 13.3's second term is the time from a device interrupt to the
+ * Interrupt dispatch latency is the time from a device interrupt to the
  * thread waiting on it, and irq_dispatch_stamp already declines to
  * measure the kernel's own threads because one of them reaching the
  * closing call through a system call put a batch of sixteen preemption
@@ -955,7 +953,7 @@ irq_dispatch_forget(struct thread *t)
 }
 
 /*
- * Section 13.3's second term: from an interrupt being taken to the user
+ * Interrupt dispatch latency: from an interrupt being taken to the user
  * thread waiting on it running.
  *
  * Measured on the path the system already has rather than on one built
@@ -982,7 +980,7 @@ irq_dispatch_stamp(struct thread *t)
     }
 
     /*
-     * Section 13.3's second term is the time to dispatch an interrupt
+     * Interrupt dispatch latency is the time to dispatch an interrupt
      * to a user thread, and the kernel's own threads are not that. One
      * of them reaching the same closing call through a system call it
      * made itself put a batch of sixteen preemption points into a
@@ -1108,16 +1106,16 @@ irq_dispatch_report(void)
 
 
 /*
- * The two figures the design's own arguments rest on, taken on the
+ * The two figures that the arguments rest on, taken on the
  * paths the system already has rather than on a benchmark written to
  * come out well.
  *
  * The round trip is what a client spends blocked waiting for its reply.
  * The donation is from a client raising a server's priority at the
- * rendezvous to that server running: section 12.3's mechanism, timed
+ * rendezvous to that server running, timed
  * rather than argued about.
  *
- * The donation is kept in two, because M8 measured a boundary between
+ * The donation is kept in two, because a measured boundary between
  * cores at four inter-processor interrupts and this is the same
  * crossing seen from the other side. A donation that stays on one core
  * needs nobody told; one that crosses needs a poke delivered and a
@@ -1206,7 +1204,7 @@ ipc_report(void)
          * How many times anything entered this kernel through the
          * submission path, which is the denominator the batching
          * saving needs. Seven crossings saved is a number; seven out
-         * of how many is the question section 17 is answered by.
+         * of how many is the question the batching count answers.
          */
         for (i = 0; i < cpu_count(); i++) {
             calls += cpu_at(i)->cp_syscalls;
@@ -1236,7 +1234,7 @@ ipc_report(void)
  * The longest region since this was last cleared, for asking what one
  * particular thing did rather than what the whole run did.
  *
- * The running maximum answers section 13.3's question about the system.
+ * The running maximum answers the question about the system.
  * It cannot answer whether a batch of sixteen entries holds interrupts
  * off sixteen times as long as a batch of one, because that is a
  * question about two windows and the maximum is one number over all of
@@ -1295,8 +1293,7 @@ submit_crossings(uint64_t *checks)
 }
 
 /*
- * How often a thread of a dying process entered this kernel, per M17
- * stage one.
+ * How often a thread of a dying process entered this kernel.
  *
  * A kill marks the process and unblocks whatever was blocked; a thread
  * that was doing neither is expected to find the mark itself, and the
@@ -1304,8 +1301,8 @@ submit_crossings(uint64_t *checks)
  * submission. This counts the entries a marked thread makes by any
  * route, which is the number of chances the kernel had to stop it.
  *
- * Every way in is counted and not only the one that looks: what the
- * stage is about is the difference between the two.
+ * Every way in is counted and not only the one that looks. What matters
+ * is the difference between the two.
  *
  * Counted on the process, not in one number for the machine. A boot
  * kills more than one thing, and a check that subtracted a baseline

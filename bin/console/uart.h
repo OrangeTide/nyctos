@@ -25,8 +25,8 @@ void uart_rx_enable(void);
 /* One byte, or -1 when the receive FIFO is empty. */
 int uart_getc(void);
 
-/* Polled, at the priority of whoever asked. Section 22.4 leaves the
- * kernel writing to the same device for panics and for boot. */
+/* Polled, at the priority of whoever asked. The kernel also
+ * writes to the same device for panics and for boot. */
 void uart_putc(char c);
 
 #endif /* _CONSOLE_UART_H_ */

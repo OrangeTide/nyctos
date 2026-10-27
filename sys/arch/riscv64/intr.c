@@ -26,11 +26,8 @@
  * A context is a hart and a privilege level together: hart H has
  * context 2H for its machine mode and 2H+1 for its supervisor mode.
  * Everything per-context here is therefore addressed from the core
- * asking, and was addressed as hart 0 until M10. Nothing had gone
- * wrong, because only the first core ever enables an external source
- * and so only it ever claims one; a second core that took an external
- * interrupt would have claimed from the first core's context and taken
- * an interrupt that was not delivered to it.
+ * asking. A core that claimed an interrupt from another core's context
+ * would take one that was not delivered to it.
  */
 #define PLIC_BASE       0x0c000000UL
 #define PLIC_PRIORITY   0x000000        /* one word per source */
@@ -134,7 +131,7 @@ md_intr_disable(void)
     /*
      * Only the call that actually turns them off begins a region.
      * One that finds them already off is inside a region somebody
-     * else began, and section 13.3 asks about the contiguous one.
+     * else began.
      */
     if (s != 0) {
         intr_region_begin((uintptr_t)__builtin_return_address(0));
@@ -346,14 +343,12 @@ md_intr_init_core(void)
 
     /*
      * And that it is this core's and not the first core's. Every
-     * per-context register here was addressed as hart zero until M10,
-     * so a second core setting its threshold was setting the first
-     * core's, and a second core claiming an interrupt would have taken
-     * one delivered to the first.
+     * per-context register here is addressed from the core asking, so
+     * a core setting its threshold sets its own, and a core claiming an
+     * interrupt takes only one delivered to it.
      *
      * Written and read back rather than reasoned about, because the
-     * arithmetic that was wrong is the arithmetic that would be
-     * checked. A value nothing else uses, into this core's threshold,
+     * context arithmetic is what would be wrong. A value nothing else uses, into this core's threshold,
      * and then the first core's is read: if they are the same register
      * it comes back.
      */

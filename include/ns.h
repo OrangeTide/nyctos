@@ -42,14 +42,12 @@ unsigned int ns_slots(void);
 void ns_slot(unsigned int i, sys_ns_id_t *id, sys_handle_t *handle);
 
 /*
- * Where a namespace entry is mounted, per section 20.4, or the empty
+ * Where a namespace entry is mounted, or the empty
  * string for an entry that is only a role. Slot numbers are the ones
  * ns_slot walks.
  *
- * This is the whole of naming at this stage. What it grows into is a
- * mount table with a resolver over it, which is the next stage; what it
- * already has is the property that matters, which is that the name came
- * from the parent rather than from a convention the child assumed.
+ * The name is the one the parent wrote, rather than a convention the
+ * child assumed.
  */
 const char *ns_name(unsigned int slot);
 
@@ -62,8 +60,7 @@ const char *ns_name(unsigned int slot);
 #define NS_PATH_MAX     128
 
 /*
- * Resolve a path against the namespace this process was given, per
- * section 20.3.
+ * Resolve a path against the namespace this process was given.
  *
  * What comes back is one of the handles the process already holds and
  * the part of the path relative to it, which is exactly what a message
@@ -82,7 +79,7 @@ sys_err_t ns_resolve(const char *path, sys_handle_t *out_dir, char *rest,
 /*
  * The same, for the nth handle mounted at that name.
  *
- * Several entries under one name is a union directory, per section 20.4,
+ * Several entries under one name is a union directory,
  * and this is the whole of the mechanism: they are tried in the order
  * the parent wrote them until one answers. Only entries at the same name
  * are in the union. An entry with a shorter name is a different mount
@@ -99,7 +96,7 @@ sys_err_t ns_resolve_at(const char *path, unsigned int nth,
 const char *ns_name_of(sys_ns_id_t id);
 
 /*
- * What to hand a child, per section 20.4. These are choices about what
+ * What to hand a child. These are choices about what
  * array to pass rather than mechanisms: there is nothing for the kernel
  * to do, because a namespace is the set of handles a parent decided to
  * give away and the names it gave them.
@@ -117,7 +114,7 @@ typedef enum ns_how {
  * closes them.
  *
  * The rights are the caller's decision and not this function's. A parent
- * may hand on less than it holds, per section 7, and what to keep back
+ * may hand on less than it holds, and what to keep back
  * is a policy: a shell that strips the right to duplicate hands its
  * children a namespace they may use and may not pass on further, which
  * is a reasonable thing to want and a terrible thing for a library to

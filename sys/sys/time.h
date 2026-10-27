@@ -56,7 +56,7 @@ sys_time_t time_now(void);
 uint64_t time_hz(void);
 
 /*
- * Build the system page of section 6.2, once at boot, and the frame it
+ * Build the system page, once at boot, and the frame it
  * lives in. See sys/syspage.h.
  */
 void syspage_build(void);

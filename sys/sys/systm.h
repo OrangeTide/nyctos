@@ -95,11 +95,11 @@ void trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
 
 /*
  * A synchronous exception taken while a program was running. It ends
- * that thread, per section 16.2, and does not return; the kernel is not
+ * that thread, and does not return; the kernel is not
  * involved beyond deciding what kind of fault it was and saying so.
  */
 /*
- * Ask a thread's pager for the page it faulted on, per section 15.3.
+ * Ask a thread's pager for the page it faulted on.
  * True when the page is there and the instruction can be tried again.
  */
 bool pager_fault(uintptr_t addr, uintptr_t pc, uint32_t access);
@@ -107,7 +107,7 @@ bool pager_fault(uintptr_t addr, uintptr_t pc, uint32_t access);
 void trap_user(unsigned long cause, unsigned long pc, unsigned long addr);
 
 /*
- * Which kind of section 16.1 an exception is, and whether the address
+ * Which kind of exception this is, and whether the address
  * the port reported means anything. Every exception a port can raise
  * maps to a kind; see sys/arch/<arch>/fault_md.c.
  */
@@ -126,9 +126,9 @@ void md_fault_check(void);
 
 /*
  * The memory the machine has, which a port states rather than
- * discovers. Section 27 blesses that for a pinned target: discovering
- * a constant is not an improvement on stating one, and the stage that
- * reads a device tree changes this function and nothing above it.
+ * discovers. For a pinned target, discovering a constant is not an
+ * improvement on stating one. Reading a device tree would change this
+ * function and nothing above it.
  *
  * The kernel image, the boot archive inside it and the boot stack are
  * the region held back, which is everything from the load address to
@@ -163,7 +163,7 @@ void machine_reset(void) __attribute__((noreturn));
 
 /*
  * Whether an exiting program's status is printed. On for the whole boot
- * except the stretch in M13 stage 5 that spawns one program hundreds of
+ * except a stretch that spawns one program hundreds of
  * times, where the line would be the check's whole output and would say
  * nothing after the first.
  */

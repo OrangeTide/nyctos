@@ -37,7 +37,7 @@ static sys_handle_t store;
 
 /*
  * A client whose request a server has taken and will not answer,
- * which is section 10.5's interesting case: the thread is inside a
+ * which is the interesting case: the thread is inside a
  * rendezvous rather than waiting to enter one.
  */
 static void

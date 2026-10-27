@@ -61,7 +61,7 @@ pool_init(struct pool *p, const char *name, void *objects,
  * taking one. Without exclusion the list itself is what breaks, not the
  * counters, and two callers can be handed the same slot.
  *
- * Section 11.4 forbids a global scheduler lock and this is not one.
+ * This is not a global scheduler lock.
  * Nothing here decides what runs, and the scheduling decision does not
  * come through here: the dispatch path checks that it takes no lock
  * another core could hold, and reaping a slot happens before that check
@@ -105,8 +105,8 @@ pool_leave(intr_state_t s)
 #else
 
 /*
- * Section 13.3 buys Tier 0 a kernel with no internal locking at all,
- * and one core is what makes disabling interrupts exclusion again.
+ * Tier 0 is a kernel with no internal locking at all, and one core is
+ * what makes disabling interrupts exclusion again.
  */
 static intr_state_t
 pool_enter(void)
@@ -228,12 +228,11 @@ pool_lookup(const struct pool *p, sys_id_t id)
  * The live object in a slot, by position rather than by identifier, or
  * NULL if that slot holds nothing.
  *
- * For walking a pool, which nothing needed until M13 stage 6 wanted to
- * ask every live process what it was holding. Deliberately not a way to
- * name an object: an index is not an identifier, it carries no
- * generation, and a caller that kept one would be holding a name that
- * silently comes to mean the next occupant. Section 8's rule, which is
- * why pool_lookup takes the pair.
+ * For walking a pool, to ask every live process what it is holding.
+ * Deliberately not a way to name an object: an index is not an
+ * identifier, it carries no generation, and a caller that kept one would
+ * be holding a name that silently comes to mean the next occupant. That
+ * is why pool_lookup takes the pair.
  */
 void *
 pool_at(const struct pool *p, uint32_t index)

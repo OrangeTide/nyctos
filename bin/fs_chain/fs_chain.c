@@ -34,8 +34,8 @@ request(struct sys_op_send_args *a, uint32_t op, const char *name,
 
     /*
      * The buffer travels with every request, because a reply larger
-     * than the inline payload has nowhere else to go: section 6.1
-     * forbids the server handing back memory of its own.
+     * than the inline payload has nowhere else to go, and the server may not
+     * hand back memory of its own.
      */
     a->request.buf = (uintptr_t)buf;
     a->request.buf_len = sizeof(buf);
@@ -87,7 +87,7 @@ main(void)
 
     /*
      * Tell the server it is finished with, which is what returns the
-     * per-connection record to its pool. Section 25.2 reclaims it here
+     * per-connection record to its pool. It is reclaimed here
      * and nowhere else, because destroying the handle locally would
      * tell the server nothing.
      */

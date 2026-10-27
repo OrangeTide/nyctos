@@ -36,7 +36,7 @@ struct timeline {
 
     /*
      * Live handles carrying SYS_RIGHT_SIGNAL. When the last one goes, no
-     * one can advance this timeline again, which is section 9.3 rule 2.
+     * one can advance this timeline again.
      */
     uint32_t        tl_signalers;
 
@@ -44,8 +44,8 @@ struct timeline {
 
     /*
      * The object this timeline is embedded in, if it is embedded in
-     * one. A completion timeline lives inside its thread or process
-     * per section 8, so a handle naming it is a pointer into that
+     * one. A completion timeline lives inside its thread or process,
+     * so a handle naming it is a pointer into that
      * object, and reaping the object under it would leave the handle
      * naming a slot somebody else now has.
      *
@@ -59,7 +59,7 @@ struct timeline {
 
 /*
  * Prepare a timeline that is part of another object rather than an entry
- * in the pool, per section 8: a completion timeline belongs to its thread
+ * in the pool: a completion timeline belongs to its thread
  * or process, so obtaining it cannot fail for want of a slot. It carries
  * no identifier, because nothing looks one of these up by id; it is
  * reached through the object that owns it.
@@ -106,8 +106,8 @@ void timeline_add_signaler(struct timeline *tl);
 void timeline_drop_signaler(struct timeline *tl);
 
 /*
- * Put a timeline into error state and release its waiters, for section
- * 17.5: a batch that aborts signals nothing it was going to signal,
+ * Put a timeline into error state and release its waiters. A batch
+ * that aborts signals nothing it was going to signal,
  * and a waiter on one of those has nothing left to wait for.
  */
 void timeline_force_error(struct timeline *tl);

@@ -31,14 +31,14 @@ static long syscall_body(struct sys_op *op, unsigned long count);
 
 
 /*
- * What can be told about an entry without running it, per section 17.2.
+ * What can be told about an entry without running it.
  *
  * One function because there are two callers and they must agree: a
  * submission checks every entry before any entry runs, and a prepared
  * program checks them once at load so that its executions do not have
- * to. When these were written out twice they drifted the moment
- * section 17.4's registers arrived, and a prepared program would have
- * half-run on an entry a submission refused.
+ * to. Written out twice, they drift apart as soon as the register
+ * convention changes, and a prepared program would then half-run on an
+ * entry a submission refused.
  *
  * The rule for what belongs here is whether the answer can change
  * between now and the entry running. Which register a number names
@@ -71,11 +71,10 @@ entry_static_check(struct proc *p, const sys_op_t *e)
 
     /*
      * A deadline on an operation that cannot wait is a caller saying
-     * something the operation does not do. Section 14.3 has every
-     * blocking call take one, and of the blocking calls here a fence
-     * wait carries its deadline in its own arguments and a receive is
-     * deliberately without one: section 12.1 has a server waiting for
-     * work rather than for a party that can fail it. So the list is one
+     * something the operation does not do. Of the blocking calls here, a
+     * fence wait carries its deadline in its own arguments and a receive
+     * is deliberately without one: a server waits for work rather than
+     * for a party that can fail it. So the list is one
      * operation long, and it is a list rather than an assumption so
      * that the day a receive gains a deadline this is where it is said.
      */
@@ -91,8 +90,8 @@ entry_static_check(struct proc *p, const sys_op_t *e)
 
         /*
          * Which operations produce a handle to put in a register is
-         * fixed by section 17.4 rather than discovered. It names two,
-         * and the issuing ops are not built.
+         * fixed rather than discovered. It names two, and the issuing ops
+         * are not built.
          */
         if (e->opcode != SYS_OP_IPC_SEND) {
             return SYS_ERR_NOT_SUPPORTED;
@@ -113,7 +112,7 @@ syscall_handler(struct sys_op *op, unsigned long count)
 {
     intr_state_t s = klock_enter();
 
-    /* A moment a stored uptime could be refreshed. M16 stage one. */
+    /* A moment a stored uptime could be refreshed. */
     clock_mark();
 
     /* And a chance to notice a kill, whether or not one is taken. */
@@ -121,8 +120,7 @@ syscall_handler(struct sys_op *op, unsigned long count)
     long r = syscall_body(op, count);
 
     /*
-     * And the mark once more before this returns to user mode, per
-     * M21 stage three.
+     * And the mark once more before this returns to user mode.
      *
      * Here rather than at the end of the entry loop, because a
      * system call has three ways out and the loop is only one of
@@ -151,8 +149,8 @@ syscall_handler(struct sys_op *op, unsigned long count)
 
     /*
      * And if this thread got here because an interrupt made it
-     * runnable, that is section 13.3's second term closing: the
-     * distance from the interrupt being taken to its program running.
+     * runnable, this is where the distance from the interrupt being
+     * taken to its program running ends.
      */
     irq_dispatch_arrived(thread_current());
 
@@ -160,7 +158,7 @@ syscall_handler(struct sys_op *op, unsigned long count)
      * The instruction that returns to user mode turns interrupts back
      * on without going through the restore, so the region has to be
      * closed here. Left open it runs through everything the program
-     * then does, and the figure stops being about the kernel.
+     * then does, and the measurement stops being about the kernel.
      */
     intr_region_end((uintptr_t)__builtin_return_address(0));
 
@@ -171,8 +169,8 @@ static long
 syscall_body(struct sys_op *op, unsigned long count)
 {
     /*
-     * A submission carries at least one entry and at most the bound of
-     * section 17.2. Zero is refused rather than treated as nothing to
+     * A submission carries at least one entry and at most the bound on
+     * entries. Zero is refused rather than treated as nothing to
      * do: a caller that computed a count of zero has a bug, and a
      * system call that succeeds without doing anything hides it.
      */
@@ -188,14 +186,14 @@ syscall_body(struct sys_op *op, unsigned long count)
     }
 
     /*
-     * Section 23.2 step 2: the descriptor array has to be memory the
+     * The descriptor array has to be memory the
      * caller can reach, or the call returns SYS_ERR_FAULT having executed
      * nothing. This is the first dereference of an address a program
      * chose, and without the check it is the kernel faulting on a number
      * a program made up.
      *
      * The array is writable as well as readable, because the kernel puts
-     * each entry's status back into it per section 17.6. One check covers
+     * each entry's status back into it. One check covers
      * both: what a program can reach in a descriptor is its own memory,
      * and its own memory is writable.
      */
@@ -219,12 +217,12 @@ syscall_body(struct sys_op *op, unsigned long count)
      * Every blocked thread of a killed process is released into that
      * line, because being blocked is being inside a system call. A
      * thread computing in user mode reaches it at its next call, and
-     * one that never calls in is not stopped, which section 10.5 does
-     * not ask for: what it asks is that the unblocking be prompt.
+     * one that never calls in is not stopped. What is asked is that the
+     * unblocking be prompt.
      */
 
     /*
-     * Every entry checked before any entry runs, per section 17.2. A
+     * Every entry is checked before any entry runs. A
      * batch that cannot run must not half-run: the alternative is a
      * caller whose first two operations happened and whose third was
      * refused for a reason it could have been told before anything
@@ -233,7 +231,7 @@ syscall_body(struct sys_op *op, unsigned long count)
      * What can be checked here is what does not need the operation:
      * that the opcode exists, and that an argument structure is memory
      * this process can reach. Everything else is the operation's own
-     * business and section 17.2 says so.
+     * business.
      */
     {
         unsigned long i;
@@ -249,8 +247,8 @@ syscall_body(struct sys_op *op, unsigned long count)
 
             if (bad != SYS_OK) {
                 /*
-                 * The entry that was refused says so, per section
-                 * 17.6, and the others are left as the caller wrote
+                 * The entry that was refused says so, and the
+                 * others are left as the caller wrote
                  * them because they were never considered. An entry
                  * refused before it ran still has to report why it was
                  * refused: the check that caught this was already in
@@ -302,7 +300,7 @@ signal_target(const sys_op_t *e, struct batch_regs *regs,
 }
 
 /*
- * Section 17.5's last line: a batch that aborts force-signals every
+ * A batch that aborts force-signals every
  * timeline it was going to signal, in error state, so that a thread
  * waiting for a value which will now never arrive is told rather than
  * left to a timeout.
@@ -354,7 +352,7 @@ cancel_signal(struct proc *p, sys_op_t *op, unsigned long count,
 /*
  * Execute a validated array of entries, in order, in this thread's
  * context. Shared by a submission and by a prepared program, so that
- * the two cannot drift: section 17.7 wants one implementation of an
+ * the two cannot drift: one implementation of an
  * operation rather than a batch path and a separate one.
  */
 long
@@ -368,13 +366,13 @@ batch_run(sys_op_t *op, unsigned long count)
         bool cancelling = false;
 
         /*
-         * The registers of section 17.4, on this call's stack and
+         * The batch registers, on this call's stack and
          * emptied here. That placement is what makes them private to
          * one execution: the next batch gets a different frame and
          * this one is gone, so nothing has to clear them afterwards
          * and nothing can read what the batch before it left.
          *
-         * Section 17.5's abort rule depends on it. A register is
+         * The abort rule depends on it. A register is
          * either written by an entry of this batch or it is empty,
          * with no third case where it holds something older, and that
          * is what makes the set of timelines a batch would have
@@ -386,8 +384,7 @@ batch_run(sys_op_t *op, unsigned long count)
             long one;
 
             /*
-             * A batch entry boundary, per section 13.3 and section
-             * 17.6. The batch is preemptible here and an entry is not,
+             * A batch entry boundary. The batch is preemptible here and an entry is not,
              * which is why the bound above does not appear in the
              * latency figures and the cost of one entry does.
              */
@@ -395,15 +392,11 @@ batch_run(sys_op_t *op, unsigned long count)
 
             /*
              * And out here if this process has been killed, before
-             * the entry rather than after it, per M21 stage three.
-             *
-             * M17 put this check at the end of an entry and gave the
-             * reason for checking at all: a killed thread must not
-             * run fifteen more operations. What the placement missed
-             * is that an entry which blocks is never followed by
-             * anything. A thread that arrives already marked runs its
-             * first operation, and if that operation is a wait it
-             * waits for ever, which is what M21 stage one measured.
+             * the entry rather than after it. A killed thread must not
+             * run fifteen more operations, and an entry which blocks is
+             * never followed by anything. A thread that arrives already
+             * marked would run its first operation, and if that
+             * operation is a wait it would wait for ever.
              *
              * Asking first also makes the kill and the entry
              * orderable. `proc_kill` writes the mark and then cancels
@@ -435,7 +428,7 @@ batch_run(sys_op_t *op, unsigned long count)
             if (cancelling) {
                 /*
                  * An earlier entry of this chain failed, so this one
-                 * does not run and says so. Section 17.5: the first
+                 * does not run and says so. The first
                  * failure cancels the remainder of that chain.
                  */
                 op[i].status = SYS_ERR_CANCELED;
@@ -467,8 +460,8 @@ batch_run(sys_op_t *op, unsigned long count)
             /*
              * The call reports the first entry that failed, and every
              * entry reports its own status in the array. With one
-             * entry the two are the same thing, which is what every
-             * caller written before this milestone assumes.
+             * entry the two are the same thing, which is what a
+             * single-entry caller relies on.
              */
             if (one != SYS_OK && r == SYS_OK) {
                 r = one;
@@ -504,8 +497,8 @@ trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
     t = thread_current();
 
     /*
-     * A synchronous exception the kernel took itself. Section 16.2 is
-     * about a thread running a program: it dies and the system carries
+     * A synchronous exception the kernel took itself. A thread running a program
+     * that faults dies and the system carries
      * on, which trap_user does. There is nobody to report this one to
      * and nothing sensible to do with a kernel whose own instruction
      * did not run, so it stops the machine and says everything it
@@ -521,9 +514,9 @@ trap_fatal(unsigned long cause, unsigned long pc, unsigned long addr)
  * A synchronous exception taken while a program was running.
  *
  * A page fault its pager can answer is the one case that comes back
- * here: section 15.3 sends it as a message, the reply carries the page,
+ * here: it is sent to the pager as a message, the reply carries the page,
  * and the instruction is tried again. Everything else ends the thread,
- * per section 16.2, and does not return.
+ * and does not return.
  */
 static void trap_user_body(unsigned long cause, unsigned long pc,
   unsigned long addr);
@@ -594,7 +587,7 @@ trap_user_body(unsigned long cause, unsigned long pc, unsigned long addr)
      * now and the instruction the thread stopped on is tried again.
      *
      * What the access was is what the port said the instruction was
-     * doing, and section 15.1 has a pager supply read-only pages only,
+     * doing, and a pager supplies read-only pages only,
      * so a fault that wanted to write is refused rather than asked
      * about.
      */

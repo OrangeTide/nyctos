@@ -109,8 +109,8 @@ main(void)
 
     /*
      * A handle it does hold and may not transfer. A process handle carries
-     * the right to wait and the right to ask, and section 7.4 makes moving
-     * one a right of its own that this was not given.
+     * the right to wait and the right to ask, and moving one is a right of
+     * its own that this was not given.
      */
     ns[0].handle = child;
     if (sys_proc_spawn("status", SYS_PRIO_INHERIT, ns, 1, NULL, 0, NULL)

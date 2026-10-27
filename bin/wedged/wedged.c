@@ -22,7 +22,7 @@ static unsigned char lent[64];
 
 #define MARK    0x5a
 
-/* The roles a parent hands this program, per section 20.4. */
+/* The roles a parent hands this program. */
 #define NS_FENCE    (SYS_NS_PRIVATE + 0)
 #define NS_NOBODY   (SYS_NS_PRIVATE + 1)
 #define NS_WEDGED   (SYS_NS_PRIVATE + 2)

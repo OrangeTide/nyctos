@@ -33,8 +33,8 @@ request(sys_handle_t target, uint32_t op, const char *name, uint64_t off,
 
     /*
      * The buffer travels with every request, because a reply larger than
-     * the inline payload has nowhere else to go: section 6.1 forbids the
-     * server handing back memory of its own.
+     * the inline payload has nowhere else to go, and the server may not
+     * hand back memory of its own.
      */
     message.buf = (uintptr_t)buf;
     message.buf_len = sizeof(buf);
@@ -87,7 +87,7 @@ main(void)
 
     /*
      * The close is what returns the server's per-connection record to its
-     * pool. Section 25.2 reclaims it here and nowhere else, because
+     * pool. It is reclaimed here and nowhere else, because
      * destroying the handle locally would tell the server nothing.
      */
     if (request(file, FS_OP_CLOSE, NULL, 0, 0, &reply) != SYS_OK) {

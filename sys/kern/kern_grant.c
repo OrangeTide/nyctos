@@ -89,9 +89,8 @@ grant_map(struct grant *g, struct proc *p, uint32_t rights,
 }
 
 /*
- * Take a grant back out of a process, per section 7: the handle is the
- * authority and a mapping that outlived one would be authority that
- * outlived it too.
+ * Take a grant back out of a process. The handle is the authority, and a
+ * mapping that outlived one would be authority that outlived it too.
  *
  * The region reverts to what every other address space has for it rather
  * than being removed. A grant covers memory the kernel maps as well, and
@@ -125,7 +124,7 @@ grant_unmap(struct grant *g, struct proc *p)
 }
 
 /*
- * The frames grants are holding, per M13 stage 6.
+ * The frames grants are holding.
  *
  * A grant over ordinary memory holds it. grant_create is handed a
  * physical address and does not own it, so nothing in a grant's

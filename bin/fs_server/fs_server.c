@@ -21,13 +21,12 @@
 /*
  * Two directories, not one.
  *
- * A server serving one tree is a server that cannot demonstrate what a
- * union directory is, and section 20.4 makes a union a library feature
- * needing no kernel involvement: several handles under one name, tried in
- * order. Two directories from one server is the smallest thing that shows
- * it, and is honest about what a union actually joins, which is
- * directories rather than servers. Which one a connection sees is its
- * cookie, which is section 25.2's per-connection state and is chosen by
+ * A server serving one tree cannot demonstrate what a union directory is.
+ * A union is a library feature needing no kernel involvement: several
+ * handles under one name, tried in order. Two directories from one server
+ * is the smallest thing that shows it, and is honest about what a union
+ * actually joins, which is directories rather than servers. Which one a
+ * connection sees is its cookie, the per-connection state chosen by
  * whoever minted the connection.
  *
  * `motd` is in both, deliberately and with different bytes in it, because
@@ -40,8 +39,8 @@
  * A file is a block and a length, and a directory is neither.
  *
  * The bytes are not here any more. They are in the block store this
- * server reads through, which is the whole of what this stage changed:
- * a file server with no copy of its own files has to ask for them, and
+ * server reads through: a file server with no copy of its own files has to
+ * ask for them, and
  * a request from a client now crosses two boundaries to reach them.
  *
  * FS_NOT_A_FILE rather than a separate flag, because every place that
@@ -95,7 +94,7 @@ climbs_out(const char *name, uint32_t namelen)
 /*
  * Resolve one name under this connection's node. A walk that would leave
  * the subtree the connection represents is refused here rather than
- * anywhere else, per section 25.3: it is a rule about the connection's own
+ * anywhere else. It is a rule about the connection's own
  * scope, so the server needs to know nothing about the caller's namespace
  * to enforce it.
  *
@@ -130,12 +129,11 @@ walk(uint32_t node, const char *name, uint32_t namelen)
  * The block store, and one block of it.
  *
  * The buffer is this server's own memory, because that is the only
- * memory it may lend: section 23.2 checks a buffer descriptor against
- * the sender's own image, and a client's buffer is mapped here at the
- * client's address without becoming this process's to hand on. So a
- * read through two layers copies once, here, and the copy is not
- * something a cohort removes. What a cohort removes is the mapping, and
- * stage five is where that shows.
+ * memory it may lend: a buffer descriptor is checked against the sender's
+ * own image, and a client's buffer is mapped here at the client's address
+ * without becoming this process's to hand on. So a read through two layers
+ * copies once, here, and the copy is not something a cohort removes. What
+ * a cohort removes is the mapping.
  *
  * One block, because every file here fits in one and a second would be
  * memory spent on a case the check never reaches. A file spanning
@@ -159,7 +157,7 @@ static uint8_t block[BLK_BLOCK_BYTES];
  * The alternative was to require the cohort and fail without it, and
  * that is worse in two ways. A filesystem that stops working because a
  * build-time table changed is a coupling nothing declares, and the
- * milestone measuring this needs the same server to run both ways so
+ * measuring this needs the same server to run both ways so
  * that the difference is the cohort and not the program.
  *
  * Three states and not two, because the refusal is read from an error
@@ -237,14 +235,13 @@ store_read(void *dst, uint32_t blocknr)
 }
 
 /*
- * Copy file bytes into the buffer the client supplied, per the reply-path
- * caveat of section 6.1: a server does not hand back memory of its own,
+ * Copy file bytes into the buffer the client supplied. A server does not
+ * hand back memory of its own,
  * because it could never tell when the client had finished with it.
  *
  * Reading past the end yields a short count and not an error. A client
  * that does not know a file's length has to be able to ask for more than
- * there is, which is section 25.7's rule and the reason a compound read
- * does not abort its own sequence.
+ * there is, so a compound read does not abort its own sequence.
  *
  * A store that refuses is different, and returns a short count of zero
  * having failed rather than a short count of zero having reached the
@@ -377,8 +374,8 @@ do_walk(sys_handle_t chan, const fs_request_t *req, uint32_t node,
     }
 
     /*
-     * And then the backstop of section 20.3, before anything is
-     * looked up: a client may not reach above the root of the
+     * The backstop, before anything is looked up: a client may not reach
+     * above the root of the
      * subtree this connection represents. See sys/sys/fs.h for why
      * the refusal is this server's to make and why refusing every
      * `..` is stricter than the rule.
@@ -399,8 +396,8 @@ do_walk(sys_handle_t chan, const fs_request_t *req, uint32_t node,
      * The client could not have constructed this itself, which is what it
      * means for the authority to be a handle rather than a name.
      *
-     * This is the allocation section 25.7 exists to avoid: a client that
-     * only wants to read the file end to end holds this across two more
+     * This is the allocation that compound requests exist to avoid: a client
+     * that only wants to read the file end to end holds this across two more
      * round trips and then closes it.
      */
     rep->fr_status = sys_chan_connect(chan, found,
@@ -422,7 +419,7 @@ do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
 
     /*
      * Into the buffer the client supplied, or inline when it supplied
-     * none. Section 25.5 puts bulk payloads in the buffer and small
+     * none. Bulk payloads go in the buffer and small
      * ones inline, and which one a reply is depends on the client's
      * request rather than on which server answered it: a client that
      * asks a console and a client that asks a filesystem should not
@@ -440,11 +437,11 @@ do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
 }
 
 /*
- * Execute a compound request, per section 25.7.
+ * Execute a compound request.
  *
  * Bounds first, then execution: the whole sequence is checked against the
- * payload it arrived in before any entry runs, which is the same reason
- * section 17.2 validates a batch once rather than as it goes. A sequence
+ * payload it arrived in before any entry runs, so a batch is validated once
+ * rather than as it goes. A sequence
  * that does not fit is rejected and nothing has happened.
  *
  * Chaining is implicit. `node` starts as the connection's node and each
@@ -508,9 +505,8 @@ do_batch(const sys_msg_t *message, uint32_t node, sys_msg_t *reply,
 
         case FS_OP_READ:
             /*
-             * Into the buffer the client supplied, per the reply-path
-             * caveat of section 6.1. A short read is a success: a client
-             * that does not know a file's length must be able to ask for
+             * Into the buffer the client supplied. A short read is a success: a
+             * client that does not know a file's length must be able to ask for
              * more than there is without aborting its own sequence.
              */
             if (node >= FS_NODE_COUNT || fs_nodes[node].block == FS_NOT_A_FILE) {
@@ -609,10 +605,10 @@ main(void)
 
 
         /*
-         * Section 12.4: the same answer in the place the kernel looks.
+         * The same answer in the place the kernel looks.
          * Both of this protocol's reply shapes begin with a sys_err_t,
-         * because section 25.6 says a server reports failure that way
-         * and invents no codes of its own, so one line covers them
+         * because a server reports failure that way and invents no codes
+         * of its own, so one line covers them
          * both. Without it a refusal is a successful send as far as
          * the kernel can see, and a chain linked behind it carries on.
          */

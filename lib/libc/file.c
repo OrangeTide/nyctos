@@ -41,7 +41,7 @@ request(sys_handle_t target, uint32_t op, const char *name, uint64_t off,
     req->fr_length = len;
     /*
      * Bounded here rather than by the caller. The field is the
-     * protocol's and its size is section 25's business, so a copy
+     * protocol's, so a copy
      * into it that trusts whoever called is a copy that is correct
      * only while every caller stays correct.
      */
@@ -79,7 +79,7 @@ file_open(const char *path, sys_handle_t *out)
     /*
      * Every handle mounted at the name, in the order the parent wrote
      * them, until one answers. That is a union directory and this loop is
-     * all of it: section 20.4 says it needs no kernel involvement, and
+     * all of it: it needs no kernel involvement, and
      * what it needs instead is a caller willing to ask twice.
      *
      * What comes back is one failure rather than one per handle. Which
@@ -189,7 +189,7 @@ file_close(sys_handle_t file)
 
     /*
      * The close is what returns the server's per-connection record to
-     * its pool, per section 25.2. Destroying the handle locally would
+     * its pool. Destroying the handle locally would
      * tell the server nothing, so both happen and in that order.
      */
     err = request(file, FS_OP_CLOSE, NULL, 0, 0, &reply);

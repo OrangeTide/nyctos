@@ -93,7 +93,7 @@ sys_err_t cohort_place(struct cohort *c, const char *image, struct proc *p);
 
 /*
  * Give the place back, for a spawn that failed after taking it. Not the
- * teardown of section 18.2, which is M7's and tears down every member
+ * teardown, which tears down every member
  * together; this is the undo of a placement whose process never ran.
  */
 void cohort_release(struct cohort *c, struct proc *p);
@@ -119,7 +119,7 @@ bool cohort_holds(const struct cohort *c, const struct proc *p);
 uint32_t cohort_frames(void);
 
 /*
- * A member faulted, so the domain is gone, per section 18.2. Says which
+ * A member faulted, so the domain is gone. Says which
  * cohort, which thread of which member, and what the teardown that does
  * not exist yet would have to do. Does not return.
  *

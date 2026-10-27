@@ -22,13 +22,13 @@
 #include <sys/time.h>
 #include <sys/timeline.h>
 
-/* Milestone 9: a validated entry array, executed many times. */
+/* A validated entry array, executed many times. */
 struct program {
     sys_id_t pg_id;
 };
 
 /*
- * The pools themselves. Exposed so that later stages can allocate from them
+ * The pools themselves. Exposed so that other code can allocate from them
  * directly; the accessors exist because the instances are file-static.
  */
 struct pool *proc_pool(void);

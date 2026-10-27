@@ -18,7 +18,7 @@
 #include <sys/vm.h>
 
 /*
- * The membership table, which is the whole of section 18.1.
+ * The membership table.
  *
  * Editing this file and rebuilding is how a cohort changes, and there is
  * deliberately no other way. The alternative was an operation that took
@@ -122,14 +122,14 @@ cohort_place(struct cohort *c, const char *image, struct proc *p)
     }
 
     /*
-     * A place a dead process left is free. Nothing is reaped before M7,
+     * A place a dead process left is free. Nothing is reaped yet,
      * so today this only ever sees NULL or something still running, and
      * the exited case is here because the rule is about what is running
      * and not about what has ever run.
      *
-     * M7 has to clear this pointer when it reclaims a process. Until
+     * Reaping has to clear this pointer when it reclaims a process. Until
      * something reuses a process slot the pointer cannot go stale, and
-     * the day reaping arrives it can, so the teardown of section 18.2
+     * the day reaping arrives it can, so the teardown
      * owns this array as much as spawn does.
      */
     if (c->c_running[j] != NULL && !c->c_running[j]->p_exited) {
@@ -139,9 +139,9 @@ cohort_place(struct cohort *c, const char *image, struct proc *p)
 #if SYS_TIER == 2
     /*
      * Built when there is none, rather than when nothing has ever been
-     * placed. Since M13 stage 3 the space goes back when the last
+     * placed. The space goes back when the last
      * member does, so a cohort can be on its second space and later
-     * ones, and "has anything ever been placed" stopped being the same
+     * ones, and "has anything ever been placed" is not the same
      * question as "is there a space".
      */
     if (c->c_as.as_root == 0) {
@@ -220,7 +220,7 @@ cohort_holds(const struct cohort *c, const struct proc *p)
 }
 
 /*
- * What every cohort's address space is holding, per M13 stage 6.
+ * What every cohort's address space is holding, .
  *
  * Counted here rather than against the members, because a cohort's
  * space is what a cohort is: one space for a set of images, built when
@@ -314,7 +314,7 @@ cohort_fault_halt(const struct cohort *c, const char *who, uint32_t kind,
     uint32_t i;
 
     /*
-     * Section 18.2: the cohort is the recovery unit, and per-process
+     * The cohort is the recovery unit, and per-process
      * recovery is unsound for a member. The members share a protection
      * domain, so one that faults may have written anything into any
      * peer before it did, and nothing in the system can establish that
@@ -323,8 +323,7 @@ cohort_fault_halt(const struct cohort *c, const char *who, uint32_t kind,
      *
      * So every member goes, including the ones that did nothing wrong,
      * and that is the whole content of the rule rather than a side
-     * effect of it. M6 printed this and stopped, because there was
-     * nothing then that could end a process.
+     * effect of it.
      */
     cnprintf("cohort %s: member %s faulted, %s at 0x%lx, pc 0x%lx\n",
       c->c_name, who, fault_name(kind), (unsigned long)addr,
@@ -338,8 +337,7 @@ cohort_fault_halt(const struct cohort *c, const char *who, uint32_t kind,
         }
 
         /*
-         * Ended exactly as a supervisor would end it, per section
-         * 10.5, which is what the section already asks for: every
+         * Ended exactly as a supervisor would end it: every
          * thread unblocked as if cancelled, every server holding one
          * of their requests told, and every client blocked on a
          * channel they answered released rather than left waiting.
@@ -353,7 +351,7 @@ cohort_fault_halt(const struct cohort *c, const char *who, uint32_t kind,
     /*
      * And what does not happen here. The places in the table are given
      * back as each member is reaped, so a restart can take them, but
-     * nothing restarts anything: section 18.3 keeps restart policy out
+     * nothing restarts anything: restart policy is kept out
      * of the kernel, so what happens next is a supervisor's decision
      * and this has only made it possible.
      */

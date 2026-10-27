@@ -47,8 +47,8 @@ spin_held(const struct spinlock *l)
 
 /*
  * How many times this core has taken a lock another core could be
- * holding. Section 11.4 has a core dispatch without doing that, and a
- * claim about what a path does not do is worth a counter rather than a
+ * holding. A core dispatch does not do that, and a claim about what a path
+ * does not do is worth a counter rather than a
  * reading of the source.
  *
  * Per core, and it was not at first. One counter for the system counts
@@ -280,8 +280,7 @@ lock_check(void)
 
         /*
          * Both of them, and not one of them twice. A second core that
-         * contributed nothing would leave every check above passing,
-         * which is the shape of failure this milestone keeps finding.
+         * contributed nothing would leave every check above passing.
          */
         if (hammer.hm_by[i] == 0) {
             panic("lock check: core %u went through none of it",

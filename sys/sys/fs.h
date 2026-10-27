@@ -20,7 +20,7 @@
 #include <stdint.h>
 
 /*
- * The operation numbers are section 25.3's, and the subset is sparse
+ * The operation numbers are the protocol's, and the subset is sparse
  * rather than renumbered. A dense subset with its own numbering is a
  * second protocol that happens to look like this one, and the first
  * program written against the document would speak it wrongly. What is
@@ -73,8 +73,8 @@ typedef struct fs_readdir_reply {
 /*
  * FS_OP_CREATE and FS_OP_UNLINK name a single entry in the directory the
  * connection names, carried in fr_name, not a path. A single component
- * carries no `..` and crosses no `/`, so the subtree backstop of section
- * 20.3 is automatic and a client that wants to act deeper walks to the
+ * carries no `..` and crosses no `/`, so the subtree backstop is
+ * automatic and a client that wants to act deeper walks to the
  * parent first.
  *
  * A create reads fr_length as the kind: FS_KIND_DIR makes a directory, and
@@ -98,7 +98,7 @@ typedef struct fs_readdir_reply {
  * What a walk carries, and the one rule a server must enforce itself.
  *
  * The name is relative to the connection the request arrives on, and may
- * have several components in it. Section 20.3 has the C library reduce
+ * have several components in it. The C library reduces
  * `.` and `..` lexically before it chooses which handle to send to, and
  * that rule is not a security measure: it exists so that a path crossing
  * a namespace boundary reaches the right server, because a server cannot
@@ -125,7 +125,7 @@ typedef struct fs_readdir_reply {
  * a client is entitled to write a path that goes down and comes back up.
  *
  * The one this tree has takes the strict route because it has one level
- * and nothing to walk. Section 20.3 adds that a server implementing
+ * and nothing to walk. A server implementing
  * physical parent links must apply its root check to the physical walk,
  * because lexical and physical resolution diverge where a name is bound
  * to a directory elsewhere in the tree.
@@ -156,7 +156,7 @@ typedef struct fs_reply {
 
 /*
  * A write carries its bytes inline, after the request header, exactly as a
- * read carries them back after the reply header. Section 25.5 puts bulk
+ * read carries them back after the reply header. Bulk
  * payloads in the message buffer instead; what is here is the small case,
  * and a console line is the small case by construction.
  *
@@ -166,28 +166,28 @@ typedef struct fs_reply {
 #define FS_WRITE_MAX    (SYS_IPC_INLINE_BYTES - sizeof(fs_request_t))
 
 /*
- * Compound requests, per section 25.7.
+ * Compound requests.
  *
  * Walk and read in one message instead of three. What this saves is not
  * mainly the four context switches: it is that the node the walk produces
  * lives only inside the server's execution of one request, so a whole-file
- * read stops drawing a connection from the pool section 25.2 requires a
+ * read stops drawing a connection from the pool that a
  * build to size for every file open at once.
  *
  * Chaining is implicit and linear. Each entry operates on the node the
  * previous entry produced, and the first operates on the connection the
  * message arrived on. There is no reference field, because the only
- * sequence this exists for is a straight line and section 17.5 makes the
+ * sequence this exists for is a straight line, and the
  * same argument about LINK: chains are not graphs. An entry that wants to
  * name something other than what came before it is a different request.
  *
- * There is no close entry. Section 25.7 releases an intermediate node when
+ * There is no close entry. An intermediate node is released when
  * the reply is sent whether or not anything asked, so a close inside a
  * compound would be a no-op that cost sixteen bytes of a sixty-four byte
  * payload.
  *
  * The whole sequence travels inline. It is small, bounded and fixed in
- * advance, which is the same reason section 17.2 can validate a batch once
+ * advance, which is the same reason a batch can be validated once
  * before executing any of it. Only bulk data needs the message buffer.
  */
 #define FS_BATCH_MAX    4

@@ -35,8 +35,8 @@ prepared_load(struct proc *p, const sys_op_t *entries, uint32_t count,
     /*
      * The same validation a submission gets, done here so that it does
      * not have to be done again. Counted the same way, because the
-     * question this stage asks is how many checks N executions cost
-     * and the answer has to include the ones the loading paid for.
+     * question is how many checks N executions cost, and the answer has
+     * to include the ones the loading paid for.
      */
     cpu_self()->cp_checks++;
     p->p_checks++;

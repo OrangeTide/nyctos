@@ -96,8 +96,8 @@ add(uint32_t parent, const char *name, int is_dir, const char *data,
 /*
  * The tree, added in index order so the fixed nodes keep known indices: a
  * root with a subdirectory holding a file, a file beside the subdirectory
- * for the not-a-directory case, and a directory the later stages page
- * through. The six entries under it are files this stage never reads.
+ * for the not-a-directory case, and a directory that is paged through. The
+ * six entries under it are files that are never read.
  */
 static void
 ramfs_init(void)
@@ -251,8 +251,8 @@ do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
     }
 
     /*
-     * Into the client's buffer when it supplied one, per section 25.5,
-     * and inline otherwise. A short read is a success.
+     * Into the client's buffer when it supplied one, and inline otherwise.
+     * A short read is a success.
      */
     if (message->buf != 0 && message->buf_len > 0) {
         dst = (void *)message->buf;
@@ -314,8 +314,8 @@ do_readdir(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
     }
 
     /*
-     * Into the client's buffer when it supplied one, per section 25.5, and
-     * inline otherwise, exactly as a read chooses. A directory too large
+     * Into the client's buffer when it supplied one, and inline otherwise,
+     * exactly as a read chooses. A directory too large
      * for whichever space it lands in is a short read that carries a cursor
      * to resume from, so paging is the same whether the entries go inline
      * or to a buffer.
@@ -392,7 +392,7 @@ do_readdir(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
 /*
  * A create and an unlink name a single entry in the directory the
  * connection names, not a path. The one-component rule is what keeps the
- * subtree backstop of section 20.3 automatic here: a single component
+ * subtree backstop automatic here: a single component
  * carries no `..` and crosses no `/`, so there is nothing to escape, and a
  * client that wants to act deeper walks to the parent first. The length is
  * returned, or zero when the name is empty, too long, or not one plain
@@ -587,7 +587,7 @@ main(void)
             break;
         }
 
-        /* Section 12.4: the same answer where the kernel can read it. */
+        /* The same answer where the kernel can read it. */
         reply.status = *(const sys_err_t *)reply.inline_data;
 
         if (sys_msg_reply(peer, &reply) != SYS_OK) {

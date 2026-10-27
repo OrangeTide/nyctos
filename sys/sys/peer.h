@@ -19,7 +19,7 @@
 #include <stdint.h>
 
 /*
- * A private identifier, per section 20.4: a number a parent and a child
+ * A private identifier: a number a parent and a child
  * agree on and nothing else reads. The connection under it goes to a
  * server outside the cohort, and there is no system role that means
  * that. Borrowing one that means something else would be a check
