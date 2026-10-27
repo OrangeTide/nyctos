@@ -80,6 +80,29 @@ typedef struct fs_readdir_reply {
 /* Round a directory entry's name length up to the entry alignment. */
 #define FS_DIRENT_PAD(n)    (((n) + 7u) & ~7u)
 
+/*
+ * FS_OP_CREATE and FS_OP_UNLINK name a single entry in the directory the
+ * connection names, carried in fr_name, not a path. A single component
+ * carries no `..` and crosses no `/`, so the subtree backstop of section
+ * 20.3 is automatic and a client that wants to act deeper walks to the
+ * parent first.
+ *
+ * A create reads fr_length as the kind: FS_KIND_DIR makes a directory, and
+ * anything else a file. It answers as a walk does, with a connection to
+ * the new node in the reply handle, so what was made can be used at once.
+ * A create under a connection that names a file rather than a directory is
+ * SYS_ERR_WRONG_TYPE, the same answer a walk gives a non-directory in the
+ * middle of a path.
+ *
+ * An unlink frees the node and answers with status alone. A connection a
+ * client already holds to the unlinked node is not revoked, because an
+ * unlink does not reach across the rendezvous; the next request on that
+ * connection is answered SYS_ERR_NO_ENT. There is as yet no EEXIST for a
+ * name a create finds taken, and no ENOTEMPTY for an unlink of a directory
+ * that still has children; both are SYS_ERR_INVALID_ARG until the error
+ * set grows the distinction.
+ */
+
 
 /*
  * What a walk carries, and the one rule a server must enforce itself.

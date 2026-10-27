@@ -1,14 +1,13 @@
 /*
  * ramfs: a filesystem server whose directory a client can change.
  *
- * M23 stages one and two. It holds its tree in its own memory rather than
- * reading a block store, so a create or an unlink is a change to that
- * memory and nothing beneath it. It walks a whole path, reads a file, and
+ * M23 stages one through three. It holds its tree in its own memory rather
+ * than reading a block store, so a create or an unlink is a change to that
+ * memory and nothing beneath it. It walks a whole path, reads a file,
  * lists a directory across an opaque cursor that pages a directory larger
- * than one buffer to its end. The create and unlink the tree is built for
- * arrive in a later stage and answer SYS_ERR_NOT_SUPPORTED until they do,
- * which is section 25.3's rule that a server names the operations it
- * cannot yet provide rather than failing them as if they did not exist.
+ * than one buffer to its end, and creates and unlinks entries in a
+ * directory. An unlink frees the node's slot at once, so the fixed node
+ * pool of section 2.7 is reclaimed exactly rather than leaked.
  *
  * It is an ordinary program. It is handed a receive handle for its channel
  * as SYS_NS_SERVICE and creates nothing, per section 24.5. The cookie on a
@@ -246,9 +245,12 @@ do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
     uint64_t off;
     void *dst;
 
-    if (node >= RAMFS_MAX_NODES || !nodes[node].live ||
-      nodes[node].data == NULL) {
+    if (node >= RAMFS_MAX_NODES || !nodes[node].live) {
         rep->fr_status = SYS_ERR_NO_ENT;
+        return;
+    }
+    if (nodes[node].is_dir) {
+        rep->fr_status = SYS_ERR_WRONG_TYPE;    /* a directory, not a file */
         return;
     }
     f = &nodes[node];
@@ -272,7 +274,9 @@ do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
     if (avail > cap) {
         avail = cap;
     }
-    memcpy(dst, &f->data[off], avail);
+    if (avail > 0) {
+        memcpy(dst, &f->data[off], avail);      /* an empty file has none */
+    }
     rep->fr_length = avail;
     rep->fr_status = SYS_OK;
 }
@@ -395,6 +399,147 @@ do_readdir(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
     }
 }
 
+/*
+ * A create and an unlink name a single entry in the directory the
+ * connection names, not a path. The one-component rule is what keeps the
+ * subtree backstop of section 20.3 automatic here: a single component
+ * carries no `..` and crosses no `/`, so there is nothing to escape, and a
+ * client that wants to act deeper walks to the parent first. The length is
+ * returned, or zero when the name is empty, too long, or not one plain
+ * component.
+ */
+static uint32_t
+component_len(const char *field)
+{
+    uint32_t len = field_len(field);
+    uint32_t i;
+
+    if (len == 0 || len >= RAMFS_NAME_MAX) {
+        return 0;
+    }
+    for (i = 0; i < len; i++) {
+        if (field[i] == '/') {
+            return 0;
+        }
+    }
+    if (len == 1 && field[0] == '.') {
+        return 0;
+    }
+    if (len == 2 && field[0] == '.' && field[1] == '.') {
+        return 0;
+    }
+    return len;
+}
+
+/* Whether any live node still has this node as its parent. */
+static int
+has_children(uint32_t node)
+{
+    uint32_t i;
+
+    for (i = 0; i < RAMFS_MAX_NODES; i++) {
+        if (nodes[i].live && nodes[i].parent == node) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+do_create(sys_handle_t chan, const fs_request_t *req, uint32_t node,
+  sys_msg_t *reply, fs_reply_t *rep)
+{
+    sys_handle_t conn;
+    uint32_t len, slot;
+    int is_dir;
+
+    if (node >= RAMFS_MAX_NODES || !nodes[node].live) {
+        rep->fr_status = SYS_ERR_NO_ENT;
+        return;
+    }
+    if (!nodes[node].is_dir) {
+        rep->fr_status = SYS_ERR_WRONG_TYPE;    /* a create under a file */
+        return;
+    }
+    len = component_len(req->fr_name);
+    if (len == 0) {
+        rep->fr_status = SYS_ERR_INVALID_ARG;
+        return;
+    }
+    if (child(node, req->fr_name, len) < RAMFS_MAX_NODES) {
+        /*
+         * The name is taken. The error set has no EEXIST yet, so an
+         * invalid request is the honest reading until it grows one.
+         */
+        rep->fr_status = SYS_ERR_INVALID_ARG;
+        return;
+    }
+
+    /* fr_length names the kind: a directory for FS_KIND_DIR, else a file. */
+    is_dir = (req->fr_length == FS_KIND_DIR);
+    slot = add(node, req->fr_name, is_dir, NULL, 0);
+    if (slot >= RAMFS_MAX_NODES) {
+        rep->fr_status = SYS_ERR_NO_MEMORY;     /* the node pool is full */
+        return;
+    }
+
+    /*
+     * Hand back a connection to the new node, as a walk does, so a client
+     * can use what it made at once. If the connection cannot be minted the
+     * create is undone, so a failed create leaves no node behind.
+     */
+    rep->fr_status = sys_chan_connect(chan, slot,
+      SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER, &conn);
+    if (rep->fr_status == SYS_OK) {
+        reply->handle = conn;
+    } else {
+        nodes[slot].live = 0;
+    }
+}
+
+static void
+do_unlink(const fs_request_t *req, uint32_t node, fs_reply_t *rep)
+{
+    uint32_t len, target;
+
+    if (node >= RAMFS_MAX_NODES || !nodes[node].live) {
+        rep->fr_status = SYS_ERR_NO_ENT;
+        return;
+    }
+    if (!nodes[node].is_dir) {
+        rep->fr_status = SYS_ERR_WRONG_TYPE;    /* unlink is from a directory */
+        return;
+    }
+    len = component_len(req->fr_name);
+    if (len == 0) {
+        rep->fr_status = SYS_ERR_INVALID_ARG;
+        return;
+    }
+    target = child(node, req->fr_name, len);
+    if (target >= RAMFS_MAX_NODES) {
+        rep->fr_status = SYS_ERR_NO_ENT;
+        return;
+    }
+    if (nodes[target].is_dir && has_children(target)) {
+        /*
+         * A non-empty directory would orphan its children, and the node
+         * pool could not then reclaim them. The error set has no
+         * ENOTEMPTY, so again an invalid request is the honest reading.
+         */
+        rep->fr_status = SYS_ERR_INVALID_ARG;
+        return;
+    }
+
+    /*
+     * The slot is free to reuse at once. A connection a client still holds
+     * to this node now names a node that is not live, and its next request
+     * is answered SYS_ERR_NO_ENT: an unlink does not reach across the
+     * rendezvous to revoke what was already handed out.
+     */
+    nodes[target].live = 0;
+    rep->fr_status = SYS_OK;
+}
+
 int
 main(void)
 {
@@ -442,13 +587,10 @@ main(void)
             rep->fr_status = SYS_OK;
             break;
         case FS_OP_CREATE:
+            do_create(chan, req, node, &reply, rep);
+            break;
         case FS_OP_UNLINK:
-            /*
-             * The tree is built for these and they arrive in a later M23
-             * stage. Named rather than left to the default, so a client
-             * learns the limit at the point of use, per section 25.3.
-             */
-            rep->fr_status = SYS_ERR_NOT_SUPPORTED;
+            do_unlink(req, node, rep);
             break;
         default:
             rep->fr_status = SYS_ERR_INVALID_ARG;

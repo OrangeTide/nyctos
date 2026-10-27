@@ -3574,16 +3574,73 @@ dirspike_checks(void)
 }
 
 /*
- * M23 stages one and two: the dirspike's walk and directory-read
- * semantics, now in a real server over a real rendezvous. `ramfs` is an
- * ordinary loaded program holding a mutable tree in its own memory, and
- * this drives it across the trap edge: a whole-path walk to a file, a read
- * of that file, the three walk refusals the proposal settled, and a
- * directory read that pages the `big` directory to its end across an
- * opaque cursor, with a cursor from another directory refused. The create
- * and unlink the tree is built for answer SYS_ERR_NOT_SUPPORTED until a
- * later stage, which this also checks, so the first client to use them
- * learns the limit rather than inferring it.
+ * Whether a readdir of a directory connection lists an entry of the given
+ * name, paged to the directory's end across cursors. It is how the checks
+ * see that a create and an unlink are reflected in what a listing returns.
+ */
+static bool
+dir_has(sys_handle_t dir, const char *name)
+{
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+    fs_readdir_reply_t *drep;
+    uint64_t cursor = 0;
+    uint32_t namelen = 0;
+
+    while (name[namelen] != '\0') {
+        namelen++;
+    }
+    for (;;) {
+        const uint8_t *ents;
+        uint32_t count, off, i;
+
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_READDIR;
+        req->fr_offset = cursor;
+        tx.request.inline_len = sizeof(*req);
+        if (run(SYS_OP_IPC_SEND, dir, &tx, sizeof(tx)) != SYS_OK) {
+            panic("ramfs: a directory read failed mid-listing");
+        }
+        drep = (fs_readdir_reply_t *)tx.reply.inline_data;
+        count = drep->fr_count;
+        if (count == 0) {
+            return false;
+        }
+        ents = &tx.reply.inline_data[sizeof(fs_readdir_reply_t)];
+        off = 0;
+        for (i = 0; i < count; i++) {
+            const fs_dirent_t *d = (const fs_dirent_t *)&ents[off];
+            const char *nm = (const char *)&ents[off + sizeof(fs_dirent_t)];
+            uint32_t j;
+
+            if (d->fd_namelen == namelen) {
+                for (j = 0; j < namelen; j++) {
+                    if (nm[j] != name[j]) {
+                        break;
+                    }
+                }
+                if (j == namelen) {
+                    return true;
+                }
+            }
+            off += (uint32_t)sizeof(fs_dirent_t) + FS_DIRENT_PAD(d->fd_namelen);
+        }
+        cursor = drep->fr_cursor;
+    }
+}
+
+/*
+ * M23 stages one through three: the dirspike's walk and directory-read
+ * semantics, now in a real server over a real rendezvous, and the create
+ * and unlink the dirspike only modelled. `ramfs` is an ordinary loaded
+ * program holding a mutable tree in its own memory, and this drives it
+ * across the trap edge: a whole-path walk to a file, a read of that file,
+ * the three walk refusals the proposal settled, a directory read that
+ * pages the `big` directory to its end across an opaque cursor with a
+ * foreign cursor refused, and a create and unlink whose effect a listing
+ * reflects. A churn longer than the node pool proves an unlink reclaims
+ * its slot rather than leaking it.
  */
 static void
 mutable_dir_checks(void)
@@ -3686,14 +3743,6 @@ mutable_dir_checks(void)
     tx.request.inline_len = sizeof(*req);
     expect("a walk above the subtree",
       run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_ERR_PERM_DENIED);
-
-    /* The operations a later stage fills in are named, not unknown. */
-    memset(&tx, 0, sizeof(tx));
-    req = (fs_request_t *)tx.request.inline_data;
-    req->fr_op = FS_OP_CREATE;
-    tx.request.inline_len = sizeof(*req);
-    expect("a create, not yet provided",
-      run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_ERR_NOT_SUPPORTED);
 
     cnprintf("    ramfs: a whole-path walk over the wire read %u bytes at "
       "sub/leaf, afile/leaf WRONG_TYPE, sub/nope NO_ENT, .. PERM_DENIED\n",
@@ -3805,6 +3854,126 @@ mutable_dir_checks(void)
         cnprintf("    ramfs: the big directory listed %u entries over %u "
           "reads, a-f each once, a foreign cursor refused WRONG_TYPE\n",
           (unsigned int)total, (unsigned int)reads);
+    }
+
+    /*
+     * Create and unlink, and a listing that reflects each change. A file
+     * created in the root appears in a listing and reads as empty;
+     * unlinked, it is gone. A create under a connection that names a file
+     * is refused. Then a churn of create and unlink longer than the node
+     * pool: a create that found the pool full would be a node a prior
+     * unlink had left behind, which is the stage's falsification.
+     */
+    {
+        sys_handle_t made, afile_conn;
+        uint32_t i;
+
+        if (dir_has(root, "made")) {
+            panic("ramfs: the root listed 'made' before it was created");
+        }
+
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_CREATE;
+        req->fr_length = FS_KIND_FILE;
+        memcpy(req->fr_name, "made", sizeof("made"));
+        tx.request.inline_len = sizeof(*req);
+        expect("creating a file in the root",
+          run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_OK);
+        made = tx.reply.handle;
+
+        if (!dir_has(root, "made")) {
+            panic("ramfs: a created file did not appear in the listing");
+        }
+
+        /* The new file is empty: a read returns zero bytes, not NO_ENT. */
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_READ;
+        req->fr_length = sizeof(buf);
+        tx.request.inline_len = sizeof(*req);
+        expect("reading the new empty file",
+          run(SYS_OP_IPC_SEND, made, &tx, sizeof(tx)), SYS_OK);
+        rep = (fs_reply_t *)tx.reply.inline_data;
+        if (rep->fr_length != 0) {
+            panic("ramfs: a newly created file was not empty");
+        }
+
+        expect("closing the created file",
+          run(SYS_OP_HANDLE_CLOSE, made, NULL, 0), SYS_OK);
+
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_UNLINK;
+        memcpy(req->fr_name, "made", sizeof("made"));
+        tx.request.inline_len = sizeof(*req);
+        expect("unlinking the created file",
+          run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_OK);
+
+        if (dir_has(root, "made")) {
+            panic("ramfs: an unlinked file still appeared in the listing");
+        }
+
+        /* A create under a connection that names a file, not a directory. */
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_WALK;
+        memcpy(req->fr_name, "afile", sizeof("afile"));
+        tx.request.inline_len = sizeof(*req);
+        expect("a walk to afile",
+          run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_OK);
+        afile_conn = tx.reply.handle;
+
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_CREATE;
+        req->fr_length = FS_KIND_FILE;
+        memcpy(req->fr_name, "under", sizeof("under"));
+        tx.request.inline_len = sizeof(*req);
+        expect("a create under a file",
+          run(SYS_OP_IPC_SEND, afile_conn, &tx, sizeof(tx)),
+          SYS_ERR_WRONG_TYPE);
+
+        expect("closing the afile connection",
+          run(SYS_OP_HANDLE_CLOSE, afile_conn, NULL, 0), SYS_OK);
+
+        /*
+         * The churn. Forty rounds through a pool with far fewer free
+         * slots, driven without expect() so the boot log is not forty
+         * lines longer: a failure panics with the round it reached.
+         */
+        for (i = 0; i < 40; i++) {
+            sys_handle_t t;
+
+            memset(&tx, 0, sizeof(tx));
+            req = (fs_request_t *)tx.request.inline_data;
+            req->fr_op = FS_OP_CREATE;
+            req->fr_length = FS_KIND_FILE;
+            memcpy(req->fr_name, "churn", sizeof("churn"));
+            tx.request.inline_len = sizeof(*req);
+            if (run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)) != SYS_OK) {
+                panic("ramfs: a churn create failed at round %u; an unlink "
+                  "left a node allocated", (unsigned int)i);
+            }
+            t = tx.reply.handle;
+            if (run(SYS_OP_HANDLE_CLOSE, t, NULL, 0) != SYS_OK) {
+                panic("ramfs: closing a churn create failed");
+            }
+
+            memset(&tx, 0, sizeof(tx));
+            req = (fs_request_t *)tx.request.inline_data;
+            req->fr_op = FS_OP_UNLINK;
+            memcpy(req->fr_name, "churn", sizeof("churn"));
+            tx.request.inline_len = sizeof(*req);
+            if (run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)) != SYS_OK) {
+                panic("ramfs: a churn unlink failed at round %u",
+                  (unsigned int)i);
+            }
+        }
+
+        cnputs("    ramfs: a file created and listed, read empty, unlinked "
+          "and gone; a create under a file refused; 40 create/unlink "
+          "rounds through a pool of far fewer slots\n");
     }
 
     expect("closing the root connection",
@@ -18954,8 +19123,8 @@ kernel_main(void)
     cnputs("dirspike: the walk and directory-read edges of section 25.3\n");
     dirspike_checks();
 
-    cnputs("ramfs: a mutable directory, walk, read and list over IPC "
-      "(M23 s2)\n");
+    cnputs("ramfs: a mutable directory, walk, read, list, create and "
+      "unlink over IPC (M23 s3)\n");
     mutable_dir_checks();
 
     cnputs("user mode: a program that can be interrupted\n");
