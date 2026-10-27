@@ -29,7 +29,7 @@
 #endif
 
 #if SYS_TIER != 0 && SYS_TIER != 2
-#error "SYS_TIER must be 0 or 2; see section 6"
+#error "SYS_TIER must be 0 or 2"
 #endif
 
 /*

@@ -1907,7 +1907,7 @@ cost_checks(void)
       "200 round trips against a set of two",
       (unsigned long)cost_us[1], (unsigned long)cost_steps[1]);
     cnprintf("    %-38s %lu of them\n",
-      "of which the milestone's own walk",
+      "of which the set walk",
       (unsigned long)cost_walks[1]);
     cnprintf("    %-38s %lu and %lu\n",
       "priority changes in the two runs",
@@ -15483,7 +15483,7 @@ chain_bound_checks(void)
     uint32_t spin;
     sys_err_t err;
 
-    cnputs("chains: the bound of section 12.3\n");
+    cnputs("chains: the bound on a reply chain\n");
 
     ch_cyc = channel_create("cycle", p);
     if (ch_cyc == NULL) {
@@ -15610,7 +15610,7 @@ inflight_checks(void)
     uint32_t i;
     long r;
 
-    cnputs("in flight: what section 17.3 asks for, and what is here\n");
+    cnputs("in flight: what a submission leaves outstanding, and what is here\n");
 
     /*
      * Refused, and distinctly. An opcode nobody has defined is
@@ -15815,7 +15815,7 @@ abort_checks(void)
     sys_err_t err;
     long r;
 
-    cnputs("aborting: what a batch that stops signals, section 17.5\n");
+    cnputs("aborting: what a batch that stops signals\n");
 
     ab_tl = timeline_create("abort");
     if (ab_tl == NULL) {
@@ -16530,7 +16530,7 @@ register_checks(void)
     uint64_t v;
     unsigned int i;
 
-    cnputs("registers: what one entry can hand the next, section 17.4\n");
+    cnputs("registers: what one entry can hand the next\n");
 
     regs_init(&r);
 
@@ -16642,7 +16642,7 @@ link_checks(void)
     uint32_t i;
     sys_err_t err;
 
-    cnputs("chaining: abort-on-error grouping, section 17.5\n");
+    cnputs("chaining: abort-on-error grouping\n");
 
     tl = timeline_create("link");
     if (tl == NULL) {
@@ -17208,7 +17208,7 @@ batch_checks(void)
     uint32_t i;
     sys_err_t err;
 
-    cnputs("batches: the count of section 17 exceeds one\n");
+    cnputs("batches: more than one batch operation\n");
 
     tl_batch = timeline_create("batch");
     if (tl_batch == NULL) {
@@ -17595,7 +17595,7 @@ core_checks(void)
     sys_handle_t h;
     uint32_t spin;
 
-    cnputs("cores: where a thread runs, section 11.4\n");
+    cnputs("cores: where a thread runs\n");
 
     /*
      * Migrated before it has ever been runnable, so that the core it
@@ -17946,7 +17946,7 @@ cross_core_donation_checks(void)
     uint32_t spin;
     sys_err_t err;
 
-    cnputs("donation: across a core boundary, section 11.4\n");
+    cnputs("donation: across a core boundary\n");
 
     ch_xc = channel_create("xc", p);
     if (ch_xc == NULL) {
@@ -18684,7 +18684,7 @@ kernel_main(void)
      * anything, which is the one thing the rest of the system does not
      * allow. A production image compiles it out and this line goes with it.
      */
-    cnprintf("*** debug console compiled in and %s: section 22.4 ***\n",
+    cnprintf("*** debug console compiled in and %s ***\n",
       SYS_DEBUG_CONSOLE_INIT ? "live" : "dormant");
 #endif
 
@@ -18773,7 +18773,7 @@ kernel_main(void)
     expect("an opcode that is not defined at all",
       run(SYS_OP_COUNT, 0, NULL, 0), SYS_ERR_INVALID_ARG);
 
-    cnputs("debug console: the run-time gate of section 22.4\n");
+    cnputs("debug console: the run-time gate\n");
     debug_console_checks();
 
     cnputs("frames: the memory the port says it has\n");
@@ -18800,7 +18800,7 @@ kernel_main(void)
     cnputs("handles: authority, rights and staleness\n");
     handle_checks();
 
-    cnputs("timelines: the four waiters of section 9.1\n");
+    cnputs("timelines: the four waiter cases\n");
     timeline_checks();
 
     cnputs("interrupts: a device advancing a timeline\n");
@@ -18829,7 +18829,7 @@ kernel_main(void)
     cnputs("timers: activation, phase and deadlines\n");
     timer_checks();
 
-    cnputs("exit: completion timelines and join, section 10.4\n");
+    cnputs("exit: completion timelines and join\n");
     completion_checks();
 
     cnputs("ipc: rendezvous, queue order and donation\n");
@@ -18858,8 +18858,7 @@ kernel_main(void)
     abort_checks();
     inflight_checks();
 
-    cnputs("ramfs: a mutable directory over IPC, walk through soak "
-      "(M23 s5)\n");
+    cnputs("ramfs: a mutable directory over IPC, walk through soak\n");
     mutable_dir_checks();
 
     cnputs("user mode: a program that can be interrupted\n");

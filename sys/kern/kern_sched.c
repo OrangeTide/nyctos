@@ -54,7 +54,7 @@ uint64_t sched_remote_readies;
 #define defer_pending       (cpu_self()->cp_defer_pending)
 
 _Static_assert(SYS_PRIO_COUNT <= 32,
-  "the ready bitmap is one 32-bit word; see section 11.1");
+  "the ready bitmap is one 32-bit word");
 
 
 /*

@@ -246,7 +246,7 @@ lock_check(void)
 
     cnprintf("locks: %s\n", cpu_count() > 1 ?
       "two cores through one region" :
-      "one core, which section 13.3 gives no lock to need");
+      "one core, which needs no lock");
 
     md_cpu_fence();
     hammer_go = 1;

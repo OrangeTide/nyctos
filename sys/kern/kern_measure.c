@@ -638,7 +638,7 @@ intr_region_report(void)
 {
     uint32_t i;
 
-    cnputs("interrupts off: the longest region, per section 13.3\n");
+    cnputs("interrupts off: the longest region\n");
 
     for (i = 0; i < cpu_count(); i++) {
         const struct cpu *c = cpu_at(i);
@@ -800,7 +800,7 @@ intr_region_report(void)
 
         if (!marked) {
             panic("interrupts off: no region spanned a switch, so the "
-              "term section 13.3 is bounded by was never measured");
+              "term it bounds was never measured");
         }
 
         /*
@@ -1042,7 +1042,7 @@ irq_dispatch_report(void)
     uint32_t i;
     uint64_t seen = 0;
 
-    cnputs("interrupt to a program: section 13.3's second term\n");
+    cnputs("interrupt to a program: the second latency term\n");
 
     for (i = 0; i < cpu_count(); i++) {
         const struct cpu *c = cpu_at(i);
