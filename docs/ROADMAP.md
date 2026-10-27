@@ -15426,6 +15426,73 @@ the block protocol the RAM store served, so a file read reaches bytes that
 live on an emulated disk rather than in a server's `static` array.** Tier 0,
 single core, and the same source at Tier 2.
 
+**Done.** All four stages are built. What it answered, what it cost, and what
+the building kept finding are below. `virtio_blk` is the block store under the
+filesystem now, in place of the RAM `blk_server`, and a `cat` of a file
+returns bytes the device wrote into the driver's queue page, not bytes a
+server held in an array. No kernel mechanism changed; two files under
+`sys/kern` did, both build-time configuration and not mechanism, named in
+their place below.
+
+The driver is an ordinary process holding two grants: one over the
+virtio-mmio transport slots, and one over a page of memory for the queue. It
+scans the slots for the block device, resets it, negotiates features, lays a
+single eight-descriptor split virtqueue out in the queue page, declares itself
+ready, and then serves the block protocol by reading the covering sector off
+the device over the ring and copying out the range a request asked for. It
+polls the used ring rather than taking an interrupt, because a block read is
+synchronous and the arch interrupt layer, which knows one source, stays as it
+is.
+
+```
+  the device, probed: the slot's magic, a modern version two, and device id
+    two, found by scanning the granted slots
+  one virtqueue, accepted: eight descriptors handed over and DRIVER_OK read
+    back with FAILED clear
+  a block off the disk: a header-data-status chain, the used ring polled, and
+    block zero read back as the disk image's first block
+  the store served: cat of motd, the second motd and notes each return the
+    disk's bytes, the same session the RAM store passed, unchanged
+```
+
+The falsification was shown to fire at each stage: a wrong device id found no
+block device, a withheld `DRIVER_OK` left the device unready, a data
+descriptor without its write flag left block zero unfilled, and a byte changed
+in the disk image changed what `cat /motd` printed and failed the paced diff.
+That last one is the whole stack proving the bytes are the disk's.
+
+**What the building kept finding.**
+
+*A program's ordinary memory is not where a device can reach it.* The plan
+said the queue would live in the driver's own memory because user memory is
+identity-mapped. It is not: the loader maps a program's virtual address to
+whatever physical frame it allocated, so the addresses the driver wrote into
+the queue were virtual and the device, reading them as physical, reached the
+wrong memory and never completed. This hung at Tier 2 at stage three and ran
+at Tier 0, where the flat tier makes virtual and physical the same. The fix
+needed no new mechanism: a grant already is a handle to a physical region and
+is mapped at the address it covers, so the queue moved into a second grant, a
+page the boot hands the driver, where a pointer's value is the physical
+address the device reads. Granted memory is identity-mapped; ordinary user
+memory is not, and that distinction is the whole of what real DMA needed here.
+
+*QEMU's virtio-mmio is legacy unless told otherwise.* The transport reported
+version one, whose queue layout is not the one a modern driver writes, until
+the flags forced the modern transport with `virtio-mmio.force-legacy=false`.
+
+*The probe was scaffolding, and it retired where the store replaced it.* A
+device has one driver, so the one-shot that probed and exited through stages
+one to three could not run beside the store that serves. It was removed in
+stage four, its work now done by the store on every boot and proved by the
+file reads the golden session already carries.
+
+*Two files under `sys/kern` changed, and neither is mechanism.* `init_main.c`,
+the boot test harness, wires the store and makes its grants; `kern_cohort.c`'s
+storage cohort membership names `virtio_blk` where it named `blk_server`. Both
+are the build naming what runs. The kernel's own code carries the same opaque
+payload and the same grants it always has. `blk_server` stays in the tree as
+an unwired RAM store, a second implementation of the same protocol.
+
 The block store today is `BLK_BLOCK_COUNT` blocks of a server's own memory,
 formatted from three string constants at start-up. It is the stand-in a
 protocol keeps so the layer above it has something to read, and nothing behind

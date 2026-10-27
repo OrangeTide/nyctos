@@ -116,7 +116,16 @@ capability-mount sandbox filesystem of mine answers the readdir-cursor and
 backend-split questions in code, in `~/Vibe/skjegg/fs/fs.h` with `ramfs.c` and
 `hostfs.c`; see the investigation note below.
 
-### User-space block and storage driver over virtio-mmio
+### User-space block and storage driver over virtio-mmio (done, built as M25)
+
+Done, and built as M25 ("The Store That Reads From a Device, Not From Its Own
+Memory"). `bin/virtio_blk` is an ordinary process driving a virtio-mmio block
+device on the `virt` board for both arches, and it is the block store under
+the filesystem. It polls the used ring rather than taking an interrupt: a
+block read is synchronous, so the interrupt landing on a timeline is a
+follow-on, not needed here. Its queue lives in a granted page because a device
+reaches memory by physical address and ordinary user memory is not mapped at
+its physical address. The original description is kept below.
 
 Persistent storage needs a real device driver, and in this system a driver is an
 ordinary process. The missing piece is a virtio-mmio transport and virtqueue
