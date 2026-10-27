@@ -23,13 +23,15 @@ static sys_err_t
 request(sys_handle_t target, uint32_t op, const char *name, uint64_t off,
   uint32_t len, sys_msg_t *reply)
 {
-    fs_request_t *req;
+    fs_request_t req;
+    fs_reply_t rep;
+    struct wire_out out;
+    struct wire_in in;
     sys_msg_t message;
     sys_err_t err;
 
     memset(&message, 0, sizeof(message));
     message.handle = SYS_HANDLE_INVALID;
-    message.inline_len = sizeof(*req);
 
     /*
      * The buffer travels with every request, because a reply larger than
@@ -40,26 +42,36 @@ request(sys_handle_t target, uint32_t op, const char *name, uint64_t off,
     message.buf_len = sizeof(buf);
     message.buf_flags = SYS_BUF_WRITE;
 
-    req = (fs_request_t *)message.inline_data;
-    req->fr_op = op;
-    req->fr_offset = off;
-    req->fr_length = len;
+    memset(&req, 0, sizeof(req));
+    req.fr_op = op;
+    req.fr_offset = off;
+    req.fr_length = len;
     if (name != NULL) {
-        memcpy(req->fr_name, name, strlen(name) + 1);
+        memcpy(req.fr_name, name, strlen(name) + 1);
     }
+    wire_out_init(&out, message.inline_data, SYS_IPC_INLINE_BYTES);
+    fs_request_put(&out, &req);
+    message.inline_len = sizeof(fs_request_t);
 
     err = sys_msg_send(target, &message, reply);
     if (err != SYS_OK) {
         return err;
     }
 
-    return ((const fs_reply_t *)reply->inline_data)->fr_status;
+    wire_in_init(&in, reply->inline_data, reply->inline_len);
+    fs_reply_get(&in, &rep);
+    if (!in.ok) {
+        return SYS_ERR_TRUNCATED;
+    }
+
+    return rep.fr_status;
 }
 
 int
 main(void)
 {
-    const fs_reply_t *rep;
+    fs_reply_t rep;
+    struct wire_in in;
     sys_handle_t dir, file;
     sys_msg_t reply;
     uint32_t got;
@@ -77,8 +89,9 @@ main(void)
     if (request(file, FS_OP_READ, NULL, 0, sizeof(buf), &reply) != SYS_OK) {
         return 3;
     }
-    rep = (const fs_reply_t *)reply.inline_data;
-    got = rep->fr_length;
+    wire_in_init(&in, reply.inline_data, reply.inline_len);
+    fs_reply_get(&in, &rep);
+    got = rep.fr_length;
 
     size_t len = got < sizeof(buf) ? got : sizeof(buf);
 

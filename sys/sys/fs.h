@@ -16,6 +16,7 @@
 #define _SYS_FS_H_
 
 #include <sys/op.h>
+#include <sys/wire.h>
 
 #include <stdint.h>
 
@@ -153,6 +154,47 @@ typedef struct fs_reply {
     uint32_t    fr_length;
     uint64_t    fr_size;
 } fs_reply_t;
+
+/*
+ * Pack and unpack the request and reply through a payload cursor, so a
+ * program reads one field at a time with the bounds checked rather than
+ * casting a struct onto bytes a client controls. The byte layout is the
+ * struct's own: a put or a get in field order reproduces it, and a get
+ * past the payload clears the cursor's flag rather than reading beyond it.
+ */
+static inline void
+fs_request_put(struct wire_out *o, const fs_request_t *r)
+{
+    wire_put_u32(o, r->fr_op);
+    wire_put_u32(o, r->fr_length);
+    wire_put_u64(o, r->fr_offset);
+    wire_put_bytes(o, (const uint8_t *)r->fr_name, FS_NAME_MAX);
+}
+
+static inline void
+fs_request_get(struct wire_in *in, fs_request_t *r)
+{
+    r->fr_op = wire_get_u32(in);
+    r->fr_length = wire_get_u32(in);
+    r->fr_offset = wire_get_u64(in);
+    wire_get_bytes(in, (uint8_t *)r->fr_name, FS_NAME_MAX);
+}
+
+static inline void
+fs_reply_put(struct wire_out *o, const fs_reply_t *r)
+{
+    wire_put_u32(o, (uint32_t)r->fr_status);
+    wire_put_u32(o, r->fr_length);
+    wire_put_u64(o, r->fr_size);
+}
+
+static inline void
+fs_reply_get(struct wire_in *in, fs_reply_t *r)
+{
+    r->fr_status = (sys_err_t)wire_get_u32(in);
+    r->fr_length = wire_get_u32(in);
+    r->fr_size = wire_get_u64(in);
+}
 
 /*
  * A write carries its bytes inline, after the request header, exactly as a

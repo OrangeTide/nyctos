@@ -127,37 +127,43 @@ main(void)
     format();
 
     for (;;) {
-        const fs_request_t *req;
-        fs_reply_t *rep;
+        fs_request_t req;
+        fs_reply_t rep;
+        struct wire_in in;
+        struct wire_out out;
 
         if (sys_msg_recv(chan, &message, &peer, &cookie) != SYS_OK) {
             return 2;
         }
 
-        req = (const fs_request_t *)message.inline_data;
+        wire_in_init(&in, message.inline_data, message.inline_len);
+        fs_request_get(&in, &req);
 
         memset(&reply, 0, sizeof(reply));
         reply.handle = SYS_HANDLE_INVALID;
-        reply.inline_len = sizeof(*rep);
-        rep = (fs_reply_t *)reply.inline_data;
-        rep->fr_length = 0;
-        rep->fr_size = (uint64_t)BLK_BLOCK_COUNT * BLK_BLOCK_BYTES;
+        memset(&rep, 0, sizeof(rep));
+        rep.fr_length = 0;
+        rep.fr_size = (uint64_t)BLK_BLOCK_COUNT * BLK_BLOCK_BYTES;
 
-        if (req->fr_op != FS_OP_READ) {
+        if (req.fr_op != FS_OP_READ) {
             /*
              * A store has no names to walk and nothing to open or
              * close, so every other operation is one this server
              * cannot provide rather than one it declines to. A server
              * answers every operation, and this is the answer.
              */
-            rep->fr_status = SYS_ERR_NOT_SUPPORTED;
+            rep.fr_status = SYS_ERR_NOT_SUPPORTED;
         } else {
-            rep->fr_status = read_blocks((void *)message.buf,
-              message.buf_len, req->fr_offset, req->fr_length);
-            if (rep->fr_status == SYS_OK) {
-                rep->fr_length = req->fr_length;
+            rep.fr_status = read_blocks((void *)message.buf,
+              message.buf_len, req.fr_offset, req.fr_length);
+            if (rep.fr_status == SYS_OK) {
+                rep.fr_length = req.fr_length;
             }
         }
+
+        wire_out_init(&out, reply.inline_data, SYS_IPC_INLINE_BYTES);
+        fs_reply_put(&out, &rep);
+        reply.inline_len = sizeof(fs_reply_t);
 
         /*
          * The same answer where the kernel can read it.
@@ -165,7 +171,7 @@ main(void)
          * send as far as the kernel is concerned, and a chain linked
          * behind it carries on.
          */
-        reply.status = rep->fr_status;
+        reply.status = rep.fr_status;
 
         if (sys_msg_reply(peer, &reply) != SYS_OK) {
             return 3;

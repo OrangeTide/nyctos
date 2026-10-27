@@ -547,8 +547,10 @@ main(void)
     sys_handle_t chan;
     sys_msg_t message, reply;
     sys_thread_id_t peer;
-    fs_request_t *req;
-    fs_reply_t *rep;
+    fs_request_t req;
+    fs_reply_t rep;
+    struct wire_in in;
+    struct wire_out out;
     uint64_t cookie;
     uint32_t node;
 
@@ -573,25 +575,26 @@ main(void)
             return 1;
         }
 
-        req = (fs_request_t *)message.inline_data;
+        wire_in_init(&in, message.inline_data, message.inline_len);
+        fs_request_get(&in, &req);
         node = (uint32_t)cookie;
 
         memset(&reply, 0, sizeof(reply));
         reply.handle = SYS_HANDLE_INVALID;
-        reply.inline_len = sizeof(*rep);
-        rep = (fs_reply_t *)reply.inline_data;
-        rep->fr_status = SYS_ERR_NO_ENT;
+        reply.inline_len = sizeof(fs_reply_t);
+        memset(&rep, 0, sizeof(rep));
+        rep.fr_status = SYS_ERR_NO_ENT;
 
-        switch (req->fr_op) {
+        switch (req.fr_op) {
         case FS_OP_WALK:
-            do_walk(chan, req, node, &reply, rep);
+            do_walk(chan, &req, node, &reply, &rep);
             break;
         case FS_OP_READ:
-            do_read(&message, req, node, &reply, rep);
-            reply.inline_len = sizeof(*rep) + rep->fr_length;
+            do_read(&message, &req, node, &reply, &rep);
+            reply.inline_len = sizeof(fs_reply_t) + rep.fr_length;
             break;
         case FS_OP_CLOSE:
-            rep->fr_status = SYS_OK;
+            rep.fr_status = SYS_OK;
             break;
         case FS_OP_BATCH:
             reply.inline_len = sizeof(fs_batch_reply_t);
@@ -599,10 +602,20 @@ main(void)
               (fs_batch_reply_t *)reply.inline_data);
             break;
         default:
-            rep->fr_status = SYS_ERR_INVALID_ARG;
+            rep.fr_status = SYS_ERR_INVALID_ARG;
             break;
         }
 
+        /*
+         * Pack the reply header for every shape but the batch, which
+         * builds its own into the payload. The header lands at the start
+         * of the payload, ahead of any inline read bytes do_read left
+         * after it.
+         */
+        if (req.fr_op != FS_OP_BATCH) {
+            wire_out_init(&out, reply.inline_data, SYS_IPC_INLINE_BYTES);
+            fs_reply_put(&out, &rep);
+        }
 
         /*
          * The same answer in the place the kernel looks.
