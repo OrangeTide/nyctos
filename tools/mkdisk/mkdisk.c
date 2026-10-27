@@ -52,14 +52,18 @@ static const struct {
 #define CONTENT_COUNT   (sizeof(contents) / sizeof(contents[0]))
 
 /*
- * The image is rounded up to a whole virtio sector, because the block
- * transport counts in 512-byte sectors regardless of the sixteen-byte block
- * the protocol above uses, and a backing file shorter than one sector is a
- * device of zero sectors.
+ * The image is a whole number of virtio sectors, because the block transport
+ * counts in 512-byte sectors regardless of the sixteen-byte block the protocol
+ * above uses, and a backing file shorter than one sector is a device of zero
+ * sectors. The store's bytes fit the first sector; the second is scratch, past
+ * the store's range and so invisible to the filesystem, where the driver
+ * writes and reads a sector back to prove its write path without disturbing a
+ * file.
  */
 #define SECTOR_BYTES    512u
-#define DISK_BYTES      (((BLK_BLOCK_COUNT * BLK_BLOCK_BYTES + SECTOR_BYTES - \
-                          1u) / SECTOR_BYTES) * SECTOR_BYTES)
+#define STORE_SECTORS   (((BLK_BLOCK_COUNT * BLK_BLOCK_BYTES + SECTOR_BYTES - \
+                          1u) / SECTOR_BYTES))
+#define DISK_BYTES      ((STORE_SECTORS + 1u) * SECTOR_BYTES)
 
 int
 main(int argc, char **argv)

@@ -194,9 +194,9 @@ bring_up(void)
  * through the register write.
  */
 static int
-read_sector(uint64_t sector)
+transfer(uint32_t type, uint64_t sector)
 {
-    q->hdr.type = VIRTIO_BLK_T_IN;
+    q->hdr.type = type;
     q->hdr.reserved = 0;
     q->hdr.sector = sector;
     q->status = 0xff;
@@ -206,9 +206,16 @@ read_sector(uint64_t sector)
     q->desc[0].flags = VIRTQ_DESC_F_NEXT;
     q->desc[0].next = 1;
 
+    /*
+     * The data descriptor's direction is the device's, not the driver's: on a
+     * read the device writes the sector into this buffer, and on a write it
+     * reads the sector out of it. So the write flag is set for a read and
+     * clear for a write, which is the one bit that tells the two apart.
+     */
     q->desc[1].addr = (uint64_t)(uintptr_t)q->data;
     q->desc[1].len = (uint32_t)sizeof(q->data);
-    q->desc[1].flags = VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT;
+    q->desc[1].flags = VIRTQ_DESC_F_NEXT |
+      (type == VIRTIO_BLK_T_IN ? VIRTQ_DESC_F_WRITE : 0u);
     q->desc[1].next = 2;
 
     q->desc[2].addr = (uint64_t)(uintptr_t)&q->status;
@@ -231,7 +238,58 @@ read_sector(uint64_t sector)
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
 
     if (q->status != VIRTIO_BLK_S_OK) {
-        return 9;       /* the device reported the read failed */
+        return 9;       /* the device reported the transfer failed */
+    }
+
+    return 0;
+}
+
+static int
+read_sector(uint64_t sector)
+{
+    return transfer(VIRTIO_BLK_T_IN, sector);
+}
+
+static int
+write_sector(uint64_t sector)
+{
+    return transfer(VIRTIO_BLK_T_OUT, sector);
+}
+
+/*
+ * The sector past the store's bytes, scratch the driver may write without
+ * touching a file. The store occupies whole sectors from zero; this is the
+ * next one.
+ */
+#define SCRATCH_SECTOR  (((uint64_t)BLK_BLOCK_COUNT * BLK_BLOCK_BYTES + \
+                          VIRTIO_BLK_SECTOR_BYTES - 1) / VIRTIO_BLK_SECTOR_BYTES)
+
+/*
+ * Prove the write path before serving: write a pattern to the scratch sector
+ * and read it back. The sector is past the store's range, so no file is
+ * disturbed and nothing the filesystem reads depends on it. A write that did
+ * not take would read back as whatever was there before, which the compare
+ * catches.
+ */
+static int
+write_selftest(void)
+{
+    uint32_t i;
+
+    for (i = 0; i < sizeof(q->data); i++) {
+        q->data[i] = (uint8_t)(i * 7u + 1u);
+    }
+    if (write_sector(SCRATCH_SECTOR) != 0) {
+        return 17;
+    }
+    memset(q->data, 0, sizeof(q->data));
+    if (read_sector(SCRATCH_SECTOR) != 0) {
+        return 18;
+    }
+    for (i = 0; i < sizeof(q->data); i++) {
+        if (q->data[i] != (uint8_t)(i * 7u + 1u)) {
+            return 19;
+        }
     }
 
     return 0;
@@ -323,6 +381,12 @@ main(void)
     err = bring_up();
     if (err != 0) {
         DBG_PUTS("virtio_blk: the block device would not come up");
+        return err;
+    }
+
+    err = write_selftest();
+    if (err != 0) {
+        DBG_PUTS("virtio_blk: the write did not read back");
         return err;
     }
 
