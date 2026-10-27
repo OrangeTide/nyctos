@@ -18273,6 +18273,68 @@ store_write_checks(sys_handle_t store)
     cnputs("    a block placed, read back, and its neighbour untouched\n");
 }
 
+/*
+ * A write the disk keeps across a boot. The first boot over a fresh image
+ * finds a free block zeroed and writes a marker into it; a later boot over
+ * the same image finds the marker and so learns the write reached the disk
+ * and not only memory. The two boots are the paced and burst sessions of one
+ * check, which run one after the other over the same image, and the burst
+ * check reads this line out of the second boot's output.
+ */
+static void
+persistence_checks(sys_handle_t store)
+{
+    static const uint8_t marker[BLK_BLOCK_BYTES] = {
+        'n', 'y', 'c', 't', 'o', 's', ' ', 'w',
+        'a', 's', ' ', 'h', 'e', 'r', 'e', '\n',
+    };
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+    const fs_reply_t *rep;
+    const uint64_t off = 8u * BLK_BLOCK_BYTES;   /* a free block past the files */
+    uint8_t got[BLK_BLOCK_BYTES];
+    int is_marker = 1, is_fresh = 1;
+    uint32_t i;
+
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = off;
+    req->fr_length = BLK_BLOCK_BYTES;
+    tx.request.inline_len = sizeof(*req);
+    expect("reading the marker block",
+      run(SYS_OP_IPC_SEND, store, &tx, sizeof(tx)), SYS_OK);
+    rep = (const fs_reply_t *)tx.reply.inline_data;
+    memcpy(got, &tx.reply.inline_data[sizeof(*rep)], BLK_BLOCK_BYTES);
+    for (i = 0; i < BLK_BLOCK_BYTES; i++) {
+        if (got[i] != marker[i]) {
+            is_marker = 0;
+        }
+        if (got[i] != 0) {
+            is_fresh = 0;
+        }
+    }
+
+    if (is_marker) {
+        cnputs("persist: the marker survived from an earlier boot\n");
+        return;
+    }
+    if (!is_fresh) {
+        panic("persist: the marker block holds neither zeros nor the marker");
+    }
+
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WRITE;
+    req->fr_offset = off;
+    req->fr_length = BLK_BLOCK_BYTES;
+    memcpy(&tx.request.inline_data[sizeof(*req)], marker, BLK_BLOCK_BYTES);
+    tx.request.inline_len = sizeof(*req) + BLK_BLOCK_BYTES;
+    expect("writing the marker",
+      run(SYS_OP_IPC_SEND, store, &tx, sizeof(tx)), SYS_OK);
+    cnputs("persist: wrote the marker for a later boot to find\n");
+}
+
 static void
 user_slice(void)
 {
@@ -18496,6 +18558,7 @@ user_slice(void)
     }
 
     store_write_checks(store);
+    persistence_checks(store);
 
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_SERVICE;

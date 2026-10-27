@@ -33,7 +33,13 @@
  * strings, and the alternative was a loop nothing ever entered twice.
  */
 #define BLK_BLOCK_BYTES     16u
-#define BLK_BLOCK_COUNT     8u
+
+/*
+ * Sixteen blocks. The three files occupy the first seven; the rest are free,
+ * where a write reaches a block no file holds, so the write tests and the
+ * boot-to-boot marker touch the disk without disturbing a file.
+ */
+#define BLK_BLOCK_COUNT     16u
 
 /*
  * Where each file starts and how long it is. A file begins at a block

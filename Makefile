@@ -71,6 +71,9 @@ check: all
 	    || { echo 'check: the burst session did not finish'; false; }
 	@! grep -q '^panic:' $(OBJTOP)/check/burst.out \
 	    || { echo 'check: the burst session panicked'; false; }
+	@grep -q '^persist: the marker survived' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: the write did not survive to the second boot'; \
+	         false; }
 	@echo "check: $(ARCH) ok"
 
 run: all
