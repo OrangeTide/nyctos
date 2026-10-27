@@ -15589,6 +15589,79 @@ answers `FS_OP_WRITE` by placing a block into its sector, and the emulator
 keeps the bytes in the disk image, so a value written in one boot is read back
 in the next.** Tier 0, single core, and the same source at Tier 2.
 
+**Done.** All three stages are built. What it answered, what it cost, and what
+the building kept finding are below. The store writes now as well as reads: a
+block written through `FS_OP_WRITE` reaches the emulated disk, and a marker a
+boot writes to a free block is read back by the next boot over the same image.
+No kernel mechanism changed; one file under `sys/kern` did, the boot harness
+that drives the checks, named in its place below.
+
+The driver's read and write are one transfer over the ring, differing in a
+single descriptor bit: the data buffer is device-writable for a read and
+device-readable for a write, so the device fills it on a read and drains it on
+a write. A block is smaller than a sector, so the store answers a write by
+reading the sector the block lives in, placing the block into it, and writing
+the sector back, which leaves the blocks that share the sector undisturbed.
+Durability is the claim a single boot cannot make, so the check is two boots
+over one image: the normal `make check` already boots paced then burst over
+the image it makes once, and that is the two-boot demonstration without a new
+target.
+
+```
+  the write chain, over the ring: a scratch sector past the store's range
+    written and read back as the pattern written, before the store serves
+  the store writes: a free block written through FS_OP_WRITE and read back
+    changed, the neighbour in its sector untouched, a misaligned write refused
+  across a boot: the first boot writes a marker to a free block, the second
+    boot over the same image reads it back
+```
+
+The falsification was shown to fire at each stage: forcing the data descriptor
+device-writable on a write left the write untaken and the read-back
+mismatched, neutralizing the block placement in the store left the read-back
+zero, and remaking the image between the two boots lost the marker and made the
+second boot write it afresh rather than find it. That last one is the two boots
+proving the disk, and not a cache, kept the write.
+
+**What the building kept finding.**
+
+*The write is the read with one bit flipped.* The read chain M25 built was
+already a header, a data buffer and a status byte over the ring. The write is
+the same chain with the data descriptor's device-writable flag cleared, so the
+device drains the buffer instead of filling it. One `transfer` serves both, and
+the write needed no second queue and no new grant.
+
+*A block smaller than a sector is a read-modify-write.* The store's block is
+sixteen bytes and the device's sector is five hundred twelve, so a write that
+named one block and wrote the sector raw would erase the thirty-one other
+blocks in it. The store reads the sector first, places the block, and writes
+the sector back, and the stage-two check confirms the neighbour block in the
+same sector is untouched.
+
+*The kernel boot thread cannot be lent memory, so the harness reads inline.*
+The store answers a small read inline, with no lent buffer, because the boot
+thread's memory is the kernel's and a user server may not be lent it. That is
+how the harness reads a block back to check a write at all. `fs_server` still
+lends a buffer for whole files, so its path is unchanged.
+
+*The store grew to sixteen blocks for free space to write.* The three files
+occupy the first seven blocks; `BLK_BLOCK_COUNT` went from eight to sixteen so
+the stage-two write check and the boot-to-boot marker each reach a block no
+file holds, and the two use different free blocks so neither reads the other's
+leavings.
+
+*QEMU keeps the write across a boot on its own.* The emulator commits the
+virtio-blk write to the disk image as the write completes, so the second boot
+over the unremade image reads what the first wrote. The disk image grew by one
+sector for the driver's scratch self-test, past the store's bytes and so
+invisible to the filesystem.
+
+*One file under `sys/kern` changed, and it is not mechanism.* `init_main.c`,
+the boot test harness, gained the write, neighbour and persistence checks that
+drive the store. The kernel's own code carries the same opaque payload and the
+same grants it always has; the store writes the device with the queue and the
+grants it already read with.
+
 M25 made the store read a real device. It is still read only: every file it
 serves was written into the disk image by the build, and nothing a running
 system does reaches the disk. This milestone adds the write. The driver gains a

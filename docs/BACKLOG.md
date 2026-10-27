@@ -116,16 +116,20 @@ capability-mount sandbox filesystem of mine answers the readdir-cursor and
 backend-split questions in code, in `~/Vibe/skjegg/fs/fs.h` with `ramfs.c` and
 `hostfs.c`; see the investigation note below.
 
-### User-space block and storage driver over virtio-mmio (done, built as M25)
+### User-space block and storage driver over virtio-mmio (done, built as M25 and M26)
 
-Done, and built as M25 ("The Store That Reads From a Device, Not From Its Own
-Memory"). `bin/virtio_blk` is an ordinary process driving a virtio-mmio block
-device on the `virt` board for both arches, and it is the block store under
-the filesystem. It polls the used ring rather than taking an interrupt: a
-block read is synchronous, so the interrupt landing on a timeline is a
-follow-on, not needed here. Its queue lives in a granted page because a device
-reaches memory by physical address and ordinary user memory is not mapped at
-its physical address. The original description is kept below.
+Done. M25 ("The Store That Reads From a Device, Not From Its Own Memory") made
+`bin/virtio_blk` an ordinary process driving a virtio-mmio block device on the
+`virt` board for both arches, the block store under the filesystem. M26 ("A
+Write the Disk Keeps Across a Boot") added the write side and the trigger
+below: the store answers `FS_OP_WRITE` by reading the block's sector, placing
+the block, and writing the sector back, and a marker a boot writes to a free
+block is read back by the next boot over the same image, so storage survives a
+boot. The driver polls the used ring rather than taking an interrupt: a block
+transfer is synchronous, so the interrupt landing on a timeline is a follow-on,
+not needed here. Its queue lives in a granted page because a device reaches
+memory by physical address and ordinary user memory is not mapped at its
+physical address. The original description is kept below.
 
 Persistent storage needs a real device driver, and in this system a driver is an
 ordinary process. The missing piece is a virtio-mmio transport and virtqueue
@@ -134,7 +138,7 @@ landing on a timeline. Interrupt-driven virtqueue code exists as a kernel-
 resident, big-endian, m68k reference in `~/DEVEL/OS/jon-os/arch/virt/virtio.c`:
 the byte swaps vanish on these little-endian targets, and the code moves into a
 user process here. This is the gating work behind a copy-on-write filesystem.
-Trigger: wanting storage that survives a boot.
+Trigger: wanting storage that survives a boot (done, M26).
 
 ### Cherry-pick shell features
 
