@@ -3134,446 +3134,6 @@ slice_checks(void)
 }
 
 /*
- * dirspike: the walk and directory-read edges of section 25.3.
- *
- * Section 25.3 names FS_OP_WALK and FS_OP_READDIR and gives each an effect
- * and a wire shape. It does not say what a walk does to a path that
- * resolves partway, what a directory read guarantees while the directory
- * is changing underneath it, or what an opaque cursor is allowed to mean.
- * PROPOSALS.md, "Walk and Directory-Read Semantics", pins those down, and
- * this stage is the proof that clause asks for, held to the rule that file
- * states: until it runs, the semantics have been tested against nothing.
- *
- * It is a spike and not a server. The transport is proved elsewhere, in
- * the slice above and in every milestone since, so nothing here crosses a
- * rendezvous: a walk and a directory read are a function of a tree and a
- * request, and this exercises that function directly. It allocates no
- * kernel object for the same reason, which is what keeps it out of the
- * resource report the check compares. A later milestone carries these
- * answers into sys/sys/fs.h and across the real protocol.
- *
- * The tree is fixed and small:
- *
- *     /               a directory
- *       sub           a directory
- *         leaf        a file
- *       afile         a file
- *       big           a directory, the one a directory read pages through
- *         a b c d e f six files, created in that order
- *
- * A key is a file's creation order under its parent and is never reused. A
- * directory read resumes from a key and not from a count, which is the
- * whole of why it survives a create or an unlink between two reads.
- */
-#define DS_NAME_MAX     8
-#define DS_MAX_NODES    24
-#define DS_READ_K       2           /* entries one directory read returns */
-#define DS_NO_PARENT    0xffffffffu
-
-/* The three nodes the checks name by index. */
-#define DS_ROOT         0
-#define DS_SUB          1
-#define DS_BIG          4
-
-struct ds_node {
-    char        name[DS_NAME_MAX];  /* NUL-padded, not necessarily ended */
-    uint32_t    parent;             /* a node index, or DS_NO_PARENT */
-    uint64_t    key;                /* creation order under its parent */
-    uint8_t     is_dir;
-    uint8_t     live;
-};
-
-static struct ds_node ds_nodes[DS_MAX_NODES];
-static uint64_t ds_next_key;
-
-/*
- * A directory read cursor is opaque, and this is the server's own reading
- * of it: the top sixteen bits name the directory and the rest is the next
- * key to return. A client may store one and send it back, and may not
- * compute one. A cursor whose directory half does not match the connection
- * it arrives on is a cursor for somewhere else, refused rather than
- * answered, which is what "a stale cursor fails rather than returning
- * garbage" means for a cursor the client does not get to interpret.
- */
-#define DS_CURSOR(dir, key)  (((uint64_t)((dir) + 1) << 48) | (uint64_t)(key))
-#define DS_CURSOR_DIR(c)     ((uint32_t)(((c) >> 48) - 1))
-#define DS_CURSOR_KEY(c)     ((c) & (((uint64_t)1 << 48) - 1))
-
-static uint32_t
-ds_namelen(const char *s)
-{
-    uint32_t i = 0;
-
-    while (i < DS_NAME_MAX && s[i] != '\0') {
-        i++;
-    }
-    return i;
-}
-
-static uint32_t
-ds_pathlen(const char *s)
-{
-    uint32_t i = 0;
-
-    while (s[i] != '\0') {
-        i++;
-    }
-    return i;
-}
-
-static void
-ds_setname(char *dst, const char *src, uint32_t len)
-{
-    uint32_t i;
-
-    for (i = 0; i < DS_NAME_MAX; i++) {
-        dst[i] = i < len ? src[i] : '\0';
-    }
-}
-
-static void
-ds_copyname(char *dst, const char *src)
-{
-    uint32_t i;
-
-    for (i = 0; i < DS_NAME_MAX; i++) {
-        dst[i] = src[i];
-    }
-}
-
-/* Whether a fixed field holds exactly [name, name + len). */
-static int
-ds_nameeq(const char *field, const char *name, uint32_t len)
-{
-    uint32_t i;
-
-    if (len >= DS_NAME_MAX || ds_namelen(field) != len) {
-        return 0;
-    }
-    for (i = 0; i < len; i++) {
-        if (field[i] != name[i]) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-/* The live child of dir named by [name, name + len), or DS_MAX_NODES. */
-static uint32_t
-ds_child(uint32_t dir, const char *name, uint32_t len)
-{
-    uint32_t i;
-
-    for (i = 0; i < DS_MAX_NODES; i++) {
-        if (ds_nodes[i].live && ds_nodes[i].parent == dir &&
-          ds_nameeq(ds_nodes[i].name, name, len)) {
-            return i;
-        }
-    }
-    return DS_MAX_NODES;
-}
-
-/* Add a child under dir with the next key. Slots free once unlinked. */
-static uint32_t
-ds_add(uint32_t dir, const char *name, int is_dir)
-{
-    uint32_t i;
-
-    for (i = 0; i < DS_MAX_NODES; i++) {
-        if (ds_nodes[i].live) {
-            continue;
-        }
-        ds_setname(ds_nodes[i].name, name, ds_namelen(name));
-        ds_nodes[i].parent = dir;
-        ds_nodes[i].key = ds_next_key++;
-        ds_nodes[i].is_dir = (uint8_t)(is_dir != 0);
-        ds_nodes[i].live = 1;
-        return i;
-    }
-    panic("dirspike: out of nodes");
-    return DS_MAX_NODES;
-}
-
-static void
-ds_unlink(uint32_t dir, const char *name)
-{
-    uint32_t c = ds_child(dir, name, ds_namelen(name));
-
-    if (c < DS_MAX_NODES) {
-        ds_nodes[c].live = 0;
-        ds_nodes[c].name[0] = '\0';
-    }
-}
-
-static void
-ds_init(void)
-{
-    static const char *const big_kids[] = { "a", "b", "c", "d", "e", "f", };
-    uint32_t i;
-
-    for (i = 0; i < DS_MAX_NODES; i++) {
-        ds_nodes[i].name[0] = '\0';
-        ds_nodes[i].parent = DS_NO_PARENT;
-        ds_nodes[i].key = 0;
-        ds_nodes[i].is_dir = 0;
-        ds_nodes[i].live = 0;
-    }
-
-    /* The fixed frame of the tree, by index so the checks can name it. */
-    ds_setname(ds_nodes[DS_ROOT].name, "/", 1);
-    ds_nodes[DS_ROOT].is_dir = 1;
-    ds_nodes[DS_ROOT].live = 1;
-
-    ds_setname(ds_nodes[DS_SUB].name, "sub", 3);
-    ds_nodes[DS_SUB].parent = DS_ROOT;
-    ds_nodes[DS_SUB].is_dir = 1;
-    ds_nodes[DS_SUB].live = 1;
-
-    ds_setname(ds_nodes[2].name, "leaf", 4);
-    ds_nodes[2].parent = DS_SUB;
-    ds_nodes[2].live = 1;
-
-    ds_setname(ds_nodes[3].name, "afile", 5);
-    ds_nodes[3].parent = DS_ROOT;
-    ds_nodes[3].live = 1;
-
-    ds_setname(ds_nodes[DS_BIG].name, "big", 3);
-    ds_nodes[DS_BIG].parent = DS_ROOT;
-    ds_nodes[DS_BIG].is_dir = 1;
-    ds_nodes[DS_BIG].live = 1;
-
-    /* big's six entries, keyed in creation order from zero. */
-    ds_next_key = 0;
-    for (i = 0; i < 6; i++) {
-        ds_add(DS_BIG, big_kids[i], 0);
-    }
-}
-
-/*
- * A walk resolves a whole path or it fails. There is no partial success,
- * because the library sends the whole path at once and has nothing to do
- * with half of one. A component that resolves under a node that is not a
- * directory stops the walk with WRONG_TYPE and not NO_ENT, because the
- * name exists and names the wrong kind of thing. A `..` is refused as the
- * subtree backstop of section 20.3, by the strict route the one real
- * server also takes.
- */
-static sys_err_t
-ds_walk(uint32_t start, const char *path, uint32_t *out)
-{
-    uint32_t node = start;
-    uint32_t n = ds_pathlen(path);
-    uint32_t i = 0;
-
-    if (n == 0) {
-        return SYS_ERR_INVALID_ARG;
-    }
-
-    while (i < n) {
-        uint32_t s = i;
-        uint32_t len;
-        uint32_t child;
-
-        while (i < n && path[i] != '/') {
-            i++;
-        }
-        len = i - s;
-        while (i < n && path[i] == '/') {
-            i++;
-        }
-
-        if (len == 0) {
-            continue;                   /* tolerate a repeated slash */
-        }
-        if (len == 1 && path[s] == '.') {
-            continue;                   /* the library reduces these */
-        }
-        if (len == 2 && path[s] == '.' && path[s + 1] == '.') {
-            return SYS_ERR_PERM_DENIED;
-        }
-        if (!ds_nodes[node].is_dir) {
-            return SYS_ERR_WRONG_TYPE;
-        }
-        child = ds_child(node, &path[s], len);
-        if (child >= DS_MAX_NODES) {
-            return SYS_ERR_NO_ENT;
-        }
-        node = child;
-    }
-
-    *out = node;
-    return SYS_OK;
-}
-
-static sys_err_t
-ds_readdir(uint32_t dir, uint64_t cursor, char names[][DS_NAME_MAX],
-  uint32_t *count, uint64_t *next_cursor)
-{
-    uint64_t next;
-    uint32_t got = 0;
-
-    if (!ds_nodes[dir].live || !ds_nodes[dir].is_dir) {
-        return SYS_ERR_WRONG_TYPE;
-    }
-    if (cursor == 0) {
-        next = 0;
-    } else {
-        if (DS_CURSOR_DIR(cursor) != dir) {
-            return SYS_ERR_WRONG_TYPE;
-        }
-        next = DS_CURSOR_KEY(cursor);
-    }
-
-    /* Up to K live children with key >= next, in ascending key order. */
-    while (got < DS_READ_K) {
-        uint32_t best = DS_MAX_NODES;
-        uint64_t best_key = 0;
-        uint32_t i;
-
-        for (i = 0; i < DS_MAX_NODES; i++) {
-            if (!ds_nodes[i].live || ds_nodes[i].parent != dir) {
-                continue;
-            }
-            if (ds_nodes[i].key < next) {
-                continue;
-            }
-            if (best >= DS_MAX_NODES || ds_nodes[i].key < best_key) {
-                best = i;
-                best_key = ds_nodes[i].key;
-            }
-        }
-        if (best >= DS_MAX_NODES) {
-            break;
-        }
-        ds_copyname(names[got], ds_nodes[best].name);
-        got++;
-        next = best_key + 1;
-    }
-
-    *count = got;
-    *next_cursor = DS_CURSOR(dir, next);
-    return SYS_OK;
-}
-
-static void
-dirspike_checks(void)
-{
-    static const char *const survive[] = { "b", "c", "d", "f", };
-    char got[DS_MAX_NODES][DS_NAME_MAX];
-    uint32_t node, ngot, reads, i, j;
-    uint64_t cursor;
-    sys_err_t err;
-
-    ds_init();
-
-    err = ds_walk(DS_ROOT, "sub/leaf", &node);
-    expect("a whole-path walk reaches the leaf", err, SYS_OK);
-    if (err == SYS_OK && ds_nodes[node].is_dir) {
-        panic("dirspike: sub/leaf did not reach a file");
-    }
-    expect("a missing final component",
-      ds_walk(DS_ROOT, "sub/nope", &node), SYS_ERR_NO_ENT);
-    expect("a missing sole component",
-      ds_walk(DS_ROOT, "nope", &node), SYS_ERR_NO_ENT);
-    expect("a non-directory mid-path component",
-      ds_walk(DS_ROOT, "afile/leaf", &node), SYS_ERR_WRONG_TYPE);
-    expect("a walk above the subtree",
-      ds_walk(DS_ROOT, "../afile", &node), SYS_ERR_PERM_DENIED);
-
-    cnputs("  a walk resolves a whole path or fails: sub/leaf a file; "
-      "sub/nope and nope NO_ENT; afile/leaf WRONG_TYPE; .. PERM_DENIED\n");
-
-    /*
-     * A directory read names a position and not a snapshot. Between the
-     * first read and the rest, one entry already returned is unlinked, one
-     * not yet reached is unlinked, and one is created past the cursor. An
-     * entry present and unchanged across the whole read appears exactly
-     * once and is never skipped, which a cursor that named a count rather
-     * than a key would break the moment the unlink shifted what followed.
-     */
-    ngot = 0;
-    reads = 0;
-    cursor = 0;
-    for (;;) {
-        char names[DS_READ_K][DS_NAME_MAX];
-        uint32_t count = 0;
-        uint64_t next = 0;
-
-        err = ds_readdir(DS_BIG, cursor, names, &count, &next);
-        if (err != SYS_OK) {
-            panic("dirspike: a directory read failed: %s", errname(err));
-        }
-        for (j = 0; j < count; j++) {
-            ds_copyname(got[ngot++], names[j]);
-        }
-        reads++;
-        if (count == 0) {
-            break;
-        }
-        cursor = next;
-        if (reads == 1) {
-            ds_unlink(DS_BIG, "a");     /* already returned */
-            ds_unlink(DS_BIG, "e");     /* not yet reached */
-            ds_add(DS_BIG, "z", 0);     /* created past the cursor */
-        }
-    }
-
-    /* Every survivor appears exactly once. */
-    for (i = 0; i < 4; i++) {
-        uint32_t len = ds_namelen(survive[i]);
-        uint32_t seen = 0;
-
-        for (j = 0; j < ngot; j++) {
-            if (ds_nameeq(got[j], survive[i], len)) {
-                seen++;
-            }
-        }
-        if (seen != 1) {
-            panic("dirspike: %s appeared %u times, not once",
-              survive[i], (unsigned int)seen);
-        }
-    }
-
-    /* No entry appears twice, whatever became of it. */
-    for (i = 0; i < ngot; i++) {
-        for (j = i + 1; j < ngot; j++) {
-            if (ds_nameeq(got[i], got[j], ds_namelen(got[j]))) {
-                panic("dirspike: an entry appeared twice");
-            }
-        }
-    }
-
-    /* The one unlinked before it was reached never appears. */
-    for (j = 0; j < ngot; j++) {
-        if (ds_nameeq(got[j], "e", 1)) {
-            panic("dirspike: e appeared after being unlinked ahead of it");
-        }
-    }
-
-    cnprintf("  a directory read names a position, not a snapshot: "
-      "%u entries over %u reads, b c d f each once, e gone before reached\n",
-      (unsigned int)ngot, (unsigned int)reads);
-
-    /*
-     * A cursor is the server's to define, and one minted for a directory
-     * is refused against another. A client cannot carry a position from
-     * one directory into a read of a different one, which is the garbage a
-     * stale cursor would otherwise return.
-     */
-    {
-        char names[DS_READ_K][DS_NAME_MAX];
-        uint32_t count = 0;
-        uint64_t next = 0;
-
-        expect("a cursor from another directory",
-          ds_readdir(DS_SUB, DS_CURSOR(DS_BIG, 2), names, &count, &next),
-          SYS_ERR_WRONG_TYPE);
-    }
-    cnputs("  a cursor is the server's to define: a foreign cursor is "
-      "refused WRONG_TYPE\n");
-}
-
-/*
  * Whether a readdir of a directory connection lists an entry of the given
  * name, paged to the directory's end across cursors. It is how the checks
  * see that a create and an unlink are reflected in what a listing returns.
@@ -3631,16 +3191,24 @@ dir_has(sys_handle_t dir, const char *name)
 }
 
 /*
- * M23 stages one through three: the dirspike's walk and directory-read
- * semantics, now in a real server over a real rendezvous, and the create
- * and unlink the dirspike only modelled. `ramfs` is an ordinary loaded
- * program holding a mutable tree in its own memory, and this drives it
- * across the trap edge: a whole-path walk to a file, a read of that file,
- * the three walk refusals the proposal settled, a directory read that
- * pages the `big` directory to its end across an opaque cursor with a
- * foreign cursor refused, and a create and unlink whose effect a listing
- * reflects. A churn longer than the node pool proves an unlink reclaims
- * its slot rather than leaking it.
+ * M23 stages one through four: the walk and directory-read semantics the
+ * spike once modelled against a static tree, now in a real server over a
+ * real rendezvous, with the create and unlink the spike only named. The
+ * spike is gone, because its one property that was not yet proved on the
+ * wire, that a reader survives a mutation made between its reads, is
+ * proved here instead.
+ *
+ * `ramfs` is an ordinary loaded program holding a mutable tree in its own
+ * memory, and this drives it across the trap edge: a whole-path walk to a
+ * file, a read of that file, the three walk refusals the proposal settled,
+ * a directory read that pages the `big` directory to its end across an
+ * opaque cursor with a foreign cursor refused, and a create and unlink
+ * whose effect a listing reflects. A churn longer than the node pool
+ * proves an unlink reclaims its slot rather than leaking it. Last, a
+ * reader pages `big` while a second connection unlinks and creates entries
+ * between two of its reads, and every surviving entry is read exactly
+ * once: the cursor names a position and not a snapshot, carried onto the
+ * wire from the function the spike proved it against.
  */
 static void
 mutable_dir_checks(void)
@@ -3974,6 +3542,149 @@ mutable_dir_checks(void)
         cnputs("    ramfs: a file created and listed, read empty, unlinked "
           "and gone; a create under a file refused; 40 create/unlink "
           "rounds through a pool of far fewer slots\n");
+    }
+
+    /*
+     * A reader across a mutation. The reader pages the big directory; a
+     * second connection to the same directory unlinks an entry the reader
+     * has already seen, unlinks one it has not yet reached, and creates one
+     * past the reader's cursor, all between two of the reader's reads. An
+     * entry present and unchanged across the whole read is read exactly
+     * once and never skipped, which a cursor naming a count rather than a
+     * key would break the moment the unlink shifted what followed. This is
+     * the property the retired spike proved against a function call, now
+     * proved over the rendezvous.
+     */
+    {
+        static const char *const survive[] = { "b", "c", "d", "f", };
+        char got[16];
+        sys_handle_t reader, mutator;
+        fs_readdir_reply_t *drep;
+        uint64_t cursor;
+        uint32_t ngot, reads, i, j;
+
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_WALK;
+        memcpy(req->fr_name, "big", sizeof("big"));
+        tx.request.inline_len = sizeof(*req);
+        expect("a reader's walk to big",
+          run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_OK);
+        reader = tx.reply.handle;
+
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_WALK;
+        memcpy(req->fr_name, "big", sizeof("big"));
+        tx.request.inline_len = sizeof(*req);
+        expect("a mutator's walk to big",
+          run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_OK);
+        mutator = tx.reply.handle;
+
+        ngot = 0;
+        reads = 0;
+        cursor = 0;
+        for (;;) {
+            const uint8_t *ents;
+            uint32_t count, off;
+
+            memset(&tx, 0, sizeof(tx));
+            req = (fs_request_t *)tx.request.inline_data;
+            req->fr_op = FS_OP_READDIR;
+            req->fr_offset = cursor;
+            tx.request.inline_len = sizeof(*req);
+            expect("the reader's directory read",
+              run(SYS_OP_IPC_SEND, reader, &tx, sizeof(tx)), SYS_OK);
+            drep = (fs_readdir_reply_t *)tx.reply.inline_data;
+            count = drep->fr_count;
+            reads++;
+            if (count == 0) {
+                break;
+            }
+            ents = &tx.reply.inline_data[sizeof(fs_readdir_reply_t)];
+            off = 0;
+            for (i = 0; i < count; i++) {
+                const fs_dirent_t *d = (const fs_dirent_t *)&ents[off];
+                char nm = (char)ents[off + sizeof(fs_dirent_t)];
+
+                if (ngot < sizeof(got)) {
+                    got[ngot++] = nm;
+                }
+                off += (uint32_t)sizeof(fs_dirent_t) +
+                  FS_DIRENT_PAD(d->fd_namelen);
+            }
+            cursor = drep->fr_cursor;
+
+            if (reads != 1) {
+                continue;
+            }
+
+            /* Between the first read and the rest, through the mutator. */
+            memset(&tx, 0, sizeof(tx));
+            req = (fs_request_t *)tx.request.inline_data;
+            req->fr_op = FS_OP_UNLINK;
+            memcpy(req->fr_name, "a", sizeof("a"));     /* already read */
+            tx.request.inline_len = sizeof(*req);
+            expect("unlinking an entry already read",
+              run(SYS_OP_IPC_SEND, mutator, &tx, sizeof(tx)), SYS_OK);
+
+            memset(&tx, 0, sizeof(tx));
+            req = (fs_request_t *)tx.request.inline_data;
+            req->fr_op = FS_OP_UNLINK;
+            memcpy(req->fr_name, "e", sizeof("e"));     /* not yet reached */
+            tx.request.inline_len = sizeof(*req);
+            expect("unlinking an entry not yet reached",
+              run(SYS_OP_IPC_SEND, mutator, &tx, sizeof(tx)), SYS_OK);
+
+            memset(&tx, 0, sizeof(tx));
+            req = (fs_request_t *)tx.request.inline_data;
+            req->fr_op = FS_OP_CREATE;
+            req->fr_length = FS_KIND_FILE;
+            memcpy(req->fr_name, "z", sizeof("z"));     /* past the cursor */
+            tx.request.inline_len = sizeof(*req);
+            expect("creating an entry past the cursor",
+              run(SYS_OP_IPC_SEND, mutator, &tx, sizeof(tx)), SYS_OK);
+            expect("closing the created entry",
+              run(SYS_OP_HANDLE_CLOSE, tx.reply.handle, NULL, 0), SYS_OK);
+        }
+
+        /* Every survivor appears exactly once. */
+        for (i = 0; i < 4; i++) {
+            uint32_t seen = 0;
+
+            for (j = 0; j < ngot; j++) {
+                if (got[j] == survive[i][0]) {
+                    seen++;
+                }
+            }
+            if (seen != 1) {
+                panic("ramfs: %s read %u times across the mutation, not once",
+                  survive[i], (unsigned int)seen);
+            }
+        }
+        /* No entry is read twice, whatever became of it. */
+        for (i = 0; i < ngot; i++) {
+            for (j = i + 1; j < ngot; j++) {
+                if (got[i] == got[j]) {
+                    panic("ramfs: an entry was read twice across the mutation");
+                }
+            }
+        }
+        /* The one unlinked before it was reached is never read. */
+        for (j = 0; j < ngot; j++) {
+            if (got[j] == 'e') {
+                panic("ramfs: e was read after an unlink ahead of the reader");
+            }
+        }
+
+        expect("closing the reader connection",
+          run(SYS_OP_HANDLE_CLOSE, reader, NULL, 0), SYS_OK);
+        expect("closing the mutator connection",
+          run(SYS_OP_HANDLE_CLOSE, mutator, NULL, 0), SYS_OK);
+
+        cnprintf("    ramfs: a reader paged big over %u reads across an "
+          "unlink behind it, an unlink ahead of it and a create past it; "
+          "b c d f each once, e gone, a once\n", (unsigned int)reads);
     }
 
     expect("closing the root connection",
@@ -19120,11 +18831,8 @@ kernel_main(void)
     abort_checks();
     inflight_checks();
 
-    cnputs("dirspike: the walk and directory-read edges of section 25.3\n");
-    dirspike_checks();
-
-    cnputs("ramfs: a mutable directory, walk, read, list, create and "
-      "unlink over IPC (M23 s3)\n");
+    cnputs("ramfs: a mutable directory, walk, read, list, create, unlink "
+      "and a reader across a mutation over IPC (M23 s4)\n");
     mutable_dir_checks();
 
     cnputs("user mode: a program that can be interrupted\n");

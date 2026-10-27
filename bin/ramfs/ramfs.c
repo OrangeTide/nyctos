@@ -1,13 +1,17 @@
 /*
  * ramfs: a filesystem server whose directory a client can change.
  *
- * M23 stages one through three. It holds its tree in its own memory rather
+ * M23 stages one through four. It holds its tree in its own memory rather
  * than reading a block store, so a create or an unlink is a change to that
  * memory and nothing beneath it. It walks a whole path, reads a file,
  * lists a directory across an opaque cursor that pages a directory larger
  * than one buffer to its end, and creates and unlinks entries in a
  * directory. An unlink frees the node's slot at once, so the fixed node
- * pool of section 2.7 is reclaimed exactly rather than leaked.
+ * pool of section 2.7 is reclaimed exactly rather than leaked. The cursor
+ * names a position by an entry's key and not a count, so a reader paging a
+ * directory sees every entry that is present and unchanged across the read
+ * exactly once, even as a second client creates and unlinks between its
+ * reads.
  *
  * It is an ordinary program. It is handed a receive handle for its channel
  * as SYS_NS_SERVICE and creates nothing, per section 24.5. The cookie on a
