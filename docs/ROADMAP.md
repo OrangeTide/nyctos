@@ -15266,6 +15266,84 @@ The filesystem and block protocol code encodes and decodes through it rather
 than casting a struct onto bytes a client controls.** Tier 0, single core,
 and the same source at Tier 2.
 
+**Done.** All four stages are built. What it answered, what it cost, and what
+the building kept finding are below. No kernel mechanism changed: the only
+file touched under `sys/kern` is `init_main.c`, the boot test harness that
+drives the checks, and no golden moved, because the cursor allocates nothing
+and reproduces the struct's own byte layout, so the self-describing output is
+identical to the byte.
+
+`sys/sys/wire.h` holds two cursors and nothing else. The append cursor carries
+a buffer, a capacity and a count, and a put that would pass the capacity
+clears a sticky flag and writes nothing. The consume cursor carries the bytes,
+their length and a position, and a get past the length clears the flag and
+yields zero. A byte run longer than what remains is refused whole rather than
+copied in part. Every bounds test is written as `cap - len` or `len - pos`,
+which cannot wrap, rather than as a sum that can. A caller writes or reads a
+whole message in field order and checks the flag once at the end. The byte
+layout is the struct's own, little-endian, so a program reading through the
+cursor reaches the same bytes a program casting the struct reached, and the
+two interoperate while the tree is half converted.
+
+```
+  the cursor itself: a round trip little-endian, 7 bytes written and read back,
+    a write that just fits taken and the next byte refused with len unmoved,
+    a read of all the bytes taken and the next refused yielding zero,
+    an over-long byte run refused whole with the destination left untouched
+  the simple paths: a file read through fs_client and a block read through
+    blk_server reach the same bytes, decoded one field at a time
+  the compound parser: a batch entry declaring 60 name bytes with only a header
+    and one entry actually sent is refused SYS_ERR_INVALID_ARG, not followed
+  the rest: a directory read and a console line reach the same bytes, and ramfs
+    packs each entry through the append cursor, which refuses the overrun
+```
+
+The crafted-batch check is the one the milestone exists for. The old parser
+read `fe_namelen` out of the client's payload and advanced a byte offset by
+it, so a length longer than what was sent walked the parser off the end of the
+message. The two-pass parser now validates every entry through the consume
+cursor before it executes any, and an entry whose name runs past the payload
+clears the cursor's flag, which the server answers `SYS_ERR_INVALID_ARG`. The
+falsification was shown to fire: disabling the directory read's fit check
+(`if (need > ents.cap - ents.len) break;` made unconditional) packed entries
+the writer would have refused and tripped `ramfs: entry d appeared 0 times,
+not once`, reverted before the commit. Every stage was shown falsifiable the
+same way.
+
+**What the building kept finding.**
+
+*The byte layout being the struct's own is what let the conversion be
+incremental.* The protocol structs carry no padding, so a put in field order
+reproduces the exact bytes a cast produced. That is why one program could move
+to the cursor while the others still cast, and the file read still crossed the
+wire between them. A layout with padding would have forced all five programs to
+move in one commit or speak two encodings at once.
+
+*A reader given a length it does not own stops where the bytes stop, not where
+the length says.* The console and the writer both bound their inline data by
+what the message actually carried rather than by the count in the request. The
+cursor makes that the only thing it can do: the consume side knows only the
+length it was initialised with, so a declared length larger than the payload
+cannot drag it past the end. The hand arithmetic had to remember to take the
+smaller of the two, and the compound path forgot.
+
+*The status is mirrored, not re-decoded.* `ramfs` and `fs_server` copy the
+reply's status word into the kernel-visible `reply.status` by reading the
+first word back out of the buffer they just packed, because the two reply
+shapes share a status-first header and reading it back avoids branching on
+which was packed. These two reads are casts onto `inline_data`, but they read
+bytes the program itself just wrote, not bytes a client controls, so they are
+outside what the milestone set out to remove.
+
+*The milestone's reach is the five named programs, not the tree.* The
+stage-four line read "leaving no struct cast onto `inline_data` in the tree,"
+which overreached. The done-when names five programs, and all five decode the
+untrusted request and encode the reply through the cursor. Struct casts onto
+`inline_data` remain in the boot test harness, in libc and the other
+filesystem clients, and in the fault-test and other-protocol programs, all
+outside this milestone. Converting them is a later sweep, not a thing M24
+claimed.
+
 A request today is a struct cast onto `message.inline_data`, and a reply is
 read back the same way. Twenty-six sites across `fs_server`, `fs_client`,
 `blk_server`, the console service and `ramfs` do this. The compound parser in

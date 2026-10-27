@@ -23,7 +23,15 @@ is worth doing and waits on a trigger named in the item.
 
 ## HIGH
 
-### Bounds-checked wire cursor for message payloads
+### Bounds-checked wire cursor for message payloads (done, built as M24)
+
+Done, and built as M24 ("The Payload a Server Reads Without Trusting It").
+`sys/sys/wire.h` holds the append-and-consume cursor, and `fs_server`,
+`fs_client`, `blk_server`, the console service and `ramfs` encode and decode
+through it. The compound parser validates its entries through the consume
+cursor, and a crafted entry whose name runs past the payload is refused
+`SYS_ERR_INVALID_ARG` rather than followed off the end. The original
+description is kept below.
 
 The filesystem client and server encode a request by casting a struct onto
 `message.inline_data` and decode a reply the same way, and the compound path
