@@ -15257,6 +15257,85 @@ server that has somewhere to climb. And a non-directory component stays
 ---
 
 
+### M24. The Payload a Server Reads Without Trusting It
+
+**A bounds-checked cursor over the inline message payload: an append side
+that refuses to run past the buffer and a consume side that refuses to read
+past the bytes it was given, each with a sticky flag the caller checks once.
+The filesystem and block protocol code encodes and decodes through it rather
+than casting a struct onto bytes a client controls.** Tier 0, single core,
+and the same source at Tier 2.
+
+A request today is a struct cast onto `message.inline_data`, and a reply is
+read back the same way. Twenty-six sites across `fs_server`, `fs_client`,
+`blk_server`, the console service and `ramfs` do this. The compound parser in
+`fs_server` goes further: it reads a name length out of a client's payload and
+advances a byte offset by it, by hand, which is where a parser walks off the
+end of a message the client controls. This milestone replaces the casts and
+the hand arithmetic with one cursor that cannot be made to read or write past
+its bounds, and proves that a declared length longer than the payload is
+refused rather than followed.
+
+The cursor is little-endian and allocates nothing. The append side carries a
+buffer, a capacity and a count; a field or byte run that would pass the
+capacity clears a flag and writes nothing. The consume side carries the bytes,
+their length and a position; a read past the length clears the flag and yields
+zero, and a byte run longer than what remains is refused whole rather than
+partly copied. A caller writes or reads a whole message and checks the flag
+once at the end. That is the discipline the reference parser had and its
+directory path failed to follow, which is the bug this does not reproduce.
+
+*Needs.* Nothing the system does not have. One header, and the servers and
+clients already in the tree.
+
+*Not needed.* Any kernel change, the MMU, cohorts, SMP. The cursor is a
+userland header, and the kernel carries the same opaque payload it always has.
+
+*Done when* `fs_server`, `fs_client`, `blk_server`, the console service and
+`ramfs` encode and decode through the cursor, the compound parser consumes its
+entries through it, and a crafted request whose declared length runs past the
+payload is refused with `SYS_ERR_INVALID_ARG` rather than read, with every
+existing filesystem, block and console check still passing.
+
+*Would falsify.* Whether one append-and-consume cursor expresses every current
+encoding without being awkward enough that the casts read more clearly.
+Whether the check-the-flag-once discipline catches the over-read the hand
+arithmetic allowed, measured as a crafted length refused rather than argued.
+Whether a reader given a length it does not own stops at the end rather than
+dragging the cursor past it.
+
+*Size.* Small to medium. A header, a check that exercises it directly, and the
+casts in five programs replaced one protocol at a time. No file under
+`sys/kern` changes, and no golden moves, because the cursor allocates nothing
+and the self-describing output does not change.
+
+The stages, each ending in something that runs and a check that can fail:
+
+1. **The cursor.** A header holding the append and consume cursors, with the
+   put and get of a byte, a 16-, a 32- and a 64-bit field, a byte run, and a
+   skip, each bounds-checked against an overflow-safe remaining count. Runs: a
+   check writes fields and reads them back little-endian, fills a buffer to its
+   capacity, and then asks for one byte more. Falsifies: a write past the end
+   that advances the cursor, a read past the end that returns a byte and leaves
+   the flag set, or a byte run longer than what remains that copies part of
+   itself.
+2. **The simple paths.** `fs_client`, `blk_server` and the single-request
+   replies of `fs_server` encode and decode through the cursor. Runs: the file
+   read and the block read reach the same bytes as before. Falsifies: a reply
+   read past the length the reply carried.
+3. **The compound parser.** `fs_server`'s batch path validates and consumes
+   its entries through the consume cursor, so an entry whose name length runs
+   past the payload is refused. Runs: a crafted batch with an over-long entry
+   is answered `SYS_ERR_INVALID_ARG`, and an honest batch runs as before.
+   Falsifies: the over-long entry followed off the end rather than refused.
+4. **The rest, and the casts gone.** The console service and `ramfs` onto the
+   cursor, leaving no struct cast onto `inline_data` in the tree. Runs: the
+   directory read and the console line reach the same bytes. Falsifies: a
+   directory entry packed past the inline capacity without the writer refusing.
+
+---
+
+
 ## 4. Milestone 1, in Retrospect
 
 The slice was chosen as the smallest thing that could falsify the design

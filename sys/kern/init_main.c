@@ -40,6 +40,7 @@
 #include <sys/timeline.h>
 #include <sys/trace.h>
 #include <sys/vm.h>
+#include <sys/wire.h>
 
 #include <stdbool.h>
 
@@ -3223,6 +3224,94 @@ dir_count(sys_handle_t dir)
  * began, which is the resource exactness the static pools exist to make
  * checkable.
  */
+/*
+ * The payload cursor on its own, no rendezvous. Fields written through the
+ * append cursor read back through the consume cursor little-endian. A write
+ * that fills a buffer is taken and the next is refused without advancing. A
+ * read that empties the payload is taken and the next yields zero with the
+ * flag cleared. A byte run longer than what remains is refused whole, so a
+ * length a client declares cannot drag the cursor past the bytes it owns.
+ */
+static void
+wire_checks(void)
+{
+    uint8_t buf[16];
+    uint8_t got[4];
+    struct wire_out o;
+    struct wire_in in;
+    uint32_t i;
+
+    /* A round trip, and the bytes are little-endian on the wire. */
+    wire_out_init(&o, buf, sizeof(buf));
+    wire_put_u8(&o, 0x11);
+    wire_put_u16(&o, 0x2233);
+    wire_put_u32(&o, 0x44556677u);
+    if (!o.ok) {
+        panic("wire: a write inside the buffer cleared ok");
+    }
+    if (o.len != 7) {
+        panic("wire: 7 bytes written, len says %u", (unsigned int)o.len);
+    }
+    if (buf[0] != 0x11 || buf[1] != 0x33 || buf[2] != 0x22 ||
+      buf[3] != 0x77 || buf[4] != 0x66 || buf[5] != 0x55 || buf[6] != 0x44) {
+        panic("wire: fields were not written little-endian");
+    }
+
+    wire_in_init(&in, buf, o.len);
+    if (wire_get_u8(&in) != 0x11 || wire_get_u16(&in) != 0x2233 ||
+      wire_get_u32(&in) != 0x44556677u) {
+        panic("wire: a field did not read back as written");
+    }
+    if (!in.ok) {
+        panic("wire: reading exactly what was written cleared ok");
+    }
+
+    /* The writer refuses to overrun: a put past capacity is a no-op. */
+    wire_out_init(&o, buf, 4);
+    wire_put_u32(&o, 0xaabbccddu);
+    if (!o.ok || o.len != 4) {
+        panic("wire: a write that just fits was refused");
+    }
+    wire_put_u8(&o, 0xff);
+    if (o.ok) {
+        panic("wire: a write past the end did not clear ok");
+    }
+    if (o.len != 4) {
+        panic("wire: a refused write still advanced the cursor");
+    }
+
+    /* The reader refuses to over-read: a get past the end yields zero. */
+    wire_in_init(&in, buf, 4);
+    (void)wire_get_u32(&in);
+    if (!in.ok) {
+        panic("wire: reading all the bytes cleared ok early");
+    }
+    if (wire_get_u8(&in) != 0) {
+        panic("wire: a read past the end returned a nonzero byte");
+    }
+    if (in.ok) {
+        panic("wire: a read past the end did not clear ok");
+    }
+
+    /* A byte run longer than what remains is refused whole, not in part. */
+    for (i = 0; i < sizeof(got); i++) {
+        got[i] = 0x5a;
+    }
+    wire_in_init(&in, buf, 2);
+    wire_get_bytes(&in, got, sizeof(got));
+    if (in.ok) {
+        panic("wire: an over-long byte run was not refused");
+    }
+    for (i = 0; i < sizeof(got); i++) {
+        if (got[i] != 0x5a) {
+            panic("wire: a refused byte run still copied into the buffer");
+        }
+    }
+
+    cnputs("wire: a cursor that refuses to overrun a buffer or over-read a "
+      "payload\n");
+}
+
 static void
 mutable_dir_checks(void)
 {
@@ -18857,6 +18946,8 @@ kernel_main(void)
     substitution_checks();
     abort_checks();
     inflight_checks();
+
+    wire_checks();
 
     cnputs("ramfs: a mutable directory over IPC, walk through soak\n");
     mutable_dir_checks();
