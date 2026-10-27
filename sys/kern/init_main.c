@@ -4933,10 +4933,10 @@ virtio_probe_checks(void)
 {
     struct proc *self = proc_current();
     struct handle_table *ht = &self->p_handles;
-    struct grant *g;
-    uintptr_t regs, span;
-    sys_handle_t h_dev, h;
-    sys_ns_spec_t ns[1];
+    struct grant *g, *g_dma;
+    uintptr_t regs, span, dma;
+    sys_handle_t h_dev, h_dma, h;
+    sys_ns_spec_t ns[2];
     struct child c;
     void *obj;
     int status;
@@ -4952,12 +4952,35 @@ virtio_probe_checks(void)
         panic("virtio: no handle for the grant");
     }
 
+    /*
+     * And a page of memory for the queue and the buffers the device reaches
+     * by their physical addresses. A grant is mapped at the address it
+     * covers, so what the driver sees as a pointer is what the device reads,
+     * which is what a device with no translation in front of it needs and is
+     * why the queue cannot live in the driver's ordinary memory.
+     */
+    dma = page_alloc();
+    if (dma == 0) {
+        panic("virtio: no page for the queue");
+    }
+    g_dma = grant_create("virtio-dma", dma, PAGE_SIZE, false);
+    if (g_dma == NULL) {
+        panic("virtio: no grant for the queue page");
+    }
+    if (handle_insert(ht, g_dma, SYS_OBJ_GRANT,
+      SYS_RIGHT_MAP | SYS_RIGHT_READ | SYS_RIGHT_WRITE | SYS_RIGHT_TRANSFER,
+      &h_dma) != SYS_OK) {
+        panic("virtio: no handle for the queue grant");
+    }
+
     memset(ns, 0, sizeof(ns));
     ns[0].id = SYS_NS_DEVICE;
     ns[0].handle = h_dev;
+    ns[1].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 0);
+    ns[1].handle = h_dma;
 
     sched_defer();
-    if (proc_spawn_op(self, "virtio_blk", PRIO_BOOT - 1, ns, 1, NULL, 0, &h)
+    if (proc_spawn_op(self, "virtio_blk", PRIO_BOOT - 1, ns, 2, NULL, 0, &h)
       != SYS_OK) {
         panic("virtio: could not start the driver");
     }
@@ -4969,12 +4992,12 @@ virtio_probe_checks(void)
 
     status = child_join(&c, JOIN_MS);
     if (status != 0) {
-        panic("virtio: the driver did not bring the device up, status %d",
+        panic("virtio: the driver did not read block zero, status %d",
           status);
     }
     handle_close(ht, h);
 
-    cnputs("virtio: a block device brought up over one virtqueue\n");
+    cnputs("virtio: block zero read off the device over one virtqueue\n");
 }
 
 

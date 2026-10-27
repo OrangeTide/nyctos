@@ -4,15 +4,17 @@
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
  * Holds a grant over the machine's virtio-mmio transport slots, scans them
- * for the block device, brings it up over one split virtqueue laid out in the
- * driver's own memory, and drives it. A block device reached this way is a
- * real one behind the block protocol the RAM store used to answer, so a file
- * read reaches bytes on an emulated disk rather than in a server's array.
+ * for the block device, brings it up over one split virtqueue, and drives it.
+ * A block device reached this way is a real one behind the block protocol the
+ * RAM store used to answer, so a file read reaches bytes on an emulated disk
+ * rather than in a server's array.
  *
  * The device reaches the queue and buffers by their addresses as the machine
- * sees them. User memory is identity-mapped, so the address the driver holds
- * is the physical address the device reads, and the queue needs no
- * translation.
+ * sees them, which are physical. A program's ordinary memory is not mapped at
+ * its physical address, so the queue and buffers live in a second grant, a
+ * page of memory the boot hands this driver. A grant is mapped at the address
+ * it covers, so an address in that page is the physical address the device
+ * reads, and the queue needs no translation.
  *
  */
 
@@ -23,30 +25,43 @@
 #include <string.h>
 #include <sys/virtio.h>
 
+/* The driver's DMA page is handed over under this private namespace id. */
+#define NS_DMA      (SYS_NS_PRIVATE + 0)
+
+#define QUEUE_SIZE  8u
+
 /* One mapped slot: the base address of its register window. */
 static uintptr_t slot_base;
 
 /*
- * The one virtqueue, laid out in the driver's own memory. Modern
- * virtio-mmio takes the three rings at three addresses, so they need no
- * shared alignment, only each its own: the descriptor table on sixteen, the
- * available ring on two, the used ring on four.
+ * The virtqueue and the buffers one read uses, laid out in the granted DMA
+ * page. Modern virtio-mmio takes the three rings at three addresses, so they
+ * need no shared alignment, only each its own; placing them in one struct at
+ * the page's base gives each its natural alignment, the descriptor table on
+ * sixteen and past it the rest.
  */
-#define QUEUE_SIZE  8u
+struct dma_page {
+    struct virtq_desc desc[QUEUE_SIZE];
+    struct {
+        uint16_t    flags;
+        uint16_t    idx;
+        uint16_t    ring[QUEUE_SIZE];
+    } avail;
+    struct {
+        uint16_t    flags;
+        uint16_t    idx;
+        struct virtq_used_elem ring[QUEUE_SIZE];
+    } used;
+    struct virtio_blk_req hdr;
+    uint8_t     data[VIRTIO_BLK_SECTOR_BYTES];
+    uint8_t     status;
+};
 
-static struct virtq_desc desc[QUEUE_SIZE] __attribute__((aligned(16)));
+static struct dma_page *q;
 
-static struct {
-    uint16_t    flags;
-    uint16_t    idx;
-    uint16_t    ring[QUEUE_SIZE];
-} avail __attribute__((aligned(2)));
-
-static struct {
-    uint16_t    flags;
-    uint16_t    idx;
-    struct virtq_used_elem ring[QUEUE_SIZE];
-} used __attribute__((aligned(4)));
+/* How far the driver has advanced the available ring, and consumed the used. */
+static uint16_t avail_sent;
+static uint16_t used_seen;
 
 static uint32_t
 reg_rd(unsigned int off)
@@ -147,14 +162,12 @@ bring_up(void)
     }
     reg_wr(VIRTIO_MMIO_QUEUE_NUM, QUEUE_SIZE);
 
-    memset(desc, 0, sizeof(desc));
-    memset(&avail, 0, sizeof(avail));
-    memset(&used, 0, sizeof(used));
-    reg_wr_addr(VIRTIO_MMIO_QUEUE_DESC_LOW, VIRTIO_MMIO_QUEUE_DESC_HIGH, desc);
+    reg_wr_addr(VIRTIO_MMIO_QUEUE_DESC_LOW, VIRTIO_MMIO_QUEUE_DESC_HIGH,
+      q->desc);
     reg_wr_addr(VIRTIO_MMIO_QUEUE_DRIVER_LOW, VIRTIO_MMIO_QUEUE_DRIVER_HIGH,
-      &avail);
+      &q->avail);
     reg_wr_addr(VIRTIO_MMIO_QUEUE_DEVICE_LOW, VIRTIO_MMIO_QUEUE_DEVICE_HIGH,
-      &used);
+      &q->used);
     reg_wr(VIRTIO_MMIO_QUEUE_READY, 1);
 
     status |= VIRTIO_STATUS_DRIVER_OK;
@@ -169,12 +182,73 @@ bring_up(void)
     return 0;
 }
 
+/*
+ * Read one 512-byte sector into the data buffer. The chain is three
+ * descriptors: the header the device reads, the sector it writes, and the
+ * status byte it writes last. The head goes in the available ring, the device
+ * is notified, and the used ring is polled until it advances. The fences keep
+ * the descriptors written before the notify and the status read after the
+ * completion, because the device sees the queue through memory and not
+ * through the register write.
+ */
+static int
+read_sector(uint64_t sector)
+{
+    q->hdr.type = VIRTIO_BLK_T_IN;
+    q->hdr.reserved = 0;
+    q->hdr.sector = sector;
+    q->status = 0xff;
+
+    q->desc[0].addr = (uint64_t)(uintptr_t)&q->hdr;
+    q->desc[0].len = (uint32_t)sizeof(q->hdr);
+    q->desc[0].flags = VIRTQ_DESC_F_NEXT;
+    q->desc[0].next = 1;
+
+    q->desc[1].addr = (uint64_t)(uintptr_t)q->data;
+    q->desc[1].len = (uint32_t)sizeof(q->data);
+    q->desc[1].flags = VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT;
+    q->desc[1].next = 2;
+
+    q->desc[2].addr = (uint64_t)(uintptr_t)&q->status;
+    q->desc[2].len = 1;
+    q->desc[2].flags = VIRTQ_DESC_F_WRITE;
+    q->desc[2].next = 0;
+
+    q->avail.ring[avail_sent % QUEUE_SIZE] = 0;      /* head of the chain */
+    avail_sent++;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    q->avail.idx = avail_sent;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+
+    reg_wr(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+
+    while (*(volatile uint16_t *)&q->used.idx == used_seen) {
+        /* spin: one request, and nothing else for this driver to do */
+    }
+    used_seen = q->used.idx;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+
+    if (q->status != VIRTIO_BLK_S_OK) {
+        return 9;       /* the device reported the read failed */
+    }
+
+    return 0;
+}
+
+/*
+ * The first block of the disk, the same bytes blk.h's layout puts at block
+ * zero and mkdisk writes there. Reading it back over the ring is the stage's
+ * proof that the bytes come off the device.
+ */
+static const char block_zero[] = "served from outside the kernel\n";
+
 int
 main(void)
 {
-    sys_handle_t h_dev;
-    uintptr_t region, span;
+    sys_handle_t h_dev, h_dma;
+    uintptr_t region, span, dma, dma_span;
     int err;
+    uint32_t i;
 
     h_dev = ns_lookup(SYS_NS_DEVICE);
     if (h_dev == SYS_HANDLE_INVALID) {
@@ -186,6 +260,22 @@ main(void)
         return 2;
     }
 
+    h_dma = ns_lookup((sys_ns_id_t)NS_DMA);
+    if (h_dma == SYS_HANDLE_INVALID) {
+        DBG_PUTS("virtio_blk: spawned without a DMA page");
+        return 11;
+    }
+    if (sys_grant_map(h_dma, &dma, &dma_span) != SYS_OK) {
+        DBG_PUTS("virtio_blk: the DMA grant would not map");
+        return 12;
+    }
+    if (dma_span < sizeof(struct dma_page)) {
+        DBG_PUTS("virtio_blk: the DMA page is too small for the queue");
+        return 13;
+    }
+    q = (struct dma_page *)dma;
+    memset(q, 0, sizeof(*q));
+
     if (find_block_device(region, span) != 0) {
         DBG_PUTS("virtio_blk: no block device in the granted slots");
         return 3;
@@ -195,6 +285,18 @@ main(void)
     if (err != 0) {
         DBG_PUTS("virtio_blk: the block device would not come up");
         return err;
+    }
+
+    err = read_sector(0);
+    if (err != 0) {
+        DBG_PUTS("virtio_blk: the read did not complete");
+        return err;
+    }
+    for (i = 0; i < sizeof(block_zero) - 1; i++) {
+        if (q->data[i] != (uint8_t)block_zero[i]) {
+            DBG_PUTS("virtio_blk: block zero was not the disk's first block");
+            return 10;
+        }
     }
 
     return 0;
