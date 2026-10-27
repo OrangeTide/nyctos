@@ -15581,6 +15581,81 @@ The stages, each ending in something that runs and a check that can fail:
 ---
 
 
+### M26. A Write the Disk Keeps Across a Boot
+
+**The write side of the block store, end to end and durable: the driver writes
+a sector to the virtio device over the ring as well as reading one, the store
+answers `FS_OP_WRITE` by placing a block into its sector, and the emulator
+keeps the bytes in the disk image, so a value written in one boot is read back
+in the next.** Tier 0, single core, and the same source at Tier 2.
+
+M25 made the store read a real device. It is still read only: every file it
+serves was written into the disk image by the build, and nothing a running
+system does reaches the disk. This milestone adds the write. The driver gains a
+write chain, the mirror of the read chain it already issues, and the store
+answers `FS_OP_WRITE` by writing the block the request carries. Because a block
+is smaller than a sector, a write reads the sector the block lives in, places
+the block into it, and writes the sector back, so the blocks around it are
+undisturbed. The emulator holds the disk image open for writing, so a write
+that reaches the device reaches the file behind it, and a later boot over that
+same image reads what the earlier boot wrote.
+
+Durability is the claim, and it is the one a single boot cannot make. A write
+read back in the same boot could be read back out of a cache that never
+reached the disk. So the milestone's own check is two boots over one image the
+build makes once and does not remake between them: the first writes a marker
+to a free block, the second reads it, and the marker being there is the disk
+having kept it while nothing was running. A boot that found the marker gone
+would be a write that reached memory and not the platter.
+
+*Needs.* The read path of M25, the queue and the grants it already holds, and
+a disk image the emulator opens for writing rather than read only. The write
+operation number is the protocol's already; the console is written to, so
+`FS_OP_WRITE` is a shape the system knows.
+
+*Not needed.* Any kernel mechanism change, an interrupt, the MMU beyond the
+grant mapping M25 used, cohorts, SMP. The write is a second descriptor chain
+and a second operation the store answers, both userland.
+
+*Done when* a boot writes a block through the store to the device and reads it
+back changed, a second boot over the same image reads a marker the first boot
+wrote, and a write the store cannot place, the same out-of-range or misaligned
+request a read refuses, is refused rather than silently dropped.
+
+*Would falsify.* Whether a user-space driver writes the device with the same
+queue and grants it reads with, and no new mechanism. Whether a block write
+smaller than a sector places its block without disturbing the blocks that
+share the sector. Whether the emulator keeps the write across a boot, or the
+image resets and the marker is gone.
+
+*Size.* Small to medium. A write chain in the driver, a read-modify-write of
+the sector, `FS_OP_WRITE` in the store, a disk image opened for writing, and a
+persistence check that boots twice over one image. No file under `sys/kern`
+changes but the boot harness that drives the checks. A golden may move where
+the store's write surfaces in boot output; the diffed shell session does not
+change.
+
+The stages, each ending in something that runs and a check that can fail:
+
+1. **The write, over the ring.** The driver gains a write chain, a header,
+   the sector to write, and a status byte, the mirror of its read chain. Runs:
+   a boot check writes a sector and reads it back as what it wrote. Falsifies:
+   a read after a write returning the bytes that were there before it.
+2. **The store writes.** `virtio_blk` answers `FS_OP_WRITE` by reading the
+   block's sector, placing the block, and writing the sector back, refusing a
+   misaligned or out-of-range write as a read is refused. Runs: the boot
+   harness writes a block through the store connection and reads it back
+   changed, and a neighbour block in the same sector is unchanged. Falsifies: a
+   write that did not change the read, or that changed a block it did not name.
+3. **Across a boot.** Two boots over one image the build makes once: the first
+   writes a marker to a free block, the second reads it. Runs: the second boot
+   finds the marker the first wrote. Falsifies: a marker gone on the second
+   boot, which is a write that reached memory and not the disk, or an image
+   remade between the boots.
+
+---
+
+
 ## 4. Milestone 1, in Retrospect
 
 The slice was chosen as the smallest thing that could falsify the design
