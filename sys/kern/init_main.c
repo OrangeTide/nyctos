@@ -3574,14 +3574,16 @@ dirspike_checks(void)
 }
 
 /*
- * M23 stage one: the dirspike's walk semantics, now in a real server over
- * a real rendezvous. `ramfs` is an ordinary loaded program holding a
- * mutable tree in its own memory, and this drives it across the trap edge:
- * a whole-path walk to a file, a read of that file, and the three walk
- * refusals the proposal settled. The create, unlink and directory read the
- * tree is built for answer SYS_ERR_NOT_SUPPORTED until later stages, which
- * this also checks, so the first client to use them learns the limit
- * rather than inferring it.
+ * M23 stages one and two: the dirspike's walk and directory-read
+ * semantics, now in a real server over a real rendezvous. `ramfs` is an
+ * ordinary loaded program holding a mutable tree in its own memory, and
+ * this drives it across the trap edge: a whole-path walk to a file, a read
+ * of that file, the three walk refusals the proposal settled, and a
+ * directory read that pages the `big` directory to its end across an
+ * opaque cursor, with a cursor from another directory refused. The create
+ * and unlink the tree is built for answer SYS_ERR_NOT_SUPPORTED until a
+ * later stage, which this also checks, so the first client to use them
+ * learns the limit rather than inferring it.
  */
 static void
 mutable_dir_checks(void)
@@ -3688,14 +3690,122 @@ mutable_dir_checks(void)
     /* The operations a later stage fills in are named, not unknown. */
     memset(&tx, 0, sizeof(tx));
     req = (fs_request_t *)tx.request.inline_data;
-    req->fr_op = FS_OP_READDIR;
+    req->fr_op = FS_OP_CREATE;
     tx.request.inline_len = sizeof(*req);
-    expect("a directory read, not yet provided",
+    expect("a create, not yet provided",
       run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_ERR_NOT_SUPPORTED);
 
     cnprintf("    ramfs: a whole-path walk over the wire read %u bytes at "
       "sub/leaf, afile/leaf WRONG_TYPE, sub/nope NO_ENT, .. PERM_DENIED\n",
       (unsigned int)n);
+
+    /*
+     * The directory read, across the rendezvous. The `big` directory holds
+     * more entries than one inline reply carries, so the listing pages to
+     * its end across cursors. An entry unchanged across the whole read
+     * appears exactly once, which the server's key-ordered read gives for
+     * free. The entries come back inline here rather than in a buffer,
+     * because the client is the boot thread and its stack is kernel memory
+     * a server may not write, which is the refusal kernel_buffer_checks
+     * proved. A user client would pass a buffer and read the same entries.
+     */
+    {
+        fs_readdir_reply_t *drep;
+        sys_handle_t dir;
+        uint64_t cursor, foreign;
+        uint32_t reads, pages, total, i;
+        uint8_t seen[6];
+
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_WALK;
+        memcpy(req->fr_name, "big", sizeof("big"));
+        tx.request.inline_len = sizeof(*req);
+        expect("a walk to the big directory",
+          run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_OK);
+        dir = tx.reply.handle;
+
+        for (i = 0; i < 6; i++) {
+            seen[i] = 0;
+        }
+        cursor = 0;
+        reads = 0;
+        pages = 0;
+        total = 0;
+        for (;;) {
+            const uint8_t *ents;
+            uint32_t count, off;
+
+            memset(&tx, 0, sizeof(tx));
+            req = (fs_request_t *)tx.request.inline_data;
+            req->fr_op = FS_OP_READDIR;
+            req->fr_offset = cursor;
+            tx.request.inline_len = sizeof(*req);
+            expect("a directory read",
+              run(SYS_OP_IPC_SEND, dir, &tx, sizeof(tx)), SYS_OK);
+            drep = (fs_readdir_reply_t *)tx.reply.inline_data;
+            count = drep->fr_count;
+            reads++;
+            if (count == 0) {
+                break;
+            }
+            pages++;
+            ents = &tx.reply.inline_data[sizeof(fs_readdir_reply_t)];
+            off = 0;
+            for (i = 0; i < count; i++) {
+                const fs_dirent_t *d = (const fs_dirent_t *)&ents[off];
+                char nm = (char)ents[off + sizeof(fs_dirent_t)];
+
+                if (nm >= 'a' && nm <= 'f') {
+                    seen[nm - 'a']++;
+                }
+                off += (uint32_t)sizeof(fs_dirent_t) +
+                  FS_DIRENT_PAD(d->fd_namelen);
+                total++;
+            }
+            cursor = drep->fr_cursor;
+        }
+
+        for (i = 0; i < 6; i++) {
+            if (seen[i] != 1) {
+                panic("ramfs: entry %c appeared %u times, not once",
+                  'a' + (int)i, (unsigned int)seen[i]);
+            }
+        }
+        if (pages < 2) {
+            panic("ramfs: the big directory fit one read; it must span");
+        }
+
+        /*
+         * A cursor minted for big is refused against the root. The client
+         * carries an opaque value from one directory into a read of
+         * another, and a position in big is not a position in the root.
+         */
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_READDIR;
+        req->fr_offset = 0;
+        tx.request.inline_len = sizeof(*req);
+        expect("a directory read to mint a cursor",
+          run(SYS_OP_IPC_SEND, dir, &tx, sizeof(tx)), SYS_OK);
+        drep = (fs_readdir_reply_t *)tx.reply.inline_data;
+        foreign = drep->fr_cursor;
+
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_READDIR;
+        req->fr_offset = foreign;
+        tx.request.inline_len = sizeof(*req);
+        expect("a cursor from another directory",
+          run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_ERR_WRONG_TYPE);
+
+        expect("closing the big connection",
+          run(SYS_OP_HANDLE_CLOSE, dir, NULL, 0), SYS_OK);
+
+        cnprintf("    ramfs: the big directory listed %u entries over %u "
+          "reads, a-f each once, a foreign cursor refused WRONG_TYPE\n",
+          (unsigned int)total, (unsigned int)reads);
+    }
 
     expect("closing the root connection",
       run(SYS_OP_HANDLE_CLOSE, root, NULL, 0), SYS_OK);
@@ -18844,7 +18954,8 @@ kernel_main(void)
     cnputs("dirspike: the walk and directory-read edges of section 25.3\n");
     dirspike_checks();
 
-    cnputs("ramfs: a mutable directory, walk and read over IPC (M23 s1)\n");
+    cnputs("ramfs: a mutable directory, walk, read and list over IPC "
+      "(M23 s2)\n");
     mutable_dir_checks();
 
     cnputs("user mode: a program that can be interrupted\n");

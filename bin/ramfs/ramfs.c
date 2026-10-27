@@ -1,13 +1,14 @@
 /*
  * ramfs: a filesystem server whose directory a client can change.
  *
- * M23 stage one. It holds its tree in its own memory rather than reading
- * a block store, so a create or an unlink is a change to that memory and
- * nothing beneath it. This stage walks a whole path and reads a file. The
- * create, unlink and directory read the tree is built for arrive in later
- * stages and answer SYS_ERR_NOT_SUPPORTED until they do, which is section
- * 25.3's rule that a server names the operations it cannot yet provide
- * rather than failing them as if they did not exist.
+ * M23 stages one and two. It holds its tree in its own memory rather than
+ * reading a block store, so a create or an unlink is a change to that
+ * memory and nothing beneath it. It walks a whole path, reads a file, and
+ * lists a directory across an opaque cursor that pages a directory larger
+ * than one buffer to its end. The create and unlink the tree is built for
+ * arrive in a later stage and answer SYS_ERR_NOT_SUPPORTED until they do,
+ * which is section 25.3's rule that a server names the operations it
+ * cannot yet provide rather than failing them as if they did not exist.
  *
  * It is an ordinary program. It is handed a receive handle for its channel
  * as SYS_NS_SERVICE and creates nothing, per section 24.5. The cookie on a
@@ -32,6 +33,20 @@
 #define RAMFS_MAX_NODES  32
 #define RAMFS_NONE       0xffffffffu
 #define RAMFS_ROOT       0
+
+/*
+ * A directory read cursor is opaque to the client, and this is the
+ * server's own reading of it: the directory it was minted for in the high
+ * bits, the key to resume after in the low bits. A client stores it and
+ * sends it back and may not compute one. A cursor whose directory half
+ * does not match the connection it arrives on names a position somewhere
+ * else, and is refused rather than answered. Keys are never reused, so a
+ * cursor names a position and not a snapshot: an entry unchanged across a
+ * read keeps its key and so appears exactly once.
+ */
+#define RAMFS_CURSOR(dir, key)  (((uint64_t)((dir) + 1) << 48) | (uint64_t)(key))
+#define RAMFS_CURSOR_DIR(c)     ((uint32_t)(((c) >> 48) - 1))
+#define RAMFS_CURSOR_KEY(c)     ((c) & (((uint64_t)1 << 48) - 1))
 
 /*
  * A node is a name under a parent, a key in creation order, and either a
@@ -262,6 +277,124 @@ do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
     rep->fr_status = SYS_OK;
 }
 
+/*
+ * Pack a directory's entries into the client's buffer, in key order, from
+ * the position the cursor names. The read stops at the first entry that
+ * does not fit, which is a short read: the cursor it returns resumes
+ * there, so a directory larger than one buffer pages to its end rather
+ * than stopping at the first buffer-full. A read of something that is not
+ * a directory is SYS_ERR_WRONG_TYPE, which is the same answer a walk gives
+ * a non-directory in the middle of a path.
+ */
+static void
+do_readdir(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
+  sys_msg_t *reply, fs_readdir_reply_t *rep)
+{
+    uint8_t *buf;
+    uint32_t cap, used, count;
+    uint64_t next;
+
+    if (node >= RAMFS_MAX_NODES || !nodes[node].live) {
+        rep->fr_status = SYS_ERR_NO_ENT;
+        return;
+    }
+    if (!nodes[node].is_dir) {
+        rep->fr_status = SYS_ERR_WRONG_TYPE;
+        return;
+    }
+
+    /*
+     * Zero starts a read; any other value is a position, and a position
+     * minted for another directory is refused rather than answered. A
+     * connection carries no position, so the cursor is read fresh here and
+     * nothing about it is held between requests.
+     */
+    if (req->fr_offset == 0) {
+        next = 0;
+    } else {
+        if (RAMFS_CURSOR_DIR(req->fr_offset) != node) {
+            rep->fr_status = SYS_ERR_WRONG_TYPE;
+            return;
+        }
+        next = RAMFS_CURSOR_KEY(req->fr_offset);
+    }
+
+    /*
+     * Into the client's buffer when it supplied one, per section 25.5, and
+     * inline otherwise, exactly as a read chooses. A directory too large
+     * for whichever space it lands in is a short read that carries a cursor
+     * to resume from, so paging is the same whether the entries go inline
+     * or to a buffer.
+     */
+    if (message->buf != 0 && message->buf_len > 0) {
+        buf = (uint8_t *)message->buf;
+        cap = message->buf_len;
+    } else {
+        buf = &reply->inline_data[sizeof(fs_readdir_reply_t)];
+        cap = SYS_IPC_INLINE_BYTES - (uint32_t)sizeof(fs_readdir_reply_t);
+    }
+    used = 0;
+    count = 0;
+
+    for (;;) {
+        uint32_t best = RAMFS_MAX_NODES;
+        uint64_t best_key = 0;
+        uint32_t i, namelen, pad, need;
+        fs_dirent_t *d;
+
+        /* The live child with the smallest key at or past the cursor. */
+        for (i = 0; i < RAMFS_MAX_NODES; i++) {
+            if (!nodes[i].live || nodes[i].parent != node) {
+                continue;
+            }
+            if (nodes[i].key < next) {
+                continue;
+            }
+            if (best >= RAMFS_MAX_NODES || nodes[i].key < best_key) {
+                best = i;
+                best_key = nodes[i].key;
+            }
+        }
+        if (best >= RAMFS_MAX_NODES) {
+            break;
+        }
+
+        namelen = (uint32_t)strlen(nodes[best].name);
+        pad = FS_DIRENT_PAD(namelen);
+        need = (uint32_t)sizeof(fs_dirent_t) + pad;
+        if (used + need > cap) {
+            break;              /* a short read: the cursor resumes here */
+        }
+
+        d = (fs_dirent_t *)&buf[used];
+        d->fd_kind = nodes[best].is_dir ? FS_KIND_DIR : FS_KIND_FILE;
+        d->fd_namelen = namelen;
+        memcpy(&buf[used + sizeof(fs_dirent_t)], nodes[best].name, namelen);
+        for (i = namelen; i < pad; i++) {
+            buf[used + sizeof(fs_dirent_t) + i] = 0;
+        }
+        used += need;
+        count++;
+        next = best_key + 1;
+    }
+
+    rep->fr_count = count;
+    rep->fr_cursor = RAMFS_CURSOR(node, next);
+    rep->fr_status = SYS_OK;
+
+    /*
+     * The entries sit after the reply header when they went inline, and
+     * the reply's inline length must cover them. A buffered read leaves
+     * the entries in the buffer and the inline payload is the header
+     * alone.
+     */
+    if (message->buf != 0 && message->buf_len > 0) {
+        reply->inline_len = sizeof(fs_readdir_reply_t);
+    } else {
+        reply->inline_len = (uint32_t)sizeof(fs_readdir_reply_t) + used;
+    }
+}
+
 int
 main(void)
 {
@@ -301,15 +434,18 @@ main(void)
             do_read(&message, req, node, &reply, rep);
             reply.inline_len = sizeof(*rep) + rep->fr_length;
             break;
+        case FS_OP_READDIR:
+            do_readdir(&message, req, node, &reply,
+              (fs_readdir_reply_t *)rep);
+            break;
         case FS_OP_CLOSE:
             rep->fr_status = SYS_OK;
             break;
         case FS_OP_CREATE:
         case FS_OP_UNLINK:
-        case FS_OP_READDIR:
             /*
-             * The tree is built for these and they arrive in later M23
-             * stages. Named rather than left to the default, so a client
+             * The tree is built for these and they arrive in a later M23
+             * stage. Named rather than left to the default, so a client
              * learns the limit at the point of use, per section 25.3.
              */
             rep->fr_status = SYS_ERR_NOT_SUPPORTED;
