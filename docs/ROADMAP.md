@@ -15418,6 +15418,102 @@ The stages, each ending in something that runs and a check that can fail:
 ---
 
 
+### M25. The Store That Reads From a Device, Not From Its Own Memory
+
+**A user-space virtio-mmio block driver, an ordinary process holding a device
+grant, that drives a real QEMU virtio-blk device over one virtqueue and serves
+the block protocol the RAM store served, so a file read reaches bytes that
+live on an emulated disk rather than in a server's `static` array.** Tier 0,
+single core, and the same source at Tier 2.
+
+The block store today is `BLK_BLOCK_COUNT` blocks of a server's own memory,
+formatted from three string constants at start-up. It is the stand-in a
+protocol keeps so the layer above it has something to read, and nothing behind
+it is a device. This milestone puts a real one there: the QEMU `virt` machine
+carries virtio-mmio transport slots, and a block device plugged into one is
+driven by a program that maps the slot's register window, negotiates the
+device, sets up a single split virtqueue in its own memory, and reads whole
+blocks off the disk image the build hands QEMU. The filesystem above does not
+change, because the driver answers the same `FS_OP_READ` with the same
+block-aligned offset the RAM store answered.
+
+The driver polls the used ring rather than taking an interrupt. A block read
+is synchronous: the driver kicks the queue and waits for the one request it
+issued, so there is nothing an interrupt would save that a poll does not, and
+the arch interrupt layer, which today knows one source, stays as it is.
+Interrupt-driven completion is the follow-on the asynchronous path of
+`PROPOSALS.md` would want, not this.
+
+The device reaches the driver's queue and buffers by their addresses as the
+machine sees them. User memory is identity-mapped, so a buffer's address in
+the driver is the physical address the device reads, and the queue needs no
+translation and no new kernel mechanism. That is the property `PROPOSALS.md`
+section 4 names when it says a storage engine is developed "without touching
+the kernel or libc"; this milestone is the first thing to lean on it, and if
+it does not hold at Tier 2 the milestone finds out at stage two rather than
+arguing about it.
+
+Read only, and the three files the RAM store served, from a disk image built
+from the same bytes so every existing `cat` check passes unchanged. Write and
+a copy-on-write engine are the separate concern section 4 keeps separate.
+
+*Needs.* A device grant over the virtio-mmio slot, exactly as the console
+holds one over the UART, and the lent-buffer reply path. Both present since
+milestone 2. An arch helper giving the slot's base address, as there is one
+for the UART interrupt, and a QEMU disk image the build produces.
+
+*Not needed.* Any kernel mechanism change, an interrupt for the device, the
+MMU as anything but the identity map it already is, cohorts, SMP. The driver
+is a user program speaking the protocol the RAM store spoke.
+
+*Done when* the block store under the filesystem is the virtio driver rather
+than the RAM server, a client reads a file and the bytes come off the virtio
+device, and the driver refuses a device that is not a block device and a
+request whose used-ring status is not success rather than serving whatever was
+in the buffer.
+
+*Would falsify.* Whether a user-space program with only a device grant and a
+lent buffer can drive a virtio device to completion with no kernel change.
+Whether user memory being identity-mapped is enough for the device to reach
+the driver's queue and buffers at Tier 2, or whether DMA needs a mechanism the
+system does not have. Whether polling the used ring reaches the same bytes the
+RAM store served, measured as the existing file reads returning unchanged.
+
+*Size.* Medium to large. A driver near the size of the console, the
+virtio-mmio and virtqueue definitions in a header, the device-grant and
+disk-image wiring, an arch base helper, and the QEMU flags. No file under
+`sys/kern` changes. A golden may move only if the store's identity surfaces in
+boot output; the file contents the shell reads do not change.
+
+The stages, each ending in something that runs and a check that can fail:
+
+1. **The device, probed.** The build gives QEMU a virtio-blk device backed by
+   a disk image, and the boot hands a driver a grant over the slot's register
+   window. The driver maps it and reads the virtio-mmio identity registers.
+   Runs: the driver confirms the magic, the version, and a block device id.
+   Falsifies: a grant over an empty slot, whose magic or device id is wrong,
+   refused rather than driven.
+2. **One virtqueue, accepted.** The driver resets the device, negotiates
+   features, lays a single split virtqueue out in its own memory, writes the
+   queue's addresses to the device, and sets `DRIVER_OK`. Runs: the device
+   reaches the ready state without the status register going to `FAILED`.
+   Falsifies: a queue address the device cannot reach, or `DRIVER_OK` withheld,
+   leaving the device unready.
+3. **A block off the disk.** The driver builds a descriptor chain of a request
+   header, a data buffer and a status byte, kicks the queue, polls the used
+   ring, and reads the completion status. Runs: reading block zero returns the
+   disk image's first block. Falsifies: a used-ring status that is not success
+   served as data, or bytes that do not match the image.
+4. **The store served from the device.** The filesystem's storage layer is the
+   virtio driver rather than the RAM server, and the three files are read off
+   the disk image over the unchanged protocol. Runs: a client reads each file
+   and the bytes come off the device. Falsifies: a block changed in the image
+   changing the file a check reads, which is the whole stack proving the bytes
+   are the disk's and not a server's array.
+
+---
+
+
 ## 4. Milestone 1, in Retrospect
 
 The slice was chosen as the smallest thing that could falsify the design
