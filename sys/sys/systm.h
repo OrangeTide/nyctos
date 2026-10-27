@@ -139,6 +139,9 @@ void md_fault_check(void);
 /* Where the console this kernel panics through has its registers. */
 void md_console_regs(uintptr_t *base, size_t *len);
 
+/* The virtio-mmio transport slots a block driver scans and drives. */
+void md_virtio_regs(uintptr_t *base, size_t *len);
+
 const char *md_mode(void);
 
 /* The address space the hardware is translating through. */

@@ -51,7 +51,8 @@ all clean:
 # purpose failed to break it, because the line being edited ended in a
 # carriage return and the edit matched nothing.
 check: all
-	@mkdir -p $(OBJTOP)/check
+	@mkdir -p $(OBJTOP)/check $(dir $(DISK_IMG))
+	@$(MKDISK) $(DISK_IMG)
 	@echo "check: $(ARCH), paced"
 	@$(TOPDIR)/scripts/session.sh 2 "$(QEMU)" "$(QEMU_FLAGS)" \
 	    $(KERNEL_ELF) > $(OBJTOP)/check/paced.out
@@ -73,6 +74,8 @@ check: all
 	@echo "check: $(ARCH) ok"
 
 run: all
+	@mkdir -p $(dir $(DISK_IMG))
+	@$(MKDISK) $(DISK_IMG)
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
 
 # Removes every architecture's build products, not just this one's.

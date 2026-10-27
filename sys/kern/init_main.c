@@ -4919,6 +4919,65 @@ device_checks(void)
 
 
 
+/*
+ * The virtio block driver, handed a grant over the machine's virtio-mmio
+ * transport slots, finds the block device among them and reports it. The
+ * grant is made here for the same reason the console's is: what assembles
+ * the system reads the platform and turns it into spawn calls, and the driver
+ * holds no address of its own. The driver exits once it has probed, and a
+ * driver that found no block device exits non-zero, which this turns into a
+ * panic rather than letting a missing device pass as a working one.
+ */
+static void
+virtio_probe_checks(void)
+{
+    struct proc *self = proc_current();
+    struct handle_table *ht = &self->p_handles;
+    struct grant *g;
+    uintptr_t regs, span;
+    sys_handle_t h_dev, h;
+    sys_ns_spec_t ns[1];
+    struct child c;
+    void *obj;
+    int status;
+
+    md_virtio_regs(&regs, &span);
+    g = grant_create("virtio-regs", regs, span, true);
+    if (g == NULL) {
+        panic("virtio: no grant for the transport slots");
+    }
+    if (handle_insert(ht, g, SYS_OBJ_GRANT,
+      SYS_RIGHT_MAP | SYS_RIGHT_READ | SYS_RIGHT_WRITE | SYS_RIGHT_TRANSFER,
+      &h_dev) != SYS_OK) {
+        panic("virtio: no handle for the grant");
+    }
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_DEVICE;
+    ns[0].handle = h_dev;
+
+    sched_defer();
+    if (proc_spawn_op(self, "virtio_blk", PRIO_BOOT - 1, ns, 1, NULL, 0, &h)
+      != SYS_OK) {
+        panic("virtio: could not start the driver");
+    }
+    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
+        panic("virtio: the spawn returned no process");
+    }
+    child_watch(&c, obj);
+    sched_undefer();
+
+    status = child_join(&c, JOIN_MS);
+    if (status != 0) {
+        panic("virtio: the driver found no block device, status %d", status);
+    }
+    handle_close(ht, h);
+
+    cnputs("virtio: a block device found in the transport slots\n");
+}
+
+
+
 
 
 /*
@@ -19004,6 +19063,7 @@ kernel_main(void)
     cnputs("the console: a driver process, and a line typed at it\n");
     console_service();
     device_checks();
+    virtio_probe_checks();
     permission_checks();
     syspage_checks();
     clock_read_checks();

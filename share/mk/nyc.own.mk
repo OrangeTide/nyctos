@@ -137,3 +137,13 @@ KERNEL_ELF := $(OBJTOP)/sys/kernel.elf
 MKBOOTARCH   := $(OBJTOP)/tools/mkbootarch/mkbootarch
 BOOT_ARCHIVE := $(OBJTOP)/sys/boot.img
 
+# The disk image the emulator's virtio block device is backed by, and the
+# host tool that writes it. It is not embedded in the kernel: the machine
+# reads it as a device, so it is handed to QEMU rather than carried in the
+# image. The virtio-mmio block device plugs into one of the 'virt' machine's
+# transport slots, which the driver finds by scanning.
+MKDISK   := $(OBJTOP)/tools/mkdisk/mkdisk
+DISK_IMG := $(OBJTOP)/sys/disk.img
+QEMU_FLAGS += -drive file=$(DISK_IMG),if=none,format=raw,id=hd0 \
+              -device virtio-blk-device,drive=hd0
+

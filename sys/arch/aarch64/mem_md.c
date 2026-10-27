@@ -95,3 +95,16 @@ md_console_regs(uintptr_t *base, size_t *len)
     *base = 0x09000000UL;
     *len = 0x1000UL;
 }
+
+/*
+ * The virtio-mmio transport slots, for whoever hands them to a driver. The
+ * 'virt' machine places thirty-two slots of 0x200 bytes end to end at
+ * 0x0a000000, and a block device plugged into one lands in a slot the driver
+ * finds by scanning. The whole region is granted so the driver can scan it.
+ */
+void
+md_virtio_regs(uintptr_t *base, size_t *len)
+{
+    *base = 0x0a000000UL;
+    *len = 32UL * 0x200UL;
+}

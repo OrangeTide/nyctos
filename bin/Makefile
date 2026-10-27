@@ -4,7 +4,7 @@
 
 include $(TOPDIR)/share/mk/nyc.own.mk
 
-SUBDIR := blk_server peer_a peer_b peer_c wedged orphan echoes supervise \
+SUBDIR := blk_server virtio_blk peer_a peer_b peer_c wedged orphan echoes supervise \
           ramfs \
           fs_server fs_client fs_batch fs_chain spin status spawner threads console greet \
           resolve \

@@ -4,6 +4,6 @@
 
 include $(TOPDIR)/share/mk/nyc.own.mk
 
-SUBDIR := mkbootarch
+SUBDIR := mkbootarch mkdisk
 
 include $(TOPDIR)/share/mk/nyc.subdir.mk
