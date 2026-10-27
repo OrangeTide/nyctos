@@ -15080,6 +15080,79 @@ whole-path walk, a directory read, create and unlink over the protocol,
 with a reader that survives a mutation made between its reads.** Tier 0,
 single core, and the same source at Tier 2.
 
+**Done.** All five stages are built. What it answered, what it cost, and
+what the building kept finding are below; what it left untested is in the
+clauses the plan already carries. No file under `sys/kern` changed, which
+was the claim: the three new operations are protocol a server understands
+and the kernel carries without meaning, section 25.1 tested a second way.
+The console was a filesystem that only read. This is one that is written
+to, and the trap edge between client and server is the same edge in both.
+
+`ramfs` is an ordinary process, loaded from a boot-archive slot, handed its
+receive handle at spawn. It holds a mutable in-memory tree and resolves a
+whole relative path one component at a time. A directory read carries an
+opaque cursor that names a position and not a snapshot: it is validated
+against the node the connection names rather than held as per-connection
+state, so a connection still carries no position per section 25.4, and a
+cursor minted for one directory is refused against another. An entry present
+and unchanged across a whole read is read exactly once and never skipped,
+even when a second client unlinks and creates around the reader between its
+reads. Create and unlink return the server's own node storage exactly,
+measured as a count that comes back to where it started.
+
+```
+  a whole-path walk over the wire: 29 bytes at sub/leaf, and three refusals
+    kept apart, WRONG_TYPE mid-path, NO_ENT missing, PERM_DENIED above the root
+  a directory larger than one reply: 6 entries over 3 reads, each seen once,
+    and a cursor from another directory refused WRONG_TYPE
+  create and unlink: a file listed then gone, a create under a file WRONG_TYPE,
+    and 40 create/unlink rounds through a pool of fewer slots, none found full
+  a reader across a mutation: 3 reads, an unlink behind it and one ahead of it
+    and a create past it, b c d f once each, e never, a once
+  what the churn reclaims: 64 rounds left 2 connections and 3 root entries,
+    where they began
+```
+
+The last block is the resource exactness the static pools of section 2.7
+exist to make checkable. A connection or a node leaked a round at a time
+would show as a count that did not return, and the soak reads both the live
+connection pool and the root's entry count before and after and panics on a
+difference. The falsification was shown to fire: a single leaked connection
+across the 64 rounds tripped `3 connections in use after the soak, not 2`,
+reverted before the commit. Every stage was shown falsifiable the same way,
+by a sabotage that panicked and was then undone.
+
+**What the building kept finding.**
+
+*The client's buffer is kernel memory the server may not write.* The
+boot thread drives these checks, and its stack is kernel memory. A server
+handed a reply buffer that points into it is refused `SYS_ERR_FAULT`, which
+is exactly what `kernel_buffer_checks` proves. So the directory read packs
+its entries inline, into the 48 bytes a reply leaves after its header,
+rather than into a client buffer. That is why `big` pages over three reads
+and not one: six entries do not fit 48 bytes. A user client with its own
+address space would pass a buffer and read the same entries in fewer reads.
+Stage two's plan said "packed into the client's buffer"; the wire said
+otherwise, and the inline cap forced the paging the stage needed anyway.
+
+*An empty file is not a missing file.* A created file has no data storage
+until it is written. The read path first treated a null data pointer as
+not-readable and answered `NO_ENT`, so a freshly created file looked gone.
+The fix reads emptiness as zero bytes and keeps `NO_ENT` for a node that is
+not there, which is the distinction the create-and-read stage turns on.
+
+*The spike retired where its property was proved.* `dirspike_checks` proved
+the one-appearance cursor against a function call, crossing no rendezvous.
+Stage four proved it over the wire, against a real second client mutating
+the directory between reads. Keeping the spike past that would have been a
+second implementation of the same property to hold in step, so it was
+deleted in stage four rather than left behind.
+
+*No EEXIST, no ENOTEMPTY.* The error set has neither, so a create of a name
+already taken and an unlink of a non-empty directory both answer
+`SYS_ERR_INVALID_ARG`. The protocol header says so rather than inventing a
+code the kernel does not define.
+
 The walk and directory-read edges were specified in `PROPOSALS.md` and
 proved there as a spike: `dirspike_checks` builds a tree in static memory
 and exercises the resolution and the directory read as functions, crossing
