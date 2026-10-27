@@ -76,6 +76,8 @@ work first.
 | `docs/BACKLOG.md` | Work considered but not scheduled. |
 | `docs/CHANGELOG.md` | What has shipped, per minor version. |
 | `docs/PROPOSALS.md` | Deliberately not built, with the reasoning kept. |
+| `docs/LIMITATIONS.md` | Known limitations and the paths the checks do not exercise. |
+| `docs/HACKING.md` | The source tree, the memory map, and coding style. |
 | `docs/CODING_STYLE.md` | C style: a FreeBSD style(9) variant, 4-space indent, no tabs. |
 | `docs/TODO.md` | Notes on the document build toolchain. |
 
@@ -170,75 +172,23 @@ are rather than trusting `PATH`.
 
 ## Project layout
 
-The tree follows a BSD source layout: `sys` is the kernel, `lib` is the
-userland libraries, `bin` is the userland programs, `include` is the headers
-those programs compile against, and `share/mk` holds the make fragments that tie
-it together.
+The tree follows a BSD source layout:
 
-`bin` holds around forty programs: the shell and its utilities, the console
-driver, the filesystem server and the block store beneath it, a supervisor, and
-programs written to break a rule, block, or fault on purpose for the checks.
-`lib` builds the C library they link against.
+- `sys/` is the kernel: machine-independent code in `kern/`, per-architecture
+  code in `arch/aarch64/` and `arch/riscv64/`, and headers in `sys/`.
+- `lib/` is the C library (`libc/`) and the C runtime startup (`csu/`).
+- `bin/` is around forty userland programs: the shell and its utilities, the
+  console driver, the filesystem server and the block store beneath it, a
+  supervisor, and programs written to break a rule, block, or fault on purpose
+  for the checks.
+- `include/` is the headers userland programs compile against.
+- `tools/` is the host-side build tools, which make the boot archive and the
+  disk image.
+- `share/` holds the make fragments (`mk/`) and userland linker scripts (`ld/`).
+- `docs/` holds the design, the roadmap, and the documents linked above.
 
-```
-.
-├── Makefile                 # top level: recurses into lib, bin, tools, sys
-├── LICENSES/                # Apache-2.0 and 0BSD license texts
-├── _out/                    # generated: <target-triplet>/ mirroring the tree
-├── docs/                    # design, roadmap, proposals, coding style
-├── share/
-│   ├── mk/                  # toolchain config and shared build rules
-│   └── ld/                  # userland linker scripts, one per arch
-├── include/                 # userland headers
-├── lib/
-│   ├── csu/<arch>/crt1.S    # C runtime startup
-│   └── libc/                # the C library
-│       ├── path.c           # resolving a path against a namespace
-│       ├── file.c           # opening one by name
-│       └── compose.c        # what to hand a child
-└── sys/                     # the kernel
-    ├── sys/
-    │   ├── config.h         # build-time pool sizes and the tier switch
-    │   ├── pool.h           # static pools and the identifier layout
-    │   ├── object.h         # the kernel object types and their pools
-    │   ├── vm.h             # address spaces, and what a port provides
-    │   ├── grant.h          # authority over a region, held as a handle
-    │   ├── cohort.h         # a protection domain shared by several images
-    │   └── systm.h          # kernel-internal prototypes
-    ├── kern/                # machine-independent
-    │   ├── init_main.c      # kernel_main and the boot checks
-    │   ├── kern_object.c    # the pool instances
-    │   ├── kern_syscall.c   # the trap path and what a fault means
-    │   ├── kern_channel.c   # send, receive, reply, and the move contract
-    │   ├── kern_proc.c      # processes, spawn, the loader, and reaping
-    │   ├── kern_pager.c     # a page fault, sent as a message
-    │   ├── kern_cohort.c    # membership, and tearing a cohort down
-    │   ├── subr_page.c      # the frame allocator
-    │   ├── subr_vm.c        # the kernel's own address space
-    │   ├── subr_pool.c      # the pool mechanism
-    │   └── subr_prf.c       # console output, formatting, panic
-    └── arch/
-        ├── aarch64/
-        │   ├── boot.S           # reset entry, EL2->EL1 drop, .bss, stack
-        │   ├── exception.S      # EL1 vector table, SVC and fault paths
-        │   ├── pmap.c           # page tables, 39-bit VA, 4KB granule
-        │   ├── fault_md.c       # every exception, mapped to a fault kind
-        │   ├── mem_md.c         # what memory and devices this board has
-        │   ├── halt.c           # PSCI power off and reset
-        │   ├── machdep.S        # drop to EL0
-        │   ├── uart.c           # PL011 UART (QEMU virt @ 0x09000000)
-        │   └── conf/kern.ld     # places the kernel at 0x40080000
-        └── riscv64/
-            ├── boot.S           # reset entry, M-mode handover to S-mode
-            ├── exception.S      # S-mode trap entry, ecall and fault paths
-            ├── pmap.c           # page tables, Sv39
-            ├── fault_md.c       # every exception, mapped to a fault kind
-            ├── mem_md.c         # what memory and devices this board has
-            ├── halt.c           # SiFive test finisher
-            ├── machdep.S        # drop to U-mode
-            ├── uart.c           # 16550A UART (QEMU virt @ 0x10000000)
-            └── conf/kern.ld     # places the kernel at 0x80000000
-```
+[docs/HACKING.md](docs/HACKING.md) walks the source tree file by file and
+records the memory map.
 
 ## Building
 
@@ -322,29 +272,6 @@ session is one file per tier, because Tier 2 runs two processes where Tier 0
 refuses the second, and an exact count of what a run used is worth more than a
 line both tiers share.
 
-## Memory map notes
-
-| Arch | Kernel load address | Why | UART |
-| --- | --- | --- | --- |
-| aarch64 | `0x40080000` | QEMU `virt` RAM starts at `0x40000000`; the `-kernel` loader places ELF images at `+0x80000` by default | PL011 @ `0x09000000` |
-| riscv64 | `0x80000000` | QEMU `virt` RAM base; with `-bios none` the reset vector jumps straight here | 16550A @ `0x10000000` |
-
-`USER_LOAD_ADDR` in [share/mk/nyc.own.mk](share/mk/nyc.own.mk) must agree with
-the userland linker script in `share/ld/`. Every program also needs its own slot
-above that base, assigned by hand in the program's own Makefile, because at Tier
-0 there is no MMU and a second copy of an image would load over the first.
-
-At Tier 2 the slot is a virtual address and the memory behind it is frames
-nobody else has, so the rule that one image has one live process is compiled
-out. The slots stay because the loader still uses them to place a program's
-memory, and because one source builds both tiers.
-
-## Coding style
-
-All C and assembly follows [docs/CODING_STYLE.md](docs/CODING_STYLE.md), a
-variant of the FreeBSD kernel style(9) guide with 4-space indentation, 2-space
-continuation lines, and no hard tabs.
-
 ## Licensing
 
 This operating system is dual-licensed under either of:
@@ -360,45 +287,11 @@ Every source file carries an `SPDX-License-Identifier` line and a short
 copyright comment near the top, per
 [docs/CODING_STYLE.md](docs/CODING_STYLE.md#licensing).
 
-## Known limitations
+## More information
 
-- One `make` invocation builds one architecture and one tier. Building all four
-  is four commands.
-- A spawn that fails partway leaks the frames it had allocated. Nothing records
-  what a spawn allocated at the point it failed, and every failure there is a
-  panic today.
-- A cohort restart loses the previous member's memory. A place becomes free when
-  its occupant exits rather than when it is reaped, so the replacement loads over
-  the old member's mappings and those frames become unreachable. The boot's
-  frame ledger counts them.
-- There is no cross-core TLB maintenance on riscv64, whose fences reach only the
-  issuing core. Reclaiming a cohort member's memory while a peer runs on another
-  core is not safe there, and the checks only reap processes in no cohort.
-  aarch64, whose fences are inner-shareable, does not have this limit.
-- There is no calendar time. A program makes its own deadlines from the counter
-  and the system page, but the page carries no UTC offset, so a program knows how
-  long it has waited and not what day it is.
-- At Tier 0 a program can write the shared system page, because there is one
-  frame and flat memory has nothing to refuse the store. Only the MMU prevents
-  it.
-- A process that creates a thread and keeps the handle can never be reaped: the
-  handle references the thread, the thread references its process, and the
-  process closes its handle table only when reaped. Closing the handle lets it
-  be reaped normally.
-- No server here receives on one thread and replies from a pool of workers,
-  though the kernel can name several replies a thread owes at once. The most any
-  thread owes in a boot is two, which the console does.
-- Address space identifiers are assigned on both ports, but buy nothing
-  measurable under QEMU, which discards every translation when the root register
-  is written. The kernel is correct and the saving is not visible here.
-- Several guarded paths are unexercised by the checks: killing a thread
-  interrupted mid-operation, a thread arriving at the kernel already marked for
-  death, and a first dispatch that finds the kernel lock held. Each guard is
-  present because the contract requires it, and removing it fails no check.
-
-## Next steps
-
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the plan and
-[docs/CHANGELOG.md](docs/CHANGELOG.md) for what has shipped. Work is chosen from
-the roadmap and backlog as each piece of work ends, out of what it left open: a
-question half answered, or a limitation this file still carries.
+- [docs/design.md](docs/design.md) describes the intended system in detail.
+- [docs/ROADMAP.md](docs/ROADMAP.md) is the plan, and
+  [docs/CHANGELOG.md](docs/CHANGELOG.md) is what has shipped.
+- [docs/LIMITATIONS.md](docs/LIMITATIONS.md) lists what the system does not do
+  yet.
+- [docs/HACKING.md](docs/HACKING.md) is for working on the code.
