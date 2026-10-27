@@ -15338,11 +15338,15 @@ outside what the milestone set out to remove.
 *The milestone's reach is the five named programs, not the tree.* The
 stage-four line read "leaving no struct cast onto `inline_data` in the tree,"
 which overreached. The done-when names five programs, and all five decode the
-untrusted request and encode the reply through the cursor. Struct casts onto
-`inline_data` remain in the boot test harness, in libc and the other
-filesystem clients, and in the fault-test and other-protocol programs, all
-outside this milestone. Converting them is a later sweep, not a thing M24
-claimed.
+untrusted request and encode the reply through the cursor. The rest of the
+filesystem clients, the C library's file and console clients, `fs_batch`,
+`fs_chain` and `echoes`, were converted in a sweep after the milestone closed,
+which also added the compound `fs_batch_put`, `fs_entry_put` and
+`fs_batch_reply_get` helpers to `sys/fs.h`. So every fs-protocol client now
+reads and writes through the cursor. Struct casts onto `inline_data` remain
+only in the boot test harness and in the fault-test and other-protocol
+programs that reuse the request struct as a carrier, neither of which is an
+fs-protocol client.
 
 A request today is a struct cast onto `message.inline_data`, and a reply is
 read back the same way. Twenty-six sites across `fs_server`, `fs_client`,
