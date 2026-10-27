@@ -3190,13 +3190,41 @@ dir_has(sys_handle_t dir, const char *name)
     }
 }
 
+/* How many entries a readdir of a directory returns, paged to the end. */
+static uint32_t
+dir_count(sys_handle_t dir)
+{
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+    fs_readdir_reply_t *drep;
+    uint64_t cursor = 0;
+    uint32_t total = 0;
+
+    for (;;) {
+        memset(&tx, 0, sizeof(tx));
+        req = (fs_request_t *)tx.request.inline_data;
+        req->fr_op = FS_OP_READDIR;
+        req->fr_offset = cursor;
+        tx.request.inline_len = sizeof(*req);
+        if (run(SYS_OP_IPC_SEND, dir, &tx, sizeof(tx)) != SYS_OK) {
+            panic("ramfs: a directory read failed while counting");
+        }
+        drep = (fs_readdir_reply_t *)tx.reply.inline_data;
+        if (drep->fr_count == 0) {
+            return total;
+        }
+        total += drep->fr_count;
+        cursor = drep->fr_cursor;
+    }
+}
+
 /*
- * M23 stages one through four: the walk and directory-read semantics the
- * spike once modelled against a static tree, now in a real server over a
- * real rendezvous, with the create and unlink the spike only named. The
- * spike is gone, because its one property that was not yet proved on the
- * wire, that a reader survives a mutation made between its reads, is
- * proved here instead.
+ * M23 in full: the walk and directory-read semantics the spike once
+ * modelled against a static tree, now in a real server over a real
+ * rendezvous, with the create and unlink the spike only named. The spike
+ * is gone, because its one property that was not yet proved on the wire,
+ * that a reader survives a mutation made between its reads, is proved here
+ * instead.
  *
  * `ramfs` is an ordinary loaded program holding a mutable tree in its own
  * memory, and this drives it across the trap edge: a whole-path walk to a
@@ -3204,11 +3232,14 @@ dir_has(sys_handle_t dir, const char *name)
  * a directory read that pages the `big` directory to its end across an
  * opaque cursor with a foreign cursor refused, and a create and unlink
  * whose effect a listing reflects. A churn longer than the node pool
- * proves an unlink reclaims its slot rather than leaking it. Last, a
- * reader pages `big` while a second connection unlinks and creates entries
+ * proves an unlink reclaims its slot rather than leaking it. A reader
+ * pages `big` while a second connection unlinks and creates entries
  * between two of its reads, and every surviving entry is read exactly
  * once: the cursor names a position and not a snapshot, carried onto the
- * wire from the function the spike proved it against.
+ * wire from the function the spike proved it against. Last, a soak returns
+ * the live connection count and the root's entry count to where they
+ * began, which is the resource exactness the static pools exist to make
+ * checkable.
  */
 static void
 mutable_dir_checks(void)
@@ -3685,6 +3716,95 @@ mutable_dir_checks(void)
         cnprintf("    ramfs: a reader paged big over %u reads across an "
           "unlink behind it, an unlink ahead of it and a create past it; "
           "b c d f each once, e gone, a once\n", (unsigned int)reads);
+    }
+
+    /*
+     * What it reclaims. A soak of walk, list, create, read, unlink and
+     * close, each round balanced so the tree and the pools end where they
+     * began. The live connection count and the root's entry count are read
+     * before and after and must come back to the same number: the static
+     * pools of section 2.7 exist to make exactly this checkable, and a
+     * count that did not return would be a connection or a node leaked a
+     * round at a time.
+     */
+    {
+        struct pool *conns = connection_pool();
+        uint32_t conns_before = conns->used;
+        uint32_t nodes_before = dir_count(root);
+        uint32_t conns_after, nodes_after, i;
+
+        for (i = 0; i < 64; i++) {
+            sys_handle_t b, s;
+
+            /* Walk to big and list it, then let the connection go. */
+            memset(&tx, 0, sizeof(tx));
+            req = (fs_request_t *)tx.request.inline_data;
+            req->fr_op = FS_OP_WALK;
+            memcpy(req->fr_name, "big", sizeof("big"));
+            tx.request.inline_len = sizeof(*req);
+            if (run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)) != SYS_OK) {
+                panic("ramfs: a soak walk failed at round %u",
+                  (unsigned int)i);
+            }
+            b = tx.reply.handle;
+            (void)dir_count(b);
+            if (run(SYS_OP_HANDLE_CLOSE, b, NULL, 0) != SYS_OK) {
+                panic("ramfs: a soak close failed at round %u",
+                  (unsigned int)i);
+            }
+
+            /* Create a file, read it empty, close it, and unlink it. */
+            memset(&tx, 0, sizeof(tx));
+            req = (fs_request_t *)tx.request.inline_data;
+            req->fr_op = FS_OP_CREATE;
+            req->fr_length = FS_KIND_FILE;
+            memcpy(req->fr_name, "soak", sizeof("soak"));
+            tx.request.inline_len = sizeof(*req);
+            if (run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)) != SYS_OK) {
+                panic("ramfs: a soak create failed at round %u",
+                  (unsigned int)i);
+            }
+            s = tx.reply.handle;
+
+            memset(&tx, 0, sizeof(tx));
+            req = (fs_request_t *)tx.request.inline_data;
+            req->fr_op = FS_OP_READ;
+            req->fr_length = sizeof(buf);
+            tx.request.inline_len = sizeof(*req);
+            if (run(SYS_OP_IPC_SEND, s, &tx, sizeof(tx)) != SYS_OK) {
+                panic("ramfs: a soak read failed at round %u",
+                  (unsigned int)i);
+            }
+            if (run(SYS_OP_HANDLE_CLOSE, s, NULL, 0) != SYS_OK) {
+                panic("ramfs: a soak close of the file failed at round %u",
+                  (unsigned int)i);
+            }
+
+            memset(&tx, 0, sizeof(tx));
+            req = (fs_request_t *)tx.request.inline_data;
+            req->fr_op = FS_OP_UNLINK;
+            memcpy(req->fr_name, "soak", sizeof("soak"));
+            tx.request.inline_len = sizeof(*req);
+            if (run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)) != SYS_OK) {
+                panic("ramfs: a soak unlink failed at round %u",
+                  (unsigned int)i);
+            }
+        }
+
+        conns_after = conns->used;
+        nodes_after = dir_count(root);
+        if (conns_after != conns_before) {
+            panic("ramfs: %u connections in use after the soak, not %u",
+              (unsigned int)conns_after, (unsigned int)conns_before);
+        }
+        if (nodes_after != nodes_before) {
+            panic("ramfs: the root held %u entries after the soak, not %u",
+              (unsigned int)nodes_after, (unsigned int)nodes_before);
+        }
+
+        cnprintf("    ramfs: 64 rounds of walk, list, create, read, unlink "
+          "and close left %u connections and %u root entries, where they "
+          "began\n", (unsigned int)conns_before, (unsigned int)nodes_before);
     }
 
     expect("closing the root connection",
@@ -18831,8 +18951,8 @@ kernel_main(void)
     abort_checks();
     inflight_checks();
 
-    cnputs("ramfs: a mutable directory, walk, read, list, create, unlink "
-      "and a reader across a mutation over IPC (M23 s4)\n");
+    cnputs("ramfs: a mutable directory over IPC, walk through soak "
+      "(M23 s5)\n");
     mutable_dir_checks();
 
     cnputs("user mode: a program that can be interrupted\n");
