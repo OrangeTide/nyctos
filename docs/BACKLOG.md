@@ -87,23 +87,23 @@ host, exists in `~/Vibe/vmm/host/elf.c`. Fix its missing check that a segment's
 file size does not exceed its memory size before the copy. Trigger: deciding to
 act on Proposal 5.
 
-### Spike the walk and directory-read semantics (done)
+### Spike the walk and directory-read semantics (done, spike retired)
 
-Done. `dirspike_checks` in `sys/kern/init_main.c` proves the Proposal 6
+Done, and carried into M23. The `dirspike_checks` spike proved the Proposal 6
 decisions: whole-path walk with `SYS_ERR_WRONG_TYPE` for a non-directory
 mid-path component, `SYS_ERR_NO_ENT` for a missing one, `SYS_ERR_PERM_DENIED`
 for a `..`, and a key-based opaque directory-read cursor that finds every
 surviving entry exactly once across an unlink of an entry already returned, an
 unlink of one not yet reached, and a create past the cursor, with a cursor from
-another directory refused. It is pure logic over a static tree, crosses no
-rendezvous, and allocates no kernel object, so it changes neither the shell
-session nor the resource report. Sabotaging the cursor from a key to a count
-fails it, so the check can fail. It passes on both architectures and both tiers.
+another directory refused. It was pure logic over a static tree, crossing no
+rendezvous and allocating no kernel object. The spike was retired in M23 stage
+four, once the one-appearance property was proved over the real rendezvous,
+and `dirspike_checks` no longer exists in `sys/kern/init_main.c`.
 
-The follow-on is scheduled as M23 ("A Directory That Changes While It Is
-Read") in `ROADMAP.md`, which carries `FS_OP_READDIR`, and the create and
-unlink a mutable directory needs, into `sys/sys/fs.h` and across the real
-protocol. A
+M23 ("A Directory That Changes While It Is Read") is built and closed; its
+retrospective is in `ROADMAP.md`. It carried `FS_OP_READDIR`, and the create
+and unlink a mutable directory needs, into `sys/sys/fs.h` and across the real
+protocol, served by the `ramfs` process. A
 capability-mount sandbox filesystem of mine answers the readdir-cursor and
 backend-split questions in code, in `~/Vibe/skjegg/fs/fs.h` with `ramfs.c` and
 `hostfs.c`; see the investigation note below.
