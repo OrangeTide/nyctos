@@ -27,18 +27,20 @@ static sys_err_t
 request(sys_handle_t target, uint32_t op, const char *name, uint64_t off,
   uint32_t len, sys_msg_t *reply)
 {
-    fs_request_t *req;
+    fs_request_t req;
+    fs_reply_t rep;
+    struct wire_out out;
+    struct wire_in in;
     sys_msg_t message;
     sys_err_t err;
 
     memset(&message, 0, sizeof(message));
     message.handle = SYS_HANDLE_INVALID;
-    message.inline_len = sizeof(*req);
 
-    req = (fs_request_t *)message.inline_data;
-    req->fr_op = op;
-    req->fr_offset = off;
-    req->fr_length = len;
+    memset(&req, 0, sizeof(req));
+    req.fr_op = op;
+    req.fr_offset = off;
+    req.fr_length = len;
     /*
      * Bounded here rather than by the caller. The field is the
      * protocol's, so a copy
@@ -51,15 +53,25 @@ request(sys_handle_t target, uint32_t op, const char *name, uint64_t off,
         if (n + 1 > FS_NAME_MAX) {
             return SYS_ERR_INVALID_ARG;
         }
-        memcpy(req->fr_name, name, n + 1);
+        memcpy(req.fr_name, name, n + 1);
     }
+
+    wire_out_init(&out, message.inline_data, SYS_IPC_INLINE_BYTES);
+    fs_request_put(&out, &req);
+    message.inline_len = sizeof(fs_request_t);
 
     err = sys_msg_send(target, &message, reply);
     if (err != SYS_OK) {
         return err;
     }
 
-    return ((const fs_reply_t *)reply->inline_data)->fr_status;
+    wire_in_init(&in, reply->inline_data, reply->inline_len);
+    fs_reply_get(&in, &rep);
+    if (!in.ok) {
+        return SYS_ERR_TRUNCATED;
+    }
+
+    return rep.fr_status;
 }
 
 sys_err_t
@@ -157,7 +169,8 @@ sys_err_t
 file_read(sys_handle_t file, void *buf, uint32_t len, uint64_t off,
   uint32_t *got)
 {
-    const fs_reply_t *rep;
+    fs_reply_t rep;
+    struct wire_in in;
     sys_msg_t reply;
     uint32_t max = SYS_IPC_INLINE_BYTES - sizeof(fs_reply_t);
     sys_err_t err;
@@ -174,9 +187,13 @@ file_read(sys_handle_t file, void *buf, uint32_t len, uint64_t off,
         return err;
     }
 
-    rep = (const fs_reply_t *)reply.inline_data;
-    *got = rep->fr_length > len ? len : rep->fr_length;
-    memcpy(buf, &reply.inline_data[sizeof(*rep)], *got);
+    wire_in_init(&in, reply.inline_data, reply.inline_len);
+    fs_reply_get(&in, &rep);
+    if (!in.ok) {
+        return SYS_ERR_TRUNCATED;
+    }
+    *got = rep.fr_length > len ? len : rep.fr_length;
+    memcpy(buf, &reply.inline_data[sizeof(fs_reply_t)], *got);
 
     return SYS_OK;
 }

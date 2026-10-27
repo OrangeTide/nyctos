@@ -289,7 +289,46 @@ fs_batch_reply_put(struct wire_out *o, const fs_batch_reply_t *r)
     wire_put_u32(o, r->fb_length);
 }
 
+/* Unpack the compound reply a client built with fs_batch_reply_put. */
+static inline void
+fs_batch_reply_get(struct wire_in *in, fs_batch_reply_t *r)
+{
+    r->fb_status = (sys_err_t)wire_get_u32(in);
+    r->fb_failed = wire_get_u32(in);
+    r->fb_completed = wire_get_u32(in);
+    r->fb_length = wire_get_u32(in);
+}
+
 /* Round a name length up to the entry alignment. */
 #define FS_ENTRY_PAD(n) (((n) + 7u) & ~7u)
+
+/* Pack the compound header through the cursor, in the struct's field order. */
+static inline void
+fs_batch_put(struct wire_out *o, const fs_batch_t *h)
+{
+    wire_put_u32(o, h->fb_op);
+    wire_put_u32(o, h->fb_count);
+}
+
+/*
+ * Pack one compound entry, then its name padded to the entry alignment, the
+ * layout do_batch consumes. The name length is the entry's own fe_namelen,
+ * and a null name is a zero-length one.
+ */
+static inline void
+fs_entry_put(struct wire_out *o, const fs_entry_t *e, const char *name)
+{
+    uint16_t namelen = e->fe_namelen;
+
+    wire_put_u8(o, e->fe_op);
+    wire_put_u8(o, e->fe_flags);
+    wire_put_u16(o, e->fe_namelen);
+    wire_put_u32(o, e->fe_length);
+    wire_put_u64(o, e->fe_offset);
+    if (namelen != 0) {
+        wire_put_bytes(o, (const uint8_t *)name, namelen);
+        wire_put_zeros(o, FS_ENTRY_PAD(namelen) - namelen);
+    }
+}
 
 #endif /* _SYS_FS_H_ */

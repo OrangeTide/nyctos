@@ -61,8 +61,10 @@ write(int fd, const void *buf, size_t nbytes)
 
     while (done < nbytes) {
         sys_msg_t request, reply;
-        fs_request_t *req;
-        fs_reply_t *rep;
+        fs_request_t req;
+        fs_reply_t rep;
+        struct wire_out out;
+        struct wire_in in;
         size_t n = nbytes - done;
 
         if (n > CONSOLE_CHUNK) {
@@ -70,18 +72,21 @@ write(int fd, const void *buf, size_t nbytes)
         }
 
         memset(&request, 0, sizeof(request));
-        req = (fs_request_t *)request.inline_data;
-        req->fr_op = FS_OP_WRITE;
-        req->fr_length = (uint32_t)n;
-        req->fr_offset = 0;
-        memcpy(&request.inline_data[sizeof(*req)], p + done, n);
-        request.inline_len = (uint32_t)(sizeof(*req) + n);
+        memset(&req, 0, sizeof(req));
+        req.fr_op = FS_OP_WRITE;
+        req.fr_length = (uint32_t)n;
+        req.fr_offset = 0;
+        wire_out_init(&out, request.inline_data, SYS_IPC_INLINE_BYTES);
+        fs_request_put(&out, &req);
+        memcpy(&request.inline_data[sizeof(fs_request_t)], p + done, n);
+        request.inline_len = (uint32_t)(sizeof(fs_request_t) + n);
 
         if (sys_msg_send(conn, &request, &reply) != SYS_OK) {
             return done == 0 ? -1 : (ssize_t)done;
         }
-        rep = (fs_reply_t *)reply.inline_data;
-        if (rep->fr_status != SYS_OK) {
+        wire_in_init(&in, reply.inline_data, reply.inline_len);
+        fs_reply_get(&in, &rep);
+        if (!in.ok || rep.fr_status != SYS_OK) {
             return done == 0 ? -1 : (ssize_t)done;
         }
 
@@ -90,10 +95,10 @@ write(int fd, const void *buf, size_t nbytes)
          * carry on from, which is why this loops on what was taken rather
          * than on what was offered.
          */
-        if (rep->fr_length == 0) {
+        if (rep.fr_length == 0) {
             break;
         }
-        done += rep->fr_length;
+        done += rep.fr_length;
     }
 
     return (ssize_t)done;
@@ -109,8 +114,10 @@ read(int fd, void *buf, size_t nbytes)
 {
     sys_handle_t conn = console_handle();
     sys_msg_t request, reply;
-    fs_request_t *req;
-    fs_reply_t *rep;
+    fs_request_t req;
+    fs_reply_t rep;
+    struct wire_out out;
+    struct wire_in in;
     uint32_t n;
 
     if (fd != STDIN_FILENO) {
@@ -124,25 +131,28 @@ read(int fd, void *buf, size_t nbytes)
     }
 
     memset(&request, 0, sizeof(request));
-    req = (fs_request_t *)request.inline_data;
-    req->fr_op = FS_OP_READ;
-    req->fr_length = nbytes > CONSOLE_CHUNK ? CONSOLE_CHUNK
+    memset(&req, 0, sizeof(req));
+    req.fr_op = FS_OP_READ;
+    req.fr_length = nbytes > CONSOLE_CHUNK ? CONSOLE_CHUNK
       : (uint32_t)nbytes;
-    request.inline_len = sizeof(*req);
+    wire_out_init(&out, request.inline_data, SYS_IPC_INLINE_BYTES);
+    fs_request_put(&out, &req);
+    request.inline_len = sizeof(fs_request_t);
 
     if (sys_msg_send(conn, &request, &reply) != SYS_OK) {
         return -1;
     }
-    rep = (fs_reply_t *)reply.inline_data;
-    if (rep->fr_status != SYS_OK) {
+    wire_in_init(&in, reply.inline_data, reply.inline_len);
+    fs_reply_get(&in, &rep);
+    if (!in.ok || rep.fr_status != SYS_OK) {
         return -1;
     }
 
-    n = rep->fr_length;
+    n = rep.fr_length;
     if (n > nbytes) {
         n = (uint32_t)nbytes;
     }
-    memcpy(buf, &reply.inline_data[sizeof(*rep)], n);
+    memcpy(buf, &reply.inline_data[sizeof(fs_reply_t)], n);
 
     return (ssize_t)n;
 }

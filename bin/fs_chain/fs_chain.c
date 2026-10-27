@@ -26,11 +26,11 @@ static void
 request(struct sys_op_send_args *a, uint32_t op, const char *name,
   uint32_t len)
 {
-    fs_request_t *req;
+    fs_request_t req;
+    struct wire_out out;
 
     memset(a, 0, sizeof(*a));
     a->request.handle = SYS_HANDLE_INVALID;
-    a->request.inline_len = sizeof(*req);
 
     /*
      * The buffer travels with every request, because a reply larger
@@ -41,19 +41,23 @@ request(struct sys_op_send_args *a, uint32_t op, const char *name,
     a->request.buf_len = sizeof(buf);
     a->request.buf_flags = SYS_BUF_WRITE;
 
-    req = (fs_request_t *)a->request.inline_data;
-    req->fr_op = op;
-    req->fr_offset = 0;
-    req->fr_length = len;
+    memset(&req, 0, sizeof(req));
+    req.fr_op = op;
+    req.fr_offset = 0;
+    req.fr_length = len;
     if (name != NULL) {
-        memcpy(req->fr_name, name, strlen(name) + 1);
+        memcpy(req.fr_name, name, strlen(name) + 1);
     }
+    wire_out_init(&out, a->request.inline_data, SYS_IPC_INLINE_BYTES);
+    fs_request_put(&out, &req);
+    a->request.inline_len = sizeof(fs_request_t);
 }
 
 int
 main(void)
 {
-    const fs_reply_t *rep;
+    fs_reply_t rep;
+    struct wire_in in;
     sys_op_t ops[4];
     sys_handle_t dir;
     uint32_t got;
@@ -111,27 +115,29 @@ main(void)
      * that failed first rather than a later one that failed because
      * of it.
      */
-    rep = (const fs_reply_t *)walk.reply.inline_data;
-    if (rep->fr_status != SYS_OK) {
+    wire_in_init(&in, walk.reply.inline_data, walk.reply.inline_len);
+    fs_reply_get(&in, &rep);
+    if (!in.ok || rep.fr_status != SYS_OK) {
         return 3;
     }
 
-    rep = (const fs_reply_t *)fetch.reply.inline_data;
-    if (rep->fr_status != SYS_OK) {
+    wire_in_init(&in, fetch.reply.inline_data, fetch.reply.inline_len);
+    fs_reply_get(&in, &rep);
+    if (!in.ok || rep.fr_status != SYS_OK) {
         return 4;
     }
-
-    rep = (const fs_reply_t *)shut.reply.inline_data;
-    if (rep->fr_status != SYS_OK) {
-        return 5;
-    }
-
     /*
      * From the read's reply and not from whichever was looked at
      * last, which is a mistake this made once and the byte count
-     * caught at once.
+     * caught at once. Kept before the close reply overwrites it.
      */
-    got = ((const fs_reply_t *)fetch.reply.inline_data)->fr_length;
+    got = rep.fr_length;
+
+    wire_in_init(&in, shut.reply.inline_data, shut.reply.inline_len);
+    fs_reply_get(&in, &rep);
+    if (!in.ok || rep.fr_status != SYS_OK) {
+        return 5;
+    }
 
     len = got < sizeof(buf) ? got : sizeof(buf);
 

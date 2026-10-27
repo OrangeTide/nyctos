@@ -77,7 +77,8 @@ main(int argc, char **argv)
     }
 
     for (;;) {
-        fs_reply_t *rep;
+        fs_reply_t rep;
+        struct wire_out out;
 
         if (sys_msg_recv(chan, &message, &peer, &cookie) != SYS_OK) {
             return 2;
@@ -90,10 +91,12 @@ main(int argc, char **argv)
 
         memset(&reply, 0, sizeof(reply));
         reply.handle = SYS_HANDLE_INVALID;
-        reply.inline_len = sizeof(*rep);
-        rep = (fs_reply_t *)reply.inline_data;
-        rep->fr_status = SYS_OK;
-        rep->fr_length = 0;
+        memset(&rep, 0, sizeof(rep));
+        rep.fr_status = SYS_OK;
+        rep.fr_length = 0;
+        wire_out_init(&out, reply.inline_data, SYS_IPC_INLINE_BYTES);
+        fs_reply_put(&out, &rep);
+        reply.inline_len = sizeof(fs_reply_t);
 
         if (sys_msg_reply(peer, &reply) != SYS_OK) {
             return 3;
