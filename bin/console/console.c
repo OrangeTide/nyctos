@@ -130,22 +130,26 @@ static void
 reply_line(sys_thread_id_t peer, uint32_t want)
 {
     sys_msg_t reply;
-    fs_reply_t *rep;
+    fs_reply_t rep;
+    struct wire_out out;
     uint32_t max;
 
     memset(&reply, 0, sizeof(reply));
-    rep = (fs_reply_t *)reply.inline_data;
-    rep->fr_status = SYS_OK;
-    max = SYS_IPC_INLINE_BYTES - sizeof(*rep);
+    memset(&rep, 0, sizeof(rep));
+    rep.fr_status = SYS_OK;
+    max = SYS_IPC_INLINE_BYTES - sizeof(fs_reply_t);
     if (want < max) {
         max = want;
     }
-    rep->fr_length = take_line((char *)&reply.inline_data[sizeof(*rep)],
+    rep.fr_length = take_line((char *)&reply.inline_data[sizeof(fs_reply_t)],
       max);
-    reply.inline_len = sizeof(*rep) + rep->fr_length;
+    reply.inline_len = sizeof(fs_reply_t) + rep.fr_length;
+
+    wire_out_init(&out, reply.inline_data, SYS_IPC_INLINE_BYTES);
+    fs_reply_put(&out, &rep);
 
     /* The same answer where the kernel can read it. */
-    reply.status = rep->fr_status;
+    reply.status = rep.fr_status;
 
     (void)sys_msg_reply(peer, &reply);
 }
@@ -239,10 +243,12 @@ main(void)
 {
     sys_handle_t th;
     sys_msg_t msg, reply;
+    struct wire_in in;
+    struct wire_out out;
     sys_thread_id_t peer;
     uint64_t cookie;
-    fs_request_t *req;
-    fs_reply_t *rep;
+    fs_request_t req;
+    fs_reply_t rep;
     sys_handle_t h_dev;
     uintptr_t regs, span;
 
@@ -287,17 +293,18 @@ main(void)
             return -3;
         }
 
-        req = (fs_request_t *)msg.inline_data;
+        wire_in_init(&in, msg.inline_data, msg.inline_len);
+        fs_request_get(&in, &req);
 
         memset(&reply, 0, sizeof(reply));
-        rep = (fs_reply_t *)reply.inline_data;
-        rep->fr_status = SYS_ERR_NOT_SUPPORTED;
-        reply.inline_len = sizeof(*rep);
+        memset(&rep, 0, sizeof(rep));
+        rep.fr_status = SYS_ERR_NOT_SUPPORTED;
+        reply.inline_len = sizeof(fs_reply_t);
 
-        switch (req->fr_op) {
+        switch (req.fr_op) {
         case FS_OP_READ:
             if (ring_lines > 0) {
-                reply_line(peer, req->fr_length);
+                reply_line(peer, req.fr_length);
                 continue;
             }
             /*
@@ -305,7 +312,7 @@ main(void)
              * queue of them, which is what a console with one shell needs.
              */
             waiting_peer = peer;
-            waiting_want = req->fr_length;
+            waiting_want = req.fr_length;
             waiting = 1;
             continue;
 
@@ -315,22 +322,22 @@ main(void)
              * claims. The length is a number a program chose, and the
              * bytes behind it are only as many as the message carried.
              */
-            uint32_t n = req->fr_length;
-            uint32_t have = msg.inline_len > sizeof(*req)
-              ? msg.inline_len - sizeof(*req) : 0;
+            uint32_t n = req.fr_length;
+            uint32_t have = msg.inline_len > sizeof(fs_request_t)
+              ? msg.inline_len - (uint32_t)sizeof(fs_request_t) : 0;
 
             if (n > have) {
                 n = have;
             }
-            put((const char *)&msg.inline_data[sizeof(*req)], n);
-            rep->fr_status = SYS_OK;
-            rep->fr_length = n;
+            put((const char *)&msg.inline_data[sizeof(fs_request_t)], n);
+            rep.fr_status = SYS_OK;
+            rep.fr_length = n;
             break;
         }
             break;
 
         case FS_OP_CLOSE:
-            rep->fr_status = SYS_OK;
+            rep.fr_status = SYS_OK;
             break;
 
         default:
@@ -342,8 +349,11 @@ main(void)
             break;
         }
 
+        wire_out_init(&out, reply.inline_data, SYS_IPC_INLINE_BYTES);
+        fs_reply_put(&out, &rep);
+
         /* The same answer where the kernel can read it. */
-        reply.status = rep->fr_status;
+        reply.status = rep.fr_status;
 
         (void)sys_msg_reply(peer, &reply);
     }

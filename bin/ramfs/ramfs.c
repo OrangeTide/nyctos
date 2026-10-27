@@ -287,6 +287,7 @@ do_readdir(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
     uint8_t *buf;
     uint32_t cap, used, count;
     uint64_t next;
+    struct wire_out ents;
 
     if (node >= RAMFS_MAX_NODES || !nodes[node].live) {
         rep->fr_status = SYS_ERR_NO_ENT;
@@ -327,14 +328,13 @@ do_readdir(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
         buf = &reply->inline_data[sizeof(fs_readdir_reply_t)];
         cap = SYS_IPC_INLINE_BYTES - (uint32_t)sizeof(fs_readdir_reply_t);
     }
-    used = 0;
+    wire_out_init(&ents, buf, cap);
     count = 0;
 
     for (;;) {
         uint32_t best = RAMFS_MAX_NODES;
         uint64_t best_key = 0;
         uint32_t i, namelen, pad, need;
-        fs_dirent_t *d;
 
         /* The live child with the smallest key at or past the cursor. */
         for (i = 0; i < RAMFS_MAX_NODES; i++) {
@@ -356,21 +356,24 @@ do_readdir(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
         namelen = (uint32_t)strlen(nodes[best].name);
         pad = FS_DIRENT_PAD(namelen);
         need = (uint32_t)sizeof(fs_dirent_t) + pad;
-        if (used + need > cap) {
+        if (need > ents.cap - ents.len) {
             break;              /* a short read: the cursor resumes here */
         }
 
-        d = (fs_dirent_t *)&buf[used];
-        d->fd_kind = nodes[best].is_dir ? FS_KIND_DIR : FS_KIND_FILE;
-        d->fd_namelen = namelen;
-        memcpy(&buf[used + sizeof(fs_dirent_t)], nodes[best].name, namelen);
-        for (i = namelen; i < pad; i++) {
-            buf[used + sizeof(fs_dirent_t) + i] = 0;
-        }
-        used += need;
+        /*
+         * The entry header, then the name padded to the entry alignment.
+         * The writer refuses anything past the buffer, so an entry that
+         * would overrun is never half-written.
+         */
+        wire_put_u32(&ents, nodes[best].is_dir ? FS_KIND_DIR : FS_KIND_FILE);
+        wire_put_u32(&ents, namelen);
+        wire_put_bytes(&ents, (const uint8_t *)nodes[best].name, namelen);
+        wire_put_zeros(&ents, pad - namelen);
+
         count++;
         next = best_key + 1;
     }
+    used = ents.len;
 
     rep->fr_count = count;
     rep->fr_cursor = RAMFS_CURSOR(node, next);
@@ -536,8 +539,11 @@ main(void)
     sys_handle_t chan;
     sys_msg_t message, reply;
     sys_thread_id_t peer;
-    fs_request_t *req;
-    fs_reply_t *rep;
+    fs_request_t req;
+    fs_reply_t rep;
+    fs_readdir_reply_t drep;
+    struct wire_in in;
+    struct wire_out out;
     uint64_t cookie;
     uint32_t node;
 
@@ -552,39 +558,52 @@ main(void)
             return 1;
         }
 
-        req = (fs_request_t *)message.inline_data;
+        wire_in_init(&in, message.inline_data, message.inline_len);
+        fs_request_get(&in, &req);
         node = (uint32_t)cookie;
 
         memset(&reply, 0, sizeof(reply));
         reply.handle = SYS_HANDLE_INVALID;
-        reply.inline_len = sizeof(*rep);
-        rep = (fs_reply_t *)reply.inline_data;
-        rep->fr_status = SYS_ERR_NO_ENT;
+        reply.inline_len = sizeof(fs_reply_t);
+        memset(&rep, 0, sizeof(rep));
+        rep.fr_status = SYS_ERR_NO_ENT;
 
-        switch (req->fr_op) {
+        switch (req.fr_op) {
         case FS_OP_WALK:
-            do_walk(chan, req, node, &reply, rep);
+            do_walk(chan, &req, node, &reply, &rep);
             break;
         case FS_OP_READ:
-            do_read(&message, req, node, &reply, rep);
-            reply.inline_len = sizeof(*rep) + rep->fr_length;
+            do_read(&message, &req, node, &reply, &rep);
+            reply.inline_len = sizeof(fs_reply_t) + rep.fr_length;
             break;
         case FS_OP_READDIR:
-            do_readdir(&message, req, node, &reply,
-              (fs_readdir_reply_t *)rep);
+            memset(&drep, 0, sizeof(drep));
+            do_readdir(&message, &req, node, &reply, &drep);
             break;
         case FS_OP_CLOSE:
-            rep->fr_status = SYS_OK;
+            rep.fr_status = SYS_OK;
             break;
         case FS_OP_CREATE:
-            do_create(chan, req, node, &reply, rep);
+            do_create(chan, &req, node, &reply, &rep);
             break;
         case FS_OP_UNLINK:
-            do_unlink(req, node, rep);
+            do_unlink(&req, node, &rep);
             break;
         default:
-            rep->fr_status = SYS_ERR_INVALID_ARG;
+            rep.fr_status = SYS_ERR_INVALID_ARG;
             break;
+        }
+
+        /*
+         * Pack the reply. A directory read answers with its own header and
+         * sets its own inline length; every other op answers with the
+         * reply header, ahead of any inline read bytes left after it.
+         */
+        wire_out_init(&out, reply.inline_data, SYS_IPC_INLINE_BYTES);
+        if (req.fr_op == FS_OP_READDIR) {
+            fs_readdir_reply_put(&out, &drep);
+        } else {
+            fs_reply_put(&out, &rep);
         }
 
         /* The same answer where the kernel can read it. */

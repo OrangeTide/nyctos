@@ -188,8 +188,10 @@ static int store_memory = STORE_UNKNOWN;
 static sys_err_t
 store_read(void *dst, uint32_t blocknr)
 {
-    const fs_reply_t *rep;
-    fs_request_t *req;
+    fs_request_t req;
+    fs_reply_t rep;
+    struct wire_out out;
+    struct wire_in in;
     sys_msg_t message, reply;
     sys_err_t err;
 
@@ -199,24 +201,30 @@ store_read(void *dst, uint32_t blocknr)
 
     memset(&message, 0, sizeof(message));
     message.handle = SYS_HANDLE_INVALID;
-    message.inline_len = sizeof(*req);
     message.buf = (uintptr_t)dst;
     message.buf_len = BLK_BLOCK_BYTES;
     message.buf_flags = SYS_BUF_WRITE;
 
-    req = (fs_request_t *)message.inline_data;
-    req->fr_op = FS_OP_READ;
-    req->fr_offset = (uint64_t)blocknr * BLK_BLOCK_BYTES;
-    req->fr_length = BLK_BLOCK_BYTES;
+    memset(&req, 0, sizeof(req));
+    req.fr_op = FS_OP_READ;
+    req.fr_offset = (uint64_t)blocknr * BLK_BLOCK_BYTES;
+    req.fr_length = BLK_BLOCK_BYTES;
+    wire_out_init(&out, message.inline_data, SYS_IPC_INLINE_BYTES);
+    fs_request_put(&out, &req);
+    message.inline_len = sizeof(fs_request_t);
 
     err = sys_msg_send(store, &message, &reply);
     if (err != SYS_OK) {
         return err;
     }
 
-    rep = (const fs_reply_t *)reply.inline_data;
-    if (rep->fr_status != SYS_OK) {
-        return rep->fr_status;
+    wire_in_init(&in, reply.inline_data, reply.inline_len);
+    fs_reply_get(&in, &rep);
+    if (!in.ok) {
+        return SYS_ERR_TRUNCATED;
+    }
+    if (rep.fr_status != SYS_OK) {
+        return rep.fr_status;
     }
 
     /*
@@ -227,7 +235,7 @@ store_read(void *dst, uint32_t blocknr)
      * bytes served as another's. Reading the field that says so costs
      * a comparison; not reading it costs a leak that looks like data.
      */
-    if (rep->fr_length != BLK_BLOCK_BYTES) {
+    if (rep.fr_length != BLK_BLOCK_BYTES) {
         return SYS_ERR_TRUNCATED;
     }
 

@@ -196,6 +196,15 @@ fs_reply_get(struct wire_in *in, fs_reply_t *r)
     r->fr_size = wire_get_u64(in);
 }
 
+/* Pack the directory-read reply header through the cursor. */
+static inline void
+fs_readdir_reply_put(struct wire_out *o, const fs_readdir_reply_t *r)
+{
+    wire_put_u32(o, (uint32_t)r->fr_status);
+    wire_put_u32(o, r->fr_count);
+    wire_put_u64(o, r->fr_cursor);
+}
+
 /*
  * A write carries its bytes inline, after the request header, exactly as a
  * read carries them back after the reply header. Bulk
