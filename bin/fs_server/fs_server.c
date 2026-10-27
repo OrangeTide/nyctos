@@ -451,51 +451,73 @@ do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
  * pool untouched.
  */
 static void
-do_batch(const sys_msg_t *message, uint32_t node, sys_msg_t *reply,
-  fs_batch_reply_t *rep)
+do_batch(const sys_msg_t *message, uint32_t node, fs_batch_reply_t *rep)
 {
-    const fs_batch_t *hdr = (const fs_batch_t *)message->inline_data;
-    uint32_t off, i;
+    struct wire_in in;
+    uint32_t count, i;
 
     rep->fb_status = SYS_OK;
     rep->fb_failed = 0;
     rep->fb_completed = 0;
     rep->fb_length = 0;
 
-    if (hdr->fb_count == 0 || hdr->fb_count > FS_BATCH_MAX) {
+    /*
+     * Validate the whole sequence against the payload before running any
+     * of it, so a name that runs past the end is refused rather than read
+     * out of bounds by the entry that used it. The cursor does the bounds
+     * arithmetic: reading an entry header and skipping its padded name
+     * clears the flag the moment either would pass the payload, and the
+     * check below refuses the batch whole.
+     */
+    wire_in_init(&in, message->inline_data, message->inline_len);
+    (void)wire_get_u32(&in);                /* fb_op */
+    count = wire_get_u32(&in);              /* fb_count */
+    if (!in.ok || count == 0 || count > FS_BATCH_MAX) {
+        rep->fb_status = SYS_ERR_INVALID_ARG;
+        return;
+    }
+    for (i = 0; i < count; i++) {
+        uint16_t namelen;
+
+        (void)wire_get_u8(&in);             /* fe_op */
+        (void)wire_get_u8(&in);             /* fe_flags */
+        namelen = wire_get_u16(&in);
+        (void)wire_get_u32(&in);            /* fe_length */
+        (void)wire_get_u64(&in);            /* fe_offset */
+        wire_skip(&in, FS_ENTRY_PAD(namelen));
+    }
+    if (!in.ok) {
         rep->fb_status = SYS_ERR_INVALID_ARG;
         return;
     }
 
     /*
-     * Walk the sequence once to check it fits, before running any of it.
-     * A name that runs past the end of the payload would otherwise be read
-     * out of bounds by the entry that used it.
+     * Run the sequence. Chaining is implicit: node starts as the
+     * connection's node and each entry replaces it, so an entry acts on
+     * what the one before it produced. The payload is known to fit, so the
+     * name pointer below is in bounds for the length the entry declared.
      */
-    off = sizeof(*hdr);
-    for (i = 0; i < hdr->fb_count; i++) {
-        const fs_entry_t *e;
+    wire_in_init(&in, message->inline_data, message->inline_len);
+    (void)wire_get_u32(&in);
+    (void)wire_get_u32(&in);
+    for (i = 0; i < count; i++) {
+        uint8_t fe_op;
+        uint16_t namelen;
+        uint32_t length;
+        uint64_t offset;
+        const char *name;
 
-        if (off + sizeof(*e) > message->inline_len) {
-            rep->fb_status = SYS_ERR_INVALID_ARG;
-            return;
-        }
-        e = (const fs_entry_t *)&message->inline_data[off];
-        off += (uint32_t)sizeof(*e) + FS_ENTRY_PAD(e->fe_namelen);
-        if (off > message->inline_len) {
-            rep->fb_status = SYS_ERR_INVALID_ARG;
-            return;
-        }
-    }
+        fe_op = wire_get_u8(&in);
+        (void)wire_get_u8(&in);             /* fe_flags */
+        namelen = wire_get_u16(&in);
+        length = wire_get_u32(&in);
+        offset = wire_get_u64(&in);
+        name = (const char *)&message->inline_data[in.pos];
+        wire_skip(&in, FS_ENTRY_PAD(namelen));
 
-    off = sizeof(*hdr);
-    for (i = 0; i < hdr->fb_count; i++) {
-        const fs_entry_t *e = (const fs_entry_t *)&message->inline_data[off];
-        const char *name = (const char *)(e + 1);
-
-        switch (e->fe_op) {
+        switch (fe_op) {
         case FS_OP_WALK:
-            node = walk(node, name, e->fe_namelen);
+            node = walk(node, name, namelen);
             if (node >= FS_NODE_COUNT) {
                 rep->fb_status = SYS_ERR_NO_ENT;
                 rep->fb_failed = i;
@@ -518,8 +540,7 @@ do_batch(const sys_msg_t *message, uint32_t node, sys_msg_t *reply,
                 sys_err_t serr;
 
                 rep->fb_length = read_into((void *)message->buf,
-                  message->buf_len, node, e->fe_offset, e->fe_length,
-                  &serr);
+                  message->buf_len, node, offset, length, &serr);
                 if (serr != SYS_OK) {
                     rep->fb_status = serr;
                     rep->fb_failed = i;
@@ -535,10 +556,7 @@ do_batch(const sys_msg_t *message, uint32_t node, sys_msg_t *reply,
         }
 
         rep->fb_completed++;
-        off += (uint32_t)sizeof(*e) + FS_ENTRY_PAD(e->fe_namelen);
     }
-
-    (void)reply;
 }
 
 int
@@ -549,6 +567,7 @@ main(void)
     sys_thread_id_t peer;
     fs_request_t req;
     fs_reply_t rep;
+    fs_batch_reply_t brep;
     struct wire_in in;
     struct wire_out out;
     uint64_t cookie;
@@ -598,8 +617,7 @@ main(void)
             break;
         case FS_OP_BATCH:
             reply.inline_len = sizeof(fs_batch_reply_t);
-            do_batch(&message, node, &reply,
-              (fs_batch_reply_t *)reply.inline_data);
+            do_batch(&message, node, &brep);
             break;
         default:
             rep.fr_status = SYS_ERR_INVALID_ARG;
@@ -607,13 +625,15 @@ main(void)
         }
 
         /*
-         * Pack the reply header for every shape but the batch, which
-         * builds its own into the payload. The header lands at the start
-         * of the payload, ahead of any inline read bytes do_read left
-         * after it.
+         * Pack the reply. The batch answers with its own shape; every
+         * other op answers with the reply header, which lands at the
+         * start of the payload, ahead of any inline read bytes do_read
+         * left after it.
          */
-        if (req.fr_op != FS_OP_BATCH) {
-            wire_out_init(&out, reply.inline_data, SYS_IPC_INLINE_BYTES);
+        wire_out_init(&out, reply.inline_data, SYS_IPC_INLINE_BYTES);
+        if (req.fr_op == FS_OP_BATCH) {
+            fs_batch_reply_put(&out, &brep);
+        } else {
             fs_reply_put(&out, &rep);
         }
 

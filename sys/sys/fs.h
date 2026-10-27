@@ -270,6 +270,16 @@ _Static_assert(sizeof(fs_batch_t) == 8, "compound header is 8 bytes");
 _Static_assert(sizeof(fs_entry_t) == 16, "compound entry is 16 bytes");
 _Static_assert(sizeof(fs_batch_reply_t) == 16, "compound reply is 16 bytes");
 
+/* Pack the compound reply through the cursor, in the struct's field order. */
+static inline void
+fs_batch_reply_put(struct wire_out *o, const fs_batch_reply_t *r)
+{
+    wire_put_u32(o, (uint32_t)r->fb_status);
+    wire_put_u32(o, r->fb_failed);
+    wire_put_u32(o, r->fb_completed);
+    wire_put_u32(o, r->fb_length);
+}
+
 /* Round a name length up to the entry alignment. */
 #define FS_ENTRY_PAD(n) (((n) + 7u) & ~7u)
 

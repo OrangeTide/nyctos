@@ -18372,6 +18372,36 @@ user_slice(void)
     (void)proc_spawn_image("fs_server", 15, ns, 2, NULL, 0);
 
     /*
+     * A compound request whose one entry declares a name longer than the
+     * payload carries. The server must refuse the whole batch rather than
+     * let the entry read the name off the end of the message, which is the
+     * over-read the payload cursor exists to make impossible. Sent inline
+     * on a connection the boot thread already holds, so it mints nothing
+     * and the resource report does not move.
+     */
+    {
+        struct sys_op_send_args tx;
+        fs_batch_t *bh;
+        fs_entry_t *be;
+
+        memset(&tx, 0, sizeof(tx));
+        bh = (fs_batch_t *)tx.request.inline_data;
+        bh->fb_op = FS_OP_BATCH;
+        bh->fb_count = 1;
+        be = (fs_entry_t *)&tx.request.inline_data[sizeof(fs_batch_t)];
+        be->fe_op = FS_OP_WALK;
+        be->fe_flags = 0;
+        be->fe_namelen = 60;    /* declares 60 name bytes that are not sent */
+        be->fe_length = 0;
+        be->fe_offset = 0;
+        tx.request.inline_len = sizeof(fs_batch_t) + sizeof(fs_entry_t);
+        expect("a compound entry whose name runs past the payload",
+          run(SYS_OP_IPC_SEND, root2, &tx, sizeof(tx)), SYS_ERR_INVALID_ARG);
+        cnputs("    fs_server: a compound entry that overran the payload "
+          "was refused\n");
+    }
+
+    /*
      * The same file, read two ways. One message should
      * cost a third of the round trips and none of the connection pool; if
      * it does not, the claim is wrong.
