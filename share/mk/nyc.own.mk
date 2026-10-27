@@ -144,6 +144,7 @@ BOOT_ARCHIVE := $(OBJTOP)/sys/boot.img
 # transport slots, which the driver finds by scanning.
 MKDISK   := $(OBJTOP)/tools/mkdisk/mkdisk
 DISK_IMG := $(OBJTOP)/sys/disk.img
-QEMU_FLAGS += -drive file=$(DISK_IMG),if=none,format=raw,id=hd0 \
+QEMU_FLAGS += -global virtio-mmio.force-legacy=false \
+              -drive file=$(DISK_IMG),if=none,format=raw,id=hd0 \
               -device virtio-blk-device,drive=hd0
 

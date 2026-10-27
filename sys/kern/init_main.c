@@ -4969,11 +4969,12 @@ virtio_probe_checks(void)
 
     status = child_join(&c, JOIN_MS);
     if (status != 0) {
-        panic("virtio: the driver found no block device, status %d", status);
+        panic("virtio: the driver did not bring the device up, status %d",
+          status);
     }
     handle_close(ht, h);
 
-    cnputs("virtio: a block device found in the transport slots\n");
+    cnputs("virtio: a block device brought up over one virtqueue\n");
 }
 
 
