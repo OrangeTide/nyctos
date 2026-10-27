@@ -23,6 +23,8 @@
 #include <debug.h>
 #include <stddef.h>
 #include <string.h>
+#include <sys/blk.h>
+#include <sys/fs.h>
 #include <sys/virtio.h>
 
 /* The driver's DMA page is handed over under this private namespace id. */
@@ -236,19 +238,56 @@ read_sector(uint64_t sector)
 }
 
 /*
- * The first block of the disk, the same bytes blk.h's layout puts at block
- * zero and mkdisk writes there. Reading it back over the ring is the stage's
- * proof that the bytes come off the device.
+ * A read of whole blocks off the device, or a refusal saying which rule it
+ * broke, answering the same block protocol the RAM store answered. The three
+ * refusals are the store's, not the device's: an unaligned offset and a
+ * non-block length could never be right, and a range off the end of the store
+ * is a fact about this disk. The bytes come from the device: the sector that
+ * holds the range is read over the ring, and the range is copied out of it.
  */
-static const char block_zero[] = "served from outside the kernel\n";
+static sys_err_t
+serve_read(void *dst, uint32_t dstlen, uint64_t off, uint32_t len)
+{
+    uint64_t store_bytes = (uint64_t)BLK_BLOCK_COUNT * BLK_BLOCK_BYTES;
+    uint64_t sector;
+
+    if ((off % BLK_BLOCK_BYTES) != 0 || (len % BLK_BLOCK_BYTES) != 0 ||
+      len == 0) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    if (off / BLK_BLOCK_BYTES >= BLK_BLOCK_COUNT || off + len > store_bytes) {
+        return SYS_ERR_NO_ENT;
+    }
+    if (dst == NULL || dstlen < len) {
+        return SYS_ERR_TRUNCATED;
+    }
+
+    /*
+     * The whole store fits in the first sector, so a range inside it is
+     * inside one sector. A store that outgrew a sector would read each
+     * sector the range crosses; this one never crosses.
+     */
+    sector = off / VIRTIO_BLK_SECTOR_BYTES;
+    if ((off % VIRTIO_BLK_SECTOR_BYTES) + len > VIRTIO_BLK_SECTOR_BYTES) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    if (read_sector(sector) != 0) {
+        return SYS_ERR_STALE;       /* the device would not read the sector */
+    }
+    memcpy(dst, &q->data[off % VIRTIO_BLK_SECTOR_BYTES], len);
+
+    return SYS_OK;
+}
 
 int
 main(void)
 {
-    sys_handle_t h_dev, h_dma;
+    sys_handle_t h_dev, h_dma, chan;
+    sys_msg_t message, reply;
+    sys_thread_id_t peer;
+    uint64_t cookie;
     uintptr_t region, span, dma, dma_span;
     int err;
-    uint32_t i;
 
     h_dev = ns_lookup(SYS_NS_DEVICE);
     if (h_dev == SYS_HANDLE_INVALID) {
@@ -287,17 +326,55 @@ main(void)
         return err;
     }
 
-    err = read_sector(0);
-    if (err != 0) {
-        DBG_PUTS("virtio_blk: the read did not complete");
-        return err;
-    }
-    for (i = 0; i < sizeof(block_zero) - 1; i++) {
-        if (q->data[i] != (uint8_t)block_zero[i]) {
-            DBG_PUTS("virtio_blk: block zero was not the disk's first block");
-            return 10;
-        }
+    chan = ns_lookup(SYS_NS_SERVICE);
+    if (chan == SYS_HANDLE_INVALID) {
+        DBG_PUTS("virtio_blk: spawned without a channel to serve on");
+        return 14;
     }
 
-    return 0;
+    for (;;) {
+        fs_request_t req;
+        fs_reply_t rep;
+        struct wire_in in;
+        struct wire_out out;
+
+        if (sys_msg_recv(chan, &message, &peer, &cookie) != SYS_OK) {
+            return 15;
+        }
+
+        wire_in_init(&in, message.inline_data, message.inline_len);
+        fs_request_get(&in, &req);
+
+        memset(&reply, 0, sizeof(reply));
+        reply.handle = SYS_HANDLE_INVALID;
+        memset(&rep, 0, sizeof(rep));
+        rep.fr_length = 0;
+        rep.fr_size = (uint64_t)BLK_BLOCK_COUNT * BLK_BLOCK_BYTES;
+
+        if (req.fr_op != FS_OP_READ) {
+            /*
+             * A store has no names to walk and nothing to open or close, so
+             * every other operation is one this server cannot provide. A
+             * server answers every operation, and this is the answer.
+             */
+            rep.fr_status = SYS_ERR_NOT_SUPPORTED;
+        } else {
+            rep.fr_status = serve_read((void *)message.buf, message.buf_len,
+              req.fr_offset, req.fr_length);
+            if (rep.fr_status == SYS_OK) {
+                rep.fr_length = req.fr_length;
+            }
+        }
+
+        wire_out_init(&out, reply.inline_data, SYS_IPC_INLINE_BYTES);
+        fs_reply_put(&out, &rep);
+        reply.inline_len = sizeof(fs_reply_t);
+
+        /* The same answer where the kernel can read it, for a chain behind. */
+        reply.status = rep.fr_status;
+
+        if (sys_msg_reply(peer, &reply) != SYS_OK) {
+            return 16;
+        }
+    }
 }

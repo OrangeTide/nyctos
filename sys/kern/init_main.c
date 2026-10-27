@@ -4918,92 +4918,6 @@ device_checks(void)
 }
 
 
-
-/*
- * The virtio block driver, handed a grant over the machine's virtio-mmio
- * transport slots, finds the block device among them and reports it. The
- * grant is made here for the same reason the console's is: what assembles
- * the system reads the platform and turns it into spawn calls, and the driver
- * holds no address of its own. The driver exits once it has probed, and a
- * driver that found no block device exits non-zero, which this turns into a
- * panic rather than letting a missing device pass as a working one.
- */
-static void
-virtio_probe_checks(void)
-{
-    struct proc *self = proc_current();
-    struct handle_table *ht = &self->p_handles;
-    struct grant *g, *g_dma;
-    uintptr_t regs, span, dma;
-    sys_handle_t h_dev, h_dma, h;
-    sys_ns_spec_t ns[2];
-    struct child c;
-    void *obj;
-    int status;
-
-    md_virtio_regs(&regs, &span);
-    g = grant_create("virtio-regs", regs, span, true);
-    if (g == NULL) {
-        panic("virtio: no grant for the transport slots");
-    }
-    if (handle_insert(ht, g, SYS_OBJ_GRANT,
-      SYS_RIGHT_MAP | SYS_RIGHT_READ | SYS_RIGHT_WRITE | SYS_RIGHT_TRANSFER,
-      &h_dev) != SYS_OK) {
-        panic("virtio: no handle for the grant");
-    }
-
-    /*
-     * And a page of memory for the queue and the buffers the device reaches
-     * by their physical addresses. A grant is mapped at the address it
-     * covers, so what the driver sees as a pointer is what the device reads,
-     * which is what a device with no translation in front of it needs and is
-     * why the queue cannot live in the driver's ordinary memory.
-     */
-    dma = page_alloc();
-    if (dma == 0) {
-        panic("virtio: no page for the queue");
-    }
-    g_dma = grant_create("virtio-dma", dma, PAGE_SIZE, false);
-    if (g_dma == NULL) {
-        panic("virtio: no grant for the queue page");
-    }
-    if (handle_insert(ht, g_dma, SYS_OBJ_GRANT,
-      SYS_RIGHT_MAP | SYS_RIGHT_READ | SYS_RIGHT_WRITE | SYS_RIGHT_TRANSFER,
-      &h_dma) != SYS_OK) {
-        panic("virtio: no handle for the queue grant");
-    }
-
-    memset(ns, 0, sizeof(ns));
-    ns[0].id = SYS_NS_DEVICE;
-    ns[0].handle = h_dev;
-    ns[1].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 0);
-    ns[1].handle = h_dma;
-
-    sched_defer();
-    if (proc_spawn_op(self, "virtio_blk", PRIO_BOOT - 1, ns, 2, NULL, 0, &h)
-      != SYS_OK) {
-        panic("virtio: could not start the driver");
-    }
-    if (handle_lookup(ht, h, SYS_OBJ_PROCESS, 0, &obj) != SYS_OK) {
-        panic("virtio: the spawn returned no process");
-    }
-    child_watch(&c, obj);
-    sched_undefer();
-
-    status = child_join(&c, JOIN_MS);
-    if (status != 0) {
-        panic("virtio: the driver did not read block zero, status %d",
-          status);
-    }
-    handle_close(ht, h);
-
-    cnputs("virtio: block zero read off the device over one virtqueue\n");
-}
-
-
-
-
-
 /*
  * The frame count, read when nothing is moving it.
  *
@@ -18273,7 +18187,7 @@ user_slice(void)
     sys_handle_t root4;
 #endif
     struct sys_op_connect_args cargs;
-    sys_ns_spec_t ns[2];
+    sys_ns_spec_t ns[3];
     struct channel *ch;
     struct channel *blk;
     sys_handle_t h_recv, h_blk, store, root, root2, root3, root5, root6;
@@ -18432,12 +18346,52 @@ user_slice(void)
       run(SYS_OP_CHAN_CONNECT, h_blk, &cargs, sizeof(cargs)), SYS_OK);
     store = cargs.out_handle;
 
-    memset(ns, 0, sizeof(ns));
-    ns[0].id = SYS_NS_SERVICE;
-    ns[0].handle = h_blk;
-    cnputs("    loading blk_server, which holds the bytes\n");
     {
-        struct proc *store = proc_spawn_image("blk_server", 15, ns, 1, NULL, 0);
+        struct grant *g_regs, *g_dma;
+        uintptr_t regs, rspan, dma;
+        sys_handle_t h_regs, h_dma;
+        struct proc *store;
+
+        /*
+         * The transport slots, and a page for the queue the device reaches
+         * by physical address. The authority to make these is here, in what
+         * assembles the system, for the same reason the console's grant is:
+         * the driver holds no address of its own, and a grant is mapped at
+         * the address it covers, so the page the driver puts its queue in is
+         * a page the device can read.
+         */
+        md_virtio_regs(&regs, &rspan);
+        g_regs = grant_create("virtio-regs", regs, rspan, true);
+        if (g_regs == NULL) {
+            panic("user slice: no grant for the virtio registers");
+        }
+        err = handle_insert(&self->p_handles, g_regs, SYS_OBJ_GRANT,
+          SYS_RIGHT_MAP | SYS_RIGHT_READ | SYS_RIGHT_WRITE |
+          SYS_RIGHT_TRANSFER, &h_regs);
+        expect("a grant over the virtio registers", err, SYS_OK);
+
+        dma = page_alloc();
+        if (dma == 0) {
+            panic("user slice: no page for the virtio queue");
+        }
+        g_dma = grant_create("virtio-dma", dma, PAGE_SIZE, false);
+        if (g_dma == NULL) {
+            panic("user slice: no grant for the virtio queue page");
+        }
+        err = handle_insert(&self->p_handles, g_dma, SYS_OBJ_GRANT,
+          SYS_RIGHT_MAP | SYS_RIGHT_READ | SYS_RIGHT_WRITE |
+          SYS_RIGHT_TRANSFER, &h_dma);
+        expect("a grant over the virtio queue page", err, SYS_OK);
+
+        memset(ns, 0, sizeof(ns));
+        ns[0].id = SYS_NS_SERVICE;
+        ns[0].handle = h_blk;
+        ns[1].id = SYS_NS_DEVICE;
+        ns[1].handle = h_regs;
+        ns[2].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 0);
+        ns[2].handle = h_dma;
+        cnputs("    loading virtio_blk, the store backed by the device\n");
+        store = proc_spawn_image("virtio_blk", 15, ns, 3, NULL, 0);
 
 #if SYS_TIER == 2
         blk_proc = store;
@@ -19087,7 +19041,6 @@ kernel_main(void)
     cnputs("the console: a driver process, and a line typed at it\n");
     console_service();
     device_checks();
-    virtio_probe_checks();
     permission_checks();
     syspage_checks();
     clock_read_checks();

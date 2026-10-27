@@ -28,7 +28,7 @@
  */
 static const char *const storage_members[] = {
     "fs_server",
-    "blk_server",
+    "virtio_blk",
 };
 
 static const char *const peers_members[] = {
