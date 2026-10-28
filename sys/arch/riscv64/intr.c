@@ -38,6 +38,15 @@
 /* The 16550 on the virt board. */
 #define UART_SOURCE     10
 
+/*
+ * The virtio-mmio transports are PLIC sources starting at 1, one per slot.
+ * QEMU's 'virt' machine puts the one block device in the highest of its
+ * eight slots, so it raises source 8.
+ */
+#define VIRTIO_SOURCE_BASE  1
+#define VIRTIO_MMIO_SLOTS   8
+#define VIRTIO_BLK_SOURCE   (VIRTIO_SOURCE_BASE + VIRTIO_MMIO_SLOTS - 1)
+
 /* QEMU's virt board runs the machine timer at 10 MHz. */
 #define TIMER_HZ        10000000ULL
 
@@ -176,6 +185,7 @@ md_intr_init(void)
      * core that is not the first one also gets one.
      */
     *plic_reg(PLIC_PRIORITY + UART_SOURCE * 4) = 1;
+    *plic_reg(PLIC_PRIORITY + VIRTIO_BLK_SOURCE * 4) = 1;
 }
 void
 md_irq_unmask(unsigned int irq)
@@ -196,6 +206,12 @@ md_irq_mask(unsigned int irq)
     if (irq >= PLIC_IRQ_BASE) {
         plic_enable(irq - PLIC_IRQ_BASE, false);
     }
+}
+
+unsigned int
+md_virtio_irq(void)
+{
+    return PLIC_IRQ_BASE + VIRTIO_BLK_SOURCE;
 }
 
 unsigned int

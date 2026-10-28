@@ -27,8 +27,13 @@
 #include <sys/fs.h>
 #include <sys/virtio.h>
 
-/* The driver's DMA page is handed over under this private namespace id. */
+/*
+ * The driver's DMA page, the device's interrupt, and a handle to wait on it
+ * are handed over under these private namespace ids.
+ */
 #define NS_DMA      (SYS_NS_PRIVATE + 0)
+#define NS_IRQ      (SYS_NS_PRIVATE + 1)
+#define NS_FENCE    (SYS_NS_PRIVATE + 2)
 
 #define QUEUE_SIZE  8u
 
@@ -64,6 +69,16 @@ static struct dma_page *q;
 /* How far the driver has advanced the available ring, and consumed the used. */
 static uint16_t avail_sent;
 static uint16_t used_seen;
+
+/*
+ * The device's interrupt and the timeline it advances. The driver waits on
+ * the timeline for each completion rather than spinning the used ring, and
+ * irq_seen is the number of completions waited for, which is the number of
+ * transfers issued: one interrupt per transfer.
+ */
+static sys_handle_t h_irq = SYS_HANDLE_INVALID;
+static sys_handle_t h_fence = SYS_HANDLE_INVALID;
+static uint64_t irq_seen;
 
 static uint32_t
 reg_rd(unsigned int off)
@@ -231,11 +246,21 @@ transfer(uint32_t type, uint64_t sector)
 
     reg_wr(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
-    while (*(volatile uint16_t *)&q->used.idx == used_seen) {
-        /* spin: one request, and nothing else for this driver to do */
+    /*
+     * Wait for the device's interrupt rather than spinning on the used ring.
+     * The handler masked the source and advanced the timeline to the count of
+     * interrupts seen, so the driver waits for the count this transfer brings.
+     * It then acknowledges the device, which drops the level-triggered line,
+     * and unmasks at the controller so the next completion is delivered.
+     */
+    irq_seen++;
+    if (sys_fence_wait(h_fence, irq_seen, SYS_DEADLINE_NEVER) != SYS_OK) {
+        return 10;      /* the wait on the interrupt timeline failed */
     }
-    used_seen = q->used.idx;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    used_seen = q->used.idx;
+    reg_wr(VIRTIO_MMIO_INTERRUPT_ACK, reg_rd(VIRTIO_MMIO_INTERRUPT_STATUS));
+    (void)sys_irq_unmask(h_irq);
 
     if (q->status != VIRTIO_BLK_S_OK) {
         return 9;       /* the device reported the transfer failed */
@@ -412,6 +437,13 @@ main(void)
     }
     q = (struct dma_page *)dma;
     memset(q, 0, sizeof(*q));
+
+    h_irq = ns_lookup((sys_ns_id_t)NS_IRQ);
+    h_fence = ns_lookup((sys_ns_id_t)NS_FENCE);
+    if (h_irq == SYS_HANDLE_INVALID || h_fence == SYS_HANDLE_INVALID) {
+        DBG_PUTS("virtio_blk: spawned without its interrupt handles");
+        return 16;
+    }
 
     if (find_block_device(region, span) != 0) {
         DBG_PUTS("virtio_blk: no block device in the granted slots");

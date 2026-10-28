@@ -18344,7 +18344,7 @@ user_slice(void)
     sys_handle_t root4;
 #endif
     struct sys_op_connect_args cargs;
-    sys_ns_spec_t ns[3];
+    sys_ns_spec_t ns[5];
     struct channel *ch;
     struct channel *blk;
     sys_handle_t h_recv, h_blk, store, root, root2, root3, root5, root6;
@@ -18505,8 +18505,10 @@ user_slice(void)
 
     {
         struct grant *g_regs, *g_dma;
+        struct timeline *tl_blk;
+        unsigned int irq;
         uintptr_t regs, rspan, dma;
-        sys_handle_t h_regs, h_dma;
+        sys_handle_t h_regs, h_dma, h_blk_irq, h_blk_fence;
         struct proc *store;
 
         /*
@@ -18540,6 +18542,26 @@ user_slice(void)
           SYS_RIGHT_TRANSFER, &h_dma);
         expect("a grant over the virtio queue page", err, SYS_OK);
 
+        /*
+         * The device's interrupt, wired as the console's is: the launcher
+         * attaches it to a timeline and hands the driver a handle to the
+         * interrupt and a handle to wait on, so the driver waits where it
+         * used to spin.
+         */
+        irq = md_virtio_irq();
+        tl_blk = timeline_create("virtio-blk");
+        if (tl_blk == NULL) {
+            panic("user slice: no timeline for the virtio interrupt");
+        }
+        expect("attaching the virtio-blk interrupt", irq_attach(irq, tl_blk),
+          SYS_OK);
+        err = handle_insert(&self->p_handles, irq_object(irq), SYS_OBJ_IRQ,
+          SYS_RIGHT_IRQ | SYS_RIGHT_TRANSFER, &h_blk_irq);
+        expect("a handle to the virtio interrupt", err, SYS_OK);
+        err = handle_insert(&self->p_handles, tl_blk, SYS_OBJ_TIMELINE,
+          SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &h_blk_fence);
+        expect("a wait handle for its timeline", err, SYS_OK);
+
         memset(ns, 0, sizeof(ns));
         ns[0].id = SYS_NS_SERVICE;
         ns[0].handle = h_blk;
@@ -18547,8 +18569,12 @@ user_slice(void)
         ns[1].handle = h_regs;
         ns[2].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 0);
         ns[2].handle = h_dma;
+        ns[3].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 1);
+        ns[3].handle = h_blk_irq;
+        ns[4].id = (sys_ns_id_t)(SYS_NS_PRIVATE + 2);
+        ns[4].handle = h_blk_fence;
         cnputs("    loading virtio_blk, the store backed by the device\n");
-        store = proc_spawn_image("virtio_blk", 15, ns, 3, NULL, 0);
+        store = proc_spawn_image("virtio_blk", 15, ns, 5, NULL, 0);
 
 #if SYS_TIER == 2
         blk_proc = store;

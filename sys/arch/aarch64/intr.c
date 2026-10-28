@@ -52,6 +52,17 @@
 #define UART_SPI        1
 #define UART_INTID      (32 + UART_SPI)
 
+/*
+ * The virtio-mmio transports are shared peripheral interrupts starting at
+ * SPI 16, one per slot. QEMU's 'virt' machine puts the one block device in
+ * the highest of its thirty-two slots, so the interrupt it raises is the
+ * last of them.
+ */
+#define VIRTIO_MMIO_SPI_BASE    16
+#define VIRTIO_MMIO_SLOTS       32
+#define VIRTIO_BLK_SPI          (VIRTIO_MMIO_SPI_BASE + VIRTIO_MMIO_SLOTS - 1)
+#define VIRTIO_BLK_INTID        (32 + VIRTIO_BLK_SPI)
+
 /* GICv2 returns this from IAR when there is nothing pending. */
 #define GIC_SPURIOUS    1023
 
@@ -138,6 +149,10 @@ md_intr_init(void)
      */
     mmio_write8(GICD_BASE, GICD_ITARGETSR + UART_INTID, 0x01);
     mmio_write8(GICD_BASE, GICD_IPRIORITYR + UART_INTID, 0x80);
+
+    /* The block device's interrupt needs the same, for the same reason. */
+    mmio_write8(GICD_BASE, GICD_ITARGETSR + VIRTIO_BLK_INTID, 0x01);
+    mmio_write8(GICD_BASE, GICD_IPRIORITYR + VIRTIO_BLK_INTID, 0x80);
 }
 
 /*
@@ -195,6 +210,12 @@ unsigned int
 md_uart_irq(void)
 {
     return UART_INTID;
+}
+
+unsigned int
+md_virtio_irq(void)
+{
+    return VIRTIO_BLK_INTID;
 }
 
 unsigned int

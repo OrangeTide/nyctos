@@ -150,10 +150,11 @@
 #define SYS_PRIO_RT_MIN         0
 
 /*
- * Interrupt numbers the kernel will bind. Sized to cover the timer PPI on
- * aarch64, which is 30, rather than to any real device census.
+ * Interrupt numbers the kernel will bind. Sized to cover the highest the
+ * ports name: on aarch64 the virtio-mmio block device is the last transport
+ * slot, GIC INTID 79, so the table reaches past it.
  */
-#define SYS_MAX_IRQS            64
+#define SYS_MAX_IRQS            128
 
 /*
  * Depth of the priority donation chain. A send that would

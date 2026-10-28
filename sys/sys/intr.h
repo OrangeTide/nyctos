@@ -68,6 +68,13 @@ void md_irq_mask(unsigned int irq);
 unsigned int md_uart_irq(void);
 
 /*
+ * The virtio-mmio block device's interrupt. As with the UART, the number is
+ * the port's business: what matters is that the board can name the one the
+ * block device raises, so the launcher can attach it to a timeline.
+ */
+unsigned int md_virtio_irq(void);
+
+/*
  * Acknowledge whatever is pending and return its number, or IRQ_NONE.
  * Called by the trap path before irq_dispatch and paired with md_irq_eoi.
  */
