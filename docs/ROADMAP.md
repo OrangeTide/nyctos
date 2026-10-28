@@ -15866,6 +15866,81 @@ The stages, each ending in something that runs and a check that can fail:
 ---
 
 
+### M28. Every Pool Back to Where It Started
+
+**A single soak churns the lifecycles the system reclaims, spawn and reap,
+connect and close, and walk and close, more times than the pools have slots,
+then asserts that every object pool and the frame count return to the baseline
+they held before the soak. The per-subsystem checks prove each reclaim on its
+own; this proves they compose, and that no pool leaks under sustained, mixed
+churn.** Tier 0, single core, and the same source at Tier 2.
+
+The system sizes its object pools at build and frees back into them, with no
+heap behind them, so exact reclaim is a count returning to where it was and not
+a figure drifting slowly up. Several checks already assert this for one
+subsystem at a time: a node pool churned past its size, a connection pool
+driven and emptied, a channel restarted more times than it has slots. What is
+missing is the bracket that holds over all of them at once, so a leak in any
+pool, from any lifecycle, and any leak that appears only when the lifecycles
+run together, shows as a nonzero delta against a single baseline.
+
+The soak runs early in boot, before the shell reads input, so nothing else is
+spawning or reaping in the window. Reclaim is not instantaneous: a process that
+exits holds its slot until its last thread is collected at the next switch, so
+the bracket settles, reading each count over several yields until it holds
+still, rather than reading once and racing the reap.
+
+*Needs.* The pool accounting that exists: `used` and `highwater` per pool, the
+`*_pool()` accessors, and the settle idiom `frames_quiet` already uses to wait
+out a deferred reap. The spawn, watch, join, and handle-release path the
+existing checks drive a child with. A trivial child that exits at once.
+
+*Not needed.* Any kernel mechanism change, a new pool, a new object, a new
+syscall, the MMU beyond what the tier already maps, the block device. The soak
+is a boot-harness loop over operations the system already has, and an assertion
+over counts it already keeps.
+
+*Done when* a mixed churn of spawn and reap, connect and close, and walk and
+close, each run more times than its pool has slots, leaves every object pool
+and the settled frame count at the baseline they held before the soak, and a
+leak introduced into any one lifecycle is named by the pool it left above
+baseline rather than passing unseen.
+
+*Would falsify.* Whether the static pools give everything back under sustained
+churn, or whether a count drifts up over many rounds. Whether the lifecycles
+compose, or whether running them together leaks a slot none of them leaks
+alone. Whether a baseline taken before the soak and asserted after is a check
+that can fail, or whether a deferred reap makes it read quiet when it is not.
+
+*Size.* Small to medium. An all-pools baseline bracket that records and asserts
+every pool and the settled frame count, and three churn loops under it. No file
+under `sys/kern` changes but the boot harness that runs the soak. A golden may
+gain a line where the soak reports it settled; the diffed shell session does
+not change.
+
+The stages, each ending in something that runs and a check that can fail:
+
+1. **The all-pools bracket, over spawn and reap.** A bracket records every
+   object pool's count and the settled frame count, runs a block, and asserts
+   each returned, naming any that did not. It wraps a spawn-and-reap churn of a
+   trivial child, run more times than the process pool has slots. Runs: the
+   churn completes and every pool and the frame count are back to baseline.
+   Falsifies: withholding one child's handle release leaves it unreaped, and the
+   bracket names the pool left above baseline.
+2. **Connect and close.** The soak gains a connect-and-close churn: a connection
+   to a server minted, used, and closed, more times than the connection pool has
+   slots, under the same bracket. Runs: the connection and channel pools end
+   where they began. Falsifies: a close that does not free the connection,
+   drifting its pool.
+3. **All three interleaved.** The soak gains a walk-and-close churn and runs
+   spawn and reap, connect and close, and walk and close interleaved in one loop
+   longer than the smallest pool, under the one bracket. Runs: the combined soak
+   leaves every pool and the frame count at baseline. Falsifies: any single
+   lifecycle leaking, surfacing as a nonzero delta on its own pool.
+
+---
+
+
 ## 4. Milestone 1, in Retrospect
 
 The slice was chosen as the smallest thing that could falsify the design
