@@ -4,6 +4,28 @@ Notable changes per minor version. Patch bumps between minors move the VERSION
 file alone and are not listed here; see the git log for their detail. Each
 milestone's full retrospective lives in docs/ROADMAP.md.
 
+## 0.28.0
+
+M27, "The Block Device's Interrupt, Not Its Spin," is the milestone of this
+release. The user-space virtio-mmio driver waits for the device's interrupt
+instead of spinning the used ring: a transfer notifies the queue and blocks on
+a timeline the kernel advances from the interrupt handler, the same path the
+console uses for the UART. The driver tells a completion from a configuration
+change or a spurious line by the interrupt-status register, counts the wakes it
+takes for completions, and refuses to serve if that count drifts from the
+transfers it issued. The ports name the virtio-blk interrupt from a helper, and
+the launcher attaches it to a timeline and hands the store a handle to the
+interrupt and a handle to wait on. No kernel mechanism changed.
+
+The forge of a spurious interrupt, which lets the driver show it passes over a
+source that is not a completion, works through the GIC on aarch64; QEMU's PLIC
+ignores a software write to its pending array, so riscv64 has none to pass over
+and runs the identical driver.
+
+This release also cut the README down to reference material and moved the
+developer and known-limitation detail into docs/HACKING.md and
+docs/LIMITATIONS.md.
+
 ## 0.27.0
 
 M26, "A Write the Disk Keeps Across a Boot," is the milestone of this release.

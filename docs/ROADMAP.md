@@ -15738,6 +15738,78 @@ for the console UART, and a transfer notifies the queue, blocks on the timeline,
 then acknowledges the device and unmasks.** Tier 0, single core, and the same
 source at Tier 2.
 
+**Done.** All three stages are built. What it answered, what it cost, and what
+the building kept finding are below. The driver waits for the device's
+interrupt instead of spinning the used ring: a transfer notifies the queue and
+blocks on a timeline the kernel advances from the interrupt handler, the same
+path the console uses for the UART. It tells a completion from a configuration
+change or a spurious line by the interrupt-status register, not by the fact an
+interrupt arrived, and refuses to serve if its completion count ever drifts
+from the transfers it issued. No kernel mechanism changed; one file under
+`sys/kern` did, the boot harness that wires and drives the checks, named in its
+place below.
+
+Each architecture names the virtio-blk interrupt from a port helper, as there
+was already one for the UART. The device sits in the highest transport slot, so
+the number is the slot's: GIC INTID 79 on aarch64 and PLIC source 8 on riscv64,
+set up at init the way the UART's source is. The launcher attaches the
+interrupt to a timeline, hands the store a handle to the interrupt and a handle
+to wait on, and the driver's `transfer` waits where it used to spin.
+
+```
+  the interrupt replaces the spin: the golden session's reads and the store's
+    write and persistence checks all complete on the device's interrupt
+  the count is in step: the driver reports one completion per transfer and
+    refuses to serve if the completions drift from the transfers issued
+  a source that is not a completion: a forged interrupt that no device raised
+    is told apart by the interrupt-status register and passed over
+```
+
+The falsification was shown to fire at each stage: withholding the unmask left
+the next transfer's interrupt masked and wedged the boot, drifting the transfer
+count by one failed the in-step check and left the store unable to serve, and
+taking the forged non-completion for a completion drifted the count the same
+way. The second and third fire on aarch64, where the boot can forge a pending
+line; riscv64 cannot, and runs the identical driver with nothing to forge.
+
+**What the building kept finding.**
+
+*The console already was the whole mechanism.* The driver waits on a timeline
+the handler advances, acknowledges the device, and unmasks, which is what the
+console's receive thread does for the UART. No kernel code changed to carry a
+second one. What a block driver adds over a line driver is the used ring as the
+authority for a completion, where the console has the UART going empty.
+
+*The interrupt number is the transport slot, read once and encoded, not
+scanned.* QEMU puts the one virtio-blk device in the highest transport slot, so
+its interrupt is the slot's: INTID 79 on aarch64, source 8 on riscv64. The
+kernel does not map the virtio window at Tier 2, so a runtime scan would fault
+there. The number is settled at build and the ports name it, the way they name
+the UART's.
+
+*A completion is the used ring moving, not the interrupt arriving.* The handler
+advances the timeline on every interrupt, so a wake is only a hint to look. The
+driver reads the interrupt-status register and the used ring: a completion is
+the ring reaching the transfers issued with the queue bit set, and anything
+else leaves the ring where it was and is passed over. Counting the wakes it
+takes for completions and refusing to serve on a drift turns a miscounted
+interrupt into a refusal rather than a read off an empty ring.
+
+*The platform decides whether a spurious line can be forged.* The GIC honors a
+write to its set-pending register, so the boot hands the aarch64 driver one
+interrupt no device raised and the driver passes over it. QEMU's PLIC drives
+its pending array from the source lines and ignores a software write, so the
+riscv64 driver has none to pass over. The driver is the same on both; the
+demonstration of the pass-over is only where the controller allows the forge.
+The write stays in the riscv port as the request a controller with software set
+pending would honor.
+
+*One file under `sys/kern` changed, and it is not mechanism.* `init_main.c`,
+the boot harness, creates the timeline, attaches the interrupt, hands the two
+handles to the store, and forges the one interrupt the driver passes over. The
+kernel's interrupt dispatch, timelines, and handles are the ones the console
+has used all along.
+
 M25 and M26 built the read and the write over the ring, and both spin on the
 used ring until the device advances it. The spin is correct for one synchronous
 request, but it holds the core and keeps the driver off the scheduler while the
