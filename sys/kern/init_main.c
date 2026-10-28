@@ -16675,32 +16675,90 @@ soak_assert_back(const struct pool_baseline *b)
  * never holds more than a couple at once, and what the count proves is reuse
  * and not depth.
  */
-#define SOAK_SPAWN_ROUNDS   (SYS_MAX_PROCESSES * 3u)
-
 /*
- * How many times the soak connects and closes: more than the connection pool
- * has slots, so a connection that was not freed on close would run the pool
- * out rather than be reused. Each round closes its connection before the next
- * opens one, so the pool holds one at a time.
+ * How many rounds the soak runs. Each round spawns and reaps once, connects
+ * and closes once, and walks and closes once, so every lifecycle runs this
+ * many times, more than any of their pools has slots. A slot that was not
+ * reclaimed would run its pool out rather than be reused, and the count past
+ * the largest pool is what proves the reuse.
  */
-#define SOAK_CONNECT_ROUNDS (SYS_MAX_CONNECTIONS * 3u)
+#define SOAK_ROUNDS     (SYS_MAX_CONNECTIONS * 3u)
+
+/* Mint a connection on a channel and close it, freeing the slot at once. */
+static void
+soak_connect_once(sys_handle_t h_recv)
+{
+    struct sys_op_connect_args cargs;
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    if (run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)) != SYS_OK) {
+        panic("soak: a connect failed");
+    }
+    if (run(SYS_OP_HANDLE_CLOSE, cargs.out_handle, NULL, 0) != SYS_OK) {
+        panic("soak: a connect's close failed");
+    }
+}
 
 /*
- * Churn connect and close. A channel is made and a connection to it minted and
- * closed, over and over, then the channel is closed. A connection is freed on
- * its own thread the moment its last handle closes, so the pool comes straight
- * back; what the count past its size proves is that the close frees the slot
- * rather than leaking one a round at a time. The channel the churn runs on is
- * made and closed inside the bracket, so the channel pool returns too.
+ * Walk to a file through a server and close the connection the walk returns.
+ * The walk mints the connection on the server's side and hands back a handle
+ * to it, so this is the connection lifecycle over a rendezvous rather than the
+ * bare one soak_connect_once drives. A walk resolves a name and reads no file,
+ * so it touches no block device.
  */
 static void
-soak_connect_close(void)
+soak_walk_once(sys_handle_t root)
+{
+    struct sys_op_send_args tx;
+    const fs_reply_t *rep;
+    fs_request_t *req;
+
+    memset(&tx, 0, sizeof(tx));
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "motd", sizeof("motd"));
+    tx.request.inline_len = sizeof(*req);
+    if (run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)) != SYS_OK) {
+        panic("soak: a walk failed");
+    }
+    rep = (const fs_reply_t *)tx.reply.inline_data;
+    if (rep->fr_status != SYS_OK) {
+        panic("soak: a walk was refused with %d", (int)rep->fr_status);
+    }
+    if (run(SYS_OP_HANDLE_CLOSE, tx.reply.handle, NULL, 0) != SYS_OK) {
+        panic("soak: a walk's connection would not close");
+    }
+}
+
+/*
+ * The soak: churn the lifecycles together and confirm every pool gave its
+ * slots back.
+ *
+ * Spawn and reap, connect and close, and walk and close run interleaved in one
+ * loop longer than any of their pools, under one bracket that records every
+ * pool and the frame count before and asserts them after. The per-subsystem
+ * checks prove each reclaim alone; running them together is what proves they
+ * compose, so a slot leaked only when the lifecycles interleave shows as a
+ * count above the baseline rather than as a drift a far longer run would need
+ * to surface.
+ *
+ * It runs after the shell, for the reason frame_endurance_checks does: it
+ * spawns a program many times, and in front of the paced session that would
+ * delay the first command past the input already sent.
+ */
+static void
+soak_checks(void)
 {
     struct proc *self = proc_current();
-    struct sys_op_connect_args cargs;
+    struct pool_baseline base;
     struct channel *ch;
     sys_handle_t h_recv;
-    uint32_t i;
+    uint32_t i, back;
+
+    cnputs("soak: every pool back to where it started\n");
+
+    soak_snapshot(&base);
 
     ch = channel_create("soak-connect", self);
     if (ch == NULL) {
@@ -16711,58 +16769,22 @@ soak_connect_close(void)
         panic("soak: no receive handle for the connect churn");
     }
 
-    for (i = 0; i < SOAK_CONNECT_ROUNDS; i++) {
-        memset(&cargs, 0, sizeof(cargs));
-        cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
-        if (run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)) != SYS_OK) {
-            panic("soak: a connect failed at round %u", (unsigned int)i);
-        }
-        if (run(SYS_OP_HANDLE_CLOSE, cargs.out_handle, NULL, 0) != SYS_OK) {
-            panic("soak: a close failed at round %u", (unsigned int)i);
-        }
+    exit_quiet = true;
+    for (i = 0; i < SOAK_ROUNDS; i++) {
+        (void)frame_cost_once("brief", &back);
+        soak_connect_once(h_recv);
+        soak_walk_once(h_fs_root);
     }
+    exit_quiet = false;
 
     if (run(SYS_OP_HANDLE_CLOSE, h_recv, NULL, 0) != SYS_OK) {
         panic("soak: the connect churn's channel would not close");
     }
-}
-
-/*
- * The soak: churn the lifecycles and confirm every pool gave its slots back.
- *
- * This stage churns spawn and reap, then connect and close, each more times
- * than its pool has slots, under one bracket that records every pool and the
- * frame count before and asserts them after. A leak in any pool, from any of
- * the lifecycles, shows as a count above the baseline rather than as a drift
- * that only a far longer run would surface.
- *
- * It runs after the shell, for the reason frame_endurance_checks does: it
- * spawns a program many times, and in front of the paced session that would
- * delay the first command past the input already sent.
- */
-static void
-soak_checks(void)
-{
-    struct pool_baseline base;
-    uint32_t i, back;
-
-    cnputs("soak: every pool back to where it started\n");
-
-    soak_snapshot(&base);
-
-    exit_quiet = true;
-    for (i = 0; i < SOAK_SPAWN_ROUNDS; i++) {
-        (void)frame_cost_once("brief", &back);
-    }
-    exit_quiet = false;
-
-    soak_connect_close();
 
     soak_assert_back(&base);
 
-    cnprintf("    %-38s %u spawns, %u connects, every pool back\n",
-      "spawn and reap, connect and close",
-      (unsigned int)SOAK_SPAWN_ROUNDS, (unsigned int)SOAK_CONNECT_ROUNDS);
+    cnprintf("    %-38s %u rounds, every pool back\n",
+      "spawn, connect and walk, each closed", (unsigned int)SOAK_ROUNDS);
 }
 
 /*
