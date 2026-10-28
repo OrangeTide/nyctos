@@ -138,6 +138,12 @@ KERNEL_ELF := $(OBJTOP)/sys/kernel.elf
 MKBOOTARCH   := $(OBJTOP)/tools/mkbootarch/mkbootarch
 BOOT_ARCHIVE := $(OBJTOP)/sys/boot.img
 
+# The kernel's own function-symbol blob and the host tool that builds it
+# from the first-pass kernel ELF. The second-pass link embeds the blob so a
+# live panic can name its frames.
+MKSYMTAB   := $(OBJTOP)/tools/mksymtab/mksymtab
+KSYM_BLOB  := $(OBJTOP)/sys/ksym.blob
+
 # The disk image the emulator's virtio block device is backed by, and the
 # host tool that writes it. It is not embedded in the kernel: the machine
 # reads it as a device, so it is handed to QEMU rather than carried in the

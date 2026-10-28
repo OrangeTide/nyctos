@@ -59,9 +59,43 @@ include $(TOPDIR)/share/mk/nyc.obj.mk
 
 all: $(KERNEL_ELF)
 
-$(KERNEL_ELF): $(OBJS) $(KERN_LDSCRIPT)
+# The kernel is linked twice so it can carry a table of its own symbols.
+# The first pass embeds an empty stub blob, so the symbolizer's references
+# to the blob resolve and reach; mksymtab reads that ELF's functions into
+# the real blob, ksyms.S embeds it in rodata past the text, and the second
+# pass links it in. The function addresses the blob records do not move
+# between the passes because the text comes before the rodata the blob is
+# added to, so the blob built from the first pass is right for the second.
+KERNEL_PASS1   := $(KERNEL_ELF).pass1
+KSYM_STUB      := $(OBJTOP)/sys/ksym.stub.blob
+KSYMS_STUB_OBJ := $(OBJDIR)/kern/ksyms_stub.o
+KSYMS_OBJ      := $(OBJDIR)/kern/ksyms.o
+
+$(KSYM_STUB): $(MKSYMTAB)
 	@mkdir -p $(@D)
-	$(LD) $(LDFLAGS) -T $(KERN_LDSCRIPT) -o $@ $(OBJS)
+	$(MKSYMTAB) --empty $@
+
+$(KSYMS_STUB_OBJ): kern/ksyms.S $(KSYM_STUB) Makefile
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -DKSYM_BLOB_PATH=\"$(KSYM_STUB)\" \
+	    -c $< -o $@
+
+$(KERNEL_PASS1): $(OBJS) $(KSYMS_STUB_OBJ) $(KERN_LDSCRIPT)
+	@mkdir -p $(@D)
+	$(LD) $(LDFLAGS) -T $(KERN_LDSCRIPT) -o $@ $(OBJS) $(KSYMS_STUB_OBJ)
+
+$(KSYM_BLOB): $(MKSYMTAB) $(KERNEL_PASS1)
+	@mkdir -p $(@D)
+	$(MKSYMTAB) $(KERNEL_PASS1) $@
+
+$(KSYMS_OBJ): kern/ksyms.S $(KSYM_BLOB) Makefile
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -DKSYM_BLOB_PATH=\"$(KSYM_BLOB)\" \
+	    -c $< -o $@
+
+$(KERNEL_ELF): $(OBJS) $(KSYMS_OBJ) $(KERN_LDSCRIPT)
+	@mkdir -p $(@D)
+	$(LD) $(LDFLAGS) -T $(KERN_LDSCRIPT) -o $@ $(OBJS) $(KSYMS_OBJ)
 
 # Every program the archive carries, as the debug-stripped ELF the kernel
 # loads. Each is a prerequisite, so an archive older than an image is

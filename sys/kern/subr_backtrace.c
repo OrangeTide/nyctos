@@ -13,8 +13,55 @@
 
 #include <sys/backtrace.h>
 #include <sys/config.h>
+#include <sys/ksym.h>
 
+#include <stddef.h>
 #include <stdint.h>
+
+/*
+ * The symbol blob the link embeds, between these symbols. The first pass
+ * embeds an empty blob, a header saying zero functions, so a lookup finds
+ * nothing but the references still resolve; the second pass embeds the real
+ * one built from the first.
+ */
+extern const uint8_t ksym_blob[];
+extern const uint8_t ksym_blob_end[];
+
+const char *
+ksym_lookup(uintptr_t addr, uintptr_t *off)
+{
+    const struct ksym_hdr *h = (const struct ksym_hdr *)ksym_blob;
+    const struct ksym_ent *ent;
+    const char *strs;
+    const char *best = NULL;
+    uint64_t best_addr = 0;
+    uint32_t i;
+
+    if (ksym_blob == ksym_blob_end) {
+        return NULL;
+    }
+
+    ent = (const struct ksym_ent *)(ksym_blob + sizeof(*h));
+    strs = (const char *)(ent + h->count);
+    for (i = 0; i < h->count; i++) {
+        if (ent[i].addr > addr) {
+            continue;
+        }
+        if (best == NULL || ent[i].addr > best_addr) {
+            best = strs + ent[i].name;
+            best_addr = ent[i].addr;
+        }
+    }
+
+    if (best == NULL) {
+        return NULL;
+    }
+    if (off != NULL) {
+        *off = addr - best_addr;
+    }
+
+    return best;
+}
 
 unsigned int
 kbacktrace(uintptr_t *out, unsigned int max)

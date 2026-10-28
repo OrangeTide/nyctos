@@ -16,6 +16,7 @@
 #include <sys/backtrace.h>
 #include <sys/bootarch.h>
 #include <sys/elf.h>
+#include <sys/ksym.h>
 #include <sys/batchreg.h>
 #include <sys/channel.h>
 #include <sys/cohort.h>
@@ -18662,6 +18663,42 @@ backtrace_check(void)
     cnprintf("backtrace: a nested call unwound to %u frames\n", n);
 }
 
+/*
+ * The kernel names two of its own addresses. The address of panic resolves
+ * to the function at its start, offset zero, and an address four bytes into
+ * it resolves to the same function at offset four. The address of kbacktrace
+ * resolves to its own start too, and the two names differ. The offsets and
+ * the difference are the test the address logic has to pass: a lookup that
+ * ignored the address would name whichever function sits highest for both
+ * probes, so the two names would be equal and at least one offset would not
+ * be zero. It also proves the two-pass link kept the addresses the blob
+ * records, since the blob was built from the first pass and read here in the
+ * second.
+ */
+static void
+ksym_check(void)
+{
+    uintptr_t off0 = 1, off4 = 0, offk = 1;
+    const char *n0 = ksym_lookup((uintptr_t)&panic, &off0);
+    const char *n4 = ksym_lookup((uintptr_t)&panic + 4, &off4);
+    const char *nk = ksym_lookup((uintptr_t)&kbacktrace, &offk);
+
+    if (n0 == NULL || nk == NULL) {
+        panic("ksym: the kernel carries no symbol for a known function");
+    }
+    if (off0 != 0 || offk != 0) {
+        panic("ksym: a function resolved at a nonzero offset, not its start");
+    }
+    if (n4 != n0 || off4 != 4) {
+        panic("ksym: an address inside panic did not stay in panic");
+    }
+    if (n0 == nk) {
+        panic("ksym: two different functions resolved to one name");
+    }
+
+    cnprintf("kernel symbols: a kernel address resolves to %s\n", n0);
+}
+
 static void
 user_slice(void)
 {
@@ -18682,6 +18719,7 @@ user_slice(void)
     cohort_report();
     archive_symbol_check();
     backtrace_check();
+    ksym_check();
 
     ch = channel_create("fs-user", self);
     if (ch == NULL) {
