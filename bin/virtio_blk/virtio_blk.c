@@ -447,18 +447,50 @@ report_in_step(void)
 }
 
 /*
+ * The indirection. A logical block, the block the protocol names, resolves
+ * through this map to a physical block, the block on the device that holds its
+ * bytes. The map starts as identity, so logical block i lives at physical
+ * block i, and it is rebuilt that way each boot rather than read from the disk.
+ * Every read and write goes through it, so a logical block is a name looked up
+ * here and not an offset computed from the request.
+ */
+static uint16_t block_map[BLK_BLOCK_COUNT];
+
+static void
+map_init(void)
+{
+    uint32_t i;
+
+    for (i = 0; i < BLK_BLOCK_COUNT; i++) {
+        block_map[i] = (uint16_t)i;
+    }
+}
+
+/*
+ * The device byte offset where a physical block's bytes begin. Blocks are
+ * laid out end to end from zero, so physical block p begins at p blocks in.
+ */
+static uint64_t
+phys_block_offset(uint16_t pblk)
+{
+    return (uint64_t)pblk * BLK_BLOCK_BYTES;
+}
+
+/*
  * A read of whole blocks off the device, or a refusal saying which rule it
  * broke, answering the same block protocol the RAM store answered. The three
  * refusals are the store's, not the device's: an unaligned offset and a
  * non-block length could never be right, and a range off the end of the store
- * is a fact about this disk. The bytes come from the device: the sector that
- * holds the range is read over the ring, and the range is copied out of it.
+ * is a fact about this disk. Each block the range covers is resolved through
+ * the map to its physical block, whose sector is read over the ring and whose
+ * bytes are copied out. A block is smaller than a sector and sector-aligned by
+ * its size, so one block never crosses a sector boundary.
  */
 static sys_err_t
 serve_read(void *dst, uint32_t dstlen, uint64_t off, uint32_t len)
 {
     uint64_t store_bytes = (uint64_t)BLK_BLOCK_COUNT * BLK_BLOCK_BYTES;
-    uint64_t sector;
+    uint32_t done;
 
     if ((off % BLK_BLOCK_BYTES) != 0 || (len % BLK_BLOCK_BYTES) != 0 ||
       len == 0) {
@@ -471,36 +503,34 @@ serve_read(void *dst, uint32_t dstlen, uint64_t off, uint32_t len)
         return SYS_ERR_TRUNCATED;
     }
 
-    /*
-     * The whole store fits in the first sector, so a range inside it is
-     * inside one sector. A store that outgrew a sector would read each
-     * sector the range crosses; this one never crosses.
-     */
-    sector = off / VIRTIO_BLK_SECTOR_BYTES;
-    if ((off % VIRTIO_BLK_SECTOR_BYTES) + len > VIRTIO_BLK_SECTOR_BYTES) {
-        return SYS_ERR_INVALID_ARG;
+    for (done = 0; done < len; done += BLK_BLOCK_BYTES) {
+        uint16_t pblk = block_map[(off + done) / BLK_BLOCK_BYTES];
+        uint64_t pbyte = phys_block_offset(pblk);
+
+        if (read_sector(pbyte / VIRTIO_BLK_SECTOR_BYTES) != 0) {
+            return SYS_ERR_STALE;   /* the device would not read the sector */
+        }
+        memcpy((uint8_t *)dst + done,
+          &q->data[pbyte % VIRTIO_BLK_SECTOR_BYTES], BLK_BLOCK_BYTES);
     }
-    if (read_sector(sector) != 0) {
-        return SYS_ERR_STALE;       /* the device would not read the sector */
-    }
-    memcpy(dst, &q->data[off % VIRTIO_BLK_SECTOR_BYTES], len);
 
     return SYS_OK;
 }
 
 /*
  * A write of whole blocks to the device, refused by the same three rules a
- * read is. A block is smaller than a sector, so the sector it lives in is read
- * first, the block is placed into it, and the sector is written back: the
- * blocks that share the sector are read and written unchanged, so a write
- * places only the block it names. The bytes to write are the caller's, bounded
- * by how many actually arrived rather than by the length the request claims.
+ * read is. Each block the range covers is resolved through the map to its
+ * physical block; the sector that block lives in is read first, the block is
+ * placed into it, and the sector is written back, so the blocks sharing the
+ * sector are read and written unchanged and the write places only the block it
+ * names. The bytes to write are the caller's, bounded by how many actually
+ * arrived rather than by the length the request claims.
  */
 static sys_err_t
 serve_write(const void *src, uint32_t have, uint64_t off, uint32_t len)
 {
     uint64_t store_bytes = (uint64_t)BLK_BLOCK_COUNT * BLK_BLOCK_BYTES;
-    uint64_t sector;
+    uint32_t done;
 
     if ((off % BLK_BLOCK_BYTES) != 0 || (len % BLK_BLOCK_BYTES) != 0 ||
       len == 0) {
@@ -513,16 +543,19 @@ serve_write(const void *src, uint32_t have, uint64_t off, uint32_t len)
         return SYS_ERR_TRUNCATED;
     }
 
-    sector = off / VIRTIO_BLK_SECTOR_BYTES;
-    if ((off % VIRTIO_BLK_SECTOR_BYTES) + len > VIRTIO_BLK_SECTOR_BYTES) {
-        return SYS_ERR_INVALID_ARG;
-    }
-    if (read_sector(sector) != 0) {
-        return SYS_ERR_STALE;       /* the device would not read the sector */
-    }
-    memcpy(&q->data[off % VIRTIO_BLK_SECTOR_BYTES], src, len);
-    if (write_sector(sector) != 0) {
-        return SYS_ERR_STALE;       /* the device would not write the sector */
+    for (done = 0; done < len; done += BLK_BLOCK_BYTES) {
+        uint16_t pblk = block_map[(off + done) / BLK_BLOCK_BYTES];
+        uint64_t pbyte = phys_block_offset(pblk);
+        uint64_t sector = pbyte / VIRTIO_BLK_SECTOR_BYTES;
+
+        if (read_sector(sector) != 0) {
+            return SYS_ERR_STALE;   /* the device would not read the sector */
+        }
+        memcpy(&q->data[pbyte % VIRTIO_BLK_SECTOR_BYTES],
+          (const uint8_t *)src + done, BLK_BLOCK_BYTES);
+        if (write_sector(sector) != 0) {
+            return SYS_ERR_STALE;   /* the device would not write the sector */
+        }
     }
 
     return SYS_OK;
@@ -593,6 +626,8 @@ main(void)
     if (err != 0) {
         return err;
     }
+
+    map_init();
 
     chan = ns_lookup(SYS_NS_SERVICE);
     if (chan == SYS_HANDLE_INVALID) {

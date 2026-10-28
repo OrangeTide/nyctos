@@ -46,10 +46,35 @@ block store under the filesystem, durable across a boot, and completing on the
 device's interrupt, was built toward this. A write forks the block it touches
 rather than overwriting it in place, so the earlier state stays readable, which
 is the ground a snapshot stands on. It builds on the store and `fs_server`
-already here and needs no new kernel mechanism, only the filesystem's own
-bookkeeping of which blocks are shared and which are owned. The largest of
-these, and the first to span several stages; its claim and stages are written
-when it is started.
+already here and needs no new kernel mechanism, only the store's own
+bookkeeping of which blocks are shared and which are owned. The map, the free
+blocks, and the snapshots live in memory, rebuilt from the fixed layout each
+boot. Putting that bookkeeping on the disk is a later version's work. Three
+stages:
+
+1. The indirection. The store resolves every read and write through a
+   logical-to-physical block map, identity to start, so a logical block is a
+   name looked up and not a device offset computed. What runs: every file read,
+   the write self-test, and the across-boot marker, all through the map. What
+   fails it: a map entry aimed at the wrong physical block makes that block read
+   another block's bytes.
+
+2. The fork on write. The store gains a free-block allocator over an arena
+   grown past the logical blocks, and a reference count per physical block. A
+   write to a block shared by more than one reference takes a free block, copies
+   the old bytes into it, points the logical block at the new block, and writes
+   there, leaving the old block untouched. What runs: a shared block is written,
+   the old physical block still holds the old bytes and the new one holds the
+   write. What fails it: a shared block written in place, changing the old
+   bytes.
+
+3. The snapshot. An operation captures the live map and raises the reference
+   count of every block it names, so the snapshot and the live view share blocks
+   until a write forks one. A read through the snapshot reads the shared block;
+   a read of the live view after a write reads the fork. What runs: snapshot,
+   write a block through the live view, read it through the snapshot and see the
+   bytes from before the write while the live view sees the bytes after. What
+   fails it: the snapshot read seeing the write.
 
 **0.31. ELF in the boot archive.** The archive tool reads each member's
 `PT_LOAD` headers instead of a sidecar, honours the read-execute against
