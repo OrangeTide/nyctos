@@ -18655,12 +18655,40 @@ backtrace_check(void)
 {
     uintptr_t frames[16];
     unsigned int n = bt_a(frames, 16);
+    const char *want[4];
+    uintptr_t drop;
+    unsigned int k;
 
     if (n < 4) {
         panic("backtrace: a four-deep nest unwound to %u frames", n);
     }
 
-    cnprintf("backtrace: a nested call unwound to %u frames\n", n);
+    /*
+     * Each return address lands in the function that made the inner call, so
+     * the first four frames are bt_c, bt_b, bt_a and this check. Each must
+     * resolve to the function its address is in, not the one after it: the
+     * name is compared by the pointer the table returns, since the kernel has
+     * no strcmp, against the name each function resolves to from its own
+     * start. An address inside a function and the function's start share a
+     * name, so the comparison names a frame wrong only if the lookup picked
+     * the following symbol rather than the containing one.
+     */
+    want[0] = ksym_lookup((uintptr_t)&bt_c, &drop);
+    want[1] = ksym_lookup((uintptr_t)&bt_b, &drop);
+    want[2] = ksym_lookup((uintptr_t)&bt_a, &drop);
+    want[3] = ksym_lookup((uintptr_t)&backtrace_check, &drop);
+
+    for (k = 0; k < 4; k++) {
+        uintptr_t off = 0;
+        const char *got = ksym_lookup(frames[k], &off);
+
+        if (got == NULL || got != want[k]) {
+            panic("backtrace: frame %u named %s, not the function it is in",
+              k, got == NULL ? "(none)" : got);
+        }
+    }
+
+    cnprintf("backtrace: a nested call unwound to %u named frames\n", n);
 }
 
 /*

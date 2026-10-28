@@ -12,6 +12,7 @@
  */
 #include <sys/backtrace.h>
 #include <sys/cpu.h>
+#include <sys/ksym.h>
 #include <sys/lock.h>
 #include <sys/measure.h>
 #include <sys/systm.h>
@@ -441,18 +442,26 @@ panic(const char *fmt, ...)
     cnputs("\n");
 
     /*
-     * The call chain that reached here, as a record of return addresses. A
-     * host tool reads these against the kernel ELF and names each frame.
+     * The call chain that reached here, each return address named as the
+     * function it falls in plus the offset into it. An address the embedded
+     * table cannot name is printed raw, so a panic before the table is read
+     * or from code the table does not cover still shows the chain.
      */
     {
         uintptr_t frames[16];
         unsigned int n = kbacktrace(frames, 16), k;
 
-        cnputs("backtrace:");
+        cnputs("backtrace:\n");
         for (k = 0; k < n; k++) {
-            cnprintf(" 0x%lx", (unsigned long)frames[k]);
+            uintptr_t off = 0;
+            const char *name = ksym_lookup(frames[k], &off);
+
+            if (name != NULL) {
+                cnprintf("  %s+0x%lx\n", name, (unsigned long)off);
+            } else {
+                cnprintf("  0x%lx\n", (unsigned long)frames[k]);
+            }
         }
-        cnputs("\n");
     }
 
     machine_halt(1);
