@@ -136,10 +136,34 @@ near its former size rather than carrying tens of kilobytes of segment padding
 per program.
 
 **0.32. Panic symbolization.** A panic reports an address, and nothing turns it
-into a function and a line. First an offline symbolizer that reads the archive
-and a panic record and prints a backtrace, then an in-kernel one that carries a
-symbol blob so a live panic names its own site. It waits on 0.31, which puts
-the symbols where it can read them. Moderate.
+into a function. First an offline symbolizer that reads the kernel ELF and a
+panic's record of addresses and prints a backtrace, then an in-kernel one that
+carries a symbol table so a live panic names each frame itself. It waits on
+0.31, which put the reader and the shared ELF description in place. The
+backtrace is the whole call chain, not the innermost frame alone, so the kernel
+compiles with frame pointers and unwinds the saved chain on both
+architectures. Three stages:
+
+1. The stack walk and the record. The kernel compiles with frame pointers, an
+   unwinder follows the saved frame-pointer chain to the chain of return
+   addresses, and a panic prints that chain as a record of addresses. A host
+   tool reads the kernel ELF and names each address, so a panic is read offline.
+   What runs: a check unwinds a known nest of calls and finds a frame for each,
+   and the tool names a known address. What fails it: an unwinder that does not
+   follow the saved frame pointer returns a chain too short for the nesting.
+
+2. The kernel's own symbols. A two-pass link embeds a table of the kernel's
+   function symbols, built from the first pass and placed past the text so the
+   addresses it records do not move, and `ksym_lookup` names the function an
+   address falls in. What runs: a check resolves the address of a known kernel
+   function to its name. What fails it: a lookup that ignores the address names
+   the wrong function.
+
+3. The live backtrace. A panic and a fault print the chain as function names
+   and offsets, each frame named through `ksym_lookup`. What runs: a check
+   prints a backtrace from a known nest of calls and names the expected
+   functions. What fails it: a frame named by the symbol after it rather than
+   the one its address is in.
 
 **0.33. A larger shell.** The shell is a minimal subset. A Bourne subset,
 functions and locals, `break` and `continue` with a count, arithmetic
