@@ -4,6 +4,26 @@ Notable changes per minor version. Patch bumps between minors move the VERSION
 file alone and are not listed here; see the git log for their detail. Each
 release's full retrospective lives in docs/ROADMAP.md.
 
+## 0.32.0
+
+Panic symbolization. The kernel compiles with frame pointers, and a panic
+unwinds the saved frame-pointer chain to the chain of return addresses that
+reached it. Each is named as the function it falls in plus the offset, so a
+panic reads as a backtrace of function names rather than bare addresses; an
+address the table cannot name prints raw. A fault reaches this path through
+panic and reads the same way. The unwinder is bounded to one kernel stack, so
+a chain that does not terminate cleanly stops at the stack's edge.
+
+Two readers name the addresses. `nycsym` is a host tool that reads the kernel
+ELF and names a panic's recorded addresses offline. The in-kernel reader,
+`ksym_lookup`, names an address against a table of the kernel's function
+symbols the image carries: a two-pass link embeds it, `mksymtab` builds it from
+the first pass, and it sits in rodata past the text so the addresses it records
+do not move before the second pass links it in. Both name an address by the
+function that contains it, the nearest symbol at or below the address. The
+kernel keeps no `strcmp`; the boot checks compare names by the pointer the
+table returns.
+
 ## 0.31.0
 
 ELF in the boot archive. Each member is carried as a debug-stripped ELF, and

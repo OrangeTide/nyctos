@@ -165,6 +165,21 @@ architectures. Three stages:
    functions. What fails it: a frame named by the symbol after it rather than
    the one its address is in.
 
+**Done, shipped in 0.32.0.** The kernel compiles with frame pointers, and a
+panic unwinds the saved chain to its return addresses and prints each as the
+function it falls in plus the offset, an unnamed address raw. A fault reaches
+this path through panic. The offline `nycsym` names a panic's recorded
+addresses against the kernel ELF, and the in-kernel `ksym_lookup` names an
+address against a symbol table a two-pass link embeds: `mksymtab` builds it
+from the first pass and it sits in rodata past the text so its addresses do not
+move before the second pass links it in. A boot check stands behind each stage:
+the unwinder recovers a four-deep nest, the lookup resolves two known functions
+to distinct names at offset zero, and the live path names the nest's frames by
+the function each address is in. One limit was taken by choice. A frame is
+named to the function and the offset, not the source line: the DWARF
+line-number reader was left for later, so the line-number sections still live
+only in the on-disk ELF, not the kernel-embedded archive.
+
 **0.33. A larger shell.** The shell is a minimal subset. A Bourne subset,
 functions and locals, `break` and `continue` with a count, arithmetic
 expansion, field splitting, `case`, and positional parameters, is the feature

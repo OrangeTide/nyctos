@@ -78,21 +78,23 @@ accounting, and assert the counts directly.
 
 ## MED
 
-### Offline, then in-kernel, panic symbolization
+### Offline, then in-kernel, panic symbolization (done, shipped 0.32.0)
 
-A panic reports an address, and nothing turns it into a function and a line. An
-offline symbolizer that reads the archive and prints a backtrace from a panic
-record is the first step, and an in-kernel one that carries a symbol blob is the
-second. This is why Proposal 5 ("ELF in the Boot Archive") is wanted: a flat
-image with a sidecar has no symbols to read.
+Done in 0.32.0, to the function and offset, not the line. A panic unwinds the
+saved frame-pointer chain and prints each return address as the function it
+falls in plus the offset. The offline `nycsym` reads the kernel ELF and names a
+panic's recorded addresses; the in-kernel path carries a symbol blob a two-pass
+link embeds, built from the first pass by `mksymtab` and placed past the text
+so its addresses do not move, and `ksym_lookup` names an address against it. A
+fault reaches the same path through panic.
 
-A DWARF reader that builds sorted line and function tables with binary-search
-lookup and no per-lookup allocation exists in `~/Vibe/skjegg/dwarf/dwread.c`
-with `dwarf.c`. It is ELF32 today with four-byte addresses, and its frame walk
-assumes the RV32 layout. The port needs ELF64, LP64 addresses, and a frame walk
-parameterized for the AArch64 and riscv64 layout (`[fp]` and `[fp+8]`). Moderate
-work. Trigger: Proposal 5 lands, so there is a symbol table to read. Scheduled:
-0.32, behind 0.31.
+The DWARF line-number reader is not done, so a frame names a function and an
+offset, not a source line. A DWARF reader that builds sorted line and function
+tables with binary-search lookup and no per-lookup allocation exists in
+`~/Vibe/skjegg/dwarf/dwread.c` with `dwarf.c` for whoever wants lines later. It
+is ELF32 today with four-byte addresses, and its frame walk assumes the RV32
+layout. That port would need ELF64, LP64 addresses, and a frame walk
+parameterized for the AArch64 and riscv64 layout (`[fp]` and `[fp+8]`).
 
 ### Adopt a host-side ELF reader in the boot-archive tool (done, shipped 0.31.0)
 
