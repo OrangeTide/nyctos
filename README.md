@@ -105,13 +105,13 @@ Install the toolchain with the system package manager:
 
 ```sh
 # Debian / Ubuntu
-sudo apt install clang lld make qemu-system-arm qemu-system-misc
+sudo apt install clang lld llvm make qemu-system-arm qemu-system-misc
 
 # Fedora
-sudo dnf install clang lld make qemu-system-aarch64 qemu-system-riscv
+sudo dnf install clang lld llvm make qemu-system-aarch64 qemu-system-riscv
 
 # Arch
-sudo pacman -S clang lld make qemu-system-aarch64 qemu-system-riscv
+sudo pacman -S clang lld llvm make qemu-system-aarch64 qemu-system-riscv
 ```
 
 Verify:
