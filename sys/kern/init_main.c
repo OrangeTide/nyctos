@@ -16598,6 +16598,121 @@ frame_endurance_checks(void)
 }
 
 /*
+ * Every object pool, so a soak can ask each one whether it gave its slots
+ * back. The pools are sized at build and freed back into, with no heap behind
+ * them, so exact reclaim is a count returning to where it was. The
+ * per-subsystem checks each assert this for one of these; the soak asserts it
+ * for all of them at once, across a churn that mixes the lifecycles.
+ */
+static struct pool *(*const soak_pool_fns[])(void) = {
+    proc_pool,
+    thread_pool,
+    channel_pool,
+    connection_pool,
+    grant_pool,
+    timeline_pool,
+    timer_pool,
+    program_pool,
+    prepared_pool,
+};
+
+#define SOAK_POOL_COUNT (sizeof(soak_pool_fns) / sizeof(soak_pool_fns[0]))
+
+/* Every pool's count and the frame count, recorded before a soak. */
+struct pool_baseline {
+    uint32_t used[SOAK_POOL_COUNT];
+    uint32_t frames;
+};
+
+/*
+ * The frame count is read through frames_quiet, which settles rather than
+ * snaps: when the baseline is taken a prior check's last reap may still be in
+ * flight, and when it is asserted the soak's own last reap is, since the join
+ * is not the reap. The pool counts are read once the frames have settled,
+ * because a pool slot comes back at the same reap the frames do.
+ */
+static void
+soak_snapshot(struct pool_baseline *b)
+{
+    unsigned int i;
+
+    b->frames = frames_quiet();
+    for (i = 0; i < SOAK_POOL_COUNT; i++) {
+        b->used[i] = soak_pool_fns[i]()->used;
+    }
+}
+
+/*
+ * Assert every pool and the frame count returned to the baseline, naming the
+ * first that did not. A pool above its baseline is a slot the soak took and
+ * did not give back, which is the leak the static pools exist to make
+ * countable.
+ */
+static void
+soak_assert_back(const struct pool_baseline *b)
+{
+    uint32_t frames = frames_quiet();
+    unsigned int i;
+
+    for (i = 0; i < SOAK_POOL_COUNT; i++) {
+        struct pool *p = soak_pool_fns[i]();
+
+        if (p->used != b->used[i]) {
+            panic("soak: the %s pool holds %u after the soak, not %u",
+              p->name, (unsigned int)p->used, (unsigned int)b->used[i]);
+        }
+    }
+    if (frames != b->frames) {
+        panic("soak: %u frames in use after the soak, not %u",
+          (unsigned int)frames, (unsigned int)b->frames);
+    }
+}
+
+/*
+ * How many times the soak spawns and reaps: more than the process pool has
+ * slots, so a slot that was not reclaimed would run the pool out rather than
+ * be quietly reused. Each cycle reaps before the next begins, so the pool
+ * never holds more than a couple at once, and what the count proves is reuse
+ * and not depth.
+ */
+#define SOAK_SPAWN_ROUNDS   (SYS_MAX_PROCESSES * 3u)
+
+/*
+ * The soak: churn a lifecycle and confirm every pool gave its slots back.
+ *
+ * This stage churns spawn and reap. A trivial program is spawned and reaped
+ * more times than the process pool has slots, under a bracket that records
+ * every pool and the frame count before and asserts them after. A leak in any
+ * pool, from the spawn or the reap, shows as a count above the baseline rather
+ * than as a drift that only a far longer run would surface.
+ *
+ * It runs after the shell, for the reason frame_endurance_checks does: it
+ * spawns a program many times, and in front of the paced session that would
+ * delay the first command past the input already sent.
+ */
+static void
+soak_checks(void)
+{
+    struct pool_baseline base;
+    uint32_t i, back;
+
+    cnputs("soak: every pool back to where it started\n");
+
+    soak_snapshot(&base);
+
+    exit_quiet = true;
+    for (i = 0; i < SOAK_SPAWN_ROUNDS; i++) {
+        (void)frame_cost_once("brief", &back);
+    }
+    exit_quiet = false;
+
+    soak_assert_back(&base);
+
+    cnprintf("    %-38s %u spawns and reaps, every pool back\n",
+      "spawn and reap", (unsigned int)SOAK_SPAWN_ROUNDS);
+}
+
+/*
  * The registers one execution has, and what they refuse.
  *
  * Checked directly rather than through a submission, because at this
@@ -19351,6 +19466,13 @@ kernel_main(void)
      * checking. Nothing runs after this but the reports.
      */
     frame_endurance_checks();
+
+    /*
+     * After the shell for the same reason, and after the endurance run so
+     * the machine is quiet when the baseline is taken: a soak that churns a
+     * lifecycle and then asks whether every pool gave its slots back.
+     */
+    soak_checks();
 
     /*
      * The same rate over the whole run and not only over the two
