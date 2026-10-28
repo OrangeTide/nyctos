@@ -90,9 +90,37 @@ and not sized for a working set.
 **0.31. ELF in the boot archive.** The archive tool reads each member's
 `PT_LOAD` headers instead of a sidecar, honours the read-execute against
 read-write split in `p_flags`, and keeps the ELF container so a reader
-downstream has the symbol and debug sections. This is Proposal 5, and it is the
+downstream has the member's symbols. This is Proposal 5, and it is the
 prerequisite for 0.32: a flat image with a sidecar has no symbols to read.
-Moderate.
+Each member is carried as a debug-stripped ELF, which keeps a valid container
+with its symbol table while leaving the line-number sections out of the
+kernel-embedded archive, where footprint is asserted. The record still carries
+the load address and the read-write and memory bounds, derived now from the
+program headers, because the loader, the cohort overlap check, and the memory
+reservation all read them. Three stages:
+
+1. Load from the ELF. The member payload becomes a debug-stripped ELF, and the
+   kernel loads a program by walking its `PT_LOAD` headers: each loadable
+   segment is copied to its virtual address and the memory past the file bytes
+   is zeroed, the read-only and writable regions taken from the segment flags.
+   The tool reads the same headers to fill the record, so the report and the
+   reservation are unchanged. Both tiers load this way. What runs: every program
+   the session spawns loads and runs. What fails it: a loader that skips a
+   segment or its zero-fill leaves a program reading bytes that are not there.
+
+2. One description, the ELF. The `.layout` sidecar and the load addresses
+   hand-written in the archive rule go away: the tool takes a member as its name
+   and its ELF, and reads the load address and the bounds from the program
+   headers alone. What runs: the build describes each program only by its ELF,
+   and all four configs boot. What fails it: the tool accepts an ELF whose
+   segments overrun the slot it is placed in, which the sidecar's bounds check
+   used to refuse.
+
+3. Symbols kept for a reader. The archived ELF carries its `.symtab` and
+   `.strtab`, and a reader resolves an address in a member to the name of the
+   function that contains it. What runs: a check reads a member from the archive
+   and names a function at a known address. What fails it: a reader given an
+   address in a member finds no symbol, or the wrong one.
 
 **0.32. Panic symbolization.** A panic reports an address, and nothing turns it
 into a function and a line. First an offline symbolizer that reads the archive
