@@ -193,6 +193,61 @@ boot_copy_image(const struct boot_member *m, size_t voff, void *dst,
 }
 
 /*
+ * The function a virtual address falls in, by name, from the member's ELF
+ * symbol table. The section headers locate the symbol table and the string
+ * table it names; the function symbol with the greatest value at or below
+ * the address is the one that contains it, and its name is returned. NULL
+ * when the ELF carries no symbol table or no function precedes the address.
+ * This is what a backtrace turns a return address into, and what 0.32 reads
+ * the archive for.
+ */
+const char *
+boot_symbolize(const struct boot_member *m, uintptr_t addr)
+{
+    const uint8_t *elf = boot_payload(m);
+    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)elf;
+    const Elf64_Sym *syms = NULL;
+    const char *strs = NULL;
+    const char *best = NULL;
+    uint64_t nsyms = 0, best_val = 0;
+    unsigned int s;
+    uint64_t i;
+
+    for (s = 0; s < eh->e_shnum; s++) {
+        const Elf64_Shdr *sh = (const Elf64_Shdr *)
+          (elf + eh->e_shoff + (uint64_t)s * eh->e_shentsize);
+
+        if (sh->sh_type == SHT_SYMTAB && sh->sh_entsize != 0) {
+            const Elf64_Shdr *str = (const Elf64_Shdr *)
+              (elf + eh->e_shoff + (uint64_t)sh->sh_link * eh->e_shentsize);
+
+            syms = (const Elf64_Sym *)(elf + sh->sh_offset);
+            nsyms = sh->sh_size / sh->sh_entsize;
+            strs = (const char *)(elf + str->sh_offset);
+            break;
+        }
+    }
+    if (syms == NULL || strs == NULL) {
+        return NULL;
+    }
+
+    for (i = 0; i < nsyms; i++) {
+        if (ELF64_ST_TYPE(syms[i].st_info) != STT_FUNC) {
+            continue;
+        }
+        if (syms[i].st_value > addr) {
+            continue;
+        }
+        if (best == NULL || syms[i].st_value > best_val) {
+            best = strs + syms[i].st_name;
+            best_val = syms[i].st_value;
+        }
+    }
+
+    return best;
+}
+
+/*
  * Copy a member to the address it was linked for and return its entry
  * point. Nothing checks that the destination is free, because there is no
  * MMU and no allocator to ask: the load addresses come from the program

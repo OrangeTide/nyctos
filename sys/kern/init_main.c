@@ -14,6 +14,7 @@
 #include <sys/lock.h>
 #include <sys/blk.h>
 #include <sys/bootarch.h>
+#include <sys/elf.h>
 #include <sys/batchreg.h>
 #include <sys/channel.h>
 #include <sys/cohort.h>
@@ -18542,6 +18543,75 @@ persistence_checks(sys_handle_t store)
     cnputs("persist: wrote the marker for a later boot to find\n");
 }
 
+/*
+ * A reader resolves an address in an archived member to the name of the
+ * function that contains it. The member's lowest function symbol is found
+ * here, independently of the reader, and an address one byte into it is
+ * handed to boot_symbolize, which must name that same function. The names
+ * are the same bytes in the member's one string table, so the check is a
+ * pointer comparison and needs no string compare, which the kernel does not
+ * have. This is the symbol path 0.32 reads the archive for.
+ */
+static void
+archive_symbol_check(void)
+{
+    const struct boot_member *m = boot_lookup("cat");
+    const uint8_t *elf;
+    const Elf64_Ehdr *eh;
+    const Elf64_Sym *syms = NULL;
+    const char *strs = NULL;
+    const char *want = NULL;
+    const char *got;
+    uint64_t nsyms = 0, lo_val = 0;
+    uint64_t i;
+    unsigned int s;
+
+    if (m == NULL) {
+        panic("symbols: no 'cat' in the archive");
+    }
+    elf = boot_payload(m);
+    eh = (const Elf64_Ehdr *)elf;
+
+    for (s = 0; s < eh->e_shnum; s++) {
+        const Elf64_Shdr *sh = (const Elf64_Shdr *)
+          (elf + eh->e_shoff + (uint64_t)s * eh->e_shentsize);
+
+        if (sh->sh_type == SHT_SYMTAB && sh->sh_entsize != 0) {
+            const Elf64_Shdr *str = (const Elf64_Shdr *)
+              (elf + eh->e_shoff + (uint64_t)sh->sh_link * eh->e_shentsize);
+
+            syms = (const Elf64_Sym *)(elf + sh->sh_offset);
+            nsyms = sh->sh_size / sh->sh_entsize;
+            strs = (const char *)(elf + str->sh_offset);
+            break;
+        }
+    }
+    if (syms == NULL) {
+        panic("symbols: 'cat' carries no symbol table");
+    }
+
+    for (i = 0; i < nsyms; i++) {
+        if (ELF64_ST_TYPE(syms[i].st_info) != STT_FUNC) {
+            continue;
+        }
+        if (want == NULL || syms[i].st_value < lo_val) {
+            lo_val = syms[i].st_value;
+            want = strs + syms[i].st_name;
+        }
+    }
+    if (want == NULL) {
+        panic("symbols: 'cat' carries no function symbol");
+    }
+
+    got = boot_symbolize(m, (uintptr_t)lo_val + 1);
+    if (got != want) {
+        panic("symbols: 0x%lx resolved to %s, not the function at its start",
+          (unsigned long)(lo_val + 1), got == NULL ? "(none)" : got);
+    }
+
+    cnprintf("archive symbols: an address in 'cat' resolves to %s\n", want);
+}
+
 static void
 user_slice(void)
 {
@@ -18560,6 +18630,7 @@ user_slice(void)
 
     boot_report();
     cohort_report();
+    archive_symbol_check();
 
     ch = channel_create("fs-user", self);
     if (ch == NULL) {

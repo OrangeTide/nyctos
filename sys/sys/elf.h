@@ -45,6 +45,28 @@ typedef struct {
     uint64_t        p_align;
 } Elf64_Phdr;
 
+typedef struct {
+    uint32_t        sh_name;
+    uint32_t        sh_type;
+    uint64_t        sh_flags;
+    uint64_t        sh_addr;
+    uint64_t        sh_offset;
+    uint64_t        sh_size;
+    uint32_t        sh_link;
+    uint32_t        sh_info;
+    uint64_t        sh_addralign;
+    uint64_t        sh_entsize;
+} Elf64_Shdr;
+
+typedef struct {
+    uint32_t        st_name;
+    uint8_t         st_info;
+    uint8_t         st_other;
+    uint16_t        st_shndx;
+    uint64_t        st_value;
+    uint64_t        st_size;
+} Elf64_Sym;
+
 /* e_ident indices and the magic the first four hold. */
 #define EI_MAG0         0
 #define EI_CLASS        4
@@ -63,5 +85,11 @@ typedef struct {
 #define PF_X            0x1     /* executable */
 #define PF_W            0x2     /* writable */
 #define PF_R            0x4     /* readable */
+
+#define SHT_SYMTAB      2       /* a symbol table */
+#define SHT_STRTAB      3       /* a string table */
+
+#define STT_FUNC        2       /* the symbol names a function */
+#define ELF64_ST_TYPE(i)        ((i) & 0xf)
 
 #endif /* _SYS_ELF_H_ */

@@ -67,6 +67,13 @@ const uint8_t *boot_payload(const struct boot_member *m);
 void boot_copy_image(const struct boot_member *m, size_t voff, void *dst,
   size_t len);
 
+/*
+ * The name of the function a virtual address falls in, from the member's
+ * symbol table, or NULL if no function symbol precedes the address. The
+ * function is the one with the greatest address at or below it.
+ */
+const char *boot_symbolize(const struct boot_member *m, uintptr_t addr);
+
 /* Hold back the memory the archive's programs are linked to run in. */
 void boot_reserve(void);
 
