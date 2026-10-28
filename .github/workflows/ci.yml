@@ -28,6 +28,19 @@ jobs:
       - uses: actions/checkout@v6
       - name: Install the toolchain
         run: sudo apt-get update && sudo apt-get install -y clang lld llvm make qemu-system-arm qemu-system-misc
+      - name: Verify the toolchain
+        run: |
+          clang --version | head -1
+          ld.lld --version | head -1
+          llvm-ar --version | head -1
+          qemu-system-aarch64 --version | head -1
+          if ! qemu-system-riscv64 --version | head -1; then
+            echo "qemu-system-riscv64 is not on PATH; looking for where it lives:"
+            dpkg -L qemu-system-misc 2>/dev/null | grep -i riscv || echo "  not shipped by qemu-system-misc"
+            apt-cache search qemu-system 2>/dev/null | grep -i risc || echo "  no qemu-system package mentions riscv"
+            ls -1 /usr/bin/qemu-system-* 2>/dev/null || true
+            exit 1
+          fi
       - name: Build and smoke test
         run: make ARCH=${{ matrix.arch }} TIER=${{ matrix.tier }} check
 
