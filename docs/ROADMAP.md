@@ -15729,6 +15729,71 @@ The stages, each ending in something that runs and a check that can fail:
 ---
 
 
+### M27. The Block Device's Interrupt, Not Its Spin
+
+**The block driver waits for the device's interrupt instead of spinning the
+used ring. The port names the virtio-blk interrupt, the kernel attaches it to a
+timeline and hands the store an interrupt handle and a wait handle, as it does
+for the console UART, and a transfer notifies the queue, blocks on the timeline,
+then acknowledges the device and unmasks.** Tier 0, single core, and the same
+source at Tier 2.
+
+M25 and M26 built the read and the write over the ring, and both spin on the
+used ring until the device advances it. The spin is correct for one synchronous
+request, but it holds the core and keeps the driver off the scheduler while the
+device works. This milestone moves completion onto the interrupt the device
+already raises, through the mechanism the console uses for the UART: a handler
+masks the source and advances a timeline, the driver waits on the timeline, and
+when it has drained the device it acknowledges and unmasks.
+
+*Needs.* The console's interrupt path, which exists: `irq_attach`, the interrupt
+as an object with `SYS_OP_IRQ_UNMASK`, and the timeline wait. The driver already
+holds the device grant and the queue. A port helper that names the virtio-blk
+interrupt, as there is one that names the UART's.
+
+*Not needed.* Any kernel mechanism change, a second queue, a new grant, the MMU
+beyond the mapping M25 used, cohorts, SMP. The change is a port helper, the
+launcher wiring, and the driver waiting where it used to spin.
+
+*Done when* a file read and a block write complete on the device's interrupt
+rather than a spin, the driver acknowledges the device and unmasks so a
+level-triggered source is not re-entered, and a transfer whose interrupt never
+arrives is caught rather than hiding behind a spin that still worked.
+
+*Would falsify.* Whether a user driver can wait on a device interrupt with the
+console's mechanism and no change to it. Whether the one interrupt per transfer
+the timeline counts stays in step with the transfers the driver issues. Whether
+acknowledging the device before unmasking the controller keeps a
+level-triggered source from re-firing.
+
+*Size.* Small to medium. A port helper per architecture, the launcher creating
+a timeline and attaching the interrupt and handing over two handles, and the
+driver's transfer waiting and acknowledging instead of spinning. No file under
+`sys/kern` changes but the boot harness that wires and drives it.
+
+The stages, each ending in something that runs and a check that can fail:
+
+1. **The interrupt replaces the spin.** The port names the virtio-blk
+   interrupt, the launcher attaches it to a timeline and hands the store an
+   interrupt handle and a wait handle, and the driver's transfer waits on the
+   timeline, reads the used ring, acknowledges the device's interrupt status,
+   and unmasks, instead of spinning. Runs: the file reads of the golden session
+   and the store's write and persistence checks all complete on the interrupt.
+   Falsifies: a wrong interrupt attached, or the unmask withheld, wedging the
+   next transfer.
+2. **The count is in step.** The driver counts the completions it waits for and
+   the boot confirms one interrupt per transfer, so a coalesced or missed
+   interrupt is visible rather than absorbed. Runs: the reported count equals
+   the transfers issued. Falsifies: a count that drifts from the transfers.
+3. **A source that is not a completion.** A configuration-change or spurious
+   interrupt is told from a completion by the interrupt-status register and does
+   not advance a transfer or corrupt the queue. Runs: the driver passes over
+   such an interrupt and still completes its transfers. Falsifies: a non-
+   completion interrupt taken as one.
+
+---
+
+
 ## 4. Milestone 1, in Retrospect
 
 The slice was chosen as the smallest thing that could falsify the design
