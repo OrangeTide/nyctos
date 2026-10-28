@@ -76,6 +76,17 @@ stages:
    bytes from before the write while the live view sees the bytes after. What
    fails it: the snapshot read seeing the write.
 
+**Done, shipped in 0.30.0.** All three stages landed in the store under
+`fs_server`, with no kernel change. The store routes reads and writes through
+the map, forks a block held by more than one reference, and keeps a snapshot's
+bytes readable after the live view diverges. A boot self-test stands behind
+each stage. One limit was left for later by choice: the map, the reference
+counts, the free pool, and the snapshot are in memory, rebuilt from the fixed
+layout each boot, so a snapshot does not survive a boot and the on-disk CoW
+metadata is a later version's work. The free pool is sixteen blocks in the
+sectors the disk image already carried, which is enough to show the mechanism
+and not sized for a working set.
+
 **0.31. ELF in the boot archive.** The archive tool reads each member's
 `PT_LOAD` headers instead of a sidecar, honours the read-execute against
 read-write split in `p_flags`, and keeps the ELF container so a reader

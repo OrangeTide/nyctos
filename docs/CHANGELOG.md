@@ -2,7 +2,24 @@
 
 Notable changes per minor version. Patch bumps between minors move the VERSION
 file alone and are not listed here; see the git log for their detail. Each
-milestone's full retrospective lives in docs/ROADMAP.md.
+release's full retrospective lives in docs/ROADMAP.md.
+
+## 0.30.0
+
+A copy-on-write block store. The store resolves every read and write through an
+in-memory logical-to-physical block map, identity at boot, over a physical
+arena larger than the logical store. A write to a block held by more than one
+reference forks it: a free block takes a copy of the old bytes, the map is
+pointed at the new block, and the write lands there, so the old bytes stay
+readable through the other holder. A snapshot captures the live map and raises
+a reference on every block it names, so a later write to a shared block forks
+and a read through the snapshot still reads the bytes from before the write
+while the live view reads after. Three boot self-tests stand behind the map,
+the fork, and the snapshot before the store serves.
+
+The map, the reference counts, the free pool, and the snapshot live in memory
+and are rebuilt from the fixed layout each boot. A snapshot does not survive a
+boot, and on-disk CoW metadata is later work. No kernel mechanism changed.
 
 ## 0.29.0
 
