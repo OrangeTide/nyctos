@@ -6,19 +6,17 @@
  * Packs a set of program ELFs into one boot archive for the kernel to
  * carry and load at boot. Usage:
  *
- *   mkbootarch out.img name=load@file [name=load@file ...]
+ *   mkbootarch out.img slot name@file [name@file ...]
  *
- * Each input is a program's ELF. The tool reads the load address, the
- * read-write boundary, the memory extent, and the file extent out of the
- * ELF's PT_LOAD program headers, and stores the ELF itself as the member's
- * payload so a reader downstream has its symbols. It runs on the build host
- * with the host compiler and stdio, and shares only sys/bootarch.h and
- * sys/elf.h with the kernel, so the writer and the reader agree on one
- * description of each format.
- *
- * The command-line load address and a "<file>.layout" beside the ELF are
- * still read and cross-checked against the program headers, so a header the
- * tool reads wrong stops the build rather than loading a program wrong.
+ * Each input is a program's ELF, named for the archive. The tool reads the
+ * load address, the read-write boundary, the memory extent, and the file
+ * extent out of the ELF's PT_LOAD program headers, and stores the ELF
+ * itself as the member's payload so a reader downstream has its symbols. An
+ * image whose memory extent would overrun slot bytes, the spacing between
+ * load addresses, is refused, because it would reach into the next
+ * program's slot. It runs on the build host with the host compiler and
+ * stdio, and shares only sys/bootarch.h and sys/elf.h with the kernel, so
+ * the writer and the reader agree on one description of each format.
  *
  */
 
@@ -90,44 +88,6 @@ pad_to(FILE *out, uint32_t from, uint32_t to)
 
 
 /*
- * The layout of an image, written beside its binary by the link that
- * produced it: two offsets from the load address, where writable memory
- * begins and where the program's memory ends.
- *
- * Beside the binary rather than on the command line because the numbers
- * come from the linker's symbol table, and a tool that took them as
- * arguments would let the archive rule and the link disagree without
- * anything noticing. Required rather than defaulted: an image whose
- * layout is missing is a build that has half changed, and guessing a
- * whole slot is not something to risk.
- */
-static void
-read_layout(const char *bin, uint32_t *rw, uint32_t *mem)
-{
-    char path[4096];
-    unsigned long long a, b;
-    FILE *f;
-
-    if (snprintf(path, sizeof(path), "%s.layout", bin) >= (int)sizeof(path))
-        die(bin, "path too long for its layout");
-
-    f = fopen(path, "r");
-    if (f == NULL)
-        die(path, strerror(errno));
-    if (fscanf(f, "%llx %llx", &a, &b) != 2)
-        die(path, "expected two hexadecimal offsets");
-    fclose(f);
-
-    if (a == 0 || b <= a)
-        die(path, "layout is not ordered: 0 < rw < mem");
-    if ((a % BOOT_ALIGN) != 0 || (b % BOOT_ALIGN) != 0)
-        die(path, "layout is not aligned to the payload granularity");
-
-    *rw = (uint32_t)a;
-    *mem = (uint32_t)b;
-}
-
-/*
  * The member's layout, read out of its ELF program headers. bm_load is the
  * lowest loadable virtual address; the read-write boundary is where the
  * first writable segment begins; the memory extent is the highest address
@@ -197,28 +157,23 @@ parse_elf(const char *path, uint64_t *load, uint32_t *rw, uint32_t *mem,
 }
 
 /*
- * Split "name=load@file". The load address is where the image is linked to
- * run; the tool does not read it out of the file, because a flat binary
- * carries no such record and inventing one would mean an ELF reader here.
+ * Split "name@file". The load address is not here: the tool reads it out of
+ * the ELF's program headers, so the member is named and pointed at its ELF
+ * and nothing more.
  */
 static void
-parse(char *spec, char **name, uint64_t *load, char **path)
+parse(char *spec, char **name, char **path)
 {
-    char *eq = strchr(spec, '=');
-    char *at = eq != NULL ? strchr(eq, '@') : NULL;
+    char *at = strchr(spec, '@');
 
-    if (eq == NULL || at == NULL)
-        die(spec, "expected name=load@file");
-    *eq = '\0';
+    if (at == NULL)
+        die(spec, "expected name@file");
     *at = '\0';
     *name = spec;
-    *load = strtoull(eq + 1, NULL, 0);
     *path = at + 1;
 
     if (strlen(*name) >= BOOT_NAME_MAX)
         die(*name, "name does not fit BOOT_NAME_MAX");
-    if (*load == 0)
-        die(spec, "load address is zero or unparsable");
 }
 
 int
@@ -228,15 +183,20 @@ main(int argc, char **argv)
     struct boot_header hdr;
     const char **paths;
     uint32_t count, offset;
+    uint64_t slot;
     FILE *out;
     int i;
 
-    if (argc < 3) {
-        fprintf(stderr, "usage: %s out.img name=load@file ...\n", argv[0]);
+    if (argc < 4) {
+        fprintf(stderr, "usage: %s out.img slot name@file ...\n", argv[0]);
         return 1;
     }
 
-    count = (uint32_t)(argc - 2);
+    slot = strtoull(argv[2], NULL, 0);
+    if (slot == 0)
+        die(argv[2], "slot size is zero or unparsable");
+
+    count = (uint32_t)(argc - 3);
     members = calloc(count, sizeof(*members));
     paths = calloc(count, sizeof(*paths));
     if (members == NULL || paths == NULL)
@@ -253,34 +213,22 @@ main(int argc, char **argv)
     offset = align_up((uint32_t)(sizeof(hdr) + count * sizeof(*members)));
     for (i = 0; i < (int)count; i++) {
         char *name, *path;
-        uint64_t load, load_e;
-        uint32_t rw_e, mem_e, size_e, rw_l, mem_l;
+        uint64_t load;
+        uint32_t rw, mem, size;
         long elfsize;
 
-        parse(argv[i + 2], &name, &load, &path);
-        parse_elf(path, &load_e, &rw_e, &mem_e, &size_e);
-        read_layout(path, &rw_l, &mem_l);
+        parse(argv[i + 3], &name, &path);
+        parse_elf(path, &load, &rw, &mem, &size);
         elfsize = file_size(path);
         paths[i] = path;
 
-        /*
-         * The program headers against the two older sources, the
-         * command-line load address and the layout sidecar. Agreement is
-         * the point: a header read wrong stops the build here rather than
-         * placing a program at the wrong address or with the wrong bounds.
-         */
-        if (load_e != load)
-            die(name, "its ELF load address is not the one on the command line");
-        if (rw_e != rw_l || mem_e != mem_l)
-            die(name, "its ELF layout is not the one in the sidecar");
-
         memset(members[i].bm_name, 0, BOOT_NAME_MAX);
         memcpy(members[i].bm_name, name, strlen(name));
-        members[i].bm_load = load_e;
+        members[i].bm_load = load;
         members[i].bm_offset = offset;
-        members[i].bm_size = size_e;
-        members[i].bm_rw = rw_e;
-        members[i].bm_mem = mem_e;
+        members[i].bm_size = size;
+        members[i].bm_rw = rw;
+        members[i].bm_mem = mem;
         members[i].bm_elfsize = (uint32_t)elfsize;
 
         /*
@@ -290,8 +238,17 @@ main(int argc, char **argv)
          * and peer_b is the one image here that has any. What would be
          * wrong is image bytes with nowhere to go.
          */
-        if (size_e > mem_e)
+        if (size > mem)
             die(name, "its bytes do not fit in the memory it asks for");
+
+        /*
+         * And the memory has to fit in the slot. Load addresses are a slot
+         * apart, so a program whose memory reaches past its slot reaches
+         * into the next program's, which the archive would otherwise carry
+         * without anything noticing until two programs ran at once.
+         */
+        if (mem > slot)
+            die(name, "its memory overruns the slot it is placed in");
 
         offset = align_up(offset + (uint32_t)elfsize);
     }

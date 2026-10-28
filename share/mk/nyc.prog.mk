@@ -42,23 +42,3 @@ $(PROG_ELF): $(OBJS) $(CRT1) $(LIBC) $(USER_LDSCRIPT)
 # than by its own name.
 $(PROG_STRIP): $(PROG_ELF)
 	$(OBJCOPY) --strip-debug --discard-all $< $@
-
-# What the loader needs, recorded as offsets from the load address: where
-# writable memory begins and where the program's memory ends. The archive
-# tool reads these out of the program headers now; this sidecar is kept
-# only so the tool can cross-check what it read against the link that
-# produced it, and goes away once that check has earned its retirement.
-PROG_LAYOUT := $(PROG_STRIP).layout
-
-all: $(PROG_LAYOUT)
-
-$(PROG_LAYOUT): $(PROG_ELF)
-	@mkdir -p $(@D)
-	@rw=$$($(NM) $< | awk '$$3 == "_rw_start" { print $$1 }'); \
-	 me=$$($(NM) $< | awk '$$3 == "_mem_end" { print $$1 }'); \
-	 test -n "$$rw" -a -n "$$me" || \
-	     { echo "$@: the link named no _rw_start or _mem_end" >&2; \
-	       exit 1; }; \
-	 printf '0x%x 0x%x\n' \
-	     $$(( 0x$$rw - $(PROG_LOAD_ADDR) )) \
-	     $$(( 0x$$me - $(PROG_LOAD_ADDR) )) > $@
