@@ -15875,6 +15875,79 @@ they held before the soak. The per-subsystem checks prove each reclaim on its
 own; this proves they compose, and that no pool leaks under sustained, mixed
 churn.** Tier 0, single core, and the same source at Tier 2.
 
+**Done.** All three stages are built. What it answered, what it cost, and what
+the building kept finding are below. A bracket records every object pool's
+count and the settled frame count, runs a churn, and asserts each returned,
+naming the first that did not. Under it the three lifecycles run interleaved in
+one loop longer than any of their pools: a trivial program spawned and reaped,
+a connection minted and closed, and a walk through the filesystem server whose
+returned connection is closed. No kernel mechanism changed; one file under
+`sys/kern` did, the boot harness that runs the soak.
+
+The counts return because the system frees back into fixed pools: a process
+gives its slot back at the reap, a connection the moment its last handle
+closes, a channel when nothing references it. The bracket reads the frame count
+through the settle the frame checks already use, because the last reap is in
+flight when the loop ends, and reads the pools once the frames have settled.
+
+```
+  the all-pools bracket over spawn and reap: 72 spawns and reaps, and before
+    stage three interleaved it 96 rounds of spawn, connect and walk
+  connect and close under the bracket: a connection minted and closed on a
+    channel, past the pool's size, the channel made and closed in the bracket
+  all three interleaved: spawn and reap, connect and close, and walk and close
+    in one loop, every pool and the frame count back to the baseline
+```
+
+The falsification was shown to fire at each stage, each naming the pool the
+leak landed in: a spawn never reaped left the process pool one above baseline,
+a connection never closed held its channel and named the channel pool, and a
+walk's connection never closed named the connection pool alone, the server's
+channel outliving it.
+
+**What the building kept finding.**
+
+*The reclaim was already proven one pool at a time.* A node pool churned past
+its size, a connection pool driven and emptied, a channel restarted more times
+than it has slots: each existing check asserts its own subsystem gives
+everything back. What was missing was the bracket that holds over all of them
+at once, so a leak in any pool, and a leak that appears only when the
+lifecycles interleave, shows against one baseline.
+
+*The spawn and reap cycle existed; the bracket is the new part.*
+`frame_cost_once` already spawns a program, joins it, and waits for its slot to
+go stale, which is a full reap, and `frame_endurance_checks` already runs it
+more times than the machine has frames. The soak drives the same cycle under a
+bracket that watches every pool rather than only the frame count.
+
+*A leak surfaces on the pool that holds the thing, not always the one it names.*
+A connection references its channel, so a connection left open on a channel the
+churn made held that channel too, and the bracket, checking the channel pool
+first, named the channel. The same leak on a walk's connection, whose channel
+is the long-lived server's, named the connection pool alone. The pool a leak
+lands in is the one that still holds a reference, which is the honest thing to
+report and not always the lifecycle that leaked.
+
+*The soak settles rather than snaps, because the join is not the reap.* A
+process that has exited holds its slot until its last thread is collected at the
+next switch. A count read the instant the loop ends has that last reap still in
+it, so the bracket waits for the frame count and the unreaped count to hold
+still over several yields before it reads, the same settle the frame checks use.
+
+*It runs after the shell, and the golden it moves is the usage tally.* Like the
+endurance run, the soak spawns many programs, and in front of the paced session
+that would delay the first command past the input already sent. The diffed
+shell session does not change. The Tier 2 usage report gains to its cumulative
+address-space name count, one name given out and back per spawn, with the live
+count unchanged, which is the reclaim the soak asserts; Tier 0 has no
+address-space names, and both tiers gain one to the channels made and given
+back, the soak's own channel.
+
+*One file under `sys/kern` changed, and it is not mechanism.* `init_main.c`,
+the boot harness, gained the bracket and the churn. The pools, their counts,
+the spawn and join path, and the settle are all the ones the system already
+had.
+
 The system sizes its object pools at build and frees back into them, with no
 heap behind them, so exact reclaim is a count returning to where it was and not
 a figure drifting slowly up. Several checks already assert this for one

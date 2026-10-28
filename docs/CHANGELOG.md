@@ -4,6 +4,18 @@ Notable changes per minor version. Patch bumps between minors move the VERSION
 file alone and are not listed here; see the git log for their detail. Each
 milestone's full retrospective lives in docs/ROADMAP.md.
 
+## 0.29.0
+
+M28, "Every Pool Back to Where It Started," is the milestone of this release.
+A soak churns the lifecycles the system reclaims, spawn and reap, connect and
+close, and walk and close, interleaved in one loop longer than any of their
+pools, under a bracket that records every object pool and the settled frame
+count before and asserts them after. The per-subsystem reclaim checks each
+prove one pool gives everything back; this proves they compose, that no pool
+leaks when the lifecycles churn together. No kernel mechanism changed; the soak
+is a boot-harness loop over operations the system already had and an assertion
+over counts it already kept.
+
 ## 0.28.0
 
 M27, "The Block Device's Interrupt, Not Its Spin," is the milestone of this

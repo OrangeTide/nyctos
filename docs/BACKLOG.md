@@ -51,7 +51,16 @@ parts and keep the cursor. Carry across the discipline it failed to follow in
 one place: a caller must check the sticky flag, and the reference server's
 directory path does not, which is the bug to not reproduce.
 
-### Resource-exactness soak tests
+### Resource-exactness soak tests (done, built as M28)
+
+Done. M28 ("Every Pool Back to Where It Started") added a soak that churns
+spawn and reap, connect and close, and walk and close interleaved in one loop
+longer than any of their pools, under a bracket that records every object pool
+and the settled frame count before and asserts them after. A leak in any pool,
+and one that appears only when the lifecycles interleave, shows as a count
+above the baseline rather than as a drift a longer run would need to surface.
+The per-subsystem reclaim checks each prove one pool; this proves they compose.
+The original description is kept below.
 
 The system asserts exact reclaim of statically sized pools, and the roadmap has
 several milestones about a pool giving everything back. A soak test makes that
