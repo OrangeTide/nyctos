@@ -74,6 +74,9 @@ check: all
 	@grep -q '^persist: the marker survived' $(OBJTOP)/check/burst.out \
 	    || { echo 'check: the write did not survive to the second boot'; \
 	         false; }
+	@grep -q '^blk: one interrupt per transfer' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: the interrupt count drifted from the transfers'; \
+	         false; }
 	@echo "check: $(ARCH) ok"
 
 run: all

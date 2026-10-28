@@ -80,6 +80,38 @@ static sys_handle_t h_irq = SYS_HANDLE_INVALID;
 static sys_handle_t h_fence = SYS_HANDLE_INVALID;
 static uint64_t irq_seen;
 
+/* Append a string to a buffer, returning how many bytes were written. */
+static size_t
+sapp(char *out, const char *s)
+{
+    size_t w = 0;
+
+    while (s[w] != '\0') {
+        out[w] = s[w];
+        w++;
+    }
+
+    return w;
+}
+
+/* Append v in decimal to a buffer, returning how many digits were written. */
+static size_t
+udec(char *out, uint64_t v)
+{
+    char tmp[20];
+    size_t n = 0, w = 0;
+
+    do {
+        tmp[n++] = (char)('0' + (unsigned int)(v % 10u));
+        v /= 10u;
+    } while (v != 0);
+    while (n > 0) {
+        out[w++] = tmp[--n];
+    }
+
+    return w;
+}
+
 static uint32_t
 reg_rd(unsigned int off)
 {
@@ -262,6 +294,20 @@ transfer(uint32_t type, uint64_t sector)
     reg_wr(VIRTIO_MMIO_INTERRUPT_ACK, reg_rd(VIRTIO_MMIO_INTERRUPT_STATUS));
     (void)sys_irq_unmask(h_irq);
 
+    /*
+     * One interrupt per transfer. The timeline reached irq_seen, the count of
+     * transfers issued, so the device must have posted the matching
+     * completion into the used ring: used_seen must equal avail_sent. If it
+     * lags, a completion the driver counted never arrived, and the wait
+     * returned only because a spurious or coalesced interrupt advanced the
+     * timeline past it. Catching the drift here makes a missed interrupt
+     * visible rather than reading a ring that did not advance as though it
+     * had.
+     */
+    if (used_seen != avail_sent) {
+        return 20;      /* the completion count drifted from the transfers */
+    }
+
     if (q->status != VIRTIO_BLK_S_OK) {
         return 9;       /* the device reported the transfer failed */
     }
@@ -318,6 +364,30 @@ write_selftest(void)
     }
 
     return 0;
+}
+
+/*
+ * Report once, at startup, that each self-test transfer completed on exactly
+ * one interrupt. transfer() fails any transfer whose completion count drifts
+ * from the transfers issued, so reaching here means the count stayed in step:
+ * the device posted one used-ring completion per transfer, and the driver
+ * waited for one interrupt per completion. The line names both counts so a
+ * boot check can confirm they match. It goes to the always-on debug console,
+ * which is separate from the block protocol, so the served path pays nothing
+ * for it.
+ */
+static void
+report_in_step(void)
+{
+    char line[80];
+    size_t n = 0;
+
+    n += sapp(&line[n], "blk: one interrupt per transfer: ");
+    n += udec(&line[n], avail_sent);
+    n += sapp(&line[n], " transfers, ");
+    n += udec(&line[n], q->used.idx);
+    n += sapp(&line[n], " completions\n");
+    (void)sys_debug_write(line, (uint32_t)n);
 }
 
 /*
@@ -461,6 +531,7 @@ main(void)
         DBG_PUTS("virtio_blk: the write did not read back");
         return err;
     }
+    report_in_step();
 
     chan = ns_lookup(SYS_NS_SERVICE);
     if (chan == SYS_HANDLE_INVALID) {
