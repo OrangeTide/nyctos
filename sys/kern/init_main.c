@@ -16678,13 +16678,63 @@ soak_assert_back(const struct pool_baseline *b)
 #define SOAK_SPAWN_ROUNDS   (SYS_MAX_PROCESSES * 3u)
 
 /*
- * The soak: churn a lifecycle and confirm every pool gave its slots back.
+ * How many times the soak connects and closes: more than the connection pool
+ * has slots, so a connection that was not freed on close would run the pool
+ * out rather than be reused. Each round closes its connection before the next
+ * opens one, so the pool holds one at a time.
+ */
+#define SOAK_CONNECT_ROUNDS (SYS_MAX_CONNECTIONS * 3u)
+
+/*
+ * Churn connect and close. A channel is made and a connection to it minted and
+ * closed, over and over, then the channel is closed. A connection is freed on
+ * its own thread the moment its last handle closes, so the pool comes straight
+ * back; what the count past its size proves is that the close frees the slot
+ * rather than leaking one a round at a time. The channel the churn runs on is
+ * made and closed inside the bracket, so the channel pool returns too.
+ */
+static void
+soak_connect_close(void)
+{
+    struct proc *self = proc_current();
+    struct sys_op_connect_args cargs;
+    struct channel *ch;
+    sys_handle_t h_recv;
+    uint32_t i;
+
+    ch = channel_create("soak-connect", self);
+    if (ch == NULL) {
+        panic("soak: no channel for the connect churn");
+    }
+    if (handle_insert(&self->p_handles, ch, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV | SYS_RIGHT_TRANSFER, &h_recv) != SYS_OK) {
+        panic("soak: no receive handle for the connect churn");
+    }
+
+    for (i = 0; i < SOAK_CONNECT_ROUNDS; i++) {
+        memset(&cargs, 0, sizeof(cargs));
+        cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+        if (run(SYS_OP_CHAN_CONNECT, h_recv, &cargs, sizeof(cargs)) != SYS_OK) {
+            panic("soak: a connect failed at round %u", (unsigned int)i);
+        }
+        if (run(SYS_OP_HANDLE_CLOSE, cargs.out_handle, NULL, 0) != SYS_OK) {
+            panic("soak: a close failed at round %u", (unsigned int)i);
+        }
+    }
+
+    if (run(SYS_OP_HANDLE_CLOSE, h_recv, NULL, 0) != SYS_OK) {
+        panic("soak: the connect churn's channel would not close");
+    }
+}
+
+/*
+ * The soak: churn the lifecycles and confirm every pool gave its slots back.
  *
- * This stage churns spawn and reap. A trivial program is spawned and reaped
- * more times than the process pool has slots, under a bracket that records
- * every pool and the frame count before and asserts them after. A leak in any
- * pool, from the spawn or the reap, shows as a count above the baseline rather
- * than as a drift that only a far longer run would surface.
+ * This stage churns spawn and reap, then connect and close, each more times
+ * than its pool has slots, under one bracket that records every pool and the
+ * frame count before and asserts them after. A leak in any pool, from any of
+ * the lifecycles, shows as a count above the baseline rather than as a drift
+ * that only a far longer run would surface.
  *
  * It runs after the shell, for the reason frame_endurance_checks does: it
  * spawns a program many times, and in front of the paced session that would
@@ -16706,10 +16756,13 @@ soak_checks(void)
     }
     exit_quiet = false;
 
+    soak_connect_close();
+
     soak_assert_back(&base);
 
-    cnprintf("    %-38s %u spawns and reaps, every pool back\n",
-      "spawn and reap", (unsigned int)SOAK_SPAWN_ROUNDS);
+    cnprintf("    %-38s %u spawns, %u connects, every pool back\n",
+      "spawn and reap, connect and close",
+      (unsigned int)SOAK_SPAWN_ROUNDS, (unsigned int)SOAK_CONNECT_ROUNDS);
 }
 
 /*
