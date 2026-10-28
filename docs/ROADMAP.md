@@ -18,13 +18,63 @@ This document says what exists, what is being built, and in what order.
 `design.md` says what the system is meant to be. `PROPOSALS.md` holds ideas
 that are not being built.
 
-Milestones 1, 2 and 3 are done. What each settled is recorded in sections
-4, 5 and 6 below, and section 4 of `design.md` carries the design decisions
-they forced; everything not yet reached by one of them is still a guess.
+Milestones 1 through 28 are built, and what each settled is recorded below.
+Section 4 of `design.md` carries the design decisions they forced; everything
+not yet reached by one of them is still a guess. From 0.30 on the plan is
+tracked by version rather than by a milestone number, in the Version Roadmap
+below.
 
 **There are no dates here.** There is no evidence on which to base one. Each
-milestone carries a rough size, and sizes are relative to each other and to
+entry carries a rough size, and sizes are relative to each other and to
 nothing else.
+
+---
+
+## The Version Roadmap
+
+The milestones through 0.29 are the record of what was built, kept below. From
+here the plan is by version. Each minor release is one body of work, built in
+stages that each end in something that runs and a check that can fail, the way
+the milestones were, and marked by an annotated tag; a patch release is a
+session's work on the current line. The VERSION file is the source of truth and
+`CHANGELOG.md` the per-minor record. The order is the claim, and there is no
+schedule behind it. Where an item below already has a reference implementation,
+`BACKLOG.md` names where it lives.
+
+**0.30. A copy-on-write filesystem.** The storage stack built through 0.29, a
+block store under the filesystem, durable across a boot, and completing on the
+device's interrupt, was built toward this. A write forks the block it touches
+rather than overwriting it in place, so the earlier state stays readable, which
+is the ground a snapshot stands on. It builds on the store and `fs_server`
+already here and needs no new kernel mechanism, only the filesystem's own
+bookkeeping of which blocks are shared and which are owned. The largest of
+these, and the first to span several stages; its claim and stages are written
+when it is started.
+
+**0.31. ELF in the boot archive.** The archive tool reads each member's
+`PT_LOAD` headers instead of a sidecar, honours the read-execute against
+read-write split in `p_flags`, and keeps the ELF container so a reader
+downstream has the symbol and debug sections. This is Proposal 5, and it is the
+prerequisite for 0.32: a flat image with a sidecar has no symbols to read.
+Moderate.
+
+**0.32. Panic symbolization.** A panic reports an address, and nothing turns it
+into a function and a line. First an offline symbolizer that reads the archive
+and a panic record and prints a backtrace, then an in-kernel one that carries a
+symbol blob so a live panic names its own site. It waits on 0.31, which puts
+the symbols where it can read them. Moderate.
+
+**0.33. A larger shell.** The shell is a minimal subset. A Bourne subset,
+functions and locals, `break` and `continue` with a count, arithmetic
+expansion, field splitting, `case`, and positional parameters, is the feature
+set to take. Last on the line because usability is worth more once the depth
+below it is there, and independent of the rest, so it can move earlier if
+wanted.
+
+**Not on the line.** The bounded-formatter decision, whether the sink-based
+allocation-free formatter is enough of an improvement over the current `printf`
+to override the choice `printf`'s own comment defends, is a decide-and-record
+rather than a release. It folds into a patch when those files are next open.
 
 ---
 

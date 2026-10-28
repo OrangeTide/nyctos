@@ -91,7 +91,8 @@ lookup and no per-lookup allocation exists in `~/Vibe/skjegg/dwarf/dwread.c`
 with `dwarf.c`. It is ELF32 today with four-byte addresses, and its frame walk
 assumes the RV32 layout. The port needs ELF64, LP64 addresses, and a frame walk
 parameterized for the AArch64 and riscv64 layout (`[fp]` and `[fp+8]`). Moderate
-work. Trigger: Proposal 5 lands, so there is a symbol table to read.
+work. Trigger: Proposal 5 lands, so there is a symbol table to read. Scheduled:
+0.32, behind 0.31.
 
 ### Adopt a host-side ELF reader in the boot-archive tool
 
@@ -102,7 +103,7 @@ debug sections. A portable reader with its own little-endian decoders and no
 `<elf.h>` dependency, which matters because the tools build on more than one
 host, exists in `~/Vibe/vmm/host/elf.c`. Fix its missing check that a segment's
 file size does not exceed its memory size before the copy. Trigger: deciding to
-act on Proposal 5.
+act on Proposal 5. Scheduled: 0.31.
 
 ### Spike the walk and directory-read semantics (done, spike retired)
 
@@ -159,7 +160,8 @@ The shell is minimal. A Bourne subset with functions, locals, `break` and
 positional parameters exists in `~/DEVEL/OS/jon-os/cmd/jsh/jsh.c`, and it builds
 hosted for testing. It is a menu to pick from, not a port: its `fork`-degraded-
 to-spawn model does not match this system, and the feature set is the only part
-worth taking. Trigger: wanting more than the current shell runs.
+worth taking. Trigger: wanting more than the current shell runs. Scheduled:
+0.33.
 
 ---
 
@@ -171,7 +173,8 @@ Compare the sink-based, allocation-free formatter in `~/Vibe/vmm/guest/libos/`
 (`fmt.c`, `fmt.h`), which returns the untruncated length, against
 `lib/libc/stdio/printf.c`. The current printf defends its own shape in a comment,
 so the question is whether the sink design is enough of an improvement to
-override that choice, not whether it is cleaner. Decide and record.
+override that choice, not whether it is cleaner. Decide and record. Scheduled:
+a patch, when these files are next open.
 
 ### Capability-mount sandbox namespace (done)
 
