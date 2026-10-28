@@ -10,6 +10,7 @@
  * the machine, and detects re-entry.
  *
  */
+#include <sys/backtrace.h>
 #include <sys/cpu.h>
 #include <sys/lock.h>
 #include <sys/measure.h>
@@ -438,6 +439,21 @@ panic(const char *fmt, ...)
     cnvprintf(fmt, ap);
     va_end(ap);
     cnputs("\n");
+
+    /*
+     * The call chain that reached here, as a record of return addresses. A
+     * host tool reads these against the kernel ELF and names each frame.
+     */
+    {
+        uintptr_t frames[16];
+        unsigned int n = kbacktrace(frames, 16), k;
+
+        cnputs("backtrace:");
+        for (k = 0; k < n; k++) {
+            cnprintf(" 0x%lx", (unsigned long)frames[k]);
+        }
+        cnputs("\n");
+    }
 
     machine_halt(1);
 }

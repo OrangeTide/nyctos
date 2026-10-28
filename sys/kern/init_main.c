@@ -13,6 +13,7 @@
 #include <sys/measure.h>
 #include <sys/lock.h>
 #include <sys/blk.h>
+#include <sys/backtrace.h>
 #include <sys/bootarch.h>
 #include <sys/elf.h>
 #include <sys/batchreg.h>
@@ -18612,6 +18613,55 @@ archive_symbol_check(void)
     cnprintf("archive symbols: an address in 'cat' resolves to %s\n", want);
 }
 
+/*
+ * A nest of calls the unwinder must recover. Each level touches a volatile
+ * after its inner call so the call is not in tail position, which would let
+ * the compiler drop the frame and defeat the test. The unwinder, walking
+ * from kbacktrace outward, must find a frame for each of bt_c, bt_b, bt_a and
+ * the check itself, so a correct walk returns at least four.
+ */
+static volatile unsigned int bt_touch;
+
+static unsigned int __attribute__((noinline))
+bt_c(uintptr_t *out, unsigned int max)
+{
+    unsigned int n = kbacktrace(out, max);
+
+    bt_touch++;
+    return n;
+}
+
+static unsigned int __attribute__((noinline))
+bt_b(uintptr_t *out, unsigned int max)
+{
+    unsigned int n = bt_c(out, max);
+
+    bt_touch++;
+    return n;
+}
+
+static unsigned int __attribute__((noinline))
+bt_a(uintptr_t *out, unsigned int max)
+{
+    unsigned int n = bt_b(out, max);
+
+    bt_touch++;
+    return n;
+}
+
+static void
+backtrace_check(void)
+{
+    uintptr_t frames[16];
+    unsigned int n = bt_a(frames, 16);
+
+    if (n < 4) {
+        panic("backtrace: a four-deep nest unwound to %u frames", n);
+    }
+
+    cnprintf("backtrace: a nested call unwound to %u frames\n", n);
+}
+
 static void
 user_slice(void)
 {
@@ -18631,6 +18681,7 @@ user_slice(void)
     boot_report();
     cohort_report();
     archive_symbol_check();
+    backtrace_check();
 
     ch = channel_create("fs-user", self);
     if (ch == NULL) {

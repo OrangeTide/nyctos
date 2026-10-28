@@ -11,6 +11,7 @@
  *
  */
 
+#include <sys/backtrace.h>
 #include <sys/cpu.h>
 #include <sys/systm.h>
 
@@ -119,4 +120,21 @@ md_cpu_arriving(void)
     __asm__ volatile ("mv %0, tp" : "=r" (id));
 
     return (uint32_t)id;
+}
+
+/*
+ * One frame of the RISC-V call stack. With frame pointers, a function's
+ * prologue stores its return address and the caller's frame pointer just
+ * below the frame pointer, s0: the return address at offset minus one and
+ * the caller's frame pointer at offset minus two.
+ */
+bool
+md_frame_step(uintptr_t fp, uintptr_t *ra, uintptr_t *caller_fp)
+{
+    const uintptr_t *f = (const uintptr_t *)fp;
+
+    *ra = f[-1];
+    *caller_fp = f[-2];
+
+    return true;
 }

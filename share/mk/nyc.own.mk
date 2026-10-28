@@ -78,7 +78,8 @@ MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mgeneral-regs-only \
 # struct fields into one 64-bit store that is only 4-byte aligned, which
 # faults at boot. Userland runs with no memory protection behind it and
 # has the same constraint. RISC-V gets the flag for the same reason.
-KERN_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align -DSYS_TIER=$(TIER) \
+KERN_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align -fno-omit-frame-pointer \
+                   -DSYS_TIER=$(TIER) \
                    -DSYS_USER_SLOT_BYTES=$(USER_LOAD_STRIDE)
 USER_CFLAGS     := $(MACHINE_CFLAGS) -mstrict-align \
                    -DSYS_USER_SLOT_BYTES=$(USER_LOAD_STRIDE)
@@ -92,7 +93,7 @@ TARGET_TRIPLE   := riscv64-none-elf
 MACHINE_CFLAGS  := --target=$(TARGET_TRIPLE) -mcmodel=medany \
                    -DARCH_NAME=\"riscv64\"
 KERN_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64gc -mabi=lp64d \
-                   -mstrict-align -DSYS_TIER=$(TIER) \
+                   -mstrict-align -fno-omit-frame-pointer -DSYS_TIER=$(TIER) \
                    -DSYS_USER_SLOT_BYTES=$(USER_LOAD_STRIDE)
 USER_CFLAGS     := $(MACHINE_CFLAGS) -march=rv64imac -mabi=lp64 \
                    -mstrict-align -DSYS_USER_SLOT_BYTES=$(USER_LOAD_STRIDE)

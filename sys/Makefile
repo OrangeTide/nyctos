@@ -47,6 +47,7 @@ SRCS := arch/$(ARCH)/boot.S \
         kern/subr_page.c \
         kern/subr_vm.c \
         kern/subr_bootarch.c \
+        kern/subr_backtrace.c \
         kern/subr_trace.c \
         kern/subr_pool.c \
         kern/subr_prf.c

@@ -11,6 +11,7 @@
  *
  */
 
+#include <sys/backtrace.h>
 #include <sys/cpu.h>
 #include <sys/systm.h>
 
@@ -118,4 +119,21 @@ md_cpu_arriving(void)
     __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (id));
 
     return (uint32_t)(id & 3u);
+}
+
+/*
+ * One frame of the AArch64 call stack. With frame pointers, a function's
+ * prologue stores the caller's frame pointer and its return address as a
+ * pair at the frame pointer, x29, so the caller's frame is at offset zero
+ * and the return address at offset one.
+ */
+bool
+md_frame_step(uintptr_t fp, uintptr_t *ra, uintptr_t *caller_fp)
+{
+    const uintptr_t *f = (const uintptr_t *)fp;
+
+    *caller_fp = f[0];
+    *ra = f[1];
+
+    return true;
 }
