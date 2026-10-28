@@ -473,6 +473,16 @@ static uint16_t block_map[BLK_BLOCK_COUNT];
  */
 static uint8_t refc[STORE_PHYS_BLOCKS];
 
+/*
+ * A snapshot: the map as it stood when the snapshot was taken, and whether one
+ * is held. Taking it raises a reference on every block it names, so a later
+ * write to a block the live map still shares forks rather than overwriting, and
+ * the snapshot keeps the bytes from before the write. The scope is one
+ * snapshot, rebuilt per boot, enough to show the mechanism.
+ */
+static uint16_t snap_map[BLK_BLOCK_COUNT];
+static int snap_live;
+
 static void
 map_init(void)
 {
@@ -562,14 +572,33 @@ bytes_equal(const void *a, const void *b, size_t n)
 }
 
 /*
+ * Read one logical block through a given map into dst. The map resolves the
+ * logical block to a physical one, whose sector is read over the ring and
+ * whose bytes are copied out. The live map serves a read; the snapshot map
+ * reads the bytes the snapshot kept, which is the same path over a different
+ * map. A block is smaller than a sector and sector-aligned by its size, so one
+ * block never crosses a sector boundary.
+ */
+static sys_err_t
+read_block(const uint16_t *map, uint32_t lblk, void *dst)
+{
+    uint64_t pbyte = phys_block_offset(map[lblk]);
+
+    if (read_sector(pbyte / VIRTIO_BLK_SECTOR_BYTES) != 0) {
+        return SYS_ERR_STALE;       /* the device would not read the sector */
+    }
+    memcpy(dst, &q->data[pbyte % VIRTIO_BLK_SECTOR_BYTES], BLK_BLOCK_BYTES);
+
+    return SYS_OK;
+}
+
+/*
  * A read of whole blocks off the device, or a refusal saying which rule it
  * broke, answering the same block protocol the RAM store answered. The three
  * refusals are the store's, not the device's: an unaligned offset and a
  * non-block length could never be right, and a range off the end of the store
- * is a fact about this disk. Each block the range covers is resolved through
- * the map to its physical block, whose sector is read over the ring and whose
- * bytes are copied out. A block is smaller than a sector and sector-aligned by
- * its size, so one block never crosses a sector boundary.
+ * is a fact about this disk. Each block the range covers is read through the
+ * live map.
  */
 static sys_err_t
 serve_read(void *dst, uint32_t dstlen, uint64_t off, uint32_t len)
@@ -589,14 +618,12 @@ serve_read(void *dst, uint32_t dstlen, uint64_t off, uint32_t len)
     }
 
     for (done = 0; done < len; done += BLK_BLOCK_BYTES) {
-        uint16_t pblk = block_map[(off + done) / BLK_BLOCK_BYTES];
-        uint64_t pbyte = phys_block_offset(pblk);
+        sys_err_t e = read_block(block_map, (off + done) / BLK_BLOCK_BYTES,
+          (uint8_t *)dst + done);
 
-        if (read_sector(pbyte / VIRTIO_BLK_SECTOR_BYTES) != 0) {
-            return SYS_ERR_STALE;   /* the device would not read the sector */
+        if (e != SYS_OK) {
+            return e;
         }
-        memcpy((uint8_t *)dst + done,
-          &q->data[pbyte % VIRTIO_BLK_SECTOR_BYTES], BLK_BLOCK_BYTES);
     }
 
     return SYS_OK;
@@ -667,6 +694,48 @@ serve_write(const void *src, uint32_t have, uint64_t off, uint32_t len)
 }
 
 /*
+ * Take a snapshot: capture the live map and raise a reference on every block
+ * it names, so the snapshot and the live view share those blocks until a write
+ * forks one. The scope is one snapshot at a time, so a second is refused while
+ * one is held.
+ */
+static int
+snapshot_take(void)
+{
+    uint32_t i;
+
+    if (snap_live) {
+        return -1;
+    }
+    for (i = 0; i < BLK_BLOCK_COUNT; i++) {
+        snap_map[i] = block_map[i];
+        refc[snap_map[i]]++;
+    }
+    snap_live = 1;
+
+    return 0;
+}
+
+/*
+ * Release the snapshot, dropping the reference it held on each block it named.
+ * A block the live view forked away from is now named by nothing and returns
+ * to the free pool; a block still shared keeps the live view's reference.
+ */
+static void
+snapshot_release(void)
+{
+    uint32_t i;
+
+    if (!snap_live) {
+        return;
+    }
+    for (i = 0; i < BLK_BLOCK_COUNT; i++) {
+        refc[snap_map[i]]--;
+    }
+    snap_live = 0;
+}
+
+/*
  * The block a write tests against: an unused block, so a file is never
  * disturbed, the way the write self-test keeps to a scratch sector.
  */
@@ -730,6 +799,70 @@ fork_selftest(void)
     refc[p_new] = 0;            /* free the fork */
     block_map[lblk] = p_old;    /* back to identity */
     refc[p_old] = 1;
+
+    return 0;
+}
+
+/*
+ * Prove the snapshot before serving: the bytes a snapshot keeps stay readable
+ * through it after the live view is written. The block is written to lay down
+ * the bytes, a snapshot is taken, and the live view is written again. The live
+ * write forks, so the live view reads the new bytes while a read through the
+ * snapshot still reads the old ones. The snapshot is released and the map and
+ * pool returned to their boot state. A snapshot that failed to hold its blocks
+ * would let the live write land in place, and the snapshot read would then see
+ * the new bytes, which the compare catches.
+ */
+static int
+snapshot_selftest(void)
+{
+    uint16_t lblk = FORK_TEST_BLOCK;
+    uint64_t off = (uint64_t)lblk * BLK_BLOCK_BYTES;
+    uint8_t before[BLK_BLOCK_BYTES], after[BLK_BLOCK_BYTES];
+    uint8_t got[BLK_BLOCK_BYTES];
+    uint16_t p_snap, p_live;
+    uint32_t i;
+
+    for (i = 0; i < BLK_BLOCK_BYTES; i++) {
+        before[i] = (uint8_t)(i * 7u + 1u);
+        after[i] = (uint8_t)(i * 13u + 9u);
+    }
+
+    if (serve_write(before, sizeof(before), off, BLK_BLOCK_BYTES) != SYS_OK) {
+        return 30;
+    }
+
+    if (snapshot_take() != 0) {
+        return 31;
+    }
+    p_snap = snap_map[lblk];
+
+    if (serve_write(after, sizeof(after), off, BLK_BLOCK_BYTES) != SYS_OK) {
+        return 32;
+    }
+    if (block_map[lblk] == p_snap) {
+        return 33;      /* the live write did not fork away from the snapshot */
+    }
+
+    if (serve_read(got, sizeof(got), off, BLK_BLOCK_BYTES) != SYS_OK) {
+        return 34;
+    }
+    if (!bytes_equal(got, after, BLK_BLOCK_BYTES)) {
+        return 35;      /* the live view does not read the new bytes */
+    }
+
+    if (read_block(snap_map, lblk, got) != SYS_OK) {
+        return 36;
+    }
+    if (!bytes_equal(got, before, BLK_BLOCK_BYTES)) {
+        return 37;      /* the snapshot read sees the write */
+    }
+
+    p_live = block_map[lblk];   /* the fork the live view holds */
+    snapshot_release();         /* drops the snapshot's hold on p_snap */
+    refc[p_live] = 0;           /* free the live fork */
+    block_map[lblk] = lblk;     /* back to identity */
+    refc[lblk] = 1;
 
     return 0;
 }
@@ -805,6 +938,12 @@ main(void)
     err = fork_selftest();
     if (err != 0) {
         DBG_PUTS("virtio_blk: a shared block did not fork on write");
+        return err;
+    }
+
+    err = snapshot_selftest();
+    if (err != 0) {
+        DBG_PUTS("virtio_blk: a snapshot did not keep its bytes");
         return err;
     }
 
