@@ -4,6 +4,29 @@ Notable changes per minor version. Patch bumps between minors move the VERSION
 file alone and are not listed here; see the git log for their detail. Each
 release's full retrospective lives in docs/ROADMAP.md.
 
+## 0.31.0
+
+ELF in the boot archive. Each member is carried as a debug-stripped ELF, and
+the kernel loads a program by walking its `PT_LOAD` headers: each loadable
+segment to its virtual address, the memory past the file bytes zeroed, the
+read-only and writable regions taken from the segment flags. The archive tool
+reads the load address and the bounds out of those headers, so the `.layout`
+sidecar and the load addresses once hand-written in the archive rule are gone;
+a member is named and pointed at its ELF, and the tool refuses an image whose
+memory would overrun its slot. The linker script reserves the stack and the
+record page inside the bss section so the writable segment's memory size
+reaches the program's end, which is what lets the headers describe the whole
+image.
+
+The archived ELF keeps its symbol table, and a reader resolves an address in a
+member to the name of the function that contains it, the symbol path panic
+symbolization will read next. The ELF is stripped of its debug sections and
+local symbols: a backtrace names a static function by the public one before
+it, and the line numbers stay in the on-disk ELF, so the kernel-embedded
+archive stays near its former size. Userland links with a 4 KiB max page size
+for the same reason. A shared `sys/elf.h` gives the kernel and the host tool
+one description of the format. No kernel mechanism changed.
+
 ## 0.30.0
 
 A copy-on-write block store. The store resolves every read and write through an

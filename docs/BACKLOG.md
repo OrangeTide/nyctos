@@ -94,16 +94,16 @@ parameterized for the AArch64 and riscv64 layout (`[fp]` and `[fp+8]`). Moderate
 work. Trigger: Proposal 5 lands, so there is a symbol table to read. Scheduled:
 0.32, behind 0.31.
 
-### Adopt a host-side ELF reader in the boot-archive tool
+### Adopt a host-side ELF reader in the boot-archive tool (done, shipped 0.31.0)
 
-Implements Proposal 5. The archive tool reads each member's `PT_LOAD` headers
-instead of a sidecar, honours `p_flags` for the read-execute against read-write
-split, and keeps the ELF container so a reader downstream has the symbol and
-debug sections. A portable reader with its own little-endian decoders and no
-`<elf.h>` dependency, which matters because the tools build on more than one
-host, exists in `~/Vibe/vmm/host/elf.c`. Fix its missing check that a segment's
-file size does not exceed its memory size before the copy. Trigger: deciding to
-act on Proposal 5. Scheduled: 0.31.
+Implemented Proposal 5 in 0.31.0. The archive tool reads each member's
+`PT_LOAD` headers instead of a sidecar, takes the read-execute against
+read-write split from `p_flags`, and stores the debug-stripped ELF so a reader
+downstream has the symbol table. The reader is a small shared `sys/elf.h` the
+kernel and the tool both build against, rather than the separate host reader
+once considered, and the tool refuses an image whose memory overruns its slot.
+The line-number debug sections and the local symbols are left out to hold the
+kernel-embedded archive's footprint down.
 
 ### Spike the walk and directory-read semantics (done, spike retired)
 

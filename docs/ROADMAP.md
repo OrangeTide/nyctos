@@ -122,6 +122,19 @@ reservation all read them. Three stages:
    and names a function at a known address. What fails it: a reader given an
    address in a member finds no symbol, or the wrong one.
 
+**Done, shipped in 0.31.0.** The kernel loads each member by walking its
+`PT_LOAD` headers, the archive tool reads the load address and the bounds out
+of those headers so the `.layout` sidecar and the hand-written load addresses
+are gone, and the archived ELF keeps its symbol table so `boot_symbolize` names
+the function an address falls in. A boot check stands behind each stage. Two
+limits were taken by choice. The ELF is debug-stripped and its local symbols
+discarded: a backtrace names a function by the global symbol before it, so a
+static function is named by its public neighbour and the line-number sections
+live only in the on-disk ELF, not the kernel-embedded archive, where footprint
+is asserted. Userland links with a 4 KiB max page size so the archive stays
+near its former size rather than carrying tens of kilobytes of segment padding
+per program.
+
 **0.32. Panic symbolization.** A panic reports an address, and nothing turns it
 into a function and a line. First an offline symbolizer that reads the archive
 and a panic record and prints a backtrace, then an in-kernel one that carries a
