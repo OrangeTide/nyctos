@@ -454,7 +454,24 @@ report_in_step(void)
  * Every read and write goes through it, so a logical block is a name looked up
  * here and not an offset computed from the request.
  */
+/*
+ * The physical arena is larger than the logical store: the first
+ * BLK_BLOCK_COUNT physical blocks hold the logical blocks at boot, and the
+ * rest are free, to be handed out when a shared block is forked. The arena
+ * fits in the sectors the disk already carries, so growing it took no change
+ * to the image.
+ */
+#define STORE_PHYS_BLOCKS   32u      /* BLK_BLOCK_COUNT logical plus free */
+
 static uint16_t block_map[BLK_BLOCK_COUNT];
+
+/*
+ * References to each physical block. A block mapped by one logical block has
+ * one reference; a block a snapshot also names has more. A write to a block
+ * with more than one reference forks rather than overwriting, so no other
+ * holder of the old bytes sees the write. A free block has no references.
+ */
+static uint8_t refc[STORE_PHYS_BLOCKS];
 
 static void
 map_init(void)
@@ -463,6 +480,10 @@ map_init(void)
 
     for (i = 0; i < BLK_BLOCK_COUNT; i++) {
         block_map[i] = (uint16_t)i;
+        refc[i] = 1;
+    }
+    for (i = BLK_BLOCK_COUNT; i < STORE_PHYS_BLOCKS; i++) {
+        refc[i] = 0;
     }
 }
 
@@ -474,6 +495,70 @@ static uint64_t
 phys_block_offset(uint16_t pblk)
 {
     return (uint64_t)pblk * BLK_BLOCK_BYTES;
+}
+
+/*
+ * Take a free physical block, giving it its first reference, or fail when the
+ * arena holds none. The caller owns the one reference the block now carries.
+ */
+static int
+blk_alloc(uint16_t *out)
+{
+    uint16_t p;
+
+    for (p = 0; p < STORE_PHYS_BLOCKS; p++) {
+        if (refc[p] == 0) {
+            refc[p] = 1;
+            *out = p;
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+/*
+ * Copy one physical block's bytes to another. Each block lives inside a
+ * sector, so the source sector is read and the byte range saved, then the
+ * destination sector is read, the range placed, and the sector written back,
+ * leaving the other blocks in the destination's sector unchanged.
+ */
+static int
+copy_block(uint16_t from, uint16_t to)
+{
+    uint8_t tmp[BLK_BLOCK_BYTES];
+    uint64_t fb = phys_block_offset(from);
+    uint64_t tb = phys_block_offset(to);
+
+    if (read_sector(fb / VIRTIO_BLK_SECTOR_BYTES) != 0) {
+        return -1;
+    }
+    memcpy(tmp, &q->data[fb % VIRTIO_BLK_SECTOR_BYTES], BLK_BLOCK_BYTES);
+    if (read_sector(tb / VIRTIO_BLK_SECTOR_BYTES) != 0) {
+        return -1;
+    }
+    memcpy(&q->data[tb % VIRTIO_BLK_SECTOR_BYTES], tmp, BLK_BLOCK_BYTES);
+    if (write_sector(tb / VIRTIO_BLK_SECTOR_BYTES) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+/* Whether two byte ranges of the same length are equal. */
+static int
+bytes_equal(const void *a, const void *b, size_t n)
+{
+    const uint8_t *x = a, *y = b;
+    size_t i;
+
+    for (i = 0; i < n; i++) {
+        if (x[i] != y[i]) {
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 /*
@@ -520,11 +605,14 @@ serve_read(void *dst, uint32_t dstlen, uint64_t off, uint32_t len)
 /*
  * A write of whole blocks to the device, refused by the same three rules a
  * read is. Each block the range covers is resolved through the map to its
- * physical block; the sector that block lives in is read first, the block is
- * placed into it, and the sector is written back, so the blocks sharing the
- * sector are read and written unchanged and the write places only the block it
- * names. The bytes to write are the caller's, bounded by how many actually
- * arrived rather than by the length the request claims.
+ * physical block. A block only this logical block names is written in place:
+ * its sector is read, the block placed into it, and the sector written back,
+ * so the blocks sharing the sector are unchanged and the write places only the
+ * block it names. A block another holder also names is forked first: a free
+ * block takes a copy of the old bytes and the map is pointed at it, so the
+ * write lands on the new block and the old bytes stay readable through the
+ * other holder. The bytes to write are the caller's, bounded by how many
+ * actually arrived rather than by the length the request claims.
  */
 static sys_err_t
 serve_write(const void *src, uint32_t have, uint64_t off, uint32_t len)
@@ -544,10 +632,27 @@ serve_write(const void *src, uint32_t have, uint64_t off, uint32_t len)
     }
 
     for (done = 0; done < len; done += BLK_BLOCK_BYTES) {
-        uint16_t pblk = block_map[(off + done) / BLK_BLOCK_BYTES];
-        uint64_t pbyte = phys_block_offset(pblk);
-        uint64_t sector = pbyte / VIRTIO_BLK_SECTOR_BYTES;
+        uint32_t lblk = (off + done) / BLK_BLOCK_BYTES;
+        uint16_t pblk = block_map[lblk];
+        uint64_t pbyte;
+        uint64_t sector;
 
+        if (refc[pblk] > 1) {
+            uint16_t newp;
+
+            if (blk_alloc(&newp) != 0) {
+                return SYS_ERR_NO_MEMORY;   /* no free block to fork into */
+            }
+            if (copy_block(pblk, newp) != 0) {
+                return SYS_ERR_STALE;
+            }
+            refc[pblk]--;
+            block_map[lblk] = newp;
+            pblk = newp;
+        }
+
+        pbyte = phys_block_offset(pblk);
+        sector = pbyte / VIRTIO_BLK_SECTOR_BYTES;
         if (read_sector(sector) != 0) {
             return SYS_ERR_STALE;   /* the device would not read the sector */
         }
@@ -559,6 +664,74 @@ serve_write(const void *src, uint32_t have, uint64_t off, uint32_t len)
     }
 
     return SYS_OK;
+}
+
+/*
+ * The block a write tests against: an unused block, so a file is never
+ * disturbed, the way the write self-test keeps to a scratch sector.
+ */
+#define FORK_TEST_BLOCK     (BLK_BLOCK_COUNT - 1u)
+
+/*
+ * Prove the fork before serving: a shared block, written, forks rather than
+ * overwriting. The old bytes are laid down while the block is owned, so that
+ * write lands in place. A second reference is added, as a snapshot would add
+ * one, and the block is written again: this one must fork. The live view then
+ * reads the new bytes, while the old physical block still holds the old bytes,
+ * untouched. The map and the pool are returned to where they started, so the
+ * store serves from the same state a boot without this test would. A fork that
+ * did not happen, a write that changed the old block, leaves the old bytes
+ * reading as the new ones, which the compare catches.
+ */
+static int
+fork_selftest(void)
+{
+    uint16_t lblk = FORK_TEST_BLOCK;
+    uint16_t p_old = block_map[lblk];
+    uint64_t off = (uint64_t)lblk * BLK_BLOCK_BYTES;
+    uint8_t a[BLK_BLOCK_BYTES], b[BLK_BLOCK_BYTES], got[BLK_BLOCK_BYTES];
+    uint16_t p_new;
+    uint32_t i;
+
+    for (i = 0; i < BLK_BLOCK_BYTES; i++) {
+        a[i] = (uint8_t)(i * 3u + 5u);
+        b[i] = (uint8_t)(i * 11u + 2u);
+    }
+
+    if (serve_write(a, sizeof(a), off, BLK_BLOCK_BYTES) != SYS_OK) {
+        return 22;
+    }
+
+    refc[p_old]++;      /* a second holder, as a snapshot would be */
+
+    if (serve_write(b, sizeof(b), off, BLK_BLOCK_BYTES) != SYS_OK) {
+        return 23;
+    }
+    p_new = block_map[lblk];
+    if (p_new == p_old) {
+        return 24;      /* it wrote in place rather than forking */
+    }
+
+    if (serve_read(got, sizeof(got), off, BLK_BLOCK_BYTES) != SYS_OK) {
+        return 25;
+    }
+    if (!bytes_equal(got, b, BLK_BLOCK_BYTES)) {
+        return 26;      /* the live view does not read the new bytes */
+    }
+
+    if (read_sector(phys_block_offset(p_old) / VIRTIO_BLK_SECTOR_BYTES) != 0) {
+        return 27;
+    }
+    if (!bytes_equal(&q->data[phys_block_offset(p_old) %
+      VIRTIO_BLK_SECTOR_BYTES], a, BLK_BLOCK_BYTES)) {
+        return 28;      /* the old block no longer holds the old bytes */
+    }
+
+    refc[p_new] = 0;            /* free the fork */
+    block_map[lblk] = p_old;    /* back to identity */
+    refc[p_old] = 1;
+
+    return 0;
 }
 
 int
@@ -628,6 +801,12 @@ main(void)
     }
 
     map_init();
+
+    err = fork_selftest();
+    if (err != 0) {
+        DBG_PUTS("virtio_blk: a shared block did not fork on write");
+        return err;
+    }
 
     chan = ns_lookup(SYS_NS_SERVICE);
     if (chan == SYS_HANDLE_INVALID) {
