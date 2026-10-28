@@ -3,21 +3,27 @@
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * Packs a set of flat program binaries into one boot archive for the
- * kernel to carry and unpack at boot. Usage:
+ * Packs a set of program ELFs into one boot archive for the kernel to
+ * carry and load at boot. Usage:
  *
  *   mkbootarch out.img name=load@file [name=load@file ...]
  *
- * Each input is a flat binary with a "<file>.layout" beside it holding two
- * hexadecimal offsets, where writable memory begins and where the
- * program's memory ends (see read_layout). It runs on the build host with
- * the host compiler and stdio, and shares only sys/bootarch.h with the
- * kernel, so the writer and the reader agree on one description of the
- * format.
+ * Each input is a program's ELF. The tool reads the load address, the
+ * read-write boundary, the memory extent, and the file extent out of the
+ * ELF's PT_LOAD program headers, and stores the ELF itself as the member's
+ * payload so a reader downstream has its symbols. It runs on the build host
+ * with the host compiler and stdio, and shares only sys/bootarch.h and
+ * sys/elf.h with the kernel, so the writer and the reader agree on one
+ * description of each format.
+ *
+ * The command-line load address and a "<file>.layout" beside the ELF are
+ * still read and cross-checked against the program headers, so a header the
+ * tool reads wrong stops the build rather than loading a program wrong.
  *
  */
 
 #include <sys/bootarch.h>
+#include <sys/elf.h>
 
 #include <errno.h>
 #include <stdint.h>
@@ -122,6 +128,75 @@ read_layout(const char *bin, uint32_t *rw, uint32_t *mem)
 }
 
 /*
+ * The member's layout, read out of its ELF program headers. bm_load is the
+ * lowest loadable virtual address; the read-write boundary is where the
+ * first writable segment begins; the memory extent is the highest address
+ * any segment occupies in memory; the file extent is the highest address a
+ * segment's file bytes reach. All but the load are returned as offsets from
+ * it, which is what the archive carries.
+ */
+static void
+parse_elf(const char *path, uint64_t *load, uint32_t *rw, uint32_t *mem,
+  uint32_t *size)
+{
+    FILE *f = fopen(path, "rb");
+    Elf64_Ehdr eh;
+    uint64_t lo = 0, file_end = 0, mem_end = 0, w_lo = 0;
+    int have_load = 0, have_w = 0;
+    unsigned int i;
+
+    if (f == NULL)
+        die(path, strerror(errno));
+    if (fread(&eh, sizeof(eh), 1, f) != 1)
+        die(path, "cannot read the ELF header");
+    if (eh.e_ident[EI_MAG0] != ELFMAG0 || eh.e_ident[1] != ELFMAG1 ||
+        eh.e_ident[2] != ELFMAG2 || eh.e_ident[3] != ELFMAG3)
+        die(path, "not an ELF file");
+    if (eh.e_ident[EI_CLASS] != ELFCLASS64 ||
+        eh.e_ident[EI_DATA] != ELFDATA2LSB)
+        die(path, "not a little-endian ELF64");
+    if (eh.e_type != ET_EXEC)
+        die(path, "not a fixed-address executable");
+    if (eh.e_phentsize != sizeof(Elf64_Phdr))
+        die(path, "unexpected program header size");
+
+    for (i = 0; i < eh.e_phnum; i++) {
+        Elf64_Phdr ph;
+        long at = (long)(eh.e_phoff + (uint64_t)i * eh.e_phentsize);
+
+        if (fseek(f, at, SEEK_SET) != 0)
+            die(path, "cannot seek to a program header");
+        if (fread(&ph, sizeof(ph), 1, f) != 1)
+            die(path, "cannot read a program header");
+        if (ph.p_type != PT_LOAD)
+            continue;
+
+        if (!have_load || ph.p_vaddr < lo)
+            lo = ph.p_vaddr;
+        have_load = 1;
+        if (ph.p_vaddr + ph.p_filesz > file_end)
+            file_end = ph.p_vaddr + ph.p_filesz;
+        if (ph.p_vaddr + ph.p_memsz > mem_end)
+            mem_end = ph.p_vaddr + ph.p_memsz;
+        if ((ph.p_flags & PF_W) != 0 && (!have_w || ph.p_vaddr < w_lo)) {
+            w_lo = ph.p_vaddr;
+            have_w = 1;
+        }
+    }
+    fclose(f);
+
+    if (!have_load)
+        die(path, "has no loadable segment");
+    if (!have_w)
+        die(path, "has no writable segment");
+
+    *load = lo;
+    *rw = (uint32_t)(w_lo - lo);
+    *mem = (uint32_t)(mem_end - lo);
+    *size = (uint32_t)(file_end - lo);
+}
+
+/*
  * Split "name=load@file". The load address is where the image is linked to
  * run; the tool does not read it out of the file, because a flat binary
  * carries no such record and inventing one would mean an ELF reader here.
@@ -178,31 +253,47 @@ main(int argc, char **argv)
     offset = align_up((uint32_t)(sizeof(hdr) + count * sizeof(*members)));
     for (i = 0; i < (int)count; i++) {
         char *name, *path;
-        uint64_t load;
-        long size;
+        uint64_t load, load_e;
+        uint32_t rw_e, mem_e, size_e, rw_l, mem_l;
+        long elfsize;
 
         parse(argv[i + 2], &name, &load, &path);
-        size = file_size(path);
+        parse_elf(path, &load_e, &rw_e, &mem_e, &size_e);
+        read_layout(path, &rw_l, &mem_l);
+        elfsize = file_size(path);
         paths[i] = path;
+
+        /*
+         * The program headers against the two older sources, the
+         * command-line load address and the layout sidecar. Agreement is
+         * the point: a header read wrong stops the build here rather than
+         * placing a program at the wrong address or with the wrong bounds.
+         */
+        if (load_e != load)
+            die(name, "its ELF load address is not the one on the command line");
+        if (rw_e != rw_l || mem_e != mem_l)
+            die(name, "its ELF layout is not the one in the sidecar");
 
         memset(members[i].bm_name, 0, BOOT_NAME_MAX);
         memcpy(members[i].bm_name, name, strlen(name));
-        members[i].bm_load = load;
+        members[i].bm_load = load_e;
         members[i].bm_offset = offset;
-        members[i].bm_size = (uint32_t)size;
-        read_layout(path, &members[i].bm_rw, &members[i].bm_mem);
+        members[i].bm_size = size_e;
+        members[i].bm_rw = rw_e;
+        members[i].bm_mem = mem_e;
+        members[i].bm_elfsize = (uint32_t)elfsize;
 
         /*
-         * The bytes have to fit in the memory. They may cross the
-         * boundary: everything above it is the program's initialised
-         * data, which is carried in the archive and copied into
-         * writable memory, and peer_b is the one image here that has
-         * any. What would be wrong is bytes with nowhere to go.
+         * The image bytes have to fit in the memory. They may cross the
+         * read-write boundary: above it is the program's initialised data,
+         * which is carried in the segment and copied into writable memory,
+         * and peer_b is the one image here that has any. What would be
+         * wrong is image bytes with nowhere to go.
          */
-        if ((uint32_t)size > members[i].bm_mem)
+        if (size_e > mem_e)
             die(name, "its bytes do not fit in the memory it asks for");
 
-        offset = align_up(offset + (uint32_t)size);
+        offset = align_up(offset + (uint32_t)elfsize);
     }
 
     hdr.bh_magic = BOOT_MAGIC;
@@ -223,7 +314,7 @@ main(int argc, char **argv)
     for (i = 0; i < (int)count; i++) {
         pad_to(out, offset, members[i].bm_offset);
         copy_into(out, paths[i]);
-        offset = members[i].bm_offset + members[i].bm_size;
+        offset = members[i].bm_offset + members[i].bm_elfsize;
     }
     pad_to(out, offset, hdr.bh_bytes);
 

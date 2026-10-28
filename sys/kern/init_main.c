@@ -13327,16 +13327,17 @@ root_pager(void *arg)
         }
 
         /*
-         * A frame with the image bytes in it. Zeroed first, because the
-         * last page of an image is short and what follows it in the page
-         * is not part of the program.
+         * A frame with the image bytes in it, read out of the member's
+         * loadable segments. The tail past the image is zero: the last
+         * page of an image is short and what follows it in the page is
+         * not part of the program.
          */
         pa = page_alloc();
         if (pa == 0) {
             panic("pager: no frame for %s", cp->p_name);
         }
         if (n > 0) {
-            memcpy((void *)pa, boot_payload(m) + off, n);
+            boot_copy_image(m, off, (void *)pa, n);
         }
 
         g = grant_create("a-text-page", pa, PAGE_SIZE, false);
@@ -13392,6 +13393,7 @@ paging_checks(void)
     struct child c;
     const char *argv[3];
     char abase[19], alen[19];
+    uint8_t image_chunk[512];
     uint32_t want = 0;
     uint32_t i;
     sys_handle_t h;
@@ -13433,8 +13435,23 @@ paging_checks(void)
     argv[1] = abase;
     argv[2] = alen;
 
-    for (i = 0; i < m->bm_size; i++) {
-        want += boot_payload(m)[i];
+    /*
+     * The checksum the program must reproduce, over the image bytes as
+     * the loader lays them in memory. Taken through boot_copy_image rather
+     * than straight off the payload, because the payload is the ELF now and
+     * the bytes the program reads are its loadable segments.
+     */
+    for (i = 0; i < m->bm_size; i += sizeof(image_chunk)) {
+        uint32_t n = m->bm_size - i;
+        uint32_t k;
+
+        if (n > sizeof(image_chunk)) {
+            n = sizeof(image_chunk);
+        }
+        boot_copy_image(m, i, image_chunk, n);
+        for (k = 0; k < n; k++) {
+            want += image_chunk[k];
+        }
     }
     want &= 0x7fffffffu;
 

@@ -59,34 +59,33 @@ SECTIONS
         *(.sdata*)
     }
 
-    /* Not part of the flat binary: crt1 zeroes it at startup. */
+    /*
+     * Writable memory the archive carries no bytes for: crt1 zeroes bss
+     * at startup, and the stack and the record page are reserved here.
+     * All of it lives in this one NOLOAD section so the writable program
+     * header's memory size reaches _mem_end, and the archive tool reads
+     * the program's memory extent from that header rather than a symbol.
+     *
+     * The stack and the record page are reserved past _bss_end, so crt1,
+     * which zeroes only [_bss_start, _bss_end), leaves them alone. The
+     * record page sits above the stack because the stack grows down and
+     * away from it, and it is the last page of what the program needs, so
+     * the loader finds it at bm_mem minus a page without being told.
+     */
     .bss (NOLOAD) : {
         _bss_start = .;
         *(.sbss*)
         *(.bss*)
         *(COMMON)
         _bss_end = .;
+
+        . = ALIGN(16);
+        . = . + 0x4000; /* 16 KiB user stack */
+        _stack_top = .;
+
+        . = ALIGN(4096);
+        . = . + 4096;   /* the startup record of section 20.4 */
     }
-
-    . = ALIGN(16);
-    . = . + 0x4000; /* 16 KiB user stack */
-    _stack_top = .;
-
-    /*
-     * And a page above the stack for the startup record of section
-     * 20.4, which the loader writes and the program reads. It is the
-     * last page of what this program needs, so the loader knows where
-     * it is without being told: bm_mem minus a page.
-     *
-     * Above the stack rather than below it, because the stack grows
-     * down and away from it. Before M14 the record went in the last
-     * page of the slot, which was the one place a program's layout did
-     * not reach when the whole slot was mapped. Nothing maps the whole
-     * slot now, so the record moves inside what the program has and is
-     * reserved here rather than assumed.
-     */
-    . = ALIGN(4096);
-    . = . + 4096;
 
     /*
      * The end of what this program needs, named for the boot archive

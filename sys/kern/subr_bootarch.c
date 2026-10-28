@@ -12,6 +12,7 @@
  */
 
 #include <sys/bootarch.h>
+#include <sys/elf.h>
 #include <sys/page.h>
 #include <sys/op.h>
 #include <sys/systm.h>
@@ -149,6 +150,49 @@ boot_check_layout(const struct boot_member *m)
 }
 
 /*
+ * Fill a run of a member's image, the bytes at virtual-address offsets
+ * [voff, voff+len), into dst. The payload is the member's ELF; its loadable
+ * segments carry the bytes, each at the offset its virtual address gives
+ * from bm_load. The span is zeroed first and each segment overlays the file
+ * bytes that fall in it, so a gap between segments, or the tail of a page
+ * past a segment's file bytes, reads as zero, which is what the flat image
+ * carried there before.
+ */
+void
+boot_copy_image(const struct boot_member *m, size_t voff, void *dst,
+  size_t len)
+{
+    const uint8_t *elf = boot_payload(m);
+    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)elf;
+    uint8_t *out = dst;
+    unsigned int p;
+
+    if (eh->e_ident[EI_MAG0] != ELFMAG0 || eh->e_ident[1] != ELFMAG1 ||
+      eh->e_ident[2] != ELFMAG2 || eh->e_ident[3] != ELFMAG3) {
+        panic("boot: member '%s' is not an ELF", m->bm_name);
+    }
+
+    memset(out, 0, len);
+
+    for (p = 0; p < eh->e_phnum; p++) {
+        const Elf64_Phdr *ph = (const Elf64_Phdr *)
+          (elf + eh->e_phoff + (uint64_t)p * eh->e_phentsize);
+        uint64_t seg, lo, hi;
+
+        if (ph->p_type != PT_LOAD || ph->p_filesz == 0) {
+            continue;
+        }
+        seg = ph->p_vaddr - m->bm_load;         /* image offset of segment */
+        lo = seg > voff ? seg : voff;
+        hi = seg + ph->p_filesz < voff + len ? seg + ph->p_filesz : voff + len;
+        if (lo < hi) {
+            memcpy(out + (lo - voff), elf + ph->p_offset + (lo - seg),
+              (size_t)(hi - lo));
+        }
+    }
+}
+
+/*
  * Copy a member to the address it was linked for and return its entry
  * point. Nothing checks that the destination is free, because there is no
  * MMU and no allocator to ask: the load addresses come from the program
@@ -157,18 +201,13 @@ boot_check_layout(const struct boot_member *m)
 uintptr_t
 boot_load(const struct boot_member *m)
 {
-    const struct boot_header *h = archive();
+    (void)archive();
 
-    if (m->bm_offset + m->bm_size > h->bh_bytes) {
-        panic("boot: member '%s' runs past the end of the archive",
-          m->bm_name);
-    }
     if (m->bm_load == 0) {
         panic("boot: member '%s' has no load address", m->bm_name);
     }
 
-    memcpy((void *)(uintptr_t)m->bm_load, boot_archive + m->bm_offset,
-      m->bm_size);
+    boot_copy_image(m, 0, (void *)(uintptr_t)m->bm_load, m->bm_size);
 
     return (uintptr_t)m->bm_load;
 }
@@ -332,7 +371,7 @@ boot_payload(const struct boot_member *m)
 {
     const struct boot_header *h = (const struct boot_header *)boot_archive;
 
-    if (m->bm_offset + m->bm_size > h->bh_bytes) {
+    if (m->bm_offset + m->bm_elfsize > h->bh_bytes) {
         panic("boot: member '%s' runs past the end of the archive",
           m->bm_name);
     }

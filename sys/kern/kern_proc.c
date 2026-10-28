@@ -389,7 +389,6 @@ proc_space_create(struct proc *p)
 static sys_err_t
 proc_load(struct proc *p, const struct boot_member *m)
 {
-    const uint8_t *src = boot_payload(m);
     uintptr_t va = (uintptr_t)m->bm_load;
     uintptr_t last = 0;
     size_t done = 0;
@@ -437,7 +436,7 @@ proc_load(struct proc *p, const struct boot_member *m)
             n = PAGE_SIZE;
         }
         if (n > 0) {
-            memcpy((void *)pa, src + done, n);
+            boot_copy_image(m, done, (void *)pa, n);
         }
 
         /*

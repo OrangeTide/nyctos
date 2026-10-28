@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
 #
 # Builds a userland program from SRCS: an ELF image for debugging, plus the
-# flat binary the kernel actually loads.
+# debug-stripped ELF the kernel loads out of the boot archive.
 #
 # PROG_LOAD_SLOT places the image. There is no MMU at Tier 0, so every
 # program that can be live at the same time as another needs its own slot,
@@ -18,28 +18,37 @@ PROG_LOAD_ADDR := $(shell printf '0x%x' \
     $$(( $(USER_LOAD_ADDR) + $(PROG_LOAD_SLOT) * $(USER_LOAD_STRIDE) )))
 
 PROG_ELF := $(OBJDIR)/$(PROG)
-PROG_BIN := $(PROG_ELF).bin
+PROG_STRIP := $(PROG_ELF).strip
 
-all: $(PROG_ELF) $(PROG_BIN)
+all: $(PROG_ELF) $(PROG_STRIP)
 
+# max-page-size is 4 KiB so the ELF's loadable segments are packed on page
+# boundaries rather than the linker's 64 KiB default. The archive carries
+# the ELF, and the default would pad tens of kilobytes of zeroes ahead of
+# each program's text, which the kernel-embedded archive should not hold.
 $(PROG_ELF): $(OBJS) $(CRT1) $(LIBC) $(USER_LDSCRIPT)
 	@mkdir -p $(@D)
-	$(LD) $(LDFLAGS) --defsym=USER_LOAD_ADDR=$(PROG_LOAD_ADDR) \
+	$(LD) $(LDFLAGS) -z max-page-size=0x1000 \
+	    --defsym=USER_LOAD_ADDR=$(PROG_LOAD_ADDR) \
 	    -T $(USER_LDSCRIPT) -o $@ $(CRT1) $(OBJS) $(LIBC)
 
-$(PROG_BIN): $(PROG_ELF)
-	$(OBJCOPY) -O binary $< $@
+# The archive carries a debug-stripped ELF: a valid container with the
+# program's loadable segments and the global symbols a backtrace resolves,
+# without the line-number debug sections and the local symbols. The locals
+# are dropped because riscv relaxation leaves thousands of unnamed ones per
+# program, which carry nothing a reader could print and would three times
+# over the size of the kernel-embedded archive. The cost is that a static
+# function is named in a backtrace by the global symbol before it rather
+# than by its own name.
+$(PROG_STRIP): $(PROG_ELF)
+	$(OBJCOPY) --strip-debug --discard-all $< $@
 
-# What the loader needs and the flat binary cannot say: where writable
-# memory begins and where the program's memory ends. Both are addresses
-# the linker script names; this records them as offsets from the load
-# address, because that is what the archive carries and what a loader
-# placing an image elsewhere would still be able to use.
-#
-# Written beside the binary rather than passed on a command line, so
-# that the archive rule does not have to know how to read symbols and
-# the numbers cannot drift from the link that produced them.
-PROG_LAYOUT := $(PROG_BIN).layout
+# What the loader needs, recorded as offsets from the load address: where
+# writable memory begins and where the program's memory ends. The archive
+# tool reads these out of the program headers now; this sidecar is kept
+# only so the tool can cross-check what it read against the link that
+# produced it, and goes away once that check has earned its retirement.
+PROG_LAYOUT := $(PROG_STRIP).layout
 
 all: $(PROG_LAYOUT)
 

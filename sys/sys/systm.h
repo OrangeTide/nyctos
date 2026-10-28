@@ -56,8 +56,16 @@ struct boot_member;
 const struct boot_member *boot_lookup(const char *name);
 uintptr_t boot_load(const struct boot_member *m);
 
-/* Where a member's bytes are, for a caller that copies them elsewhere. */
+/* Where a member's ELF payload is, for a caller that reads it directly. */
 const uint8_t *boot_payload(const struct boot_member *m);
+
+/*
+ * Copy a member's image bytes at virtual-address offsets [voff, voff+len)
+ * into dst, resolving them through the ELF's loadable segments and zeroing
+ * any part of the span no segment's file bytes cover.
+ */
+void boot_copy_image(const struct boot_member *m, size_t voff, void *dst,
+  size_t len);
 
 /* Hold back the memory the archive's programs are linked to run in. */
 void boot_reserve(void);
