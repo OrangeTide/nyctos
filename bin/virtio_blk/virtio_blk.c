@@ -72,13 +72,18 @@ static uint16_t used_seen;
 
 /*
  * The device's interrupt and the timeline it advances. The driver waits on
- * the timeline for each completion rather than spinning the used ring, and
- * irq_seen is the number of completions waited for, which is the number of
- * transfers issued: one interrupt per transfer.
+ * the timeline rather than spinning the used ring. irq_seen is the number of
+ * interrupts waited for, which is no longer the number of transfers: a wake
+ * that is not a completion is passed over and counted, so interrupts are
+ * transfers plus the ones passed over. completions is the number of wakes the
+ * driver took for completions, one per transfer; passed_over is the number it
+ * told apart as a configuration change or a spurious line and did not.
  */
 static sys_handle_t h_irq = SYS_HANDLE_INVALID;
 static sys_handle_t h_fence = SYS_HANDLE_INVALID;
 static uint64_t irq_seen;
+static uint64_t completions;
+static uint64_t passed_over;
 
 /* Append a string to a buffer, returning how many bytes were written. */
 static size_t
@@ -279,33 +284,42 @@ transfer(uint32_t type, uint64_t sector)
     reg_wr(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
     /*
-     * Wait for the device's interrupt rather than spinning on the used ring.
-     * The handler masked the source and advanced the timeline to the count of
-     * interrupts seen, so the driver waits for the count this transfer brings.
-     * It then acknowledges the device, which drops the level-triggered line,
-     * and unmasks at the controller so the next completion is delivered.
+     * Wait for the device's interrupt rather than spinning on the used ring,
+     * and keep waiting until the wake is this transfer's completion. The
+     * handler masks the source and advances the timeline on every interrupt,
+     * so a wake may be a completion, a configuration change, or a spurious
+     * line. The completion is the used ring reaching the count of transfers
+     * issued, flagged by the queue bit in the interrupt-status register; the
+     * rest carry no queue bit and leave the ring where it was. Each wake is
+     * acknowledged at the device and the source re-armed, so a non-completion
+     * is passed over and the next interrupt delivered.
      */
-    irq_seen++;
-    if (sys_fence_wait(h_fence, irq_seen, SYS_DEADLINE_NEVER) != SYS_OK) {
-        return 10;      /* the wait on the interrupt timeline failed */
-    }
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    used_seen = q->used.idx;
-    reg_wr(VIRTIO_MMIO_INTERRUPT_ACK, reg_rd(VIRTIO_MMIO_INTERRUPT_STATUS));
-    (void)sys_irq_unmask(h_irq);
+    for (;;) {
+        uint32_t status;
 
-    /*
-     * One interrupt per transfer. The timeline reached irq_seen, the count of
-     * transfers issued, so the device must have posted the matching
-     * completion into the used ring: used_seen must equal avail_sent. If it
-     * lags, a completion the driver counted never arrived, and the wait
-     * returned only because a spurious or coalesced interrupt advanced the
-     * timeline past it. Catching the drift here makes a missed interrupt
-     * visible rather than reading a ring that did not advance as though it
-     * had.
-     */
-    if (used_seen != avail_sent) {
-        return 20;      /* the completion count drifted from the transfers */
+        irq_seen++;
+        if (sys_fence_wait(h_fence, irq_seen, SYS_DEADLINE_NEVER) != SYS_OK) {
+            return 10;      /* the wait on the interrupt timeline failed */
+        }
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        status = reg_rd(VIRTIO_MMIO_INTERRUPT_STATUS);
+        used_seen = q->used.idx;
+        reg_wr(VIRTIO_MMIO_INTERRUPT_ACK, status);
+        (void)sys_irq_unmask(h_irq);
+
+        if (used_seen == avail_sent) {
+            /*
+             * The ring reached this transfer, so the device posted its
+             * completion. A completion carries the queue bit; its absence
+             * would mean the ring moved without the device saying so.
+             */
+            if ((status & VIRTIO_MMIO_INT_VRING) == 0) {
+                return 20;      /* the ring advanced with no queue bit */
+            }
+            completions++;
+            break;
+        }
+        passed_over++;          /* a configuration change or a spurious line */
     }
 
     if (q->status != VIRTIO_BLK_S_OK) {
@@ -367,27 +381,69 @@ write_selftest(void)
 }
 
 /*
- * Report once, at startup, that each self-test transfer completed on exactly
- * one interrupt. transfer() fails any transfer whose completion count drifts
- * from the transfers issued, so reaching here means the count stayed in step:
- * the device posted one used-ring completion per transfer, and the driver
- * waited for one interrupt per completion. The line names both counts so a
- * boot check can confirm they match. It goes to the always-on debug console,
- * which is separate from the block protocol, so the served path pays nothing
- * for it.
+ * Pass over any interrupt that is pending before the first transfer. The
+ * device has been brought up but not notified, so it has completed nothing:
+ * the used ring is empty and the interrupt-status register carries no queue
+ * bit. Whatever is pending here is therefore not a completion, and taking it
+ * for one would read a ring that holds nothing. Each is acknowledged and the
+ * source re-armed. The wait is bounded because there may be none: a port that
+ * cannot forge a pending line hands the driver nothing to pass over, and the
+ * wait then returns empty rather than blocking for a completion that only a
+ * transfer would bring.
  */
 static void
+pass_over_pending(void)
+{
+    for (;;) {
+        uint32_t status;
+
+        if (sys_fence_wait(h_fence, irq_seen + 1,
+          sys_deadline_in_ms(100)) != SYS_OK) {
+            break;      /* nothing pending within the window */
+        }
+        irq_seen++;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        status = reg_rd(VIRTIO_MMIO_INTERRUPT_STATUS);
+        reg_wr(VIRTIO_MMIO_INTERRUPT_ACK, status);
+        (void)sys_irq_unmask(h_irq);
+        passed_over++;
+    }
+}
+
+/*
+ * Report once, at startup, how the self-test's interrupts were told apart:
+ * the transfers issued, the wakes taken for completions, and the wakes passed
+ * over as a configuration change or a spurious line. The counts must stay in
+ * step: one completion per transfer, and the device's used ring at the same
+ * count. A completion count that drifted from the transfers would mean a wake
+ * was taken for a completion that no transfer drew, so this refuses to serve
+ * rather than report a count it cannot stand behind. The line goes to the
+ * always-on debug console, separate from the block protocol, so a boot check
+ * can read it.
+ */
+static int
 report_in_step(void)
 {
-    char line[80];
+    char line[96];
     size_t n = 0;
 
-    n += sapp(&line[n], "blk: one interrupt per transfer: ");
+    if (completions != avail_sent || (uint16_t)q->used.idx != avail_sent) {
+        static const char e[] = "blk: the interrupt count drifted\n";
+
+        (void)sys_debug_write(e, (uint32_t)sizeof(e) - 1);
+        return 21;
+    }
+
+    n += sapp(&line[n], "blk: interrupts told apart: ");
     n += udec(&line[n], avail_sent);
     n += sapp(&line[n], " transfers, ");
-    n += udec(&line[n], q->used.idx);
-    n += sapp(&line[n], " completions\n");
+    n += udec(&line[n], completions);
+    n += sapp(&line[n], " completions, ");
+    n += udec(&line[n], passed_over);
+    n += sapp(&line[n], " passed over\n");
     (void)sys_debug_write(line, (uint32_t)n);
+
+    return 0;
 }
 
 /*
@@ -526,12 +582,17 @@ main(void)
         return err;
     }
 
+    pass_over_pending();
+
     err = write_selftest();
     if (err != 0) {
         DBG_PUTS("virtio_blk: the write did not read back");
         return err;
     }
-    report_in_step();
+    err = report_in_step();
+    if (err != 0) {
+        return err;
+    }
 
     chan = ns_lookup(SYS_NS_SERVICE);
     if (chan == SYS_HANDLE_INVALID) {

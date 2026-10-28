@@ -75,6 +75,16 @@ unsigned int md_uart_irq(void);
 unsigned int md_virtio_irq(void);
 
 /*
+ * Make one interrupt pending at the controller without a device behind it,
+ * so the handler delivers it like any other. It raises a line that no device
+ * raised, which is what a spurious interrupt is, and is how the boot hands a
+ * driver one to tell apart from a completion. Whether a write can force a line
+ * is the controller's to decide: one that does not implement software set
+ * pending ignores the request, and the driver then has none to pass over.
+ */
+void md_irq_set_pending(unsigned int irq);
+
+/*
  * Acknowledge whatever is pending and return its number, or IRQ_NONE.
  * Called by the trap path before irq_dispatch and paired with md_irq_eoi.
  */

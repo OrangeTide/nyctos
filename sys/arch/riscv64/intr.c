@@ -31,6 +31,7 @@
  */
 #define PLIC_BASE       0x0c000000UL
 #define PLIC_PRIORITY   0x000000        /* one word per source */
+#define PLIC_PENDING    0x001000        /* one bit per source */
 #define PLIC_ENABLE     0x002000        /* one bit per source, per context */
 #define PLIC_THRESHOLD  0x200000        /* per context */
 #define PLIC_CLAIM      0x200004        /* per context */
@@ -212,6 +213,23 @@ unsigned int
 md_virtio_irq(void)
 {
     return PLIC_IRQ_BASE + VIRTIO_BLK_SOURCE;
+}
+
+void
+md_irq_set_pending(unsigned int irq)
+{
+    /*
+     * The PLIC pending array is driven by the source lines and is read-only
+     * to software on this controller, so a write here does not raise a line
+     * and the driver has no forged interrupt to pass over. The write is left
+     * as the request a controller with software set pending would honor.
+     */
+    if (irq >= PLIC_IRQ_BASE) {
+        unsigned int source = irq - PLIC_IRQ_BASE;
+
+        *plic_reg(PLIC_PENDING + (source / 32) * 4) =
+          (uint32_t)1 << (source % 32);
+    }
 }
 
 unsigned int

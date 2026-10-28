@@ -18562,6 +18562,16 @@ user_slice(void)
           SYS_RIGHT_WAIT | SYS_RIGHT_TRANSFER, &h_blk_fence);
         expect("a wait handle for its timeline", err, SYS_OK);
 
+        /*
+         * Hand the driver one interrupt no device raised, before it issues a
+         * transfer. It arrives while the device is idle, so the driver must
+         * tell it from a completion by the interrupt-status register and pass
+         * over it rather than read a used ring that holds nothing. A port
+         * that cannot forge a pending line makes this a no-op, and the driver
+         * simply has none to pass over.
+         */
+        md_irq_set_pending(irq);
+
         memset(ns, 0, sizeof(ns));
         ns[0].id = SYS_NS_SERVICE;
         ns[0].handle = h_blk;

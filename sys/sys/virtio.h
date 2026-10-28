@@ -48,6 +48,15 @@
 #define VIRTIO_MMIO_QUEUE_NOTIFY    0x050u
 #define VIRTIO_MMIO_INTERRUPT_STATUS 0x060u
 #define VIRTIO_MMIO_INTERRUPT_ACK   0x064u
+
+/*
+ * The bits of the interrupt-status register. A used-ring update is a queue
+ * completion; a configuration change is not. A line that asserts with
+ * neither bit set is spurious. The driver tells a completion from the rest
+ * by these bits rather than by the fact an interrupt arrived.
+ */
+#define VIRTIO_MMIO_INT_VRING       0x1u
+#define VIRTIO_MMIO_INT_CONFIG      0x2u
 #define VIRTIO_MMIO_STATUS          0x070u
 #define VIRTIO_MMIO_QUEUE_DESC_LOW  0x080u
 #define VIRTIO_MMIO_QUEUE_DESC_HIGH 0x084u
