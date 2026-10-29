@@ -80,6 +80,9 @@ check: all
 	@grep -q '^blk: metadata restored' $(OBJTOP)/check/burst.out \
 	    || { echo 'check: the store metadata did not survive to the second boot'; \
 	         false; }
+	@grep -q '^blk: snapshot survived' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: the snapshot did not survive to the second boot'; \
+	         false; }
 	@echo "check: $(ARCH), symbols"
 	@$(TOPDIR)/scripts/symcheck.sh $(NYCSYM) $(KERNEL_ELF)
 	@$(TOPDIR)/scripts/klinecheck.sh $(MKLINE) $(KLINE_BLOB) $(KERNEL_ELF)

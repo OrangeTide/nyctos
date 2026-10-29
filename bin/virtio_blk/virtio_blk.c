@@ -465,12 +465,21 @@ report_in_step(void)
  */
 /*
  * The physical arena is larger than the logical store: the first
- * BLK_BLOCK_COUNT physical blocks hold the logical blocks at boot, and the
- * rest are free, to be handed out when a shared block is forked. The arena
- * fits in the sectors the disk already carries, so growing it took no change
- * to the image.
+ * BLK_BLOCK_COUNT physical blocks hold the logical blocks at boot, the next are
+ * free, to be handed out when a shared block is forked, and the top one is
+ * reserved. The arena fits in the sectors the disk already carries, so growing
+ * it took no change to the image.
  */
-#define STORE_PHYS_BLOCKS   32u      /* BLK_BLOCK_COUNT logical plus free */
+#define STORE_PHYS_BLOCKS   32u      /* BLK_BLOCK_COUNT logical, free, reserved */
+
+/*
+ * The top physical block, reserved for the snapshot-persistence
+ * demonstration's live fork and never handed out by the allocator. The boot
+ * self-tests draw freely from the pool and leave their bytes on the blocks they
+ * touch, so a block a restored map points at must sit outside the pool, or a
+ * later boot's self-tests would scribble over it before the map is restored.
+ */
+#define SNAP_FORK_PHYS      (STORE_PHYS_BLOCKS - 1u)
 
 static uint16_t block_map[BLK_BLOCK_COUNT];
 
@@ -533,7 +542,7 @@ blk_alloc(uint16_t *out)
 {
     uint16_t p;
 
-    for (p = 0; p < STORE_PHYS_BLOCKS; p++) {
+    for (p = 0; p < SNAP_FORK_PHYS; p++) {       /* the reserved block aside */
         if (refc[p] == 0) {
             refc[p] = 1;
             *out = p;
@@ -885,13 +894,15 @@ snapshot_selftest(void)
 }
 
 /*
- * The on-disk metadata, one sector holding the live map and the reference
- * counts behind a header. The magic marks the sector as this store's, the
- * version its layout, and the epoch counts the boots that have restored it. A
- * sector whose magic does not match is a fresh image with no metadata yet.
+ * The on-disk metadata, one sector holding the live map, the reference counts,
+ * and the snapshot, behind a header. The magic marks the sector as this
+ * store's, the version its layout, and the epoch counts the boots that have
+ * restored it. A sector whose magic does not match is a fresh image with no
+ * metadata yet. The snapshot map and its live flag ride alongside the live map,
+ * so a snapshot and the block sharing it describes survive a boot.
  */
 #define META_MAGIC      0x6e626c6bu     /* 'nblk' */
-#define META_VERSION    1u
+#define META_VERSION    2u
 
 struct blk_meta {
     uint32_t    magic;
@@ -899,6 +910,8 @@ struct blk_meta {
     uint32_t    epoch;
     uint16_t    block_map[BLK_BLOCK_COUNT];
     uint8_t     refc[STORE_PHYS_BLOCKS];
+    uint16_t    snap_map[BLK_BLOCK_COUNT];
+    uint8_t     snap_live;
 };
 
 _Static_assert(sizeof(struct blk_meta) <= VIRTIO_BLK_SECTOR_BYTES,
@@ -921,6 +934,8 @@ meta_save(void)
     m.epoch = meta_epoch;
     memcpy(m.block_map, block_map, sizeof(block_map));
     memcpy(m.refc, refc, sizeof(refc));
+    memcpy(m.snap_map, snap_map, sizeof(snap_map));
+    m.snap_live = (uint8_t)snap_live;
 
     memset(q->data, 0, sizeof(q->data));
     memcpy(q->data, &m, sizeof(m));
@@ -956,6 +971,8 @@ meta_load_or_init(void)
     if (m.magic == META_MAGIC && m.version == META_VERSION) {
         memcpy(block_map, m.block_map, sizeof(block_map));
         memcpy(refc, m.refc, sizeof(refc));
+        memcpy(snap_map, m.snap_map, sizeof(snap_map));
+        snap_live = m.snap_live;
         meta_epoch = m.epoch + 1u;
         n += sapp(&line[n], "blk: metadata restored, epoch ");
     } else {
@@ -967,6 +984,111 @@ meta_load_or_init(void)
     (void)sys_debug_write(line, (uint32_t)n);
 
     return meta_save();
+}
+
+/*
+ * The block the snapshot-persistence demonstration keeps to: unused by the
+ * files, by the kernel's storage probes, and by the store's own self-tests, so
+ * arming a snapshot over it disturbs nothing a boot check reads.
+ */
+#define SNAP_PERSIST_BLOCK  12u
+
+/*
+ * Return the serving state to identity after the demonstration, freeing the
+ * snapshot's hold on every block and the live view's fork of the demonstration
+ * block. The diverged state has already reached the disk, so the snapshot
+ * touches only the metadata sector and the two physical blocks it named, not
+ * this boot's own writes.
+ */
+static void
+snapshot_persist_teardown(void)
+{
+    uint16_t live = block_map[SNAP_PERSIST_BLOCK];
+
+    snapshot_release();
+    if (live != SNAP_PERSIST_BLOCK) {
+        refc[live] = 0;
+        block_map[SNAP_PERSIST_BLOCK] = SNAP_PERSIST_BLOCK;
+    }
+    refc[SNAP_PERSIST_BLOCK] = 1;
+}
+
+/*
+ * Show a snapshot surviving a boot. A boot that restored no snapshot arms one:
+ * it lays old bytes down, takes a snapshot, and writes new bytes, which forks
+ * the block so the snapshot keeps the old bytes while the live view holds the
+ * new, then persists the diverged state. A later boot over the same image
+ * restores that snapshot and reads it: the live view must read the new bytes
+ * and a read through the snapshot the old ones, the bytes the previous boot
+ * kept. Either boot ends by returning the serving state to identity, so the
+ * demonstration leaves the store serving as a boot without it would. The store
+ * reports which half it ran on the always-on debug console, where a boot check
+ * reads the survival line out of the second boot.
+ */
+static int
+snapshot_persist_check(void)
+{
+    static const char armed[] = "blk: snapshot armed for a later boot\n";
+    static const char survived[] =
+      "blk: snapshot survived from an earlier boot\n";
+    uint64_t off = (uint64_t)SNAP_PERSIST_BLOCK * BLK_BLOCK_BYTES;
+    uint8_t old_b[BLK_BLOCK_BYTES], new_b[BLK_BLOCK_BYTES];
+    uint8_t got[BLK_BLOCK_BYTES];
+    uint32_t i;
+
+    for (i = 0; i < BLK_BLOCK_BYTES; i++) {
+        old_b[i] = (uint8_t)(i * 5u + 3u);
+        new_b[i] = (uint8_t)(i * 9u + 4u);
+    }
+
+    if (snap_live) {
+        if (read_block(block_map, SNAP_PERSIST_BLOCK, got) != SYS_OK) {
+            return 42;
+        }
+        if (!bytes_equal(got, new_b, BLK_BLOCK_BYTES)) {
+            return 43;      /* the live view lost its write across the boot */
+        }
+        if (read_block(snap_map, SNAP_PERSIST_BLOCK, got) != SYS_OK) {
+            return 44;
+        }
+        if (!bytes_equal(got, old_b, BLK_BLOCK_BYTES)) {
+            return 45;      /* the snapshot did not keep the old bytes */
+        }
+        snapshot_persist_teardown();
+        (void)sys_debug_write(survived, (uint32_t)sizeof(survived) - 1);
+
+        return 0;
+    }
+
+    if (serve_write(old_b, sizeof(old_b), off, BLK_BLOCK_BYTES) != SYS_OK) {
+        return 46;      /* lay the old bytes down in place */
+    }
+    if (snapshot_take() != 0) {
+        return 47;      /* the snapshot now holds this block too */
+    }
+
+    /*
+     * Fork the block away from the snapshot by hand, onto the reserved physical
+     * block rather than a pool block, so the live bytes survive a later boot's
+     * self-tests. The snapshot keeps the old physical block; the live map moves
+     * to the reserved one, and the new bytes are written there in place.
+     */
+    refc[block_map[SNAP_PERSIST_BLOCK]]--;
+    block_map[SNAP_PERSIST_BLOCK] = SNAP_FORK_PHYS;
+    refc[SNAP_FORK_PHYS] = 1;
+    if (serve_write(new_b, sizeof(new_b), off, BLK_BLOCK_BYTES) != SYS_OK) {
+        return 48;
+    }
+    if (block_map[SNAP_PERSIST_BLOCK] == snap_map[SNAP_PERSIST_BLOCK]) {
+        return 49;      /* the live view and the snapshot did not diverge */
+    }
+    if (meta_save() != 0) {
+        return 50;
+    }
+    snapshot_persist_teardown();
+    (void)sys_debug_write(armed, (uint32_t)sizeof(armed) - 1);
+
+    return 0;
 }
 
 int
@@ -1052,6 +1174,12 @@ main(void)
     err = meta_load_or_init();
     if (err != 0) {
         DBG_PUTS("virtio_blk: the metadata sector would not restore");
+        return err;
+    }
+
+    err = snapshot_persist_check();
+    if (err != 0) {
+        DBG_PUTS("virtio_blk: the snapshot did not survive the boot");
         return err;
     }
 
