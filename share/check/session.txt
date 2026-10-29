@@ -19,4 +19,10 @@ for x in a b c; do echo loop $x; done
 while false; do echo never; done
 case hello in h*) echo case-h;; *) echo case-other; esac
 for x in 1 2 3; do for y in p q; do echo $x$y; break 2; done; done
+greeting=hello
+echo $greeting
+echo '$greeting'
+echo "$greeting there"
+pair="a b"
+echo "$pair"
 exit

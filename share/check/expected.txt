@@ -60,6 +60,20 @@ case-h
 $ for x in 1 2 3; do for y in p q; do echo $x$y; break 2; done; done
 1p
     echo exited with status 0
+$ greeting=hello
+$ echo $greeting
+hello
+    echo exited with status 0
+$ echo '$greeting'
+$greeting
+    echo exited with status 0
+$ echo "$greeting there"
+hello there
+    echo exited with status 0
+$ pair="a b"
+$ echo "$pair"
+a b
+    echo exited with status 0
 $ exit
     sh exited with status 0
     the shell exited with status 0

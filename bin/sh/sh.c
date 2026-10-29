@@ -1,4 +1,4 @@
-/* sh.c : a shell with control flow over programs it runs.
+/* sh.c : a shell with control flow and quoting over programs it runs.
  *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
@@ -6,13 +6,20 @@
  * A command is read, tokenized, and interpreted from the token list. The
  * grammar is a Bourne subset: simple commands separated by ';' or newline,
  * the compound commands 'if', 'while', 'until', 'for' and 'case', and the
- * loop builtins 'break' and 'continue' with an optional count. A word may
- * carry '$name', '${name}' or '$?' which expand to a variable's value or the
- * last status before the word is passed on. The 'for' loop binds its name,
- * which is how a variable comes to be set; assignment and quoting are not
- * here yet. The builtins 'true', 'false' and ':' give a condition a status
- * without a program. Everything else is a program the shell spawns and waits
- * for, with the namespace built as before.
+ * loop builtins 'break' and 'continue' with an optional count.
+ *
+ * A word may carry single quotes, double quotes and backslash escapes, and
+ * '$name', '${name}' or '$?' which expand to a variable's value or the last
+ * status. Single quotes keep their contents literal. Double quotes allow the
+ * expansions but keep the spaces inside, so a quoted run stays one word.
+ * Quoting and escaping are resolved when the word is expanded, not when it is
+ * read, so a word reused across loop passes expands against the current
+ * values each time. A leading 'NAME=VALUE' word sets a shell variable, and
+ * several may precede a command. The 'for' loop also binds its name.
+ *
+ * The builtins 'true', 'false' and ':' give a condition a status without a
+ * program. Everything else is a program the shell spawns and waits for, with
+ * the namespace built as before.
  *
  */
 
@@ -179,18 +186,86 @@ set_var(const char *name, const char *value)
 }
 
 /*
- * Expand '$name', '${name}' and '$?' in a word into the pool, and return the
- * expanded string. A lone '$' or an unknown name expands to nothing beyond
- * what is literal. No field splitting happens, so an expansion is one word.
+ * Whether a word is an assignment, 'NAME=VALUE' with NAME a valid name. The
+ * name is read from the raw word, before any expansion, so quotes in the
+ * value do not change where the name ends.
+ */
+static int
+is_assign(const char *w)
+{
+    int i;
+
+    if (!name_char(w[0], 1)) {
+        return 0;
+    }
+    for (i = 1; w[i] != '\0' && w[i] != '='; i++) {
+        if (!name_char(w[i], 0)) {
+            return 0;
+        }
+    }
+
+    return w[i] == '=';
+}
+
+/*
+ * Expand a word into the pool and return the expanded string. Single quotes
+ * keep their contents literal; double quotes keep the expansions but swallow
+ * the quote characters; a backslash escapes the next character, with only
+ * '$', '"', '\' and '`' escapable inside double quotes. '$name', '${name}'
+ * and '$?' become a variable's value or the last status. A lone '$' or an
+ * unknown name expands to nothing beyond what is literal. No field splitting
+ * happens, so an expansion is one word.
  */
 static char *
 expand(const char *src, char *pool, int *pos, int cap)
 {
     char *out = pool + *pos;
     int n = *pos;
+    int sq = 0, dq = 0;         /* inside single or double quotes */
 
     while (*src != '\0' && n + 1 < cap) {
-        if (*src != '$') {
+        char c = *src;
+
+        if (sq) {
+            if (c == '\'') {
+                sq = 0;
+                src++;
+            } else {
+                pool[n++] = *src++;
+            }
+            continue;
+        }
+        if (c == '\\') {
+            if (dq) {
+                char d = src[1];
+
+                if (d == '$' || d == '"' || d == '\\' || d == '`') {
+                    pool[n++] = d;
+                    src += 2;
+                } else {
+                    pool[n++] = '\\';
+                    src++;
+                }
+            } else if (src[1] != '\0') {
+                pool[n++] = src[1];
+                src += 2;
+            } else {
+                pool[n++] = '\\';
+                src++;
+            }
+            continue;
+        }
+        if (c == '\'' && !dq) {
+            sq = 1;
+            src++;
+            continue;
+        }
+        if (c == '"') {
+            dq = !dq;
+            src++;
+            continue;
+        }
+        if (c != '$') {
             pool[n++] = *src++;
             continue;
         }
@@ -348,11 +423,44 @@ tokenize(void)
         }
         {
             char *w = tbuf + ti;
+            int sq = 0, dq = 0; /* quoting, so a space inside stays in */
 
-            while (*s != '\0' && *s != ' ' && *s != '\t' && *s != ';' &&
-              *s != ')' && *s != '(' && *s != '\n') {
+            while (*s != '\0') {
+                char wc = *s;
+
+                if (sq) {
+                    if (ti + 1 < (int)sizeof(tbuf)) {
+                        tbuf[ti++] = wc;
+                    }
+                    s++;
+                    if (wc == '\'') {
+                        sq = 0;
+                    }
+                    continue;
+                }
+                if (wc == '\\') {
+                    if (ti + 1 < (int)sizeof(tbuf)) {
+                        tbuf[ti++] = wc;
+                    }
+                    s++;
+                    if (*s != '\0') {
+                        if (ti + 1 < (int)sizeof(tbuf)) {
+                            tbuf[ti++] = *s;
+                        }
+                        s++;
+                    }
+                    continue;
+                }
+                if (wc == '\'' && !dq) {
+                    sq = 1;
+                } else if (wc == '"') {
+                    dq = !dq;
+                } else if (!dq && (wc == ' ' || wc == '\t' || wc == ';' ||
+                  wc == ')' || wc == '(' || wc == '\n')) {
+                    break;
+                }
                 if (ti + 1 < (int)sizeof(tbuf)) {
-                    tbuf[ti++] = *s;
+                    tbuf[ti++] = wc;
                 }
                 s++;
             }
@@ -563,6 +671,34 @@ exec_simple(void)
     char pool[ARG_POOL];
     char *argv[SYS_MAX_ARGS + 1];
     int pos = 0, argc = 0, over = 0;
+
+    /*
+     * Leading assignments set shell variables. The value is expanded, so it
+     * may carry quotes and '$'. In skip mode the words are stepped over and
+     * nothing is set.
+     */
+    while (toks[tp].type == TOK_WORD && is_assign(toks[tp].text)) {
+        const char *raw = toks[tp].text;
+        int eq = 0;
+
+        while (raw[eq] != '=') {
+            eq++;
+        }
+        if (!g_skip) {
+            char name[VAR_NAME];
+            char *val;
+            int j;
+
+            for (j = 0; j < eq && j + 1 < VAR_NAME; j++) {
+                name[j] = raw[j];
+            }
+            name[j] = '\0';
+            val = expand(raw + eq + 1, pool, &pos, (int)sizeof(pool));
+            set_var(name, val);
+            last_status = 0;
+        }
+        tp++;
+    }
 
     while (toks[tp].type == TOK_WORD) {
         char *a = expand(toks[tp].text, pool, &pos, (int)sizeof(pool));
