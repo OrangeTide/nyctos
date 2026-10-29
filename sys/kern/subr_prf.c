@@ -12,6 +12,7 @@
  */
 #include <sys/backtrace.h>
 #include <sys/cpu.h>
+#include <sys/kline.h>
 #include <sys/ksym.h>
 #include <sys/lock.h>
 #include <sys/measure.h>
@@ -443,9 +444,11 @@ panic(const char *fmt, ...)
 
     /*
      * The call chain that reached here, each return address named as the
-     * function it falls in plus the offset into it. An address the embedded
-     * table cannot name is printed raw, so a panic before the table is read
-     * or from code the table does not cover still shows the chain.
+     * function it falls in plus the offset into it, and the source file and
+     * line that address falls on where the table has one. An address the
+     * table cannot name is printed raw, and one it has no line for carries
+     * none, so a panic before the tables are read or from code they do not
+     * cover still shows the chain.
      */
     {
         uintptr_t frames[16];
@@ -455,12 +458,18 @@ panic(const char *fmt, ...)
         for (k = 0; k < n; k++) {
             uintptr_t off = 0;
             const char *name = ksym_lookup(frames[k], &off);
+            const char *file = NULL;
+            int line = 0;
 
             if (name != NULL) {
-                cnprintf("  %s+0x%lx\n", name, (unsigned long)off);
+                cnprintf("  %s+0x%lx", name, (unsigned long)off);
             } else {
-                cnprintf("  0x%lx\n", (unsigned long)frames[k]);
+                cnprintf("  0x%lx", (unsigned long)frames[k]);
             }
+            if (kline_lookup(frames[k], &file, &line) && line > 0) {
+                cnprintf(" %s:%d", file, line);
+            }
+            cnputs("\n");
         }
     }
 

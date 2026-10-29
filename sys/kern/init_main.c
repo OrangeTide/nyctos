@@ -18651,6 +18651,8 @@ bt_a(uintptr_t *out, unsigned int max)
     return n;
 }
 
+static int kline_name_is(const char *path, const char *name);
+
 static void
 backtrace_check(void)
 {
@@ -18659,6 +18661,7 @@ backtrace_check(void)
     const char *want[4];
     uintptr_t drop;
     unsigned int k;
+    unsigned int lines = 0;
 
     if (n < 4) {
         panic("backtrace: a four-deep nest unwound to %u frames", n);
@@ -18682,14 +18685,35 @@ backtrace_check(void)
     for (k = 0; k < 4; k++) {
         uintptr_t off = 0;
         const char *got = ksym_lookup(frames[k], &off);
+        const char *file = NULL;
+        int line = 0;
 
         if (got == NULL || got != want[k]) {
             panic("backtrace: frame %u named %s, not the function it is in",
               k, got == NULL ? "(none)" : got);
         }
+
+        /*
+         * And the source location the panic backtrace prints beside each
+         * name. Each of these frames is a return address in this file, so
+         * the table must place it here. A return address can land on a row
+         * the compiler left with no line, so a zero line is allowed, but
+         * the run as a whole has to resolve at least one real line.
+         */
+        if (!kline_lookup(frames[k], &file, &line) || file == NULL ||
+          !kline_name_is(file, "init_main.c")) {
+            panic("backtrace: frame %u is not placed in this file", k);
+        }
+        if (line > 0) {
+            lines++;
+        }
+    }
+    if (lines == 0) {
+        panic("backtrace: no frame resolved to a source line");
     }
 
-    cnprintf("backtrace: a nested call unwound to %u named frames\n", n);
+    cnprintf("backtrace: a nested call unwound to %u frames with names and "
+      "lines\n", n);
 }
 
 /*
