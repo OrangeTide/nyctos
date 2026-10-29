@@ -11,6 +11,7 @@
  * A word may carry single quotes, double quotes and backslash escapes, and
  * '$name', '${name}', '$?', '$#', '$0'..'$9', '${NN}', '$@' and '$*' which
  * expand to a variable's value, the last status or the positional parameters.
+ * '$(( expr ))' evaluates an integer expression and substitutes its value.
  * The 'set' builtin sets the positional parameters. Single quotes keep their
  * contents literal. Double quotes allow the expansions but keep the spaces
  * inside, so a quoted run stays one word. An unquoted expansion is split on
@@ -342,13 +343,298 @@ wb_params(struct wb *b, int star, int dq)
 }
 
 /*
+ * An integer arithmetic evaluator for '$(( ))'. It reads a C-like expression
+ * through a cursor, with the usual precedence from '||' down to unary and
+ * parentheses. A bare name or '$name' is the integer value of that variable,
+ * '$0'..'$9' a positional parameter, and a divide or remainder by zero is
+ * zero rather than a fault.
+ */
+struct aeval {
+    const char *p;
+};
+
+static int32_t aexpr(struct aeval *a);
+
+static void
+askip(struct aeval *a)
+{
+    while (*a->p == ' ' || *a->p == '\t' || *a->p == '\n') {
+        a->p++;
+    }
+}
+
+static int32_t
+aprimary(struct aeval *a)
+{
+    int32_t v;
+
+    askip(a);
+    if (*a->p == '(') {
+        a->p++;
+        v = aexpr(a);
+        askip(a);
+        if (*a->p == ')') {
+            a->p++;
+        }
+        return v;
+    }
+    if (*a->p == '+') {
+        a->p++;
+        return aprimary(a);
+    }
+    if (*a->p == '-') {
+        a->p++;
+        return -aprimary(a);
+    }
+    if (*a->p == '!') {
+        a->p++;
+        return !aprimary(a);
+    }
+    if (*a->p == '~') {
+        a->p++;
+        return ~aprimary(a);
+    }
+    if (*a->p == '$') {
+        a->p++;
+        if (*a->p >= '0' && *a->p <= '9') {
+            v = to_int(pos_param(*a->p - '0'));
+            a->p++;
+            return v;
+        }
+    }
+    if (*a->p >= '0' && *a->p <= '9') {
+        v = 0;
+        while (*a->p >= '0' && *a->p <= '9') {
+            v = v * 10 + (*a->p - '0');
+            a->p++;
+        }
+        return v;
+    }
+    if (name_char(*a->p, 1)) {
+        char nm[VAR_NAME];
+        int k = 0;
+
+        while (name_char(*a->p, k == 0) && k + 1 < VAR_NAME) {
+            nm[k++] = *a->p++;
+        }
+        nm[k] = '\0';
+        return to_int(get_var(nm));
+    }
+
+    return 0;
+}
+
+static int32_t
+amul(struct aeval *a)
+{
+    int32_t v = aprimary(a);
+
+    for (;;) {
+        askip(a);
+        if (*a->p == '*') {
+            a->p++;
+            v = v * aprimary(a);
+        } else if (*a->p == '/') {
+            int32_t r;
+
+            a->p++;
+            r = aprimary(a);
+            v = r != 0 ? v / r : 0;
+        } else if (*a->p == '%') {
+            int32_t r;
+
+            a->p++;
+            r = aprimary(a);
+            v = r != 0 ? v % r : 0;
+        } else {
+            return v;
+        }
+    }
+}
+
+static int32_t
+aadd(struct aeval *a)
+{
+    int32_t v = amul(a);
+
+    for (;;) {
+        askip(a);
+        if (*a->p == '+') {
+            a->p++;
+            v = v + amul(a);
+        } else if (*a->p == '-') {
+            a->p++;
+            v = v - amul(a);
+        } else {
+            return v;
+        }
+    }
+}
+
+static int32_t
+ashift(struct aeval *a)
+{
+    int32_t v = aadd(a);
+
+    for (;;) {
+        askip(a);
+        if (a->p[0] == '<' && a->p[1] == '<') {
+            a->p += 2;
+            v = v << aadd(a);
+        } else if (a->p[0] == '>' && a->p[1] == '>') {
+            a->p += 2;
+            v = v >> aadd(a);
+        } else {
+            return v;
+        }
+    }
+}
+
+static int32_t
+arel(struct aeval *a)
+{
+    int32_t v = ashift(a);
+
+    for (;;) {
+        askip(a);
+        if (a->p[0] == '<' && a->p[1] == '=') {
+            a->p += 2;
+            v = v <= ashift(a);
+        } else if (a->p[0] == '>' && a->p[1] == '=') {
+            a->p += 2;
+            v = v >= ashift(a);
+        } else if (a->p[0] == '<') {
+            a->p++;
+            v = v < ashift(a);
+        } else if (a->p[0] == '>') {
+            a->p++;
+            v = v > ashift(a);
+        } else {
+            return v;
+        }
+    }
+}
+
+static int32_t
+aeq(struct aeval *a)
+{
+    int32_t v = arel(a);
+
+    for (;;) {
+        askip(a);
+        if (a->p[0] == '=' && a->p[1] == '=') {
+            a->p += 2;
+            v = v == arel(a);
+        } else if (a->p[0] == '!' && a->p[1] == '=') {
+            a->p += 2;
+            v = v != arel(a);
+        } else {
+            return v;
+        }
+    }
+}
+
+static int32_t
+aband(struct aeval *a)
+{
+    int32_t v = aeq(a);
+
+    for (;;) {
+        askip(a);
+        if (a->p[0] == '&' && a->p[1] != '&') {
+            a->p++;
+            v = v & aeq(a);
+        } else {
+            return v;
+        }
+    }
+}
+
+static int32_t
+abxor(struct aeval *a)
+{
+    int32_t v = aband(a);
+
+    for (;;) {
+        askip(a);
+        if (*a->p == '^') {
+            a->p++;
+            v = v ^ aband(a);
+        } else {
+            return v;
+        }
+    }
+}
+
+static int32_t
+abor(struct aeval *a)
+{
+    int32_t v = abxor(a);
+
+    for (;;) {
+        askip(a);
+        if (a->p[0] == '|' && a->p[1] != '|') {
+            a->p++;
+            v = v | abxor(a);
+        } else {
+            return v;
+        }
+    }
+}
+
+static int32_t
+aland(struct aeval *a)
+{
+    int32_t v = abor(a);
+
+    for (;;) {
+        askip(a);
+        if (a->p[0] == '&' && a->p[1] == '&') {
+            int32_t r;
+
+            a->p += 2;
+            r = abor(a);
+            v = v && r;
+        } else {
+            return v;
+        }
+    }
+}
+
+static int32_t
+alor(struct aeval *a)
+{
+    int32_t v = aland(a);
+
+    for (;;) {
+        askip(a);
+        if (a->p[0] == '|' && a->p[1] == '|') {
+            int32_t r;
+
+            a->p += 2;
+            r = aland(a);
+            v = v || r;
+        } else {
+            return v;
+        }
+    }
+}
+
+static int32_t
+aexpr(struct aeval *a)
+{
+    return alor(a);
+}
+
+/*
  * The shared expansion engine. Single quotes keep their contents literal;
  * double quotes keep the expansions but swallow the quote characters; a
  * backslash escapes the next character, with only '$', '"', '\' and '`'
  * escapable inside double quotes. '$name', '${name}', '$?', '$#', '$0'..'$9',
  * '${NN}', '$@' and '$*' expand against the variables, the last status and
- * the positional parameters. A lone '$' or an unknown name expands to
- * nothing beyond what is literal.
+ * the positional parameters, and '$(( expr ))' substitutes an arithmetic
+ * value. A lone '$' or an unknown name expands to nothing beyond what is
+ * literal.
  */
 static int
 expand_core(const char *src, int split, char *pool, int *pos, int cap,
@@ -425,7 +711,26 @@ expand_core(const char *src, int split, char *pool, int *pos, int cap,
         }
         src++;
         c = *src;
-        if (c == '?') {
+        if (c == '(' && src[1] == '(') {
+            struct aeval a;
+            char num[12];
+            int32_t v;
+
+            a.p = src + 2;
+            v = aexpr(&a);
+            int_str(v, num);
+            src = a.p;
+            while (*src == ' ' || *src == '\t' || *src == '\n') {
+                src++;
+            }
+            if (*src == ')') {
+                src++;
+            }
+            if (*src == ')') {
+                src++;
+            }
+            wb_val(&b, num, dq);
+        } else if (c == '?') {
             char num[12];
 
             src++;
@@ -649,6 +954,29 @@ tokenize(void)
                     }
                     s++;
                     if (*s != '\0') {
+                        if (ti + 1 < (int)sizeof(tbuf)) {
+                            tbuf[ti++] = *s;
+                        }
+                        s++;
+                    }
+                    continue;
+                }
+                if (wc == '$' && s[1] == '(' && s[2] == '(') {
+                    int adepth = 2;     /* the two parens of '$((' */
+                    int m;
+
+                    for (m = 0; m < 3; m++) {
+                        if (ti + 1 < (int)sizeof(tbuf)) {
+                            tbuf[ti++] = *s;
+                        }
+                        s++;
+                    }
+                    while (*s != '\0' && adepth > 0) {
+                        if (*s == '(') {
+                            adepth++;
+                        } else if (*s == ')') {
+                            adepth--;
+                        }
                         if (ti + 1 < (int)sizeof(tbuf)) {
                             tbuf[ti++] = *s;
                         }

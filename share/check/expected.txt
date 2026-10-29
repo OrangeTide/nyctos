@@ -93,6 +93,21 @@ $ set $spaced
 $ echo split $#
 split 3
     echo exited with status 0
+$ echo sum $((2 + 3 * 4))
+sum 14
+    echo exited with status 0
+$ n=5
+$ echo n2 $((n * n))
+n2 25
+    echo exited with status 0
+$ echo cmp $((n > 3))
+cmp 1
+    echo exited with status 0
+$ for i in $((1+1)) $((2+2)); do echo i $i; done
+i 2
+    echo exited with status 0
+i 4
+    echo exited with status 0
 $ exit
     sh exited with status 0
     the shell exited with status 0
