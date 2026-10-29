@@ -205,6 +205,25 @@ the call, and `{ list; }` grouping a list. Each stage shipped behind a check
 that fails when its feature is removed. The reference in `jsh` was a menu, not a
 port: the feature set was reimplemented for this system's spawn model.
 
+**0.34. Source lines in the backtrace.** A frame names the function and the
+offset but not the source line, because the DWARF line-number reader was left
+for later. Reading it, embedding a line table the way the symbol table is
+embedded, and printing a file and line beside each frame is the step to take.
+
+**Done, shipped in 0.34.0.** The offline `nycsym` reads `.debug_line`, version 4
+on riscv64 and version 5 on aarch64, and names a recorded address with its file
+and line. The in-kernel path carries a line table built the way the symbol table
+is: `mkline` reads the first pass's line program and writes the rows sorted by
+address and delta encoded, a second two-pass link embeds the blob past the text,
+and `kline_lookup` walks it to the nearest row at or below an address. A panic
+prints the file and line beside each frame's name, a frame with no line keeping
+just the name. Checks stand behind it: a probe resolves to its own recorded
+line, the nest's frames resolve into this file, and the symbols step holds the
+embedded table against the DWARF across every text address by resolving the blob
+the kernel's way and comparing to llvm-symbolizer. The reader referenced in the
+backlog was ELF32 and RV32; the one built here is ELF64 for both boards and
+reads the line program directly.
+
 **Not on the line.** The bounded-formatter decision, whether the sink-based
 allocation-free formatter is enough of an improvement over the current `printf`
 to override the choice `printf`'s own comment defends, is a decide-and-record

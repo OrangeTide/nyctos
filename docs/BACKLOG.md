@@ -88,13 +88,13 @@ link embeds, built from the first pass by `mksymtab` and placed past the text
 so its addresses do not move, and `ksym_lookup` names an address against it. A
 fault reaches the same path through panic.
 
-The DWARF line-number reader is not done, so a frame names a function and an
-offset, not a source line. A DWARF reader that builds sorted line and function
-tables with binary-search lookup and no per-lookup allocation exists in
-`~/Vibe/skjegg/dwarf/dwread.c` with `dwarf.c` for whoever wants lines later. It
-is ELF32 today with four-byte addresses, and its frame walk assumes the RV32
-layout. That port would need ELF64, LP64 addresses, and a frame walk
-parameterized for the AArch64 and riscv64 layout (`[fp]` and `[fp+8]`).
+The DWARF line-number reader shipped in 0.34.0, so a frame also names a source
+file and line. `nycsym` reads `.debug_line` for version 4 and version 5, the
+in-kernel `kline_lookup` walks a delta-encoded line table a second two-pass link
+embeds past the text, and the panic backtrace prints the line beside each name.
+The symbols check holds the embedded table against the DWARF across every text
+address. The reader built here is ELF64 for both boards and reads the line
+program directly, rather than the ELF32 RV32 `dwread.c` once noted as a start.
 
 ### Adopt a host-side ELF reader in the boot-archive tool (done, shipped 0.31.0)
 

@@ -4,6 +4,31 @@ Notable changes per minor version. Patch bumps between minors move the VERSION
 file alone and are not listed here; see the git log for their detail. Each
 release's full retrospective lives in docs/ROADMAP.md.
 
+## 0.34.0
+
+Source lines in the backtrace. A panic names each frame with the source file and
+line its address falls on, not only the function and the offset, and the kernel
+carries the line table to do it without the host tool.
+
+The offline `nycsym` reads `.debug_line`, DWARF version 4 on riscv64 and version
+5 on aarch64, so it names a recorded address with its file and line against the
+kernel ELF. The in-kernel path carries a line table the way it already carries
+the symbol table: `mkline` reads the first pass's line program, flattens it to
+one row per statement, and writes the rows sorted by address and delta encoded,
+which holds the whole table in about forty per cent of the text rather than its
+full size. A second two-pass link embeds the blob past the text so its addresses
+do not move, and `kline_lookup` walks it to the nearest row at or below an
+address. The panic backtrace prints the file and line beside each name, and a
+frame the table has no line for keeps just its name.
+
+Checks stand behind each part. A boot probe records its own source line and the
+check fails unless the table gives it back, and the backtrace check requires its
+known nest of frames to resolve into this file. The symbols step holds the
+embedded table against the DWARF across every text address: `mkline --query`
+resolves the blob the way the kernel does, and `klinecheck.sh` compares each
+address to the line llvm-symbolizer reads, so a blob that disagrees with its own
+DWARF fails the build.
+
 ## 0.33.0
 
 A larger shell. The shell reads a command, tokenizes it, and interprets it from
