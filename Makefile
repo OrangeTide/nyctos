@@ -79,6 +79,7 @@ check: all
 	         false; }
 	@echo "check: $(ARCH), symbols"
 	@$(TOPDIR)/scripts/symcheck.sh $(NYCSYM) $(KERNEL_ELF)
+	@$(TOPDIR)/scripts/klinecheck.sh $(MKLINE) $(KLINE_BLOB) $(KERNEL_ELF)
 	@echo "check: $(ARCH) ok"
 
 run: all

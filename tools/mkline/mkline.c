@@ -591,6 +591,59 @@ sleb_len(int64_t v)
     return n;
 }
 
+/* Resolve addresses against a finished blob the same way the kernel's
+ * kline_lookup does, so a check can hold the embedded table against the DWARF
+ * it was built from. Reads hex addresses on stdin, one per line, and prints
+ * the base name and line of the nearest row at or below each, or "??" when no
+ * row precedes it. This is the reader in sys/kern/subr_kline.c, over the bytes
+ * on disk rather than the bytes linked in. */
+static int
+query(const char *blobpath)
+{
+    long len;
+    uint8_t *blob = read_file(blobpath, &len);
+    const struct kline_hdr *h = (const struct kline_hdr *)blob;
+    const uint32_t *foff;
+    const char *strs;
+    const uint8_t *stream;
+    char in[64];
+
+    if ((size_t)len < sizeof(*h))
+        die(blobpath, "shorter than a header");
+    foff = (const uint32_t *)(blob + sizeof(*h));
+    strs = (const char *)(foff + h->filecount);
+    stream = (const uint8_t *)(strs + h->strsize);
+
+    while (fgets(in, sizeof(in), stdin) != NULL) {
+        uint64_t addr = strtoull(in, NULL, 16);
+        struct cur c = { stream, stream + h->streamsize };
+        uint64_t cur = 0;
+        int64_t cur_line = 0, cur_file = 0, best_line = 0, best_file = 0;
+        uint32_t i;
+        int found = 0;
+
+        for (i = 0; i < h->count && c.p < c.end; i++) {
+            cur += rd_uleb(&c);
+            cur_line += rd_sleb(&c);
+            cur_file += rd_sleb(&c);
+            if (cur <= addr) {
+                best_line = cur_line;
+                best_file = cur_file;
+                found = 1;
+            } else {
+                break;
+            }
+        }
+        if (!found || best_file < 0 || (uint32_t)best_file >= h->filecount)
+            printf("??\n");
+        else
+            printf("%s:%d\n", strs + foff[best_file], (int)best_line);
+    }
+
+    free(blob);
+    return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -609,8 +662,12 @@ main(int argc, char **argv)
     if (argc != 3) {
         fprintf(stderr, "usage: %s kernel.elf out.blob\n", argv[0]);
         fprintf(stderr, "       %s --empty out.blob\n", argv[0]);
+        fprintf(stderr, "       %s --query in.blob < addresses\n", argv[0]);
         return 1;
     }
+
+    if (strcmp(argv[1], "--query") == 0)
+        return query(argv[2]);
 
     if (strcmp(argv[1], "--empty") == 0) {
         struct kline_hdr empty = { 0, 0, 0, 0 };
