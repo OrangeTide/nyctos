@@ -164,8 +164,10 @@ The shell is minimal. A Bourne subset with functions, locals, `break` and
 positional parameters exists in `~/DEVEL/OS/jon-os/cmd/jsh/jsh.c`, and it builds
 hosted for testing. It is a menu to pick from, not a port: its `fork`-degraded-
 to-spawn model does not match this system, and the feature set is the only part
-worth taking. Trigger: wanting more than the current shell runs. Scheduled:
-0.33.
+worth taking. Trigger: wanting more than the current shell runs. Done, shipped
+in 0.33.0: that whole feature set was reimplemented for this system's spawn
+model, built in five stages and each behind a check that fails when its feature
+is removed.
 
 ---
 

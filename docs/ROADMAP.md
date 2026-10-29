@@ -187,6 +187,24 @@ set to take. Last on the line because usability is worth more once the depth
 below it is there, and independent of the rest, so it can move earlier if
 wanted.
 
+**Done, shipped in 0.33.0.** The shell reads a command, tokenizes it, and
+interprets the token list, a Bourne subset built in five stages. Control flow
+over the programs it runs: `if`, `while`, `until`, `for`, `case`, lists joined
+by `;` or newline, and `break` and `continue` with a count that carries through
+nested loops, a loop body re-run by resetting the cursor to a recorded position
+and a not-taken branch walked in a skip mode. Quoting and expansion resolved
+when a word is used, not when it is read: single quotes literal, double quotes
+keeping the expansions and the spaces inside, a backslash escaping the next
+character, and a leading `NAME=VALUE` setting a variable. Positional parameters
+from `set`, read as `$1`..`$9`, `${NN}`, `$#`, `$@`, `$*` and `$0`, with field
+splitting through a shared engine where an unquoted expansion splits and a
+quoted one does not. `$(( expr ))` evaluates an integer expression with C
+precedence. Functions defined `name() { list }` and called with their arguments
+as the positional parameters, `return` ending one, `local` scoping a variable to
+the call, and `{ list; }` grouping a list. Each stage shipped behind a check
+that fails when its feature is removed. The reference in `jsh` was a menu, not a
+port: the feature set was reimplemented for this system's spawn model.
+
 **Not on the line.** The bounded-formatter decision, whether the sink-based
 allocation-free formatter is enough of an improvement over the current `printf`
 to override the choice `printf`'s own comment defends, is a decide-and-record

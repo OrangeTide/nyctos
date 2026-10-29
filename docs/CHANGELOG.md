@@ -4,6 +4,46 @@ Notable changes per minor version. Patch bumps between minors move the VERSION
 file alone and are not listed here; see the git log for their detail. Each
 release's full retrospective lives in docs/ROADMAP.md.
 
+## 0.33.0
+
+A larger shell. The shell reads a command, tokenizes it, and interprets it from
+the token list, a Bourne subset built in five stages.
+
+Control flow runs over the programs it starts: `if`, `while`, `until`, `for` and
+`case`, command lists joined by `;` or newline, and `break` and `continue` with
+an optional count that carries through nested loops. A loop body re-runs by
+resetting the interpreter to a recorded token position, and a not-taken branch is
+walked in a skip mode that moves the cursor without side effects.
+
+Words carry quoting and expansion, resolved when the word is used rather than
+when it is read, so a word reused across loop passes expands against the current
+values. Single quotes keep their contents literal, double quotes keep the
+expansions but hold the spaces inside, and a backslash escapes the next
+character. A leading `NAME=VALUE` word sets a shell variable.
+
+`set` fills the positional parameters, and `$1`..`$9`, `${NN}`, `$#`, `$@`, `$*`
+and `$0` read them. Expansion feeds a shared engine that produces one or more
+fields: an unquoted expansion splits on whitespace, a quoted one keeps its
+spaces, `$@` and an unquoted `$*` give a field per parameter, and a quoted `$*`
+joins them into one.
+
+`$(( expr ))` evaluates an integer expression with the usual C precedence from
+`||` down to unary and parentheses, reading variables and positional parameters
+by name, and treating a divide or remainder by zero as zero rather than a fault.
+
+A function is defined with `name() { list }` and called like any command,
+running its body over its own stored token array with the call arguments as the
+positional parameters. The caller's stream, parameters and loop state are
+restored on return. `return` ends a function and sets its status, `local` gives a
+variable a value that lasts only for the call, and `{ list; }` runs a list in the
+current shell.
+
+The recorded `make check` session grew a stretch for each stage, and each stage
+shipped with a check that fails when its one feature is removed: a `break` that
+ignores its count, single quotes that do not suppress an expansion, an unquoted
+expansion passed on whole, addition binding as tightly as multiplication, and a
+call that does not pass its arguments.
+
 ## 0.32.0
 
 Panic symbolization. The kernel compiles with frame pointers, and a panic
