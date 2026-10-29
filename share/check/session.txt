@@ -25,4 +25,11 @@ echo '$greeting'
 echo "$greeting there"
 pair="a b"
 echo "$pair"
+set one two three
+echo count $#
+echo args $1 $3
+for w in "$@"; do echo item $w; done
+spaced="a b c"
+set $spaced
+echo split $#
 exit

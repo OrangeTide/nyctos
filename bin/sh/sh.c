@@ -9,13 +9,17 @@
  * loop builtins 'break' and 'continue' with an optional count.
  *
  * A word may carry single quotes, double quotes and backslash escapes, and
- * '$name', '${name}' or '$?' which expand to a variable's value or the last
- * status. Single quotes keep their contents literal. Double quotes allow the
- * expansions but keep the spaces inside, so a quoted run stays one word.
- * Quoting and escaping are resolved when the word is expanded, not when it is
- * read, so a word reused across loop passes expands against the current
- * values each time. A leading 'NAME=VALUE' word sets a shell variable, and
- * several may precede a command. The 'for' loop also binds its name.
+ * '$name', '${name}', '$?', '$#', '$0'..'$9', '${NN}', '$@' and '$*' which
+ * expand to a variable's value, the last status or the positional parameters.
+ * The 'set' builtin sets the positional parameters. Single quotes keep their
+ * contents literal. Double quotes allow the expansions but keep the spaces
+ * inside, so a quoted run stays one word. An unquoted expansion is split on
+ * whitespace into separate words, so '$@' and a variable holding spaces each
+ * spread across the command. Quoting and expansion are resolved when the word
+ * is used, not when it is read, so a word reused across loop passes expands
+ * against the current values each time. A leading 'NAME=VALUE' word sets a
+ * shell variable, and several may precede a command. The 'for' loop also
+ * binds its name.
  *
  * The builtins 'true', 'false' and ':' give a condition a status without a
  * program. Everything else is a program the shell spawns and waits for, with
@@ -39,6 +43,8 @@
 #define ARG_POOL    1024
 #define FOR_POOL    512
 #define FOR_MAX     32
+#define POS_MAX     32
+#define POS_POOL    512
 
 enum tok_type {
     TOK_EOF,
@@ -63,6 +69,10 @@ static int tp;                  /* the interpreter's position in toks */
 static char var_name[VAR_MAX][VAR_NAME];
 static char var_value[VAR_MAX][VAR_VALUE];
 static int var_n;
+
+static char pos_pool[POS_POOL];         /* the positional parameters, packed */
+static char *pos_val[POS_MAX];          /* '$1' is pos_val[0] */
+static int pos_n;                       /* '$#' */
 
 static int32_t last_status;     /* '$?' and the status 'last' reports */
 static int g_eof;               /* the console closed */
@@ -207,32 +217,167 @@ is_assign(const char *w)
     return w[i] == '=';
 }
 
-/*
- * Expand a word into the pool and return the expanded string. Single quotes
- * keep their contents literal; double quotes keep the expansions but swallow
- * the quote characters; a backslash escapes the next character, with only
- * '$', '"', '\' and '`' escapable inside double quotes. '$name', '${name}'
- * and '$?' become a variable's value or the last status. A lone '$' or an
- * unknown name expands to nothing beyond what is literal. No field splitting
- * happens, so an expansion is one word.
- */
-static char *
-expand(const char *src, char *pool, int *pos, int cap)
+static int
+is_ifs(char c)
 {
-    char *out = pool + *pos;
-    int n = *pos;
-    int sq = 0, dq = 0;         /* inside single or double quotes */
+    return c == ' ' || c == '\t' || c == '\n';
+}
 
-    while (*src != '\0' && n + 1 < cap) {
+/*
+ * A positional parameter by number. '$0' is the shell's name, '$1' upward are
+ * the parameters set by 'set', and anything past the end is empty.
+ */
+static const char *
+pos_param(int i)
+{
+    if (i == 0) {
+        return "sh";
+    }
+    if (i >= 1 && i <= pos_n) {
+        return pos_val[i - 1];
+    }
+
+    return "";
+}
+
+/*
+ * A word being expanded into one or more fields. Characters are appended to
+ * the current field, which is closed into argv at a split point or at the
+ * end. When split is zero the whole word stays one field, which is what the
+ * contexts that do not split (an assignment value, a case word) want.
+ */
+struct wb {
+    char *pool;
+    int n;
+    int cap;
+    char **argv;
+    int argc;
+    int max;
+    int split;
+    int open;           /* a field is being built */
+    int full;           /* argv ran out of room */
+    char *cur;          /* start of the open field */
+};
+
+static void
+wb_putc(struct wb *b, char c)
+{
+    if (!b->open) {
+        b->cur = b->pool + b->n;
+        b->open = 1;
+    }
+    if (b->n + 1 < b->cap) {
+        b->pool[b->n++] = c;
+    }
+}
+
+static void
+wb_end(struct wb *b)
+{
+    if (!b->open) {
+        return;
+    }
+    if (b->n + 1 < b->cap) {
+        b->pool[b->n++] = '\0';
+    }
+    if (b->argc < b->max) {
+        b->argv[b->argc++] = b->cur;
+    } else {
+        b->full = 1;
+    }
+    b->open = 0;
+}
+
+/*
+ * Append a value. An unquoted value is split on whitespace into separate
+ * fields when the builder is splitting; a quoted value keeps its spaces.
+ */
+static void
+wb_val(struct wb *b, const char *v, int dq)
+{
+    if (b->split && !dq) {
+        while (*v != '\0') {
+            if (is_ifs(*v)) {
+                wb_end(b);
+                v++;
+            } else {
+                wb_putc(b, *v++);
+            }
+        }
+    } else {
+        while (*v != '\0') {
+            wb_putc(b, *v++);
+        }
+    }
+}
+
+/*
+ * Expand '$@' or '$*'. '$@' and an unquoted '$*' give one field per
+ * parameter; a quoted '$*' joins them with a space into one field; a
+ * builder that is not splitting always joins.
+ */
+static void
+wb_params(struct wb *b, int star, int dq)
+{
+    int per_param = b->split && !(star && dq);
+    int i;
+
+    for (i = 0; i < pos_n; i++) {
+        if (per_param) {
+            if (i > 0) {
+                wb_end(b);
+            }
+            if (pos_val[i][0] == '\0' && !b->open) {
+                b->cur = b->pool + b->n;
+                b->open = 1;
+            }
+            wb_val(b, pos_val[i], 1);
+        } else {
+            if (i > 0) {
+                wb_putc(b, ' ');
+            }
+            wb_val(b, pos_val[i], 1);
+        }
+    }
+}
+
+/*
+ * The shared expansion engine. Single quotes keep their contents literal;
+ * double quotes keep the expansions but swallow the quote characters; a
+ * backslash escapes the next character, with only '$', '"', '\' and '`'
+ * escapable inside double quotes. '$name', '${name}', '$?', '$#', '$0'..'$9',
+ * '${NN}', '$@' and '$*' expand against the variables, the last status and
+ * the positional parameters. A lone '$' or an unknown name expands to
+ * nothing beyond what is literal.
+ */
+static int
+expand_core(const char *src, int split, char *pool, int *pos, int cap,
+    char **argv, int argc, int max)
+{
+    struct wb b;
+    int sq = 0, dq = 0;
+
+    b.pool = pool;
+    b.n = *pos;
+    b.cap = cap;
+    b.argv = argv;
+    b.argc = argc;
+    b.max = max;
+    b.split = split;
+    b.open = !split;            /* a non-splitting word always has a field */
+    b.full = 0;
+    b.cur = pool + *pos;
+
+    while (*src != '\0') {
         char c = *src;
 
         if (sq) {
             if (c == '\'') {
                 sq = 0;
-                src++;
             } else {
-                pool[n++] = *src++;
+                wb_putc(&b, c);
             }
+            src++;
             continue;
         }
         if (c == '\\') {
@@ -240,73 +385,133 @@ expand(const char *src, char *pool, int *pos, int cap)
                 char d = src[1];
 
                 if (d == '$' || d == '"' || d == '\\' || d == '`') {
-                    pool[n++] = d;
+                    wb_putc(&b, d);
                     src += 2;
                 } else {
-                    pool[n++] = '\\';
+                    wb_putc(&b, '\\');
                     src++;
                 }
             } else if (src[1] != '\0') {
-                pool[n++] = src[1];
+                wb_putc(&b, src[1]);
                 src += 2;
             } else {
-                pool[n++] = '\\';
+                wb_putc(&b, '\\');
                 src++;
             }
             continue;
         }
         if (c == '\'' && !dq) {
             sq = 1;
+            if (!b.open) {
+                b.cur = b.pool + b.n;
+                b.open = 1;
+            }
             src++;
             continue;
         }
         if (c == '"') {
             dq = !dq;
+            if (!b.open) {
+                b.cur = b.pool + b.n;
+                b.open = 1;
+            }
             src++;
             continue;
         }
         if (c != '$') {
-            pool[n++] = *src++;
+            wb_putc(&b, c);
+            src++;
             continue;
         }
         src++;
-        if (*src == '?') {
+        c = *src;
+        if (c == '?') {
             char num[12];
-            int k;
 
             src++;
             int_str(last_status, num);
-            for (k = 0; num[k] != '\0' && n + 1 < cap; k++) {
-                pool[n++] = num[k];
-            }
-        } else if (*src == '{' || name_char(*src, 1)) {
-            char name[VAR_NAME];
-            const char *val;
-            int k = 0;
-            int braced = *src == '{';
+            wb_val(&b, num, dq);
+        } else if (c == '#') {
+            char num[12];
 
-            if (braced) {
-                src++;
+            src++;
+            int_str(pos_n, num);
+            wb_val(&b, num, dq);
+        } else if (c == '@' || c == '*') {
+            src++;
+            wb_params(&b, c == '*', dq);
+        } else if (c >= '0' && c <= '9') {
+            src++;
+            wb_val(&b, pos_param(c - '0'), dq);
+        } else if (c == '{') {
+            src++;
+            if (*src >= '0' && *src <= '9') {
+                int idx = 0;
+
+                while (*src >= '0' && *src <= '9') {
+                    idx = idx * 10 + (*src - '0');
+                    src++;
+                }
+                if (*src == '}') {
+                    src++;
+                }
+                wb_val(&b, pos_param(idx), dq);
+            } else {
+                char name[VAR_NAME];
+                int k = 0;
+
+                while (name_char(*src, k == 0) && k + 1 < VAR_NAME) {
+                    name[k++] = *src++;
+                }
+                name[k] = '\0';
+                if (*src == '}') {
+                    src++;
+                }
+                wb_val(&b, get_var(name), dq);
             }
+        } else if (name_char(c, 1)) {
+            char name[VAR_NAME];
+            int k = 0;
+
             while (name_char(*src, k == 0) && k + 1 < VAR_NAME) {
                 name[k++] = *src++;
             }
             name[k] = '\0';
-            if (braced && *src == '}') {
-                src++;
-            }
-            val = get_var(name);
-            for (k = 0; val[k] != '\0' && n + 1 < cap; k++) {
-                pool[n++] = val[k];
-            }
+            wb_val(&b, get_var(name), dq);
         } else {
-            pool[n++] = '$';
+            wb_putc(&b, '$');
         }
     }
-    pool[n++] = '\0';
-    *pos = n;
+    wb_end(&b);
+    *pos = b.n;
+
+    return b.full ? -1 : b.argc;
+}
+
+/*
+ * Expand a word to a single string, used where a word is not split: an
+ * assignment value and a case word.
+ */
+static char *
+expand(const char *src, char *pool, int *pos, int cap)
+{
+    char *out = pool + *pos;
+    char *one[1];
+
+    (void)expand_core(src, 0, pool, pos, cap, one, 0, 1);
 
     return out;
+}
+
+/*
+ * Expand a word into argv, splitting unquoted expansions into fields. Returns
+ * the new argc, or -1 if argv had no room.
+ */
+static int
+expand_word(const char *src, char *pool, int *pos, int cap,
+    char **argv, int argc, int max)
+{
+    return expand_core(src, 1, pool, pos, cap, argv, argc, max);
 }
 
 /*
@@ -701,14 +906,17 @@ exec_simple(void)
     }
 
     while (toks[tp].type == TOK_WORD) {
-        char *a = expand(toks[tp].text, pool, &pos, (int)sizeof(pool));
+        if (!over) {
+            int na = expand_word(toks[tp].text, pool, &pos, (int)sizeof(pool),
+              argv, argc, SYS_MAX_ARGS);
 
-        tp++;
-        if (argc < SYS_MAX_ARGS) {
-            argv[argc++] = a;
-        } else {
-            over = 1;
+            if (na < 0) {
+                over = 1;
+            } else {
+                argc = na;
+            }
         }
+        tp++;
     }
     argv[argc] = NULL;
 
@@ -728,6 +936,23 @@ exec_simple(void)
     }
     if (streq(argv[0], "last")) {
         printf("%d\n", last_status);
+        return;
+    }
+    if (streq(argv[0], "set")) {
+        int i, p = 0;
+
+        pos_n = 0;
+        for (i = 1; i < argc && pos_n < POS_MAX; i++) {
+            char *d = pos_pool + p;
+            int j = 0;
+
+            while (argv[i][j] != '\0' && p + 1 < POS_POOL) {
+                pos_pool[p++] = argv[i][j++];
+            }
+            pos_pool[p++] = '\0';
+            pos_val[pos_n++] = d;
+        }
+        last_status = 0;
         return;
     }
     if (streq(argv[0], "true") || streq(argv[0], ":")) {
@@ -933,8 +1158,13 @@ exec_for(void)
     }
     if (word_is(tp, "in")) {
         tp++;
-        while (toks[tp].type == TOK_WORD && nv < FOR_MAX) {
-            vals[nv++] = expand(toks[tp].text, pool, &pos, (int)sizeof(pool));
+        while (toks[tp].type == TOK_WORD) {
+            if (nv < FOR_MAX) {
+                int nn = expand_word(toks[tp].text, pool, &pos,
+                  (int)sizeof(pool), vals, nv, FOR_MAX);
+
+                nv = nn < 0 ? FOR_MAX : nn;
+            }
             tp++;
         }
     }
