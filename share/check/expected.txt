@@ -40,6 +40,26 @@ cat: /u/absent: no such file
 [3]
 $ last
 3
+$ if true; then echo if-yes; fi
+if-yes
+    echo exited with status 0
+$ if false; then echo nope; else echo if-else; fi
+if-else
+    echo exited with status 0
+$ for x in a b c; do echo loop $x; done
+loop a
+    echo exited with status 0
+loop b
+    echo exited with status 0
+loop c
+    echo exited with status 0
+$ while false; do echo never; done
+$ case hello in h*) echo case-h;; *) echo case-other; esac
+case-h
+    echo exited with status 0
+$ for x in 1 2 3; do for y in p q; do echo $x$y; break 2; done; done
+1p
+    echo exited with status 0
 $ exit
     sh exited with status 0
     the shell exited with status 0

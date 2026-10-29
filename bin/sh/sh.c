@@ -1,15 +1,18 @@
-/* sh.c : a shell that runs one program per line and waits for it.
+/* sh.c : a shell with control flow over programs it runs.
  *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * It splits each line into words, refuses a line with more words than a
- * command can carry, and starts the program named by the first word with the
- * rest as its arguments. The child receives duplicates of the console and
- * root entries, and the shell waits for it to exit before reading the next
- * line. A leading "alone" or "only NAME" word selects how the child's
- * namespace is built. The shell reports the exit status, or the fault if the
- * child faulted.
+ * A command is read, tokenized, and interpreted from the token list. The
+ * grammar is a Bourne subset: simple commands separated by ';' or newline,
+ * the compound commands 'if', 'while', 'until', 'for' and 'case', and the
+ * loop builtins 'break' and 'continue' with an optional count. A word may
+ * carry '$name', '${name}' or '$?' which expand to a variable's value or the
+ * last status before the word is passed on. The 'for' loop binds its name,
+ * which is how a variable comes to be set; assignment and quoting are not
+ * here yet. The builtins 'true', 'false' and ':' give a condition a status
+ * without a program. Everything else is a program the shell spawns and waits
+ * for, with the namespace built as before.
  *
  */
 
@@ -21,48 +24,445 @@
 #include <unistd.h>
 
 #define LINE_BYTES  128
+#define CMD_BYTES   1024
+#define MAX_TOKS    256
+#define VAR_MAX     16
+#define VAR_NAME    24
+#define VAR_VALUE   96
+#define ARG_POOL    1024
+#define FOR_POOL    512
+#define FOR_MAX     32
 
-static char line[LINE_BYTES];
-static char *word[SYS_MAX_ARGS];
+enum tok_type {
+    TOK_EOF,
+    TOK_WORD,
+    TOK_SEP,        /* ';' or newline between commands */
+    TOK_DSEMI,      /* ';;' ends a case clause */
+    TOK_RPAREN,     /* ')' ends a case pattern */
+};
 
-/*
- * Split a line into words in place, and refuse a line with more words
- * than a command can carry. Silently merging the ninth word into the
- * eighth is the worst of the three options: the line looks accepted,
- * and echo hides it by joining its arguments with the spaces that were
- * lost, while any other program receives one argument that is three.
- *
- * Everything else a shell does to a line
- * is quoting, expansion and substitution, and none of it exists here.
- */
+struct tok {
+    enum tok_type type;
+    char *text;     /* for TOK_WORD; NULL otherwise */
+};
+
+static char linebuf[LINE_BYTES];
+static char buf[CMD_BYTES];     /* the whole command, lines joined by '\n' */
+static char tbuf[CMD_BYTES];    /* word text, copied out of buf */
+static struct tok toks[MAX_TOKS];
+static int tok_n;
+static int tp;                  /* the interpreter's position in toks */
+
+static char var_name[VAR_MAX][VAR_NAME];
+static char var_value[VAR_MAX][VAR_VALUE];
+static int var_n;
+
+static int32_t last_status;     /* '$?' and the status 'last' reports */
+static int g_eof;               /* the console closed */
+static int g_exit;              /* 'exit' ran; leave the shell */
+static int32_t exit_code;
+static int g_break;             /* levels of loop left to break */
+static int g_continue;          /* levels of loop left to continue */
+static int g_skip;              /* walk tokens without running them */
+static int g_show_status;       /* a program ran, so a nonzero status prints */
+
+static int exec_list(void);
+
 static int
-split(char *s, char **out, int max)
+streq(const char *a, const char *b)
 {
-    int n = 0;
+    while (*a != '\0' && *a == *b) {
+        a++;
+        b++;
+    }
 
-    for (;;) {
-        while (*s == ' ' || *s == '\t') {
-            *s++ = '\0';
-        }
-        if (*s == '\0') {
-            break;
-        }
-        if (n == max) {
-            return -1;      /* more words than a command can carry */
-        }
-        out[n++] = s;
-        while (*s != '\0' && *s != ' ' && *s != '\t') {
-            s++;
+    return *a == '\0' && *b == '\0';
+}
+
+static int
+name_char(char c, int first)
+{
+    if (c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+        return 1;
+    }
+
+    return !first && c >= '0' && c <= '9';
+}
+
+static int32_t
+to_int(const char *s)
+{
+    int32_t v = 0;
+    int neg = 0;
+
+    if (*s == '-') {
+        neg = 1;
+        s++;
+    }
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10 + (*s - '0');
+        s++;
+    }
+
+    return neg ? -v : v;
+}
+
+static int
+int_str(int32_t v, char *out)
+{
+    char tmp[12];
+    unsigned int u;
+    int i = 0, j = 0, neg = 0;
+
+    if (v < 0) {
+        neg = 1;
+        u = (unsigned int)(-(int64_t)v);
+    } else {
+        u = (unsigned int)v;
+    }
+    if (u == 0) {
+        tmp[i++] = '0';
+    }
+    while (u != 0) {
+        tmp[i++] = (char)('0' + u % 10);
+        u /= 10;
+    }
+    if (neg) {
+        out[j++] = '-';
+    }
+    while (i > 0) {
+        out[j++] = tmp[--i];
+    }
+    out[j] = '\0';
+
+    return j;
+}
+
+static const char *
+get_var(const char *name)
+{
+    int i;
+
+    for (i = 0; i < var_n; i++) {
+        if (streq(var_name[i], name)) {
+            return var_value[i];
         }
     }
 
-    return n;
+    return "";
 }
 
+static void
+set_var(const char *name, const char *value)
+{
+    int i, j;
+
+    for (i = 0; i < var_n; i++) {
+        if (streq(var_name[i], name)) {
+            break;
+        }
+    }
+    if (i == var_n) {
+        if (var_n == VAR_MAX) {
+            return;     /* the table is full; a later stage grows it */
+        }
+        var_n++;
+        for (j = 0; j + 1 < VAR_NAME && name[j] != '\0'; j++) {
+            var_name[i][j] = name[j];
+        }
+        var_name[i][j] = '\0';
+    }
+    for (j = 0; j + 1 < VAR_VALUE && value[j] != '\0'; j++) {
+        var_value[i][j] = value[j];
+    }
+    var_value[i][j] = '\0';
+}
 
 /*
- * The name of a fault kind, in the words a person reading a shell reads.
+ * Expand '$name', '${name}' and '$?' in a word into the pool, and return the
+ * expanded string. A lone '$' or an unknown name expands to nothing beyond
+ * what is literal. No field splitting happens, so an expansion is one word.
  */
+static char *
+expand(const char *src, char *pool, int *pos, int cap)
+{
+    char *out = pool + *pos;
+    int n = *pos;
+
+    while (*src != '\0' && n + 1 < cap) {
+        if (*src != '$') {
+            pool[n++] = *src++;
+            continue;
+        }
+        src++;
+        if (*src == '?') {
+            char num[12];
+            int k;
+
+            src++;
+            int_str(last_status, num);
+            for (k = 0; num[k] != '\0' && n + 1 < cap; k++) {
+                pool[n++] = num[k];
+            }
+        } else if (*src == '{' || name_char(*src, 1)) {
+            char name[VAR_NAME];
+            const char *val;
+            int k = 0;
+            int braced = *src == '{';
+
+            if (braced) {
+                src++;
+            }
+            while (name_char(*src, k == 0) && k + 1 < VAR_NAME) {
+                name[k++] = *src++;
+            }
+            name[k] = '\0';
+            if (braced && *src == '}') {
+                src++;
+            }
+            val = get_var(name);
+            for (k = 0; val[k] != '\0' && n + 1 < cap; k++) {
+                pool[n++] = val[k];
+            }
+        } else {
+            pool[n++] = '$';
+        }
+    }
+    pool[n++] = '\0';
+    *pos = n;
+
+    return out;
+}
+
+/*
+ * Match a glob pattern against a string. '*' matches any run, '?' one
+ * character, everything else itself. Used by 'case'.
+ */
+static int
+glob(const char *pat, const char *s)
+{
+    while (*pat != '\0') {
+        if (*pat == '*') {
+            pat++;
+            if (*pat == '\0') {
+                return 1;
+            }
+            while (*s != '\0') {
+                if (glob(pat, s)) {
+                    return 1;
+                }
+                s++;
+            }
+            return glob(pat, s);
+        }
+        if (*s == '\0') {
+            return 0;
+        }
+        if (*pat != '?' && *pat != *s) {
+            return 0;
+        }
+        pat++;
+        s++;
+    }
+
+    return *s == '\0';
+}
+
+/*
+ * A case pattern word may carry '|' alternatives. Match any of them.
+ */
+static int
+glob_any(const char *pat, const char *s)
+{
+    char one[VAR_VALUE];
+
+    for (;;) {
+        int k = 0;
+
+        while (*pat != '\0' && *pat != '|' && k + 1 < (int)sizeof(one)) {
+            one[k++] = *pat++;
+        }
+        one[k] = '\0';
+        if (glob(one, s)) {
+            return 1;
+        }
+        if (*pat != '|') {
+            return 0;
+        }
+        pat++;
+    }
+}
+
+static void
+add_tok(enum tok_type type, char *text)
+{
+    if (tok_n < MAX_TOKS) {
+        toks[tok_n].type = type;
+        toks[tok_n].text = text;
+        tok_n++;
+    }
+}
+
+/*
+ * Split the command buffer into tokens. Words are copied into tbuf so the
+ * operators in buf stay readable. ';;' is one token, ';' and newline are a
+ * separator, ')' ends a pattern, '(' before a pattern is ignored.
+ */
+static void
+tokenize(void)
+{
+    const char *s = buf;
+    int ti = 0;
+
+    tok_n = 0;
+    while (*s != '\0') {
+        char c = *s;
+
+        if (c == ' ' || c == '\t') {
+            s++;
+            continue;
+        }
+        if (c == ';') {
+            if (s[1] == ';') {
+                add_tok(TOK_DSEMI, NULL);
+                s += 2;
+            } else {
+                add_tok(TOK_SEP, NULL);
+                s++;
+            }
+            continue;
+        }
+        if (c == '\n') {
+            add_tok(TOK_SEP, NULL);
+            s++;
+            continue;
+        }
+        if (c == ')') {
+            add_tok(TOK_RPAREN, NULL);
+            s++;
+            continue;
+        }
+        if (c == '(') {
+            s++;
+            continue;
+        }
+        {
+            char *w = tbuf + ti;
+
+            while (*s != '\0' && *s != ' ' && *s != '\t' && *s != ';' &&
+              *s != ')' && *s != '(' && *s != '\n') {
+                if (ti + 1 < (int)sizeof(tbuf)) {
+                    tbuf[ti++] = *s;
+                }
+                s++;
+            }
+            if (ti + 1 < (int)sizeof(tbuf)) {
+                tbuf[ti++] = '\0';
+            }
+            add_tok(TOK_WORD, w);
+        }
+    }
+    add_tok(TOK_EOF, NULL);
+}
+
+static int
+word_is(int at, const char *s)
+{
+    return toks[at].type == TOK_WORD && streq(toks[at].text, s);
+}
+
+/*
+ * A reserved word that ends a command list: the interpreter stops a list
+ * when it reaches one at command position, so the compound that opened the
+ * block can read it.
+ */
+static int
+is_terminator(int at)
+{
+    return word_is(at, "then") || word_is(at, "elif") || word_is(at, "else") ||
+      word_is(at, "fi") || word_is(at, "do") || word_is(at, "done") ||
+      word_is(at, "esac");
+}
+
+/*
+ * The count of open compound commands over the whole buffer, so a line left
+ * inside one draws another line before the command is run. Reserved words
+ * count only at command position.
+ */
+static int
+open_depth(void)
+{
+    int depth = 0, cmdpos = 1, i;
+
+    for (i = 0; i < tok_n; i++) {
+        if (toks[i].type == TOK_SEP || toks[i].type == TOK_DSEMI ||
+          toks[i].type == TOK_RPAREN) {
+            cmdpos = 1;
+            continue;
+        }
+        if (toks[i].type != TOK_WORD) {
+            continue;
+        }
+        if (cmdpos) {
+            const char *w = toks[i].text;
+
+            if (streq(w, "if") || streq(w, "while") || streq(w, "until") ||
+              streq(w, "for") || streq(w, "case")) {
+                depth++;
+            } else if (streq(w, "fi") || streq(w, "done") ||
+              streq(w, "esac")) {
+                depth--;
+            }
+            cmdpos = streq(w, "then") || streq(w, "do") || streq(w, "else") ||
+              streq(w, "elif");
+        } else {
+            cmdpos = 0;
+        }
+    }
+
+    return depth;
+}
+
+/*
+ * Read one command, drawing more lines while a compound command is still
+ * open. Returns zero at end of input with nothing read.
+ */
+static int
+read_command(void)
+{
+    int len = 0, first = 1;
+
+    buf[0] = '\0';
+    for (;;) {
+        int n;
+
+        printf(first ? "$ " : "> ");
+        n = readline(linebuf, sizeof(linebuf));
+        if (n < 0) {
+            g_eof = 1;
+            return len > 0;
+        }
+        if (len + n + 2 >= (int)sizeof(buf)) {
+            printf("sh: line too long\n");
+            return 0;
+        }
+        {
+            int i;
+
+            for (i = 0; i < n; i++) {
+                buf[len++] = linebuf[i];
+            }
+            buf[len++] = '\n';
+            buf[len] = '\0';
+        }
+        tokenize();
+        if (open_depth() <= 0) {
+            return 1;
+        }
+        first = 0;
+    }
+}
+
 static const char *
 fault_name(uint32_t kind)
 {
@@ -78,8 +478,12 @@ fault_name(uint32_t kind)
     }
 }
 
-
-
+/*
+ * Spawn a program and wait for it. The first word or two choose the child's
+ * namespace: 'alone' hands over nothing, 'only NAME' one entry, a bare
+ * command everything this shell holds. These are a choice about which array
+ * to build, not something the kernel or the library knows.
+ */
 static sys_err_t
 run(int argc, char **argv, int32_t *status)
 {
@@ -91,17 +495,6 @@ run(int argc, char **argv, int32_t *status)
     uint32_t state;
     sys_err_t err;
 
-    /*
-     * Two words in front of a command choose what it is launched with.
-     * Composition is a choice about what array to
-     * pass, and this is a shell making that choice out loud: `alone`
-     * hands over nothing, `only <name>` hands over one entry, and a bare
-     * command hands over everything this shell holds.
-     *
-     * They are not builtins in any deeper sense. Nothing in the kernel
-     * knows they exist and nothing in the library does either; they
-     * decide which of three arrays is built.
-     */
     if (argc >= 2 && strncmp(argv[0], "alone", 6) == 0) {
         how = NS_NEW;
         argv++;
@@ -113,12 +506,6 @@ run(int argc, char **argv, int32_t *status)
         argc -= 2;
     }
 
-    /*
-     * Attenuated on the way down: a child may send on
-     * these connections and hand them to its own children, and may
-     * not mint another. What it cannot do is duplicate one, which
-     * means it cannot compose a namespace of its own from them.
-     */
     err = ns_compose(how, only, 1, SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER,
       ns, SYS_NS_MAX, &nns);
     if (err != SYS_OK) {
@@ -128,12 +515,6 @@ run(int argc, char **argv, int32_t *status)
     err = sys_proc_spawn(argv[0], SYS_PRIO_INHERIT, ns, nns,
       (const char *const *)argv, (uint32_t)argc, &child);
     if (err != SYS_OK) {
-        /*
-         * The duplicates were not moved, because nothing was built. They
-         * would otherwise accumulate one per failed command until the
-         * table filled, which is a shell that stops working after sixty
-         * typing mistakes.
-         */
         while (nns > 0) {
             (void)sys_handle_close(ns[--nns].handle);
         }
@@ -156,13 +537,6 @@ run(int argc, char **argv, int32_t *status)
         return SYS_ERR_STALE;
     }
 
-    /*
-     * A program the machine stopped. The status alone
-     * says a number a program never returns, which is true and useless;
-     * what a person needs is which fault, where, and on what
-     * instruction. Printed here rather than left to the caller because
-     * the caller has the number and this has the reason.
-     */
     {
         sys_fault_t fault;
 
@@ -179,66 +553,455 @@ run(int argc, char **argv, int32_t *status)
     return SYS_OK;
 }
 
+/*
+ * A simple command: the words up to a separator, expanded, run as a builtin
+ * or a program. In skip mode the words are walked but nothing runs.
+ */
+static void
+exec_simple(void)
+{
+    char pool[ARG_POOL];
+    char *argv[SYS_MAX_ARGS + 1];
+    int pos = 0, argc = 0, over = 0;
+
+    while (toks[tp].type == TOK_WORD) {
+        char *a = expand(toks[tp].text, pool, &pos, (int)sizeof(pool));
+
+        tp++;
+        if (argc < SYS_MAX_ARGS) {
+            argv[argc++] = a;
+        } else {
+            over = 1;
+        }
+    }
+    argv[argc] = NULL;
+
+    if (g_skip || argc == 0) {
+        return;
+    }
+    if (over) {
+        printf("sh: too many arguments\n");
+        last_status = -1;
+        return;
+    }
+
+    if (streq(argv[0], "exit")) {
+        g_exit = 1;
+        exit_code = argc > 1 ? to_int(argv[1]) : 0;
+        return;
+    }
+    if (streq(argv[0], "last")) {
+        printf("%d\n", last_status);
+        return;
+    }
+    if (streq(argv[0], "true") || streq(argv[0], ":")) {
+        last_status = 0;
+        return;
+    }
+    if (streq(argv[0], "false")) {
+        last_status = 1;
+        return;
+    }
+    if (streq(argv[0], "break")) {
+        g_break = argc > 1 ? (int)to_int(argv[1]) : 1;
+        return;
+    }
+    if (streq(argv[0], "continue")) {
+        g_continue = argc > 1 ? (int)to_int(argv[1]) : 1;
+        return;
+    }
+
+    {
+        int32_t status = 0;
+
+        if (run(argc, argv, &status) != SYS_OK) {
+            printf("sh: %s: cannot run it\n", argv[0]);
+            last_status = -1;
+            return;
+        }
+        last_status = status;
+        g_show_status = 1;
+    }
+}
+
+/*
+ * Walk the rest of the current block to its closer without running it, and
+ * step past the closer. Used when a loop stops early.
+ */
+static void
+flush_block(const char *closer)
+{
+    int save = g_skip;
+
+    g_skip = 1;
+    (void)exec_list();
+    if (word_is(tp, closer)) {
+        tp++;
+    }
+    g_skip = save;
+}
+
+static void
+exec_if(void)
+{
+    int outer = g_skip;
+    int taken = 0;
+    int cond;
+
+    tp++;                       /* 'if' */
+    g_skip = outer;
+    (void)exec_list();          /* condition */
+    cond = (int)last_status;
+    if (word_is(tp, "then")) {
+        tp++;
+    }
+    if (!outer && cond == 0) {
+        g_skip = 0;
+        (void)exec_list();
+        taken = 1;
+    } else {
+        g_skip = 1;
+        (void)exec_list();
+    }
+
+    for (;;) {
+        if (word_is(tp, "elif")) {
+            tp++;
+            if (outer || taken) {
+                g_skip = 1;
+                (void)exec_list();
+                if (word_is(tp, "then")) {
+                    tp++;
+                }
+                g_skip = 1;
+                (void)exec_list();
+            } else {
+                g_skip = 0;
+                (void)exec_list();
+                cond = (int)last_status;
+                if (word_is(tp, "then")) {
+                    tp++;
+                }
+                if (cond == 0) {
+                    g_skip = 0;
+                    (void)exec_list();
+                    taken = 1;
+                } else {
+                    g_skip = 1;
+                    (void)exec_list();
+                }
+            }
+        } else if (word_is(tp, "else")) {
+            tp++;
+            if (outer || taken) {
+                g_skip = 1;
+                (void)exec_list();
+            } else {
+                g_skip = 0;
+                (void)exec_list();
+                taken = 1;
+            }
+        } else {
+            break;
+        }
+    }
+    if (word_is(tp, "fi")) {
+        tp++;
+    }
+    g_skip = outer;
+}
+
+static void
+exec_while(int until)
+{
+    int outer = g_skip;
+    int cond_start;
+
+    tp++;                       /* 'while' or 'until' */
+    cond_start = tp;
+
+    if (outer) {
+        g_skip = 1;
+        (void)exec_list();      /* condition */
+        if (word_is(tp, "do")) {
+            tp++;
+        }
+        (void)exec_list();      /* body */
+        if (word_is(tp, "done")) {
+            tp++;
+        }
+        g_skip = outer;
+        return;
+    }
+
+    for (;;) {
+        int cond, run_body;
+
+        tp = cond_start;
+        g_skip = 0;
+        (void)exec_list();
+        cond = (int)last_status;
+        if (word_is(tp, "do")) {
+            tp++;
+        }
+        run_body = until ? cond != 0 : cond == 0;
+        if (!run_body) {
+            flush_block("done");
+            break;
+        }
+        g_skip = 0;
+        (void)exec_list();      /* body */
+        if (g_exit) {
+            flush_block("done");
+            break;
+        }
+        if (g_break) {
+            flush_block("done");
+            g_break--;
+            break;
+        }
+        if (g_continue) {
+            if (g_continue > 1) {
+                g_continue--;
+                flush_block("done");
+                break;
+            }
+            g_continue = 0;
+            continue;
+        }
+        /* a normal pass leaves tp at 'done'; the next pass resets it */
+    }
+    g_skip = outer;
+}
+
+static void
+exec_for(void)
+{
+    char name[VAR_NAME];
+    char pool[FOR_POOL];
+    char *vals[FOR_MAX];
+    int outer = g_skip;
+    int nv = 0, pos = 0, body_start, i, k;
+
+    tp++;                       /* 'for' */
+    if (toks[tp].type == TOK_WORD) {
+        const char *w = toks[tp].text;
+
+        for (k = 0; k + 1 < VAR_NAME && w[k] != '\0'; k++) {
+            name[k] = w[k];
+        }
+        name[k] = '\0';
+        tp++;
+    } else {
+        name[0] = '\0';
+    }
+    if (word_is(tp, "in")) {
+        tp++;
+        while (toks[tp].type == TOK_WORD && nv < FOR_MAX) {
+            vals[nv++] = expand(toks[tp].text, pool, &pos, (int)sizeof(pool));
+            tp++;
+        }
+    }
+    while (toks[tp].type == TOK_SEP) {
+        tp++;
+    }
+    if (word_is(tp, "do")) {
+        tp++;
+    }
+    body_start = tp;
+
+    if (outer || nv == 0) {
+        g_skip = 1;
+        tp = body_start;
+        (void)exec_list();
+        if (word_is(tp, "done")) {
+            tp++;
+        }
+        g_skip = outer;
+        return;
+    }
+
+    for (i = 0; i < nv; i++) {
+        set_var(name, vals[i]);
+        tp = body_start;
+        g_skip = 0;
+        (void)exec_list();
+        if (g_exit) {
+            flush_block("done");
+            g_skip = outer;
+            return;
+        }
+        if (g_break) {
+            flush_block("done");
+            g_break--;
+            g_skip = outer;
+            return;
+        }
+        if (g_continue) {
+            if (g_continue > 1) {
+                g_continue--;
+                flush_block("done");
+                g_skip = outer;
+                return;
+            }
+            g_continue = 0;
+            continue;
+        }
+    }
+    if (word_is(tp, "done")) {
+        tp++;
+    }
+    g_skip = outer;
+}
+
+static void
+exec_case(void)
+{
+    char word[VAR_VALUE];
+    char pool[VAR_VALUE];
+    int outer = g_skip;
+    int matched = 0, pos = 0, k;
+    char *w;
+
+    tp++;                       /* 'case' */
+    w = expand(toks[tp].type == TOK_WORD ? toks[tp].text : "",
+      pool, &pos, (int)sizeof(pool));
+    for (k = 0; k + 1 < (int)sizeof(word) && w[k] != '\0'; k++) {
+        word[k] = w[k];
+    }
+    word[k] = '\0';
+    if (toks[tp].type == TOK_WORD) {
+        tp++;
+    }
+    if (word_is(tp, "in")) {
+        tp++;
+    }
+    while (toks[tp].type == TOK_SEP) {
+        tp++;
+    }
+
+    while (toks[tp].type != TOK_EOF && !word_is(tp, "esac")) {
+        int hit = 0;
+
+        while (toks[tp].type == TOK_WORD) {
+            if (!outer && !matched && glob_any(toks[tp].text, word)) {
+                hit = 1;
+            }
+            tp++;
+        }
+        if (toks[tp].type == TOK_RPAREN) {
+            tp++;
+        }
+        if (!outer && !matched && hit) {
+            g_skip = 0;
+            (void)exec_list();
+            matched = 1;
+        } else {
+            g_skip = 1;
+            (void)exec_list();
+            g_skip = outer;
+        }
+        if (toks[tp].type == TOK_DSEMI) {
+            tp++;
+            while (toks[tp].type == TOK_SEP) {
+                tp++;
+            }
+        }
+    }
+    if (word_is(tp, "esac")) {
+        tp++;
+    }
+    g_skip = outer;
+}
+
+static void
+exec_command(void)
+{
+    if (toks[tp].type == TOK_WORD) {
+        const char *w = toks[tp].text;
+
+        if (streq(w, "if")) {
+            exec_if();
+            return;
+        }
+        if (streq(w, "while")) {
+            exec_while(0);
+            return;
+        }
+        if (streq(w, "until")) {
+            exec_while(1);
+            return;
+        }
+        if (streq(w, "for")) {
+            exec_for();
+            return;
+        }
+        if (streq(w, "case")) {
+            exec_case();
+            return;
+        }
+    }
+    exec_simple();
+}
+
+/*
+ * A command list: commands separated by ';' or newline, run in turn until a
+ * block terminator, a ';;', or the end. Stops early when a break, continue
+ * or exit is pending and the list is being run rather than skipped.
+ */
+static int
+exec_list(void)
+{
+    for (;;) {
+        while (toks[tp].type == TOK_SEP) {
+            tp++;
+        }
+        if (toks[tp].type == TOK_EOF || toks[tp].type == TOK_DSEMI ||
+          toks[tp].type == TOK_RPAREN) {
+            return last_status;
+        }
+        if (is_terminator(tp)) {
+            return last_status;
+        }
+        exec_command();
+        if (g_exit) {
+            return last_status;
+        }
+        if (!g_skip && (g_break || g_continue)) {
+            return last_status;
+        }
+    }
+}
+
 int
 main(void)
 {
-    int32_t status = 0;
-    int argc;
-    int n;
-
     printf("nyctos shell. exit leaves, last reports a status.\n");
 
     for (;;) {
-        printf("$ ");
-
-        n = readline(line, sizeof(line));
-        if (n < 0) {
-            printf("sh: the console is gone\n");
-            return -1;
-        }
-
-        /*
-         * A line that filled the buffer did not end. What is left of
-         * it arrives as further reads, and running those as commands
-         * is what this did before: one long line became six, five of
-         * them nonsense that the shell reported as if a person had
-         * typed them.
-         */
-        if (n == (int)sizeof(line) - 1) {
-            while (n == (int)sizeof(line) - 1) {
-                n = readline(line, sizeof(line));
-                if (n < 0) {
-                    return -1;
-                }
+        if (!read_command()) {
+            if (g_eof) {
+                printf("sh: the console is gone\n");
+                return -1;
             }
-            printf("sh: line too long\n");
+            continue;
+        }
+        if (tok_n <= 1) {       /* only TOK_EOF */
             continue;
         }
 
-        argc = split(line, word, SYS_MAX_ARGS);
-        if (argc < 0) {
-            printf("sh: too many arguments\n");
-            continue;
-        }
-        if (argc == 0) {
-            continue;
-        }
+        tp = 0;
+        g_break = 0;
+        g_continue = 0;
+        g_skip = 0;
+        g_show_status = 0;
+        (void)exec_list();
 
-        if (strncmp(word[0], "exit", 5) == 0) {
-            return 0;
+        if (g_exit) {
+            return exit_code;
         }
-        if (strncmp(word[0], "last", 5) == 0) {
-            printf("%d\n", status);
-            continue;
-        }
-
-        if (run(argc, word, &status) != SYS_OK) {
-            printf("sh: %s: cannot run it\n", word[0]);
-            status = -1;
-            continue;
-        }
-        if (status != 0) {
-            printf("[%d]\n", status);
+        if (g_show_status && last_status != 0) {
+            printf("[%d]\n", last_status);
         }
     }
 }

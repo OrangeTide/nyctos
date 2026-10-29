@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
- * A receive thread stores bytes from the UART in a 256-byte ring when the
- * interrupt fires. A request thread answers line reads from that ring. Both
+ * A receive thread stores bytes from the UART in a ring when the interrupt
+ * fires. A request thread answers line reads from that ring. Both
  * threads run at the same priority, so neither preempts the other between
  * the blocking calls where they touch the ring.
  *
@@ -19,7 +19,7 @@
 
 #include "uart.h"
 
-#define RING_BYTES      256
+#define RING_BYTES      1024
 #define STACK_BYTES     4096
 
 /*
