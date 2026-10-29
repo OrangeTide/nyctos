@@ -77,6 +77,8 @@ check: all
 	@grep -q '^blk: interrupts told apart' $(OBJTOP)/check/burst.out \
 	    || { echo 'check: the block driver did not tell its interrupts apart'; \
 	         false; }
+	@echo "check: $(ARCH), symbols"
+	@$(TOPDIR)/scripts/symcheck.sh $(NYCSYM) $(KERNEL_ELF)
 	@echo "check: $(ARCH) ok"
 
 run: all

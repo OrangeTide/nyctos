@@ -144,6 +144,10 @@ BOOT_ARCHIVE := $(OBJTOP)/sys/boot.img
 MKSYMTAB   := $(OBJTOP)/tools/mksymtab/mksymtab
 KSYM_BLOB  := $(OBJTOP)/sys/ksym.blob
 
+# The offline symbolizer that names a panic's recorded addresses against the
+# kernel ELF, as a function and a source line.
+NYCSYM     := $(OBJTOP)/tools/nycsym/nycsym
+
 # The disk image the emulator's virtio block device is backed by, and the
 # host tool that writes it. It is not embedded in the kernel: the machine
 # reads it as a device, so it is handed to QEMU rather than carried in the
