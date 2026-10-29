@@ -77,6 +77,9 @@ check: all
 	@grep -q '^blk: interrupts told apart' $(OBJTOP)/check/burst.out \
 	    || { echo 'check: the block driver did not tell its interrupts apart'; \
 	         false; }
+	@grep -q '^blk: metadata restored' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: the store metadata did not survive to the second boot'; \
+	         false; }
 	@echo "check: $(ARCH), symbols"
 	@$(TOPDIR)/scripts/symcheck.sh $(NYCSYM) $(KERNEL_ELF)
 	@$(TOPDIR)/scripts/klinecheck.sh $(MKLINE) $(KLINE_BLOB) $(KERNEL_ELF)

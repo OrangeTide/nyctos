@@ -350,6 +350,15 @@ write_sector(uint64_t sector)
                           VIRTIO_BLK_SECTOR_BYTES - 1) / VIRTIO_BLK_SECTOR_BYTES)
 
 /*
+ * The sector past the scratch sector, holding the store's on-disk metadata.
+ * The store reads it at boot and restores the block map and the reference
+ * counts the previous boot wrote, rather than rebuilding identity, so the
+ * indirection survives a boot. A fresh image has this sector zeroed, whose
+ * absent magic the store reads as no metadata yet.
+ */
+#define META_SECTOR     (SCRATCH_SECTOR + 1u)
+
+/*
  * Prove the write path before serving: write a pattern to the scratch sector
  * and read it back. The sector is past the store's range, so no file is
  * disturbed and nothing the filesystem reads depends on it. A write that did
@@ -482,6 +491,14 @@ static uint8_t refc[STORE_PHYS_BLOCKS];
  */
 static uint16_t snap_map[BLK_BLOCK_COUNT];
 static int snap_live;
+
+/*
+ * How many boots have restored the metadata. It is raised each time the store
+ * reads the metadata sector and writes it back, so a boot that restored a disk
+ * reports a higher epoch than the boot that wrote it, which is how an across-
+ * boot check tells a restore from a fresh start.
+ */
+static uint32_t meta_epoch;
 
 static void
 map_init(void)
@@ -867,6 +884,91 @@ snapshot_selftest(void)
     return 0;
 }
 
+/*
+ * The on-disk metadata, one sector holding the live map and the reference
+ * counts behind a header. The magic marks the sector as this store's, the
+ * version its layout, and the epoch counts the boots that have restored it. A
+ * sector whose magic does not match is a fresh image with no metadata yet.
+ */
+#define META_MAGIC      0x6e626c6bu     /* 'nblk' */
+#define META_VERSION    1u
+
+struct blk_meta {
+    uint32_t    magic;
+    uint32_t    version;
+    uint32_t    epoch;
+    uint16_t    block_map[BLK_BLOCK_COUNT];
+    uint8_t     refc[STORE_PHYS_BLOCKS];
+};
+
+_Static_assert(sizeof(struct blk_meta) <= VIRTIO_BLK_SECTOR_BYTES,
+  "the metadata does not fit one sector");
+
+/*
+ * Write the live map and the reference counts to the metadata sector behind the
+ * header, so the next boot restores them rather than rebuilding identity. The
+ * sector is zeroed first, so the bytes past the struct are a known value rather
+ * than whatever the data buffer last held.
+ */
+static int
+meta_save(void)
+{
+    struct blk_meta m;
+
+    memset(&m, 0, sizeof(m));
+    m.magic = META_MAGIC;
+    m.version = META_VERSION;
+    m.epoch = meta_epoch;
+    memcpy(m.block_map, block_map, sizeof(block_map));
+    memcpy(m.refc, refc, sizeof(refc));
+
+    memset(q->data, 0, sizeof(q->data));
+    memcpy(q->data, &m, sizeof(m));
+    if (write_sector(META_SECTOR) != 0) {
+        return 41;      /* the device would not write the metadata sector */
+    }
+
+    return 0;
+}
+
+/*
+ * Restore the map from the metadata sector, or start fresh. The sector is read
+ * and its header checked: a matching magic and version restore the block map
+ * and the reference counts a previous boot wrote and raise the epoch, so the
+ * indirection survives a boot. A sector with no matching magic, a fresh image,
+ * leaves the identity map in place and takes the first epoch. Either way the
+ * sector ends holding this boot's metadata, and the store reports on the
+ * always-on debug console whether it restored or started fresh, where a boot
+ * check can read it.
+ */
+static int
+meta_load_or_init(void)
+{
+    struct blk_meta m;
+    char line[80];
+    size_t n = 0;
+
+    if (read_sector(META_SECTOR) != 0) {
+        return 40;      /* the device would not read the metadata sector */
+    }
+    memcpy(&m, q->data, sizeof(m));
+
+    if (m.magic == META_MAGIC && m.version == META_VERSION) {
+        memcpy(block_map, m.block_map, sizeof(block_map));
+        memcpy(refc, m.refc, sizeof(refc));
+        meta_epoch = m.epoch + 1u;
+        n += sapp(&line[n], "blk: metadata restored, epoch ");
+    } else {
+        meta_epoch = 1u;
+        n += sapp(&line[n], "blk: metadata fresh, epoch ");
+    }
+    n += udec(&line[n], meta_epoch);
+    n += sapp(&line[n], "\n");
+    (void)sys_debug_write(line, (uint32_t)n);
+
+    return meta_save();
+}
+
 int
 main(void)
 {
@@ -944,6 +1046,12 @@ main(void)
     err = snapshot_selftest();
     if (err != 0) {
         DBG_PUTS("virtio_blk: a snapshot did not keep its bytes");
+        return err;
+    }
+
+    err = meta_load_or_init();
+    if (err != 0) {
+        DBG_PUTS("virtio_blk: the metadata sector would not restore");
         return err;
     }
 

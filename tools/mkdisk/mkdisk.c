@@ -58,12 +58,13 @@ static const struct {
  * sectors. The store's bytes fit the first sector; the second is scratch, past
  * the store's range and so invisible to the filesystem, where the driver
  * writes and reads a sector back to prove its write path without disturbing a
- * file.
+ * file. The third holds the store's metadata, left zeroed here: the store reads
+ * an all-zero sector as a fresh image with no metadata yet and writes its own.
  */
 #define SECTOR_BYTES    512u
 #define STORE_SECTORS   (((BLK_BLOCK_COUNT * BLK_BLOCK_BYTES + SECTOR_BYTES - \
                           1u) / SECTOR_BYTES))
-#define DISK_BYTES      ((STORE_SECTORS + 1u) * SECTOR_BYTES)
+#define DISK_BYTES      ((STORE_SECTORS + 2u) * SECTOR_BYTES)
 
 int
 main(int argc, char **argv)
