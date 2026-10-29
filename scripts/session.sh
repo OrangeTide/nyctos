@@ -43,4 +43,4 @@ feed() {
 }
 
 # shellcheck disable=SC2086
-feed | timeout "${TIMEOUT:-900}" $qemu $flags -kernel "$kernel" 2>&1
+feed | timeout "${TIMEOUT:-180}" $qemu $flags -kernel "$kernel" 2>&1

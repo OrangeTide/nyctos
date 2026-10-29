@@ -16,9 +16,14 @@
 #define UART0_RBR  (*(volatile unsigned char *)(base + 0x00))
 #define UART0_THR  (*(volatile unsigned char *)(base + 0x00))
 #define UART0_IER  (*(volatile unsigned char *)(base + 0x01))
+#define UART0_FCR  (*(volatile unsigned char *)(base + 0x02))
 #define UART0_LSR  (*(volatile unsigned char *)(base + 0x05))
 
 #define IER_RX     (1U << 0)    /* received data available */
+#define FCR_ENABLE (1U << 0)    /* enable the receive and transmit FIFOs */
+#define FCR_RX_CLR (1U << 1)    /* clear the receive FIFO */
+#define FCR_TX_CLR (1U << 2)    /* clear the transmit FIFO */
+#define FCR_RX_14  (3U << 6)    /* interrupt once the receive FIFO holds 14 */
 #define LSR_DR     (1U << 0)    /* data ready */
 #define LSR_THRE   (1U << 5)    /* transmit holding register empty */
 
@@ -44,6 +49,15 @@ uart_attach(uintptr_t at, uintptr_t len)
 void
 uart_rx_enable(void)
 {
+    /*
+     * The FIFO as well, so the device holds a run of received bytes and
+     * raises one interrupt for them rather than one for each. The trigger
+     * is high and the 16550 adds a timeout interrupt for the tail of a
+     * line that does not reach it, so a short line still arrives at once.
+     * Without the FIFO the driver takes an interrupt per byte, which a
+     * console on a slow core cannot keep up with.
+     */
+    UART0_FCR = FCR_ENABLE | FCR_RX_CLR | FCR_TX_CLR | FCR_RX_14;
     UART0_IER |= IER_RX;
 }
 
