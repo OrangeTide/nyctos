@@ -108,6 +108,19 @@ i 2
     echo exited with status 0
 i 4
     echo exited with status 0
+$ greet() { echo hello $1; }
+$ greet world
+hello world
+    echo exited with status 0
+$ counter=global
+$ bump() { local counter=local; echo in $counter; return 7; }
+$ bump
+in local
+    echo exited with status 0
+[7]
+$ echo after $counter last $?
+after global last 7
+    echo exited with status 0
 $ exit
     sh exited with status 0
     the shell exited with status 0

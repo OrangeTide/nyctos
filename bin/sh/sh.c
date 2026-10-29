@@ -5,8 +5,11 @@
  *
  * A command is read, tokenized, and interpreted from the token list. The
  * grammar is a Bourne subset: simple commands separated by ';' or newline,
- * the compound commands 'if', 'while', 'until', 'for' and 'case', and the
- * loop builtins 'break' and 'continue' with an optional count.
+ * the compound commands 'if', 'while', 'until', 'for', 'case' and the brace
+ * group '{ ... }', and the loop builtins 'break' and 'continue' with an
+ * optional count. A function is defined with 'name() { ... }' and called
+ * like any command, with its arguments as the positional parameters; 'return'
+ * ends it and 'local' gives a variable a value that lasts only for the call.
  *
  * A word may carry single quotes, double quotes and backslash escapes, and
  * '$name', '${name}', '$?', '$#', '$0'..'$9', '${NN}', '$@' and '$*' which
@@ -46,13 +49,19 @@
 #define FOR_MAX     32
 #define POS_MAX     32
 #define POS_POOL    512
+#define FN_MAX      8
+#define FN_BODY     96          /* tokens a function body may hold */
+#define FN_TEXT     1024        /* bytes of word text per function */
+#define LOCAL_MAX   32          /* saved variables across call frames */
+#define CALL_MAX    24          /* nested function calls */
 
 enum tok_type {
     TOK_EOF,
     TOK_WORD,
     TOK_SEP,        /* ';' or newline between commands */
     TOK_DSEMI,      /* ';;' ends a case clause */
-    TOK_RPAREN,     /* ')' ends a case pattern */
+    TOK_LPAREN,     /* '(' of a function header or a case pattern */
+    TOK_RPAREN,     /* ')' ends a case pattern or a function header */
 };
 
 struct tok {
@@ -63,7 +72,8 @@ struct tok {
 static char linebuf[LINE_BYTES];
 static char buf[CMD_BYTES];     /* the whole command, lines joined by '\n' */
 static char tbuf[CMD_BYTES];    /* word text, copied out of buf */
-static struct tok toks[MAX_TOKS];
+static struct tok main_toks[MAX_TOKS];
+static struct tok *toks = main_toks;    /* the token array now being run */
 static int tok_n;
 static int tp;                  /* the interpreter's position in toks */
 
@@ -75,12 +85,36 @@ static char pos_pool[POS_POOL];         /* the positional parameters, packed */
 static char *pos_val[POS_MAX];          /* '$1' is pos_val[0] */
 static int pos_n;                       /* '$#' */
 
+/*
+ * The function table. A body is kept as its own token array, with the word
+ * text copied so it outlives the command that defined it. A call swaps the
+ * running token array to the body and back.
+ */
+static char fn_name[FN_MAX][VAR_NAME];
+static struct tok fn_tok[FN_MAX][FN_BODY];
+static int fn_tok_n[FN_MAX];
+static char fn_text[FN_MAX][FN_TEXT];
+static int fn_n;
+
+/*
+ * Variables saved by 'local', as a stack. A call records where its frame
+ * begins and, on return, restores every variable saved above that mark.
+ */
+static char loc_name[LOCAL_MAX][VAR_NAME];
+static char loc_value[LOCAL_MAX][VAR_VALUE];
+static int loc_had[LOCAL_MAX];          /* whether the variable had existed */
+static int loc_n;
+
+static int call_depth;                  /* nested function calls */
+
 static int32_t last_status;     /* '$?' and the status 'last' reports */
 static int g_eof;               /* the console closed */
 static int g_exit;              /* 'exit' ran; leave the shell */
 static int32_t exit_code;
 static int g_break;             /* levels of loop left to break */
 static int g_continue;          /* levels of loop left to continue */
+static int g_return;            /* 'return' ran; leave the function */
+static int32_t ret_code;
 static int g_skip;              /* walk tokens without running them */
 static int g_show_status;       /* a program ran, so a nonzero status prints */
 
@@ -194,6 +228,47 @@ set_var(const char *name, const char *value)
         var_value[i][j] = value[j];
     }
     var_value[i][j] = '\0';
+}
+
+static int
+var_exists(const char *name)
+{
+    int i;
+
+    for (i = 0; i < var_n; i++) {
+        if (streq(var_name[i], name)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * Remove a variable, used to put one back the way 'local' found it: unset,
+ * when the call that made it local returns.
+ */
+static void
+unset_var(const char *name)
+{
+    int i, j;
+
+    for (i = 0; i < var_n; i++) {
+        if (streq(var_name[i], name)) {
+            for (j = i; j + 1 < var_n; j++) {
+                int k;
+
+                for (k = 0; k < VAR_NAME; k++) {
+                    var_name[j][k] = var_name[j + 1][k];
+                }
+                for (k = 0; k < VAR_VALUE; k++) {
+                    var_value[j][k] = var_value[j + 1][k];
+                }
+            }
+            var_n--;
+            return;
+        }
+    }
 }
 
 /*
@@ -891,7 +966,8 @@ add_tok(enum tok_type type, char *text)
 /*
  * Split the command buffer into tokens. Words are copied into tbuf so the
  * operators in buf stay readable. ';;' is one token, ';' and newline are a
- * separator, ')' ends a pattern, '(' before a pattern is ignored.
+ * separator, and '(' and ')' are their own tokens, for a case pattern or a
+ * function header.
  */
 static void
 tokenize(void)
@@ -928,6 +1004,7 @@ tokenize(void)
             continue;
         }
         if (c == '(') {
+            add_tok(TOK_LPAREN, NULL);
             s++;
             continue;
         }
@@ -1022,7 +1099,7 @@ is_terminator(int at)
 {
     return word_is(at, "then") || word_is(at, "elif") || word_is(at, "else") ||
       word_is(at, "fi") || word_is(at, "do") || word_is(at, "done") ||
-      word_is(at, "esac");
+      word_is(at, "esac") || word_is(at, "}");
 }
 
 /*
@@ -1048,14 +1125,14 @@ open_depth(void)
             const char *w = toks[i].text;
 
             if (streq(w, "if") || streq(w, "while") || streq(w, "until") ||
-              streq(w, "for") || streq(w, "case")) {
+              streq(w, "for") || streq(w, "case") || streq(w, "{")) {
                 depth++;
             } else if (streq(w, "fi") || streq(w, "done") ||
-              streq(w, "esac")) {
+              streq(w, "esac") || streq(w, "}")) {
                 depth--;
             }
             cmdpos = streq(w, "then") || streq(w, "do") || streq(w, "else") ||
-              streq(w, "elif");
+              streq(w, "elif") || streq(w, "{");
         } else {
             cmdpos = 0;
         }
@@ -1194,6 +1271,155 @@ run(int argc, char **argv, int32_t *status)
     return SYS_OK;
 }
 
+static int
+is_name(const char *w)
+{
+    int i;
+
+    if (!name_char(w[0], 1)) {
+        return 0;
+    }
+    for (i = 1; w[i] != '\0'; i++) {
+        if (!name_char(w[i], 0)) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int
+is_reserved(const char *w)
+{
+    return streq(w, "if") || streq(w, "then") || streq(w, "elif") ||
+      streq(w, "else") || streq(w, "fi") || streq(w, "while") ||
+      streq(w, "until") || streq(w, "for") || streq(w, "do") ||
+      streq(w, "done") || streq(w, "case") || streq(w, "esac") ||
+      streq(w, "in");
+}
+
+static int
+fn_find(const char *name)
+{
+    int i;
+
+    for (i = 0; i < fn_n; i++) {
+        if (streq(fn_name[i], name)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+/*
+ * Record a function, copying the body tokens in range [start, end) and the
+ * text of each word so they outlive the command buffer. A trailing TOK_EOF
+ * ends the stored body when it is run.
+ */
+static void
+define_fn(const char *name, int start, int end)
+{
+    int slot = fn_find(name);
+    int tn = 0, tx = 0, i, k;
+
+    if (slot < 0) {
+        if (fn_n == FN_MAX) {
+            printf("sh: too many functions\n");
+            return;
+        }
+        slot = fn_n++;
+    }
+    for (k = 0; k + 1 < VAR_NAME && name[k] != '\0'; k++) {
+        fn_name[slot][k] = name[k];
+    }
+    fn_name[slot][k] = '\0';
+
+    for (i = start; i < end && tn + 1 < FN_BODY; i++) {
+        fn_tok[slot][tn].type = toks[i].type;
+        if (toks[i].type == TOK_WORD && toks[i].text != NULL) {
+            char *d = fn_text[slot] + tx;
+
+            for (k = 0; toks[i].text[k] != '\0' && tx + 1 < FN_TEXT; k++) {
+                fn_text[slot][tx++] = toks[i].text[k];
+            }
+            fn_text[slot][tx++] = '\0';
+            fn_tok[slot][tn].text = d;
+        } else {
+            fn_tok[slot][tn].text = NULL;
+        }
+        tn++;
+    }
+    fn_tok[slot][tn].type = TOK_EOF;
+    fn_tok[slot][tn].text = NULL;
+    fn_tok_n[slot] = tn + 1;
+}
+
+/*
+ * Run a function. The body runs over its own token array with the call
+ * arguments as the positional parameters, and the caller's token stream,
+ * parameters and loop state are put back afterward. 'return' ends the body
+ * and sets the status, and any 'local' made in the frame is undone.
+ */
+static void
+call_function(int slot, int argc, char **argv)
+{
+    struct tok *save_toks = toks;
+    char *save_pos_val[POS_MAX];
+    int save_tok_n = tok_n, save_tp = tp;
+    int save_pos_n = pos_n;
+    int save_break = g_break, save_continue = g_continue;
+    int frame = loc_n;
+    int i;
+
+    if (call_depth >= CALL_MAX) {
+        printf("sh: %s: calls nested too deep\n", argv[0]);
+        last_status = -1;
+        return;
+    }
+    call_depth++;
+
+    for (i = 0; i < pos_n; i++) {
+        save_pos_val[i] = pos_val[i];
+    }
+    pos_n = 0;
+    for (i = 1; i < argc && pos_n < POS_MAX; i++) {
+        pos_val[pos_n++] = argv[i];
+    }
+
+    toks = fn_tok[slot];
+    tok_n = fn_tok_n[slot];
+    tp = 0;
+    g_break = 0;
+    g_continue = 0;
+    g_return = 0;
+    (void)exec_list();
+    if (g_return) {
+        last_status = ret_code;
+    }
+    g_return = 0;
+
+    while (loc_n > frame) {
+        loc_n--;
+        if (loc_had[loc_n]) {
+            set_var(loc_name[loc_n], loc_value[loc_n]);
+        } else {
+            unset_var(loc_name[loc_n]);
+        }
+    }
+
+    g_break = save_break;
+    g_continue = save_continue;
+    pos_n = save_pos_n;
+    for (i = 0; i < pos_n; i++) {
+        pos_val[i] = save_pos_val[i];
+    }
+    toks = save_toks;
+    tok_n = save_tok_n;
+    tp = save_tp;
+    call_depth--;
+}
+
 /*
  * A simple command: the words up to a separator, expanded, run as a builtin
  * or a program. In skip mode the words are walked but nothing runs.
@@ -1298,6 +1524,54 @@ exec_simple(void)
     if (streq(argv[0], "continue")) {
         g_continue = argc > 1 ? (int)to_int(argv[1]) : 1;
         return;
+    }
+    if (streq(argv[0], "return")) {
+        g_return = 1;
+        ret_code = argc > 1 ? to_int(argv[1]) : last_status;
+        return;
+    }
+    if (streq(argv[0], "local")) {
+        int i;
+
+        for (i = 1; i < argc; i++) {
+            char name[VAR_NAME];
+            const char *eq = argv[i];
+            int k = 0;
+
+            while (*eq != '\0' && *eq != '=' && k + 1 < VAR_NAME) {
+                name[k++] = *eq++;
+            }
+            name[k] = '\0';
+            while (*eq != '\0' && *eq != '=') {
+                eq++;
+            }
+            if (loc_n < LOCAL_MAX) {
+                const char *old = get_var(name);
+
+                loc_had[loc_n] = var_exists(name);
+                for (k = 0; k + 1 < VAR_NAME && name[k] != '\0'; k++) {
+                    loc_name[loc_n][k] = name[k];
+                }
+                loc_name[loc_n][k] = '\0';
+                for (k = 0; k + 1 < VAR_VALUE && old[k] != '\0'; k++) {
+                    loc_value[loc_n][k] = old[k];
+                }
+                loc_value[loc_n][k] = '\0';
+                loc_n++;
+            }
+            set_var(name, *eq == '=' ? eq + 1 : "");
+        }
+        last_status = 0;
+        return;
+    }
+
+    {
+        int slot = fn_find(argv[0]);
+
+        if (slot >= 0) {
+            call_function(slot, argc, argv);
+            return;
+        }
     }
 
     {
@@ -1440,7 +1714,7 @@ exec_while(int until)
         }
         g_skip = 0;
         (void)exec_list();      /* body */
-        if (g_exit) {
+        if (g_exit || g_return) {
             flush_block("done");
             break;
         }
@@ -1520,7 +1794,7 @@ exec_for(void)
         tp = body_start;
         g_skip = 0;
         (void)exec_list();
-        if (g_exit) {
+        if (g_exit || g_return) {
             flush_block("done");
             g_skip = outer;
             return;
@@ -1577,6 +1851,9 @@ exec_case(void)
     while (toks[tp].type != TOK_EOF && !word_is(tp, "esac")) {
         int hit = 0;
 
+        if (toks[tp].type == TOK_LPAREN) {
+            tp++;
+        }
         while (toks[tp].type == TOK_WORD) {
             if (!outer && !matched && glob_any(toks[tp].text, word)) {
                 hit = 1;
@@ -1608,12 +1885,85 @@ exec_case(void)
     g_skip = outer;
 }
 
+/*
+ * Define a function from 'name () { list }'. The body between the braces is
+ * stored for later; in skip mode the tokens are stepped over but nothing is
+ * recorded.
+ */
+static void
+exec_funcdef(void)
+{
+    char name[VAR_NAME];
+    int k, i, depth, start;
+
+    for (k = 0; k + 1 < VAR_NAME && toks[tp].text[k] != '\0'; k++) {
+        name[k] = toks[tp].text[k];
+    }
+    name[k] = '\0';
+    tp += 2;                    /* name and '(' */
+    if (toks[tp].type == TOK_RPAREN) {
+        tp++;
+    }
+    while (toks[tp].type == TOK_SEP) {
+        tp++;
+    }
+    if (!word_is(tp, "{")) {
+        printf("sh: %s: a function body must be { ... }\n", name);
+        last_status = -1;
+        return;
+    }
+    tp++;                       /* '{' */
+    start = tp;
+    depth = 1;
+    i = tp;
+    while (toks[i].type != TOK_EOF) {
+        if (word_is(i, "{")) {
+            depth++;
+        } else if (word_is(i, "}")) {
+            depth--;
+            if (depth == 0) {
+                break;
+            }
+        }
+        i++;
+    }
+    if (!g_skip) {
+        define_fn(name, start, i);
+        last_status = 0;
+    }
+    tp = toks[i].type == TOK_EOF ? i : i + 1;
+}
+
+/*
+ * A brace group, '{ list; }', runs its list in the current shell rather than
+ * a child.
+ */
+static void
+exec_brace(void)
+{
+    tp++;                       /* '{' */
+    (void)exec_list();
+    if (word_is(tp, "}")) {
+        tp++;
+    }
+}
+
 static void
 exec_command(void)
 {
     if (toks[tp].type == TOK_WORD) {
         const char *w = toks[tp].text;
 
+        if (is_name(w) && !is_reserved(w) &&
+          toks[tp + 1].type == TOK_LPAREN &&
+          toks[tp + 2].type == TOK_RPAREN) {
+            exec_funcdef();
+            return;
+        }
+        if (streq(w, "{")) {
+            exec_brace();
+            return;
+        }
         if (streq(w, "if")) {
             exec_if();
             return;
@@ -1658,7 +2008,7 @@ exec_list(void)
             return last_status;
         }
         exec_command();
-        if (g_exit) {
+        if (g_exit || g_return) {
             return last_status;
         }
         if (!g_skip && (g_break || g_continue)) {
@@ -1687,6 +2037,7 @@ main(void)
         tp = 0;
         g_break = 0;
         g_continue = 0;
+        g_return = 0;
         g_skip = 0;
         g_show_status = 0;
         (void)exec_list();
