@@ -48,6 +48,7 @@ SRCS := arch/$(ARCH)/boot.S \
         kern/subr_vm.c \
         kern/subr_bootarch.c \
         kern/subr_backtrace.c \
+        kern/subr_kline.c \
         kern/subr_trace.c \
         kern/subr_pool.c \
         kern/subr_prf.c
@@ -59,17 +60,20 @@ include $(TOPDIR)/share/mk/nyc.obj.mk
 
 all: $(KERNEL_ELF)
 
-# The kernel is linked twice so it can carry a table of its own symbols.
-# The first pass embeds an empty stub blob, so the symbolizer's references
-# to the blob resolve and reach; mksymtab reads that ELF's functions into
-# the real blob, ksyms.S embeds it in rodata past the text, and the second
-# pass links it in. The function addresses the blob records do not move
-# between the passes because the text comes before the rodata the blob is
-# added to, so the blob built from the first pass is right for the second.
+# The kernel is linked twice so it can carry tables of its own symbols and
+# source lines. The first pass embeds empty stub blobs, so the references to
+# them resolve and reach; mksymtab and mkline read that ELF into the real
+# blobs, ksyms.S and klines.S embed them in rodata past the text, and the
+# second pass links them in. The text addresses the blobs record do not move
+# between the passes because the text comes before the rodata the blobs are
+# added to, so the blobs built from the first pass are right for the second.
 KERNEL_PASS1   := $(KERNEL_ELF).pass1
 KSYM_STUB      := $(OBJTOP)/sys/ksym.stub.blob
 KSYMS_STUB_OBJ := $(OBJDIR)/kern/ksyms_stub.o
 KSYMS_OBJ      := $(OBJDIR)/kern/ksyms.o
+KLINE_STUB     := $(OBJTOP)/sys/kline.stub.blob
+KLINES_STUB_OBJ := $(OBJDIR)/kern/klines_stub.o
+KLINES_OBJ     := $(OBJDIR)/kern/klines.o
 
 $(KSYM_STUB): $(MKSYMTAB)
 	@mkdir -p $(@D)
@@ -80,9 +84,19 @@ $(KSYMS_STUB_OBJ): kern/ksyms.S $(KSYM_STUB) Makefile
 	$(CC) $(CFLAGS) $(CPPFLAGS) -DKSYM_BLOB_PATH=\"$(KSYM_STUB)\" \
 	    -c $< -o $@
 
-$(KERNEL_PASS1): $(OBJS) $(KSYMS_STUB_OBJ) $(KERN_LDSCRIPT)
+$(KLINE_STUB): $(MKLINE)
 	@mkdir -p $(@D)
-	$(LD) $(LDFLAGS) -T $(KERN_LDSCRIPT) -o $@ $(OBJS) $(KSYMS_STUB_OBJ)
+	$(MKLINE) --empty $@
+
+$(KLINES_STUB_OBJ): kern/klines.S $(KLINE_STUB) Makefile
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -DKLINE_BLOB_PATH=\"$(KLINE_STUB)\" \
+	    -c $< -o $@
+
+$(KERNEL_PASS1): $(OBJS) $(KSYMS_STUB_OBJ) $(KLINES_STUB_OBJ) $(KERN_LDSCRIPT)
+	@mkdir -p $(@D)
+	$(LD) $(LDFLAGS) -T $(KERN_LDSCRIPT) -o $@ $(OBJS) $(KSYMS_STUB_OBJ) \
+	    $(KLINES_STUB_OBJ)
 
 $(KSYM_BLOB): $(MKSYMTAB) $(KERNEL_PASS1)
 	@mkdir -p $(@D)
@@ -93,9 +107,19 @@ $(KSYMS_OBJ): kern/ksyms.S $(KSYM_BLOB) Makefile
 	$(CC) $(CFLAGS) $(CPPFLAGS) -DKSYM_BLOB_PATH=\"$(KSYM_BLOB)\" \
 	    -c $< -o $@
 
-$(KERNEL_ELF): $(OBJS) $(KSYMS_OBJ) $(KERN_LDSCRIPT)
+$(KLINE_BLOB): $(MKLINE) $(KERNEL_PASS1)
 	@mkdir -p $(@D)
-	$(LD) $(LDFLAGS) -T $(KERN_LDSCRIPT) -o $@ $(OBJS) $(KSYMS_OBJ)
+	$(MKLINE) $(KERNEL_PASS1) $@
+
+$(KLINES_OBJ): kern/klines.S $(KLINE_BLOB) Makefile
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -DKLINE_BLOB_PATH=\"$(KLINE_BLOB)\" \
+	    -c $< -o $@
+
+$(KERNEL_ELF): $(OBJS) $(KSYMS_OBJ) $(KLINES_OBJ) $(KERN_LDSCRIPT)
+	@mkdir -p $(@D)
+	$(LD) $(LDFLAGS) -T $(KERN_LDSCRIPT) -o $@ $(OBJS) $(KSYMS_OBJ) \
+	    $(KLINES_OBJ)
 
 # Every program the archive carries, as the debug-stripped ELF the kernel
 # loads. Each is a prerequisite, so an archive older than an image is

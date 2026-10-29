@@ -17,6 +17,7 @@
 #include <sys/bootarch.h>
 #include <sys/elf.h>
 #include <sys/ksym.h>
+#include <sys/kline.h>
 #include <sys/batchreg.h>
 #include <sys/channel.h>
 #include <sys/cohort.h>
@@ -18727,6 +18728,56 @@ ksym_check(void)
     cnprintf("kernel symbols: a kernel address resolves to %s\n", n0);
 }
 
+/*
+ * A one-line function whose body records its own source line, so the line
+ * the table gives for its address can be checked against the line the
+ * compiler saw, with nothing hard-coded that a later edit would have to
+ * follow.
+ */
+static volatile int kline_probe_line;
+
+static void __attribute__((noinline))
+kline_probe(void) { kline_probe_line = __LINE__; }
+
+static int
+kline_name_is(const char *path, const char *name)
+{
+    const char *base = path;
+    const char *s;
+
+    for (s = path; *s != '\0'; s++) {
+        if (*s == '/') {
+            base = s + 1;
+        }
+    }
+    while (*base != '\0' && *base == *name) {
+        base++;
+        name++;
+    }
+
+    return *base == '\0' && *name == '\0';
+}
+
+static void
+kline_check(void)
+{
+    const char *file = NULL;
+    int line = 0;
+
+    kline_probe();
+    if (!kline_lookup((uintptr_t)&kline_probe, &file, &line) || file == NULL) {
+        panic("kline: the kernel carries no line for a known function");
+    }
+    if (line != kline_probe_line) {
+        panic("kline: a kernel address resolved to the wrong source line");
+    }
+    if (!kline_name_is(file, "init_main.c")) {
+        panic("kline: a kernel address resolved to the wrong source file");
+    }
+
+    cnprintf("kernel lines: a kernel address resolves to %s:%d\n", file, line);
+}
+
 static void
 user_slice(void)
 {
@@ -18748,6 +18799,7 @@ user_slice(void)
     archive_symbol_check();
     backtrace_check();
     ksym_check();
+    kline_check();
 
     ch = channel_create("fs-user", self);
     if (ch == NULL) {

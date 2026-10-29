@@ -148,6 +148,11 @@ KSYM_BLOB  := $(OBJTOP)/sys/ksym.blob
 # kernel ELF, as a function and a source line.
 NYCSYM     := $(OBJTOP)/tools/nycsym/nycsym
 
+# The kernel's embedded source-line table and the host tool that builds it
+# from the first-pass kernel ELF, so a live panic can name a frame's line.
+MKLINE     := $(OBJTOP)/tools/mkline/mkline
+KLINE_BLOB := $(OBJTOP)/sys/kline.blob
+
 # The disk image the emulator's virtio block device is backed by, and the
 # host tool that writes it. It is not embedded in the kernel: the machine
 # reads it as a device, so it is handed to QEMU rather than carried in the
