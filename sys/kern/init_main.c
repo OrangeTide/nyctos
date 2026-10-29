@@ -2730,9 +2730,12 @@ shell_checks(sys_handle_t console, sys_handle_t root)
 
     /*
      * As long as a person is willing to sit there. This is the one child
-     * in the system whose running time is somebody else's to decide.
+     * in the system whose running time is somebody else's to decide, so
+     * the bound is only here to catch a shell that never leaves. It is
+     * wide enough that a slow emulator feeding a whole session still
+     * finishes well inside it.
      */
-    code = child_join(&c, 300000);
+    code = child_join(&c, 600000);
     cnprintf("    the shell exited with status %d\n", code);
     if (code != 0) {
         panic("sh: the shell ended with status %d rather than being told to",
