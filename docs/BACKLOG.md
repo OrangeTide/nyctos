@@ -153,9 +153,10 @@ resident, big-endian, m68k reference in `~/DEVEL/OS/jon-os/arch/virt/virtio.c`:
 the byte swaps vanish on these little-endian targets, and the code moves into a
 user process here. This was the gating work behind a copy-on-write filesystem,
 whose in-memory mechanism shipped in 0.30.0: an indirection map, fork-on-write
-of a shared block, and snapshots that share blocks. On-disk CoW metadata is
-still later work. Trigger: wanting storage that survives a boot (done, M26); the
-interrupt in place of the spin (done, M27).
+of a shared block, and snapshots that share blocks. On-disk CoW metadata, the
+live map, the reference counts, and the snapshot in a metadata sector behind a
+checksummed header, shipped in 0.35.0. Trigger: wanting storage that survives a
+boot (done, M26); the interrupt in place of the spin (done, M27).
 
 ### Cherry-pick shell features
 

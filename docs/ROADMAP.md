@@ -224,6 +224,26 @@ the kernel's way and comparing to llvm-symbolizer. The reader referenced in the
 backlog was ELF32 and RV32; the one built here is ELF64 for both boards and
 reads the line program directly.
 
+**0.35. The block store's metadata on the disk.** The copy-on-write store's
+indirection lives in memory and the map is rebuilt as identity every boot, so a
+forked block and a snapshot that shares one do not survive a power off. Writing
+the live map, the reference counts, and the snapshot to a metadata sector behind
+a validated header, so the store reads back what a previous boot left, is the
+step to take.
+
+**Done, shipped in 0.35.0.** The store carries a metadata sector holding a
+header over the live map, the reference counts, the snapshot map, and its live
+flag, built in three stages. The live map and the reference counts ride behind a
+magic, a version, and an epoch, proven by the epoch counting up across a boot.
+The snapshot rides alongside: the store arms a diverged snapshot on a fresh
+image, forking the demonstration block onto a physical block the allocator never
+hands out, and a later boot restores it and reads the new bytes live and the old
+bytes through the snapshot. A checksum over the body seals it, so a sector with
+the right magic and version but a damaged body is passed over the way a fresh
+image is and the store falls back to identity. Each stage shipped behind a check
+the second boot's console feeds: the restored epoch, the surviving snapshot, and
+the rejected damaged sector.
+
 **Not on the line.** The bounded-formatter decision, whether the sink-based
 allocation-free formatter is enough of an improvement over the current `printf`
 to override the choice `printf`'s own comment defends, is a decide-and-record

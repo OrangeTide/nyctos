@@ -4,6 +4,32 @@ Notable changes per minor version. Patch bumps between minors move the VERSION
 file alone and are not listed here; see the git log for their detail. Each
 release's full retrospective lives in docs/ROADMAP.md.
 
+## 0.35.0
+
+The block store's metadata on the disk. The copy-on-write store kept its
+indirection in memory and rebuilt an identity map every boot, so a write that
+forked a block and a snapshot that shared one were both lost at power off. The
+live map, the reference counts, and the snapshot now ride in a metadata sector,
+so the store reads back the shape a previous boot left rather than starting
+over.
+
+The sector holds a header over the live map, the reference counts, the snapshot
+map, and its live flag, built in three stages. The first wrote the live map and
+the reference counts behind a magic, a version, and an epoch, proven by the
+epoch counting up across a boot. The second added the snapshot: the store arms a
+diverged snapshot on a fresh image, forking the demonstration block onto a
+physical block the allocator never hands out so a later boot's self-tests cannot
+clobber it, and a later boot restores the snapshot and reads the new bytes live
+and the old bytes through it. The third sealed the body with a checksum, so a
+sector with the right magic and version but a damaged body is passed over the
+way a fresh image is and the store falls back to identity rather than trusting
+it.
+
+Each stage shipped behind a check that fails when its piece is removed. The
+second boot's console reports the restored epoch, the surviving snapshot, and
+the rejected damaged sector, and the burst check greps the second boot for all
+three.
+
 ## 0.34.0
 
 Source lines in the backtrace. A panic names each frame with the source file and
