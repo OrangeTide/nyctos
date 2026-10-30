@@ -128,6 +128,8 @@ BOOT_IMAGES := \
 $(OBJTOP)/bin/fs_server/fs_server.strip \
 $(OBJTOP)/bin/fs_client/fs_client.strip \
 $(OBJTOP)/bin/fs_batch/fs_batch.strip \
+$(OBJTOP)/bin/fs_make/fs_make.strip \
+$(OBJTOP)/bin/fs_scan/fs_scan.strip \
 $(OBJTOP)/bin/spin/spin.strip \
 $(OBJTOP)/bin/status/status.strip \
 $(OBJTOP)/bin/spawner/spawner.strip \
@@ -180,6 +182,8 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) $(BOOT_IMAGES)
 	    fs_server@$(OBJTOP)/bin/fs_server/fs_server.strip \
 	    fs_client@$(OBJTOP)/bin/fs_client/fs_client.strip \
 	    fs_batch@$(OBJTOP)/bin/fs_batch/fs_batch.strip \
+	    fs_make@$(OBJTOP)/bin/fs_make/fs_make.strip \
+	    fs_scan@$(OBJTOP)/bin/fs_scan/fs_scan.strip \
 	    spin@$(OBJTOP)/bin/spin/spin.strip \
 	    status@$(OBJTOP)/bin/status/status.strip \
 	    spawner@$(OBJTOP)/bin/spawner/spawner.strip \

@@ -788,6 +788,30 @@ do_truncate(const fs_request_t *req, uint32_t node, fs_reply_t *rep)
 }
 
 /*
+ * Report the node this connection names: its kind, and for a file its byte
+ * length. A reader asks this to size a buffer or learn where a file ends
+ * without reading to find out, so the length it returns is the same number
+ * a write or a truncate last set.
+ */
+static void
+do_stat(uint32_t node, fs_reply_t *rep)
+{
+    if (node >= FS_NODE_COUNT) {
+        rep->fr_status = SYS_ERR_NO_ENT;
+        return;
+    }
+
+    rep->fr_status = SYS_OK;
+    if (fs_nodes[node].block == FS_NOT_A_FILE) {
+        rep->fr_length = FS_KIND_DIR;
+        rep->fr_size = 0;
+    } else {
+        rep->fr_length = FS_KIND_FILE;
+        rep->fr_size = fs_nodes[node].len;
+    }
+}
+
+/*
  * Execute a compound request.
  *
  * Bounds first, then execution: the whole sequence is checked against the
@@ -978,6 +1002,9 @@ main(void)
             break;
         case FS_OP_TRUNCATE:
             do_truncate(&req, node, &rep);
+            break;
+        case FS_OP_STAT:
+            do_stat(node, &rep);
             break;
         case FS_OP_CLOSE:
             rep.fr_status = SYS_OK;

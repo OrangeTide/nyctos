@@ -28,6 +28,7 @@
  * missing here is missing, not moved.
  */
 #define FS_OP_WALK      1
+#define FS_OP_STAT      2
 #define FS_OP_READ      3
 #define FS_OP_WRITE     4
 #define FS_OP_CREATE    5
@@ -98,6 +99,12 @@ typedef struct fs_readdir_reply {
  * in fr_length. A length below the current one drops the bytes above it; a
  * length above it is not a grow on its own, since a file grows where a
  * write reaches past its end. It answers with status and the new size.
+ *
+ * FS_OP_STAT reports the node the connection names without a walk: the kind
+ * in fr_length, FS_KIND_FILE or FS_KIND_DIR, and the size in fr_size, the
+ * byte length of a file and zero for a directory. A reader that will size a
+ * buffer or seek to the end asks this rather than inferring a length from a
+ * read that returned fewer bytes than it asked for.
  */
 
 

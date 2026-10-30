@@ -1,13 +1,15 @@
-/* file.c : opens, reads, and closes files on a mounted file server.
+/* file.c : reaches files on a mounted file server by path and by handle.
  *
  * SPDX-License-Identifier: 0BSD OR Apache-2.0
  * Copyright (C) 2026 Jon Mayo <jon@rm-f.net>
  *
  * file_open resolves the path in the namespace and sends a walk request to
- * each candidate mount until one succeeds. file_read and file_close send
- * read and close requests over the returned handle, and file_close also
- * closes that handle. file_read is limited to what fits in one inline reply,
- * and message layouts come from the fs protocol in sys/fs.h.
+ * each candidate mount until one succeeds; file_create resolves to one mount
+ * and makes a file there. file_read, file_write, file_truncate, file_stat,
+ * and file_close send their requests over the returned handle, and
+ * file_close also closes that handle. A read or a write moves what fits in
+ * one inline message, and message layouts come from the fs protocol in
+ * sys/fs.h.
  *
  */
 
@@ -194,6 +196,140 @@ file_read(sys_handle_t file, void *buf, uint32_t len, uint64_t off,
     }
     *got = rep.fr_length > len ? len : rep.fr_length;
     memcpy(buf, &reply.inline_data[sizeof(fs_reply_t)], *got);
+
+    return SYS_OK;
+}
+
+sys_err_t
+file_create(const char *path, sys_handle_t *out)
+{
+    char rest[NS_PATH_MAX];
+    sys_handle_t dir;
+    sys_msg_t reply;
+    sys_err_t err;
+
+    if (out == NULL) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    /*
+     * The first mount the path resolves in, and the leaf below it. A create
+     * names one directory, unlike the walk of file_open that tries each
+     * mount in turn: a file is made in one place, not in whichever of
+     * several happens to answer.
+     */
+    err = ns_resolve_at(path, 0, &dir, rest, sizeof(rest));
+    if (err != SYS_OK) {
+        return err;
+    }
+    if (rest[0] == '\0') {
+        return SYS_ERR_WRONG_TYPE;
+    }
+    if (strlen(rest) + 1 > FS_NAME_MAX) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    /* fr_length carries the kind on a create. */
+    err = request(dir, FS_OP_CREATE, rest, 0, FS_KIND_FILE, &reply);
+    if (err != SYS_OK) {
+        return err;
+    }
+    if (reply.handle == SYS_HANDLE_INVALID) {
+        return SYS_ERR_STALE;
+    }
+
+    *out = reply.handle;
+
+    return SYS_OK;
+}
+
+sys_err_t
+file_write(sys_handle_t file, const void *buf, uint32_t len, uint64_t off,
+  uint32_t *put)
+{
+    fs_request_t req;
+    fs_reply_t rep;
+    struct wire_out out;
+    struct wire_in in;
+    sys_msg_t message, reply;
+    uint32_t max = SYS_IPC_INLINE_BYTES - sizeof(fs_request_t);
+    sys_err_t err;
+
+    if (buf == NULL || put == NULL) {
+        return SYS_ERR_INVALID_ARG;
+    }
+    if (len > max) {
+        len = max;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.handle = SYS_HANDLE_INVALID;
+
+    memset(&req, 0, sizeof(req));
+    req.fr_op = FS_OP_WRITE;
+    req.fr_offset = off;
+    req.fr_length = len;
+    wire_out_init(&out, message.inline_data, SYS_IPC_INLINE_BYTES);
+    fs_request_put(&out, &req);
+    wire_put_bytes(&out, (const uint8_t *)buf, len);
+    message.inline_len = sizeof(fs_request_t) + len;
+
+    err = sys_msg_send(file, &message, &reply);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    wire_in_init(&in, reply.inline_data, reply.inline_len);
+    fs_reply_get(&in, &rep);
+    if (!in.ok) {
+        return SYS_ERR_TRUNCATED;
+    }
+    if (rep.fr_status != SYS_OK) {
+        return rep.fr_status;
+    }
+
+    *put = rep.fr_length;
+
+    return SYS_OK;
+}
+
+sys_err_t
+file_truncate(sys_handle_t file, uint64_t size)
+{
+    sys_msg_t reply;
+
+    if (size > 0xffffffffu) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    return request(file, FS_OP_TRUNCATE, NULL, 0, (uint32_t)size, &reply);
+}
+
+sys_err_t
+file_stat(sys_handle_t file, uint64_t *size, uint32_t *kind)
+{
+    fs_reply_t rep;
+    struct wire_in in;
+    sys_msg_t reply;
+    sys_err_t err;
+
+    err = request(file, FS_OP_STAT, NULL, 0, 0, &reply);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    wire_in_init(&in, reply.inline_data, reply.inline_len);
+    fs_reply_get(&in, &rep);
+    if (!in.ok) {
+        return SYS_ERR_TRUNCATED;
+    }
+
+    if (size != NULL) {
+        *size = rep.fr_size;
+    }
+    if (kind != NULL) {
+        *kind = rep.fr_length;
+    }
 
     return SYS_OK;
 }

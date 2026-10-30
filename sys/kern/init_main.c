@@ -18917,26 +18917,6 @@ fs_write_checks(sys_handle_t root)
     cnputs("fs: a written file read back the new bytes\n");
 }
 
-/* Write bytes at the front of a file the connection names, panicking unless
- * the server took them. */
-static void
-fs_write_bytes(sys_handle_t file, const uint8_t *data, uint32_t n,
-  const char *what)
-{
-    struct sys_op_send_args tx;
-    fs_request_t *req;
-
-    memset(&tx, 0, sizeof(tx));
-    tx.request.handle = SYS_HANDLE_INVALID;
-    req = (fs_request_t *)tx.request.inline_data;
-    req->fr_op = FS_OP_WRITE;
-    req->fr_offset = 0;
-    req->fr_length = n;
-    memcpy(&tx.request.inline_data[sizeof(*req)], data, n);
-    tx.request.inline_len = sizeof(*req) + n;
-    expect(what, run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx)), SYS_OK);
-}
-
 /* Read n bytes from the front of a file inline and panic unless they are the
  * n bytes expected. */
 static void
@@ -18986,22 +18966,20 @@ fs_close_conn(sys_handle_t file)
 }
 
 /*
- * A file created and written in one boot, found and read in the next. The
- * filesystem keeps the made file's directory entry on the store, so a walk
- * in a later boot finds a file no code made this boot, and a read returns
- * the bytes the earlier boot wrote. A tree held in the server's memory alone
- * would be gone at power off, which the two-boot check catches: the later
- * boot would not find the file and its survived marker would never print.
+ * Whether the made file is here before any program has run this boot. Its
+ * presence is the store having kept the directory across a power off, so a
+ * later boot reads it back the way the persistence check reads its marker
+ * block. A fresh image has no file and this returns without a word; the
+ * writer program below makes it. A later boot reads it and checks the bytes
+ * the store kept, then prints the survived marker the burst session greps.
  *
- * The presence of the file tells the boots apart, the way the persistence
- * check reads its marker block. A fresh image has no file, so this boot
- * makes it: create, a write that grows it past one block, a truncate that
- * shortens it, and a write that grows it back, each read back and checked
- * here so the whole path is load-bearing in this boot too. A later boot
- * finds the file and checks the bytes the store kept.
+ * It is detect-only, run before the writer, so the file it finds is one an
+ * earlier boot made and not one this boot just did. A directory held in the
+ * server's memory alone would be gone at power off, and this would not find
+ * the file, so the marker would never print.
  */
 static void
-fs_create_checks(sys_handle_t root)
+fs_persist_checks(sys_handle_t root)
 {
     static const uint8_t pattern[24] = {
         0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
@@ -19022,61 +19000,81 @@ fs_create_checks(sys_handle_t root)
     memcpy(req->fr_name, "made", sizeof("made"));
     err = run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx));
 
-    if (err == SYS_OK) {
-        rep = (const fs_reply_t *)tx.reply.inline_data;
-        file = tx.reply.handle;
-        if (rep->fr_size != sizeof(pattern)) {
-            panic("fs: the made file came back %u bytes, not %u",
-              (unsigned int)rep->fr_size, (unsigned int)sizeof(pattern));
-        }
-        fs_read_check(file, pattern, sizeof(pattern),
-          "reading the made file in a later boot");
-        fs_close_conn(file);
-        cnputs("fs: a created file survived to this boot\n");
-        return;
+    if (err == SYS_ERR_NO_ENT) {
+        return;                 /* a fresh image; the writer makes it below */
     }
-    if (err != SYS_ERR_NO_ENT) {
+    if (err != SYS_OK) {
         panic("fs: walking to the made file answered %d", (int)err);
     }
 
-    /* A fresh image. Make the file and leave it for a later boot to find. */
-    memset(&tx, 0, sizeof(tx));
-    tx.request.handle = SYS_HANDLE_INVALID;
-    tx.request.inline_len = sizeof(*req);
-    req = (fs_request_t *)tx.request.inline_data;
-    req->fr_op = FS_OP_CREATE;
-    req->fr_length = FS_KIND_FILE;
-    memcpy(req->fr_name, "made", sizeof("made"));
-    expect("creating a file on disk",
-      run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_OK);
-    file = tx.reply.handle;
-
-    /* A write that reaches past the first block grows the file into a second. */
-    fs_write_bytes(file, pattern, sizeof(pattern), "writing the made file");
-    fs_read_check(file, pattern, sizeof(pattern), "reading the made file back");
-
-    /* Shorten it, and read the shorter file back. */
-    memset(&tx, 0, sizeof(tx));
-    tx.request.handle = SYS_HANDLE_INVALID;
-    tx.request.inline_len = sizeof(*req);
-    req = (fs_request_t *)tx.request.inline_data;
-    req->fr_op = FS_OP_TRUNCATE;
-    req->fr_length = 8;
-    expect("truncating the made file",
-      run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx)), SYS_OK);
     rep = (const fs_reply_t *)tx.reply.inline_data;
-    if (rep->fr_size != 8) {
-        panic("fs: truncate left the file %u bytes, not 8",
-          (unsigned int)rep->fr_size);
+    file = tx.reply.handle;
+    if (rep->fr_size != sizeof(pattern)) {
+        panic("fs: the made file came back %u bytes, not %u",
+          (unsigned int)rep->fr_size, (unsigned int)sizeof(pattern));
     }
-    fs_read_check(file, pattern, 8, "reading the truncated file");
-
-    /* Grow it back to the whole pattern, the state a later boot reads. */
-    fs_write_bytes(file, pattern, sizeof(pattern), "growing the made file back");
-    fs_read_check(file, pattern, sizeof(pattern), "reading the regrown file");
-
+    fs_read_check(file, pattern, sizeof(pattern),
+      "reading the made file in a later boot");
     fs_close_conn(file);
-    cnputs("fs: made a file, grew it past a block, and shortened it\n");
+    cnputs("fs: a created file survived to this boot\n");
+}
+
+/*
+ * One program writes a file through the C library and a second reads its
+ * size and bytes through the same library. The writer makes the file, writes
+ * a pattern past one block, shortens it, and grows it back; the reader stats
+ * it for a size and reads it to the end, and its own code says whether the
+ * size the stat gave matched the bytes the read returned. A stat that
+ * reported a stale size would disagree, and the reader returns nonzero,
+ * which panics here.
+ *
+ * Two programs rather than one, so the file and its size come from the server
+ * across a boundary rather than from a writer's own memory. Each gets the
+ * filesystem under its own duplicate of the root, named so a path resolves.
+ */
+static void
+fs_library_checks(sys_handle_t root)
+{
+    struct sys_op_dup_args dup;
+    sys_ns_spec_t ns[1];
+    struct child c;
+    int32_t code;
+
+    memset(&dup, 0, sizeof(dup));
+    dup.new_rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
+      SYS_RIGHT_TRANSFER;
+    expect("a directory for the writer",
+      run(SYS_OP_HANDLE_DUP, root, &dup, sizeof(dup)), SYS_OK);
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_ROOT;
+    ns[0].handle = dup.out_handle;
+    strncpy_ns(ns[0].name, "/");
+    sched_defer();
+    child_watch(&c, proc_spawn_image("fs_make", 20, ns, 1, NULL, 0));
+    sched_undefer();
+    code = child_join(&c, JOIN_MS);
+    if (code != 0) {
+        panic("fs: the writer program failed with %d", (int)code);
+    }
+
+    memset(&dup, 0, sizeof(dup));
+    dup.new_rights = SYS_RIGHT_SEND | SYS_RIGHT_DUPLICATE |
+      SYS_RIGHT_TRANSFER;
+    expect("a directory for the reader",
+      run(SYS_OP_HANDLE_DUP, root, &dup, sizeof(dup)), SYS_OK);
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_ROOT;
+    ns[0].handle = dup.out_handle;
+    strncpy_ns(ns[0].name, "/");
+    sched_defer();
+    child_watch(&c, proc_spawn_image("fs_scan", 20, ns, 1, NULL, 0));
+    sched_undefer();
+    code = child_join(&c, JOIN_MS);
+    if (code != 0) {
+        panic("fs: the reader disagreed about the file, code %d", (int)code);
+    }
+
+    cnputs("fs: a reader's stat agreed with the bytes a writer left\n");
 }
 
 /*
@@ -19639,7 +19637,8 @@ user_slice(void)
     }
 
     fs_write_checks(h_fs_root);
-    fs_create_checks(h_fs_root);
+    fs_persist_checks(h_fs_root);
+    fs_library_checks(h_fs_root);
 
     /*
      * The same file, read two ways. One message should

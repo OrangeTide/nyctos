@@ -98,6 +98,9 @@ check: all
 	@grep -q '^fs: a created file survived to this boot' $(OBJTOP)/check/burst.out \
 	    || { echo 'check: a created file did not survive to the second boot'; \
 	         false; }
+	@grep -q '^fs: a reader.s stat agreed with the bytes a writer left' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: the library stat and read did not agree'; \
+	         false; }
 	@echo "check: $(ARCH), symbols"
 	@$(TOPDIR)/scripts/symcheck.sh $(NYCSYM) $(KERNEL_ELF)
 	@$(TOPDIR)/scripts/klinecheck.sh $(MKLINE) $(KLINE_BLOB) $(KERNEL_ELF)

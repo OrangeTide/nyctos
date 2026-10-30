@@ -22,6 +22,6 @@ used at most: 26 of 32 threads, 14 of 24 processes
   a request in flight when its client died: 18, and a slot kept for one: 2
   a death that reached every client it owed: 2 released at once at most, and 1 left to the owner's
   what the set costs a rendezvous: 0 steps in 200 owing one, 200 in 200 owing two
-  names: 2712 given out, 2680 again, 1 spaces without, 10 live
-  names given back: 2702, each throwing away what was filed under it
+  names: 2714 given out, 2682 again, 1 spaces without, 10 live
+  names given back: 2704, each throwing away what was filed under it
 stage 9 complete

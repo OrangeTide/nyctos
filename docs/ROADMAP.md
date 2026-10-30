@@ -323,6 +323,28 @@ read back in the next. Three stages:
    library. What fails it: a `stat` that reports a stale size disagrees with the
    bytes the reader gets.
 
+**Done, shipped in 0.37.0.** The filesystem server took a write, in three
+stages. First it wrote a file's content through the block store rather than
+pointing at fixed bytes: `FS_OP_WRITE` reads the file's block, lays the new
+bytes over it, and writes the whole block back, moving the length only after
+the bytes are on the store, so a read that follows reads what is there. Then it
+kept a file across a boot: a one-entry directory on a store block, read at
+startup and written back on every create, grow, and truncate, so a file made in
+one boot is walked and read in the next with its content intact; `FS_OP_CREATE`
+makes the file, a write past the end grows it into the next block of its run,
+and `FS_OP_TRUNCATE` shortens it. Last it added `FS_OP_STAT` and a C library
+over the protocol: `file_create`, `file_write`, `file_truncate`, and
+`file_stat` beside the `file_open`, `file_read`, and `file_close` already
+there. Each stage shipped behind a check: a file opened, written, and read back
+in one boot; a file made in one boot found and read in the next, where a
+directory held only in memory would be gone; and one program that writes a file
+and a second that reads its size with a stat and its bytes with a read,
+agreeing, where a stale size would not. The two blocks the store keeps for its
+own fork and snapshot demonstrations are stepped around. What is not here:
+directories hold one made file, names are a single component, there is no
+`FS_OP_UNLINK` on this server yet, and the on-disk tree is the smallest thing
+that shows a file surviving a boot rather than a general one.
+
 **0.38. Descriptors, streams, and redirection.** I/O is a single hardwired
 console channel plus a separate file-handle world, with no descriptor table, so
 a program's output cannot be pointed anywhere but the console. A per-process

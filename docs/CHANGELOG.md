@@ -4,6 +4,35 @@ Notable changes per minor version. Patch bumps between minors move the VERSION
 file alone and are not listed here; see the git log for their detail. Each
 release's full retrospective lives in docs/ROADMAP.md.
 
+## 0.37.0
+
+A filesystem that takes writes. The server above the block store was read-only:
+it pointed at fixed bytes, made nothing, and kept nothing. It now writes a
+file's content to the store, makes a file that survives a boot, and answers a
+stat, and the C library reaches all of it.
+
+Three stages. The first wrote a file's content through the store rather than
+pointing at fixed bytes: a write reads the file's block, lays the new bytes
+over it, and writes the whole block back, moving the length only after the
+bytes are on the store, so a write that moved the length but not the block
+would leave the old bytes readable. The second kept a file across a boot. A
+one-entry directory on a store block is read at startup and written back on
+every create, grow, and truncate, so a file made in one boot is walked and read
+in the next; FS_OP_CREATE makes the file, a write past the end grows it into
+the next block of its contiguous run, and FS_OP_TRUNCATE shortens it. A
+directory held only in the server's memory would be gone at power off. The
+third added FS_OP_STAT and carried file_create, file_write, file_truncate, and
+file_stat in the C library beside file_open, file_read, and file_close, so a
+program reaches the filesystem without hand-built messages.
+
+Each stage shipped behind a check. A file is opened, written, and read back in
+one boot with the bytes written. A file made in one boot is found and read in
+the next, a marker the burst session greps, where a tree in memory alone would
+lose it. And one program writes a file while a second reads its size with a
+stat and its bytes with a read, the two agreeing, where a stale size would
+disagree. The directory block and the file's content run step around the two
+blocks the store keeps for its own fork and snapshot demonstrations.
+
 ## 0.36.0
 
 A heap that grows, and an allocator over it. Every process had a fixed slot with
