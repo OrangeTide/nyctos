@@ -89,6 +89,9 @@ check: all
 	@grep -q '^anon: the heap grew and the range took a write' $(OBJTOP)/check/burst.out \
 	    || { echo 'check: a write to the grown heap range was not served'; \
 	         false; }
+	@grep -q '^allot: malloc reused a freed block and kept the live ones' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: the allocator did not reuse or preserve blocks'; \
+	         false; }
 	@echo "check: $(ARCH), symbols"
 	@$(TOPDIR)/scripts/symcheck.sh $(NYCSYM) $(KERNEL_ELF)
 	@$(TOPDIR)/scripts/klinecheck.sh $(MKLINE) $(KLINE_BLOB) $(KERNEL_ELF)

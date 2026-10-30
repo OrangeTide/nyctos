@@ -143,6 +143,7 @@ $(OBJTOP)/bin/grabber/grabber.strip \
 $(OBJTOP)/bin/granted/granted.strip \
 $(OBJTOP)/bin/paged/paged.strip \
 $(OBJTOP)/bin/anon/anon.strip \
+$(OBJTOP)/bin/allot/allot.strip \
 $(OBJTOP)/bin/namespace/namespace.strip \
 $(OBJTOP)/bin/resolve/resolve.strip \
 $(OBJTOP)/bin/peer_a/peer_a.strip \
@@ -194,6 +195,7 @@ $(BOOT_ARCHIVE): $(MKBOOTARCH) $(BOOT_IMAGES)
 	    granted@$(OBJTOP)/bin/granted/granted.strip \
 	    paged@$(OBJTOP)/bin/paged/paged.strip \
 	    anon@$(OBJTOP)/bin/anon/anon.strip \
+	    allot@$(OBJTOP)/bin/allot/allot.strip \
 	    namespace@$(OBJTOP)/bin/namespace/namespace.strip \
 	    resolve@$(OBJTOP)/bin/resolve/resolve.strip \
 	    peer_a@$(OBJTOP)/bin/peer_a/peer_a.strip \

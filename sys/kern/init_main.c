@@ -13861,6 +13861,67 @@ anon_paging_checks(void)
 }
 
 /*
+ * A program driving the C library's allocator over the same heap.
+ *
+ * malloc and free sit over sys_heap_grow, so the allocator grows the heap
+ * for what it cannot serve from freed blocks and reuses freed blocks for
+ * what it can. The program checks that a freed block comes back without
+ * the heap growing again, that its live blocks never overlap, and that a
+ * block keeps its bytes while later allocations come and go; it returns
+ * nonzero naming which failed. An allocator that handed out an
+ * overlapping block, the mistake this is built to catch, gives the
+ * program two live pointers to one address and fails it.
+ *
+ * It reuses the anon pager, which serves any client's faults, so the
+ * allocator's grown pages arrive the same way the anonymous region's do.
+ * At Tier 0 the slot is flat and no page reaches the pager, and the
+ * allocator runs over memory that is simply there.
+ */
+static void
+allot_checks(void)
+{
+    struct sys_op_connect_args cargs;
+    sys_ns_spec_t ns[1];
+    struct child c;
+    const char *argv[1];
+    int32_t code;
+
+    cnputs("the allocator: malloc and free over the heap\n");
+
+    if (boot_lookup("allot") == NULL) {
+        panic("allot: no such image");
+    }
+
+    argv[0] = "allot";
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = 0;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to the pager, for the allocator",
+      run(SYS_OP_CHAN_CONNECT, h_anon_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_PAGER;
+    ns[0].handle = cargs.out_handle;
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("allot", 20, ns, 1, argv, 1));
+    sched_undefer();
+
+    code = child_join(&c, JOIN_MS);
+
+    if (code != 0) {
+        panic("allot: it returned %ld, %s fault at 0x%lx pc 0x%lx",
+          (long)code, fault_name(c.c_proc->p_fault),
+          (unsigned long)c.c_proc->p_fault_addr,
+          (unsigned long)c.c_proc->p_fault_pc);
+    }
+
+    cnputs("allot: malloc reused a freed block and kept the live ones\n");
+}
+
+/*
  * What a process was given, with names on it.
  *
  * A namespace arrives at launch as an array of named directory handles.
@@ -20035,6 +20096,25 @@ kernel_main(void)
          */
         grant_holder("pages the anon pager supplied", a,
           anon_pages_text + anon_pages_fresh, "the anon pager's grants");
+    }
+
+    {
+        uint32_t a = grant_frames();
+        uint32_t pt = anon_pages_text;
+        uint32_t pf = anon_pages_fresh;
+
+        allot_checks();
+
+        /*
+         * The allocator's faults went to the same pager, so the pages it
+         * took are the growth in that pager's counts across this check.
+         * They are held after the program was reaped for the same reason
+         * the anon program's were, and are nothing at Tier 0, where the
+         * allocator runs over a flat slot that never faults.
+         */
+        grant_holder("pages the allocator's faults took", a,
+          (anon_pages_text - pt) + (anon_pages_fresh - pf),
+          "the anon pager's grants");
     }
 
     cnputs("the slice again, with both halves in user mode\n");

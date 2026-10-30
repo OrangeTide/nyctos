@@ -19,6 +19,7 @@ SRCS := arch/$(ARCH)/sys/syscall.S \
         stdio/gets.c \
         stdio/puts.c \
         stdlib/exit.c \
+        stdlib/malloc.c \
         string/memcpy.c \
         string/memset.c \
         string/strlen.c \

@@ -4,6 +4,32 @@ Notable changes per minor version. Patch bumps between minors move the VERSION
 file alone and are not listed here; see the git log for their detail. Each
 release's full retrospective lives in docs/ROADMAP.md.
 
+## 0.36.0
+
+A heap that grows, and an allocator over it. Every process had a fixed slot with
+the whole region above its image open and no way to ask for memory at run time.
+A process now extends a heap backed by writable pages the pager fills on a fault,
+and the C library allocates over it.
+
+Three stages. The first had the pager answer a write fault above the image with a
+zeroed writable page, so a store past the data segment stopped being fatal and
+the program read back the bytes it wrote; a pager that still refused the write
+killed the program at the first store. The second added SYS_OP_HEAP_SET, which
+raises the top of a process's heap and returns the old top: the reach check now
+bounds a program at the top, so an address below a raised top is one it may name
+where it could not before, and Tier 2 serves a write fault only below the top
+while Tier 0 holds the frames already in its flat slot. The interface is the same
+on both. The third carried malloc and free in the C library over sys_heap_grow,
+carving aligned blocks from a free list, growing the heap when the list cannot
+serve a request, and handing a freed block back out rather than growing again.
+
+Each stage shipped behind a check that fails when its piece is removed. A program
+writes a fresh page above its image; another raises its top and writes the whole
+range it claimed, with the kernel reading the top back afterward to confirm the
+reach tracked it and stopped there; and a third allocates and frees in a pattern
+that outgrows its first reservation, with no two live blocks overlapping and
+every live block keeping its bytes. The burst check greps the boot for all three.
+
 ## 0.35.0
 
 The block store's metadata on the disk. The copy-on-write store kept its

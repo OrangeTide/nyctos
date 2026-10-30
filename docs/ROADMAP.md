@@ -280,6 +280,22 @@ Three stages:
    allocator that hands out an overlapping block returns two live pointers to one
    address.
 
+**Done, shipped in 0.36.0.** A process grows a heap and the C library allocates
+over it, in three stages. The pager answers a write fault above the image with a
+zeroed writable page, so a store past the data segment stops being fatal and the
+program reads back what it wrote. A heap operation then raises the top of that
+region and the reach check follows it, so an address below the new top is one
+the program may name where it could not before; the interface is the same at
+both tiers, Tier 2 filling a page on the fault and Tier 0 holding it already in
+the flat slot. The C library carries `malloc` and `free` over `sys_heap_grow`,
+carving aligned blocks from a free list and growing the heap when the list
+cannot serve a request, reusing a freed block rather than growing again. Each
+stage shipped behind a check: a program writes a fresh page above its image;
+another raises its top and writes the whole range it claimed while the kernel
+reads the top back to confirm the reach tracked it and stopped there; and a
+third allocates and frees in a pattern that outgrows its first reservation with
+no two live blocks ever overlapping.
+
 **0.37. A filesystem that takes writes.** The block store survives a boot, but
 no server above it writes file content: `ramfs` holds immutable static bytes,
 `fs_server` is read-only, and the virtio store writes raw blocks with nothing
