@@ -321,6 +321,23 @@ sys_grant_map(sys_handle_t grant, uintptr_t *out_base, uintptr_t *out_len)
 }
 
 sys_err_t
+sys_heap_grow(uintptr_t delta, uintptr_t *out_base)
+{
+    sys_op_heap_args_t args;
+    sys_err_t err;
+
+    memset(&args, 0, sizeof(args));
+    args.delta = delta;
+
+    err = submit(SYS_OP_HEAP_SET, SYS_HANDLE_INVALID, &args, sizeof(args));
+    if (err == SYS_OK && out_base != NULL) {
+        *out_base = args.out_base;
+    }
+
+    return err;
+}
+
+sys_err_t
 sys_fence_wait(sys_handle_t timeline, uint64_t value, uint64_t deadline)
 {
     sys_op_fence_args_t args;

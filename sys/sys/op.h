@@ -317,7 +317,25 @@ typedef uintptr_t sys_handle_t;
  */
 #define SYS_OP_CHAN_LISTEN       28
 
-#define SYS_OP_COUNT             29
+/*
+ * Raise the top of the calling process's heap. There is no target: a
+ * process moves its own top and no other's.
+ *
+ * The region above a program's image is unmapped at load, and this is
+ * what opens it: the top moves up by the requested amount, the reach
+ * check follows it so an address below the new top becomes one the
+ * program may name, and at Tier 2 a store there faults onto a writable
+ * page the pager supplies. Tier 0 has the frames already, flat in the
+ * reserved slot, so the move is only the bound.
+ *
+ * Grow only for now. A delta is unsigned and the top does not come back
+ * down, because reclaiming a page a program gave back is a later
+ * version's problem; a delta of zero moves nothing and reads the top.
+ * SYS_ERR_NO_MEMORY if the new top would pass the end of the slot.
+ */
+#define SYS_OP_HEAP_SET          29
+
+#define SYS_OP_COUNT             30
 
 
 /*
@@ -753,6 +771,20 @@ typedef struct sys_op_grant_args {
     uintptr_t       out_base;       /* written by the kernel */
     uintptr_t       out_len;        /* written by the kernel */
 } sys_op_grant_args_t;
+
+/*
+ * Argument structure for SYS_OP_HEAP_SET. There is no target.
+ *
+ * delta is how many bytes to raise the top by, which the kernel rounds up
+ * to a page. out_base comes back as the old top, the first address of the
+ * range the call just claimed, so a caller writes from there without
+ * knowing where its heap began. A delta of zero returns the current top
+ * and moves nothing.
+ */
+typedef struct sys_op_heap_args {
+    uintptr_t       delta;          /* in: bytes to raise the top by */
+    uintptr_t       out_base;       /* written by the kernel: the old top */
+} sys_op_heap_args_t;
 
 /*
  * A page fault, as the message the faulting thread sends: the address

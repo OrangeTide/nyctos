@@ -472,6 +472,15 @@ proc_load(struct proc *p, const struct boot_member *m)
      * machine, so a reap must not give it back: see p_syspage_off.
      */
     p->p_syspage_off = m->bm_mem;
+
+    /*
+     * The heap begins one page above the system page and starts empty,
+     * so a fresh process reaches its image and no more. The operation
+     * that raises the top is what opens the region above it.
+     */
+    p->p_heap_base = (uintptr_t)m->bm_mem + PAGE_SIZE;
+    p->p_heap_top = p->p_heap_base;
+
     err = md_map(proc_as(p), va + m->bm_mem, syspage_frame(), PAGE_SIZE,
       VM_READ | VM_USER);
     if (err != SYS_OK) {
@@ -690,6 +699,15 @@ proc_spawn_image(const char *image, uint8_t prio,
 #else
     p->p_entry = boot_load(m);
     p->p_startup_va = (uintptr_t)&p->p_startup;
+
+    /*
+     * The heap begins just past the image, where flat memory has no
+     * system page in the slot to sit above. It starts empty, and the
+     * same operation raises the top here as at Tier 2; the frames are
+     * already present in the reserved slot, so raising it is accounting.
+     */
+    p->p_heap_base = (uintptr_t)m->bm_mem;
+    p->p_heap_top = p->p_heap_base;
 
     /*
      * The system page at the address it really is, because flat memory
@@ -911,17 +929,30 @@ proc_slot(const struct proc *p, uintptr_t *base, size_t *len)
 size_t
 proc_reach_len(const struct proc *p, uintptr_t va)
 {
-    uintptr_t base;
+    uintptr_t base, off;
     size_t slot;
 
     if (!proc_slot(p, &base, &slot)) {
         return SIZE_MAX;
     }
-    if (va < base || va - base >= slot) {
+    (void)slot;
+    if (va < base) {
+        return 0;
+    }
+    off = va - base;
+
+    /*
+     * The heap top and not the slot end. A program reaches its image, its
+     * data and the heap it has raised, and the unraised rest of the slot
+     * is memory it was not given: an address there is the mistake this
+     * bound exists to catch. The top is at or below the slot end, so this
+     * is the tighter bound and the slot bound falls out of it.
+     */
+    if (off >= p->p_heap_top) {
         return 0;
     }
 
-    return slot - (va - base);
+    return (size_t)(p->p_heap_top - off);
 }
 
 /*
@@ -942,12 +973,15 @@ proc_reaches(const struct proc *p, uintptr_t va, size_t len)
 }
 
 /*
- * Whether this address is in the process's anonymous region: the pages
- * above the system page and within the slot. The loader leaves that
- * region unmapped and the pager supplies it writable on a fault, so a
- * write fault there is a heap page to be filled rather than a write to
- * read-only text, which stays fatal. The system page itself is one page
- * below, read-only, and is not part of this.
+ * Whether this address is in the part of the heap the process has
+ * raised: at or above the base, which is one page above the system page,
+ * and below the top the program moved with the heap operation. The loader
+ * leaves the region unmapped and the pager supplies it writable on a
+ * fault, so a write fault below the top is a page the program claimed and
+ * is filled, while one between the top and the slot end is a store past
+ * what it was given and stays fatal the way a write to text does. The
+ * system page itself is one page below the base, read-only, and no part
+ * of this.
  */
 bool
 proc_anon_contains(const struct proc *p, uintptr_t va)
@@ -965,7 +999,7 @@ proc_anon_contains(const struct proc *p, uintptr_t va)
 
     off = va - base;
 
-    return off >= (uintptr_t)p->p_syspage_off + PAGE_SIZE;
+    return off >= p->p_heap_base && off < p->p_heap_top;
 #else
     /*
      * Flat memory has no system page in the slot and nothing to fault,
@@ -1560,6 +1594,15 @@ proc_spawn_op(struct proc *parent, const char *image, uint8_t prio,
 #else
     p->p_entry = boot_load(m);
     p->p_startup_va = (uintptr_t)&p->p_startup;
+
+    /*
+     * The heap begins just past the image, where flat memory has no
+     * system page in the slot to sit above. It starts empty, and the
+     * same operation raises the top here as at Tier 2; the frames are
+     * already present in the reserved slot, so raising it is accounting.
+     */
+    p->p_heap_base = (uintptr_t)m->bm_mem;
+    p->p_heap_top = p->p_heap_base;
 
     /*
      * The system page at the address it really is, because flat memory

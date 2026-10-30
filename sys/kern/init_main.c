@@ -13737,19 +13737,23 @@ anon_pager(void *arg)
 }
 
 /*
- * A program given a pager that serves the anonymous region, writing a
- * page above its image and reading it back.
+ * A program given a pager that serves its heap, raising the top and
+ * writing the range it claimed.
  *
- * The write is the point. The region above the system page is unmapped
- * at load, so a store there faults, and a write fault used to be fatal.
- * The pager answers it with a zeroed writable page, the store lands, and
- * the program reads back what it wrote. A pager that still refused the
- * write would kill the program at the first store, which is this check
- * run the other way.
+ * The grow is the point. The heap top starts at its base, so the region
+ * above it is unreachable and a store there faults, and the fault is
+ * refused. Raising the top opens the range: the reach check follows it,
+ * so an address below the new top is one the program may name, and at
+ * Tier 2 a store there faults onto a writable page the pager supplies.
+ * The program writes the whole range and reads it back. A top that moved
+ * without the reach check following, or a store that faulted in the range
+ * the program had just claimed, is this check run the other way.
  *
- * At Tier 0 there is no paging and the slot is flat memory, so the same
- * program writes and reads the same page without a fault ever reaching
- * the pager.
+ * After the program has run, its heap top is read back here: the range it
+ * claimed is reachable and the memory above the top is not, which is the
+ * reach check having tracked the top rather than opening the whole slot.
+ * At Tier 0 there is no paging and the slot is flat, so no page reaches
+ * the pager, and the reach bound is the whole of what the grow does.
  */
 static void
 anon_paging_checks(void)
@@ -13760,30 +13764,21 @@ anon_paging_checks(void)
     sys_ns_spec_t ns[1];
     struct thread *t;
     struct child c;
-    const char *argv[2];
-    char addr[19];
-    uintptr_t where;
+    const char *argv[1];
+    struct proc *cp;
+    uintptr_t cbase;
+    size_t cslot;
     int32_t code;
     sys_err_t err;
 
-    cnputs("the anonymous region: a page above the image, written\n");
+    cnputs("the heap: a program raises its top and writes the range\n");
 
     m = boot_lookup("anon");
     if (m == NULL) {
         panic("anon: no such image");
     }
 
-    /*
-     * One page above the system page, which is itself one page above
-     * everything the image asked for. That is the first page of the
-     * anonymous region, and the kernel passes it because it is what
-     * knows the slot's layout: a virtual address inside the slot at Tier
-     * 2, and the same offset into the slot's flat memory at Tier 0.
-     */
-    where = (uintptr_t)m->bm_load + m->bm_mem + PAGE_SIZE;
-    hex_into(addr, where);
     argv[0] = "anon";
-    argv[1] = addr;
 
     ch_anon = channel_create("anon-pager", self);
     if (ch_anon == NULL) {
@@ -13808,7 +13803,7 @@ anon_paging_checks(void)
     ns[0].handle = cargs.out_handle;
 
     sched_defer();
-    child_watch(&c, proc_spawn_image("anon", 20, ns, 1, argv, 2));
+    child_watch(&c, proc_spawn_image("anon", 20, ns, 1, argv, 1));
     sched_undefer();
 
     code = child_join(&c, JOIN_MS);
@@ -13820,25 +13815,49 @@ anon_paging_checks(void)
           (unsigned long)c.c_proc->p_fault_pc);
     }
 
+    /*
+     * The top moved and the reach check followed it. The program raised
+     * its top before it wrote, so the range from the base to the top is
+     * what it claimed and must be reachable, and the slot above the top
+     * must not: a reach that still reported the whole slot would pass the
+     * range it was never given, which is this half of the check the other
+     * way. Read from the program's own object, which outlives it until
+     * the join lets go.
+     */
+    cp = c.c_proc;
+    if (!proc_slot(cp, &cbase, &cslot)) {
+        panic("anon: the program had no slot to read a top from");
+    }
+    if (cp->p_heap_top <= cp->p_heap_base) {
+        panic("anon: the heap top did not move");
+    }
+    if (!proc_reaches(cp, cbase + cp->p_heap_base,
+      cp->p_heap_top - cp->p_heap_base)) {
+        panic("anon: the range it claimed is not reachable");
+    }
+    if (proc_reaches(cp, cbase + cp->p_heap_top, 1)) {
+        panic("anon: memory above the top is reachable");
+    }
+
 #if SYS_TIER == 2
     if (anon_pages_fresh == 0) {
         panic("anon: it ran without a fresh page arriving");
     }
-    cnprintf("    %-38s %u\n", "fresh pages above the image",
+    cnprintf("    %-38s %u\n", "fresh pages in the grown range",
       (unsigned int)anon_pages_fresh);
 #else
     /*
-     * The write still lands, on a tier where a flat slot has nothing
+     * The stores still land, on a tier where a flat slot has nothing
      * absent to fault on, so no page ever reaches the pager.
      */
     if (anon_pages_fresh != 0) {
         panic("anon: %u fresh pages arrived on a tier with no paging",
           (unsigned int)anon_pages_fresh);
     }
-    cnprintf("    %-38s %s\n", "fresh pages above the image",
+    cnprintf("    %-38s %s\n", "fresh pages in the grown range",
       "none, the slot is flat");
 #endif
-    cnputs("anon: a page above the image took a write\n");
+    cnputs("anon: the heap grew and the range took a write\n");
 }
 
 /*
@@ -20009,10 +20028,10 @@ kernel_main(void)
         /*
          * The anon pager's pages, text and fresh, still held after its
          * program was reaped. The text pages are held the way the root
-         * pager's are; the fresh page above the image is held the same
-         * way, its grant describing it and the reap leaving it, which is
-         * what keeps the ledger from counting a frame it had freed. It
-         * is nothing at Tier 0, where a flat slot never faults.
+         * pager's are; the fresh pages of the grown range are held the
+         * same way, each grant describing its page and the reap leaving
+         * it, which is what keeps the ledger from counting a frame it had
+         * freed. It is nothing at Tier 0, where a flat slot never faults.
          */
         grant_holder("pages the anon pager supplied", a,
           anon_pages_text + anon_pages_fresh, "the anon pager's grants");

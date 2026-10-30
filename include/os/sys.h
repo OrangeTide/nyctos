@@ -259,6 +259,15 @@ sys_err_t sys_grant_map(sys_handle_t grant, uintptr_t *out_base,
   uintptr_t *out_len);
 
 /*
+ * Raise the top of this process's heap by delta bytes, rounded up to a
+ * page, and report the old top in out_base: the first address of the
+ * range just claimed, which the caller may write from without knowing
+ * where its heap began. A delta of zero reads the current top and moves
+ * nothing. SYS_ERR_NO_MEMORY when the top would pass the end of the slot.
+ */
+sys_err_t sys_heap_grow(uintptr_t delta, uintptr_t *out_base);
+
+/*
  * Ends the calling thread and does not return.
  */
 void sys_thread_exit(int32_t code) __attribute__((noreturn));

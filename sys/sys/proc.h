@@ -129,6 +129,22 @@ struct proc {
     uintptr_t           p_startup_va;
 
     /*
+     * The heap, as offsets into the slot. The base is where the region a
+     * program may grow begins: one page above the system page at Tier 2,
+     * and just past the image at Tier 0. The top is how far the program
+     * has raised it, equal to the base until it asks for more. Both tiers
+     * carry these, because the reach check bounds a program at the top on
+     * each of them and the operation that moves it is the same on each.
+     *
+     * The base alone would not do. A program reaches memory up to the top
+     * and no further, so the region between the top and the slot end is
+     * memory it was not given until it asks, which is what makes raising
+     * the top mean something.
+     */
+    uintptr_t           p_heap_base;
+    uintptr_t           p_heap_top;
+
+    /*
      * The completion timeline, embedded rather than drawn from the
      * pool, and the status a joiner reads once it has advanced. A
      * process finishes when its last thread does, and the code it

@@ -26,6 +26,7 @@
 #include <sys/handle.h>
 #include <sys/intr.h>
 #include <sys/op.h>
+#include <sys/page.h>
 #include <sys/proc.h>
 #include <sys/thread.h>
 #include <sys/systm.h>
@@ -516,6 +517,48 @@ op_irq_unmask(struct proc *p, struct sys_op *op)
     }
 
     return irq_unmask(obj);
+}
+
+/*
+ * Raise the calling process's heap top.
+ *
+ * The amount is rounded up to a page, because the region is mapped a page
+ * at a time and a top partway into one would name memory that page does
+ * not cover. The top does not pass the end of the slot: beyond it is the
+ * next program's memory at Tier 0 and nothing at all at Tier 2, neither of
+ * which this program may claim. The old top comes back as the base of the
+ * range the caller just claimed, so it writes from there without knowing
+ * where its heap began.
+ */
+static sys_err_t
+op_heap_set(struct proc *p, struct sys_op *op)
+{
+    struct sys_op_heap_args *args;
+    uintptr_t base, grow, top;
+    size_t slot;
+
+    args = (struct sys_op_heap_args *)op->arg_ptr;
+    if (args == NULL || op->arg_len < sizeof(*args)) {
+        return SYS_ERR_INVALID_ARG;
+    }
+
+    if (!proc_slot(p, &base, &slot)) {
+        return SYS_ERR_NOT_SUPPORTED;
+    }
+
+    grow = PAGE_ALIGN_UP(args->delta);
+    if (grow < args->delta) {
+        return SYS_ERR_NO_MEMORY;
+    }
+    top = p->p_heap_top + grow;
+    if (top < p->p_heap_top || top > slot) {
+        return SYS_ERR_NO_MEMORY;
+    }
+
+    args->out_base = base + p->p_heap_top;
+    p->p_heap_top = top;
+
+    return SYS_OK;
 }
 
 /*
@@ -1017,6 +1060,9 @@ sys_op_exec(struct sys_op *op, struct batch_regs *regs)
         break;
     case SYS_OP_GRANT_MAP:
         err = op_grant_map(p, op);
+        break;
+    case SYS_OP_HEAP_SET:
+        err = op_heap_set(p, op);
         break;
     case SYS_OP_PROC_SPAWN:
         err = op_proc_spawn(p, op);

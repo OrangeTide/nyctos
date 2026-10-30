@@ -86,8 +86,8 @@ check: all
 	@grep -q '^blk: a damaged metadata sector is rejected' $(OBJTOP)/check/burst.out \
 	    || { echo 'check: a damaged metadata sector was not rejected'; \
 	         false; }
-	@grep -q '^anon: a page above the image took a write' $(OBJTOP)/check/burst.out \
-	    || { echo 'check: a write to a page above the image was not served'; \
+	@grep -q '^anon: the heap grew and the range took a write' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: a write to the grown heap range was not served'; \
 	         false; }
 	@echo "check: $(ARCH), symbols"
 	@$(TOPDIR)/scripts/symcheck.sh $(NYCSYM) $(KERNEL_ELF)
