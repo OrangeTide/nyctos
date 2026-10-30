@@ -244,6 +244,185 @@ image is and the store falls back to identity. Each stage shipped behind a check
 the second boot's console feeds: the restored epoch, the surviving snapshot, and
 the rejected damaged sector.
 
+The versions through 0.35 built the storage stack down to the disk. The ones
+that follow are the path to a system that runs a serious program, a C compiler
+among them, on real hardware. The order is the claim: 0.36 is the gate in front
+of every serious program, 0.37 and 0.38 give files that programs and the shell
+can use, 0.39 lets a tool come from disk, 0.40 makes the library sufficient,
+0.41 is the hardware, and 0.42 is the payoff.
+
+**0.36. A heap that grows.** Every process has a fixed one-megabyte address
+space, mapped in full at spawn, and the Tier 2 pager serves read-only pages
+only, so nothing can ask for memory at run time. A process gains a heap it can
+extend, backed by writable pages the pager fills on a write fault at Tier 2 and
+by a larger reservation at Tier 0, and the C library gets an allocator over it.
+Three stages:
+
+1. Writable pages on fault. The pager supplies a zeroed writable page for a
+   write fault above the image, and a write fault there stops being fatal. What
+   runs: a program writes past its data segment into a fresh page and reads the
+   bytes back. What fails it: a pager that still refuses the write fault kills
+   the program at the first store.
+
+2. A heap the process extends. An operation moves the top of a process's heap
+   region, and the reach check grows with it, so a pointer into the new range is
+   valid where it was not before. Tier 0 reserves the range eagerly, Tier 2
+   leaves it to the fault path, and the interface is the same at both. What runs:
+   a program raises its heap top, writes the whole new range, and the kernel
+   accounts the frames. What fails it: a top that moves without the reach check
+   following lets a program reach memory it was not given, or a store faults in
+   the range it just claimed.
+
+3. `malloc` and `free`. The C library carries an allocator over the heap region,
+   returning aligned blocks and reusing freed ones. What runs: a program
+   allocates and frees in a pattern that outlives its initial reservation, and
+   the live bytes are never corrupted by a later allocation. What fails it: an
+   allocator that hands out an overlapping block returns two live pointers to one
+   address.
+
+**0.37. A filesystem that takes writes.** The block store survives a boot, but
+no server above it writes file content: `ramfs` holds immutable static bytes,
+`fs_server` is read-only, and the virtio store writes raw blocks with nothing
+over them. A filesystem server lays a directory tree and file data on the block
+store and serves create, write, and truncate, so a file written in one boot is
+read back in the next. Three stages:
+
+1. Bytes onto the store. The filesystem server writes a file's content through
+   the block store rather than pointing at fixed bytes, and `FS_OP_WRITE` lands
+   in a block the store owns. What runs: a file is opened, written, and read back
+   in the same boot with the bytes that were written. What fails it: a write that
+   updates the length but not the block leaves the old bytes readable.
+
+2. Create, grow, and truncate on disk. The server keeps its directory tree and
+   per-file block lists on the store, so `FS_OP_CREATE` makes a file with
+   content, a write past the end grows it, and `FS_OP_TRUNCATE` shortens it. What
+   runs: a file created and written in one boot is walked and read in the next
+   with its content intact. What fails it: a tree held only in memory loses the
+   file at power off, which the two-boot check catches.
+
+3. `stat`, and the library client. The protocol gains `FS_OP_STAT`, and the C
+   library gets `file_create`, `file_write`, `file_truncate`, and `file_stat` so
+   a program reaches all of it without hand-built messages. What runs: one
+   program writes a file and a second reads its size and bytes through the
+   library. What fails it: a `stat` that reports a stale size disagrees with the
+   bytes the reader gets.
+
+**0.38. Descriptors, streams, and redirection.** I/O is a single hardwired
+console channel plus a separate file-handle world, with no descriptor table, so
+a program's output cannot be pointed anywhere but the console. A per-process
+descriptor table unifies the console and files, buffered streams sit over it,
+and the shell redirects and pipes them. Three stages:
+
+1. A descriptor table. The library keeps a per-process table of open descriptors
+   over both console connections and files, with `open`, `close`, `read`,
+   `write`, and `lseek`, and 0, 1, and 2 are entries in it rather than a fixed
+   console lookup. What runs: a program opens a file as a descriptor, reads it
+   with `read`, and seeks within it. What fails it: a table that resolves every
+   descriptor to the console reads the console when asked for a file.
+
+2. Buffered streams. The library carries `FILE`, `fopen`, `fread`, `fwrite`,
+   `fprintf`, and `fflush` over the descriptor layer. What runs: a program writes
+   a file through a buffered stream and the bytes match when read back
+   unbuffered. What fails it: a stream that never flushes loses the last partial
+   buffer.
+
+3. Redirection and pipes. The shell applies `>`, `>>`, and `<` by opening a file
+   onto a child's descriptor before spawn, and `|` by connecting one child's
+   output descriptor to the next child's input. A child inherits 0, 1, and 2 from
+   the shell. What runs: `echo hi > f` then `cat < f` prints `hi`, and `a | b`
+   passes a's output to b. What fails it: a redirection the child does not
+   inherit sends the output to the console instead of the file.
+
+**0.39. Programs from the filesystem.** A process can be created only from a name
+baked into the kernel's boot archive, and there is no loader a running program
+can reach, so no driver can start a tool it finds on disk. A loader reads an ELF
+from the filesystem into a new process, and spawn takes a path. The boot archive
+keeps only the bootstrap set. Three stages:
+
+1. Load an ELF from a file. A loader, a user process holding the filesystem and
+   the right to populate a new address space, reads a program's `PT_LOAD`
+   segments from a file and starts it. What runs: a program stored as a file is
+   loaded and runs to its exit status. What fails it: a loader that skips a
+   segment or its zero fill starts a program reading bytes that are not there.
+
+2. Spawn by path. The shell runs a program named by a filesystem path, resolved
+   against its namespace, rather than an archive member. What runs: a program
+   placed on the filesystem runs from the shell by its path. What fails it: a
+   path that resolves to nothing is reported as not found rather than spawning a
+   stale archive member of the same name.
+
+3. More than one at once. The Tier 0 one-live-instance-per-image limit, a
+   consequence of the physical load address, is lifted or scoped so a toolchain
+   can run several programs together. What runs: the same program runs as two
+   live processes at both tiers. What fails it: a second instance overwrites the
+   first's image.
+
+**0.40. A C library a compiler links against.** The library is a stub: `string.h`
+is four functions, there is no `errno`, no `setjmp`, no `ctype`, and `printf` is
+console-only. It grows to what a non-trivial program and a compiler need, each
+group behind a program that exercises it. Three stages:
+
+1. Strings and conversions. The full `string.h` family, `ctype`, and the integer
+   conversions, each behind a test program. What runs: a program exercises each
+   function against known inputs and outputs. What fails it: a `memmove` that
+   does not handle overlap corrupts an overlapping copy.
+
+2. `errno`, `setjmp`, and the process environment. A per-thread `errno` set by
+   the failing library calls, `setjmp` and `longjmp`, and an environment passed
+   to children so `getenv` has something to read. What runs: a library call
+   fails, sets `errno`, and a `longjmp` unwinds to a saved point. What fails it:
+   a shared `errno` across threads reports one thread's failure to another.
+
+3. Enough `stdio` and `stdlib` for a compiler. Formatted input, the remaining
+   `printf` conversions a compiler emits, and the allocation and exit paths a
+   multi-pass program leans on. What runs: a mid-sized program that reads
+   structured input, allocates, and writes formatted output runs to completion.
+   What fails it: a conversion the compiler emits prints the wrong text.
+
+**0.41. A real board.** Every device address, interrupt number, memory size, and
+the RISC-V timer frequency is a compiled-in constant matching QEMU `virt`, and
+there is no handover parsing, so the system runs on one emulated board and no
+other. The kernel reads the hardware it was handed rather than assuming it, and
+boots on a named real target. Three stages:
+
+1. Read the handover. The kernel parses the device tree it is handed at boot and
+   takes the memory base and size and the console from it rather than from
+   constants. What runs: the system boots with the memory size and console the
+   device tree names, and a changed memory size is honoured. What fails it: a
+   kernel that ignores the device tree runs only at the one size it was compiled
+   for.
+
+2. Discover the controllers and the clock. The interrupt controller layout and
+   the timer frequency come from the device tree, so the RISC-V timer is no
+   longer a hardcoded ten megahertz and the interrupt routing is read rather than
+   assumed. What runs: timers and device interrupts work on a board whose
+   frequency and routing differ from QEMU's. What fails it: a hardcoded frequency
+   makes every deadline wrong on hardware that does not match it.
+
+3. One real target. A real boot path for a named board, a real firmware handover
+   rather than QEMU's direct kernel load, the correct call conduit on ARM, a real
+   SBI underneath on RISC-V, and a storage driver for a device that board has.
+   What runs: the shell session runs on the real board against real storage. What
+   fails it: a driver written to QEMU's virtio slot layout finds no device on the
+   real controller.
+
+**0.42. A compiler on the machine.** With a heap, a writable filesystem,
+descriptors, a loader, and a fuller library in place, a C compiler is a program
+the system can host. A small self-hosting compiler, skjegg rather than gcc, is
+ported to the nyctos library and runs on the machine, compiling a C source to an
+object the on-device assembler and linker turn into a program that runs. gcc is
+out of scope: it needs a hosted build and far more memory than this system will
+offer for a long time. The stages follow once 0.36 through 0.41 are real,
+because each depends on them, and are written when the ground under them is.
+
+**Off the line, not on it.** A screen editor and the `ls`, `cp`, `rm`, and
+`mkdir` utility set are worth a small version or a patch once files can be
+written, but they are not on the path to a compiler, so they are not a claim
+here. The object pool bounds, twenty-four processes and thirty-two threads and
+five hundred and twelve megabytes of frames, are enough for a small toolchain
+and are a tuning question once the per-process memory ceiling in 0.36 is gone,
+not a version of their own.
+
 **Not on the line.** The bounded-formatter decision, whether the sink-based
 allocation-free formatter is enough of an improvement over the current `printf`
 to override the choice `printf`'s own comment defends, is a decide-and-record
