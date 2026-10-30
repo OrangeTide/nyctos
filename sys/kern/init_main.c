@@ -18825,6 +18825,99 @@ persistence_checks(sys_handle_t store)
 }
 
 /*
+ * A file written through the filesystem and read back in the same boot. The
+ * write crosses into the server and then into the store below it, and the
+ * read that follows must return the bytes the write placed rather than the
+ * bytes the block held before. A server that moved the file's length
+ * without putting the bytes on the store would leave the old bytes
+ * readable, which is the failure the compare catches: on a fresh image the
+ * block is zeroed and the pattern is not, so the read would come back zeros.
+ *
+ * Inline both ways. The boot thread's memory is the kernel's and a server
+ * may not be lent it, so the write carries its bytes in the message and the
+ * read takes them back the same way, which is the small case this protocol
+ * already serves without a buffer.
+ */
+static void
+fs_write_checks(sys_handle_t root)
+{
+    static const uint8_t pattern[] = {
+        'h', 'e', 'l', 'l', 'o', ' ', 'd', 'i', 's', 'k',
+    };
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+    const fs_reply_t *rep;
+    sys_handle_t file;
+    uint32_t i;
+
+    /* Walk to the writable file, as any client would. */
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = sizeof(*req);
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "data", sizeof("data"));
+    expect("walking to the writable file",
+      run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_OK);
+    rep = (const fs_reply_t *)tx.reply.inline_data;
+    if (rep->fr_status != SYS_OK) {
+        panic("fs: the walk to the writable file failed");
+    }
+    file = tx.reply.handle;
+
+    /* Write the pattern at the front of the file. */
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WRITE;
+    req->fr_offset = 0;
+    req->fr_length = sizeof(pattern);
+    memcpy(&tx.request.inline_data[sizeof(*req)], pattern, sizeof(pattern));
+    tx.request.inline_len = sizeof(*req) + sizeof(pattern);
+    expect("writing the file through the server",
+      run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx)), SYS_OK);
+    rep = (const fs_reply_t *)tx.reply.inline_data;
+    if (rep->fr_status != SYS_OK) {
+        panic("fs: the write was refused");
+    }
+
+    /* Read it back inline: the bytes must be the ones just written. */
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = sizeof(*req);
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = 0;
+    req->fr_length = sizeof(pattern);
+    expect("reading the written file back",
+      run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx)), SYS_OK);
+    rep = (const fs_reply_t *)tx.reply.inline_data;
+    if (rep->fr_status != SYS_OK) {
+        panic("fs: the read after the write failed");
+    }
+    if (rep->fr_length != sizeof(pattern)) {
+        panic("fs: the file read back %u bytes, not %u",
+          (unsigned int)rep->fr_length, (unsigned int)sizeof(pattern));
+    }
+    for (i = 0; i < sizeof(pattern); i++) {
+        if (tx.reply.inline_data[sizeof(*rep) + i] != pattern[i]) {
+            panic("fs: the file read back the old bytes, not what was written");
+        }
+    }
+
+    /* Done with the connection the walk minted. */
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = sizeof(*req);
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_CLOSE;
+    (void)run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx));
+    handle_close(&proc_current()->p_handles, file);
+
+    cnputs("fs: a written file read back the new bytes\n");
+}
+
+/*
  * A reader resolves an address in an archived member to the name of the
  * function that contains it. The member's lowest function symbol is found
  * here, independently of the reader, and an address one byte into it is
@@ -19382,6 +19475,8 @@ user_slice(void)
         cnputs("    fs_server: a compound entry that overran the payload "
           "was refused\n");
     }
+
+    fs_write_checks(h_fs_root);
 
     /*
      * The same file, read two ways. One message should

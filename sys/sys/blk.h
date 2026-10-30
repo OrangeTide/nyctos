@@ -55,4 +55,12 @@
 #define BLK_NOTES_BLOCK     4u
 #define BLK_NOTES_BYTES     35u
 
+/*
+ * A block for a file the filesystem server writes at run time rather than
+ * reads from fixed bytes. It starts empty and takes whatever a write puts
+ * in it, so it sits past the static files and past the blocks the store's
+ * own write and persistence checks use (7 and 8).
+ */
+#define BLK_DATA_BLOCK      9u
+
 #endif /* _SYS_BLK_H_ */

@@ -92,6 +92,9 @@ check: all
 	@grep -q '^allot: malloc reused a freed block and kept the live ones' $(OBJTOP)/check/burst.out \
 	    || { echo 'check: the allocator did not reuse or preserve blocks'; \
 	         false; }
+	@grep -q '^fs: a written file read back the new bytes' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: a file written through the filesystem did not read back'; \
+	         false; }
 	@echo "check: $(ARCH), symbols"
 	@$(TOPDIR)/scripts/symcheck.sh $(NYCSYM) $(KERNEL_ELF)
 	@$(TOPDIR)/scripts/klinecheck.sh $(MKLINE) $(KLINE_BLOB) $(KERNEL_ELF)

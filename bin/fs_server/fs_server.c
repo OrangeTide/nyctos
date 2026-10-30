@@ -47,10 +47,16 @@
  * used to ask whether a node had bytes has to keep asking the same
  * question, and a second field to keep consistent with the first is a
  * second field that will one day disagree.
+ *
+ * The table is not const, because a write moves a file's length. The
+ * length a write sets lives here and nowhere else, so the read that
+ * follows it reads the same number the write wrote. It is in memory and
+ * not on the store: the tree does not yet survive a boot, which is a later
+ * stage, so a length set this boot is gone at the next.
  */
 #define FS_NOT_A_FILE   (-1)
 
-static const struct {
+static struct {
     const char *name;
     int32_t     block;      /* in the store, or FS_NOT_A_FILE */
     uint32_t    len;
@@ -61,6 +67,7 @@ static const struct {
     { "/",     FS_NOT_A_FILE,      0,                  FS_NODE_ALT },
     { "motd",  BLK_ALT_MOTD_BLOCK, BLK_ALT_MOTD_BYTES, FS_NODE_ALT },
     { "notes", BLK_NOTES_BLOCK,    BLK_NOTES_BYTES,    FS_NODE_ALT },
+    { "data",  BLK_DATA_BLOCK,     0,                  FS_NODE_ROOT },
 };
 
 #define FS_NODE_COUNT   (sizeof(fs_nodes) / sizeof(fs_nodes[0]))
@@ -240,6 +247,53 @@ store_read(void *dst, uint32_t blocknr)
     }
 
     return SYS_OK;
+}
+
+/*
+ * Write one block to the store, the bytes carried inline after the request
+ * header the way a client's write carries its own. A whole block every
+ * time: the store deals in blocks, so a write of part of one is a read of
+ * the block, the change laid over it, and the whole block written back,
+ * which do_write does before it calls this.
+ */
+static sys_err_t
+store_write(const void *src, uint32_t blocknr)
+{
+    fs_request_t req;
+    fs_reply_t rep;
+    struct wire_out out;
+    struct wire_in in;
+    sys_msg_t message, reply;
+    sys_err_t err;
+
+    if (store == SYS_HANDLE_INVALID) {
+        return SYS_ERR_NOT_SUPPORTED;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.handle = SYS_HANDLE_INVALID;
+
+    memset(&req, 0, sizeof(req));
+    req.fr_op = FS_OP_WRITE;
+    req.fr_offset = (uint64_t)blocknr * BLK_BLOCK_BYTES;
+    req.fr_length = BLK_BLOCK_BYTES;
+    wire_out_init(&out, message.inline_data, SYS_IPC_INLINE_BYTES);
+    fs_request_put(&out, &req);
+    wire_put_bytes(&out, (const uint8_t *)src, BLK_BLOCK_BYTES);
+    message.inline_len = sizeof(fs_request_t) + BLK_BLOCK_BYTES;
+
+    err = sys_msg_send(store, &message, &reply);
+    if (err != SYS_OK) {
+        return err;
+    }
+
+    wire_in_init(&in, reply.inline_data, reply.inline_len);
+    fs_reply_get(&in, &rep);
+    if (!in.ok) {
+        return SYS_ERR_TRUNCATED;
+    }
+
+    return rep.fr_status;
 }
 
 /*
@@ -445,6 +499,77 @@ do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
 }
 
 /*
+ * Write bytes into a file, through the store, and move the file's length to
+ * cover them. The bytes travel inline after the request header, the small
+ * case a console line is too, so the store below gets them the same way.
+ *
+ * A block at a time, and this stage within the file's first block: the
+ * store serves whole blocks, so a write of part of one reads the block,
+ * lays the new bytes over the part the write names, and writes the whole
+ * block back. Writing the block without reading it first would zero the
+ * bytes beside the ones written, so a five-byte write would lose the rest
+ * of the block.
+ *
+ * The length moves last, after the bytes are on the store, so a read that
+ * follows a write reads bytes that are there. A length moved first would
+ * let a reader ask for bytes the store does not hold yet, which is the
+ * failure this order avoids.
+ */
+static void
+do_write(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
+  fs_reply_t *rep)
+{
+    const uint8_t *src;
+    uint32_t len, within, blocknr;
+    sys_err_t err;
+
+    if (node >= FS_NODE_COUNT || fs_nodes[node].block == FS_NOT_A_FILE) {
+        rep->fr_status = SYS_ERR_NO_ENT;
+        return;
+    }
+
+    len = req->fr_length;
+
+    /*
+     * Within the file's first block, this stage. A write that reaches past
+     * it, or past the end of the payload it says it carries, is refused
+     * whole rather than served short.
+     */
+    if (len == 0 || req->fr_offset >= BLK_BLOCK_BYTES ||
+      req->fr_offset + len > BLK_BLOCK_BYTES) {
+        rep->fr_status = SYS_ERR_INVALID_ARG;
+        return;
+    }
+    if (message->inline_len < sizeof(fs_request_t) + len) {
+        rep->fr_status = SYS_ERR_INVALID_ARG;
+        return;
+    }
+
+    src = &message->inline_data[sizeof(fs_request_t)];
+    within = (uint32_t)req->fr_offset;
+    blocknr = (uint32_t)fs_nodes[node].block;
+
+    err = store_read(block, blocknr);
+    if (err != SYS_OK) {
+        rep->fr_status = err;
+        return;
+    }
+    memcpy(&block[within], src, len);
+    err = store_write(block, blocknr);
+    if (err != SYS_OK) {
+        rep->fr_status = err;
+        return;
+    }
+
+    if (within + len > fs_nodes[node].len) {
+        fs_nodes[node].len = within + len;
+    }
+    rep->fr_status = SYS_OK;
+    rep->fr_length = len;
+    rep->fr_size = fs_nodes[node].len;
+}
+
+/*
  * Execute a compound request.
  *
  * Bounds first, then execution: the whole sequence is checked against the
@@ -619,6 +744,9 @@ main(void)
         case FS_OP_READ:
             do_read(&message, &req, node, &reply, &rep);
             reply.inline_len = sizeof(fs_reply_t) + rep.fr_length;
+            break;
+        case FS_OP_WRITE:
+            do_write(&message, &req, node, &rep);
             break;
         case FS_OP_CLOSE:
             rep.fr_status = SYS_OK;
