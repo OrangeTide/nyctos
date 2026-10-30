@@ -896,17 +896,20 @@ snapshot_selftest(void)
 /*
  * The on-disk metadata, one sector holding the live map, the reference counts,
  * and the snapshot, behind a header. The magic marks the sector as this
- * store's, the version its layout, and the epoch counts the boots that have
- * restored it. A sector whose magic does not match is a fresh image with no
- * metadata yet. The snapshot map and its live flag ride alongside the live map,
- * so a snapshot and the block sharing it describes survive a boot.
+ * store's, the version its layout, the checksum seals the body against damage,
+ * and the epoch counts the boots that have restored it. A sector whose magic
+ * does not match is a fresh image with no metadata yet; a sector whose checksum
+ * does not match is torn or foreign and is passed over the same way, so neither
+ * is restored as the map. The snapshot map and its live flag ride alongside the
+ * live map, so a snapshot and the block sharing it describes survive a boot.
  */
 #define META_MAGIC      0x6e626c6bu     /* 'nblk' */
-#define META_VERSION    2u
+#define META_VERSION    3u
 
 struct blk_meta {
     uint32_t    magic;
     uint32_t    version;
+    uint32_t    checksum;
     uint32_t    epoch;
     uint16_t    block_map[BLK_BLOCK_COUNT];
     uint8_t     refc[STORE_PHYS_BLOCKS];
@@ -916,6 +919,42 @@ struct blk_meta {
 
 _Static_assert(sizeof(struct blk_meta) <= VIRTIO_BLK_SECTOR_BYTES,
   "the metadata does not fit one sector");
+
+/*
+ * Hash the metadata for the header's checksum field, so a sector with the right
+ * magic and version but a damaged body is caught rather than restored. The
+ * field being filled reads as zero while the hash runs, so the stored value
+ * never covers itself. memcpy copies every byte, padding included, so the hash
+ * does not depend on bytes the struct assignment would leave untouched.
+ */
+static uint32_t
+meta_checksum(const struct blk_meta *m)
+{
+    struct blk_meta t;
+    const uint8_t *b = (const uint8_t *)&t;
+    uint32_t h = 2166136261u;       /* FNV-1a offset basis */
+    size_t i;
+
+    memcpy(&t, m, sizeof(t));
+    t.checksum = 0;
+    for (i = 0; i < sizeof(t); i++) {
+        h = (h ^ b[i]) * 16777619u;     /* FNV-1a prime */
+    }
+
+    return h;
+}
+
+/*
+ * Whether a sector read from disk is this store's metadata to restore: the
+ * magic and version mark the layout, and the checksum must match the body so a
+ * torn or foreign sector is passed over rather than taken as the map.
+ */
+static int
+meta_sector_accepts(const struct blk_meta *m)
+{
+    return m->magic == META_MAGIC && m->version == META_VERSION &&
+        m->checksum == meta_checksum(m);
+}
 
 /*
  * Write the live map and the reference counts to the metadata sector behind the
@@ -936,6 +975,7 @@ meta_save(void)
     memcpy(m.refc, refc, sizeof(refc));
     memcpy(m.snap_map, snap_map, sizeof(snap_map));
     m.snap_live = (uint8_t)snap_live;
+    m.checksum = meta_checksum(&m);
 
     memset(q->data, 0, sizeof(q->data));
     memcpy(q->data, &m, sizeof(m));
@@ -948,13 +988,13 @@ meta_save(void)
 
 /*
  * Restore the map from the metadata sector, or start fresh. The sector is read
- * and its header checked: a matching magic and version restore the block map
- * and the reference counts a previous boot wrote and raise the epoch, so the
- * indirection survives a boot. A sector with no matching magic, a fresh image,
- * leaves the identity map in place and takes the first epoch. Either way the
- * sector ends holding this boot's metadata, and the store reports on the
- * always-on debug console whether it restored or started fresh, where a boot
- * check can read it.
+ * and its header checked: a matching magic, version, and checksum restore the
+ * block map and the reference counts a previous boot wrote and raise the epoch,
+ * so the indirection survives a boot. A sector the header rejects, a fresh
+ * image or one torn or foreign, leaves the identity map in place and takes the
+ * first epoch. Either way the sector ends holding this boot's metadata, and the
+ * store reports on the always-on debug console whether it restored or started
+ * fresh, where a boot check can read it.
  */
 static int
 meta_load_or_init(void)
@@ -968,7 +1008,7 @@ meta_load_or_init(void)
     }
     memcpy(&m, q->data, sizeof(m));
 
-    if (m.magic == META_MAGIC && m.version == META_VERSION) {
+    if (meta_sector_accepts(&m)) {
         memcpy(block_map, m.block_map, sizeof(block_map));
         memcpy(refc, m.refc, sizeof(refc));
         memcpy(snap_map, m.snap_map, sizeof(snap_map));
@@ -984,6 +1024,63 @@ meta_load_or_init(void)
     (void)sys_debug_write(line, (uint32_t)n);
 
     return meta_save();
+}
+
+/*
+ * Prove the header's checksum catches a damaged sector before any map is
+ * restored. The live sector is read aside, then a sector with a valid magic and
+ * version but one body byte disturbed after sealing is written in its place:
+ * the header must reject it, so a single bit of damage is not taken as the map.
+ * An intact sector is confirmed accepted first, so a header that rejected
+ * everything would not pass. The saved sector is written back byte for byte, so
+ * the store loads the real metadata next and a persisted snapshot still
+ * survives. The store reports on the always-on debug console, where a boot
+ * check reads the line.
+ */
+static int
+meta_validate_selftest(void)
+{
+    static const char ok[] = "blk: a damaged metadata sector is rejected\n";
+    uint8_t backup[VIRTIO_BLK_SECTOR_BYTES];
+    struct blk_meta m;
+
+    if (read_sector(META_SECTOR) != 0) {
+        return 51;      /* the device would not read the metadata sector */
+    }
+    memcpy(backup, q->data, sizeof(backup));
+
+    memset(&m, 0, sizeof(m));
+    m.magic = META_MAGIC;
+    m.version = META_VERSION;
+    m.epoch = 1u;
+    m.checksum = meta_checksum(&m);
+    if (!meta_sector_accepts(&m)) {
+        return 52;      /* an intact sector was wrongly rejected */
+    }
+    m.refc[0] ^= 0x01u;             /* disturb the body after sealing it */
+
+    memset(q->data, 0, sizeof(q->data));
+    memcpy(q->data, &m, sizeof(m));
+    if (write_sector(META_SECTOR) != 0) {
+        return 53;
+    }
+
+    if (read_sector(META_SECTOR) != 0) {
+        return 54;
+    }
+    memcpy(&m, q->data, sizeof(m));
+    if (meta_sector_accepts(&m)) {
+        return 55;      /* a damaged sector was taken as the map */
+    }
+
+    memcpy(q->data, backup, sizeof(backup));
+    if (write_sector(META_SECTOR) != 0) {
+        return 56;      /* the real sector would not go back */
+    }
+
+    (void)sys_debug_write(ok, (uint32_t)sizeof(ok) - 1);
+
+    return 0;
 }
 
 /*
@@ -1168,6 +1265,12 @@ main(void)
     err = snapshot_selftest();
     if (err != 0) {
         DBG_PUTS("virtio_blk: a snapshot did not keep its bytes");
+        return err;
+    }
+
+    err = meta_validate_selftest();
+    if (err != 0) {
+        DBG_PUTS("virtio_blk: the metadata checksum did not catch damage");
         return err;
     }
 
