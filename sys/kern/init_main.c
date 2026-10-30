@@ -18917,6 +18917,168 @@ fs_write_checks(sys_handle_t root)
     cnputs("fs: a written file read back the new bytes\n");
 }
 
+/* Write bytes at the front of a file the connection names, panicking unless
+ * the server took them. */
+static void
+fs_write_bytes(sys_handle_t file, const uint8_t *data, uint32_t n,
+  const char *what)
+{
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WRITE;
+    req->fr_offset = 0;
+    req->fr_length = n;
+    memcpy(&tx.request.inline_data[sizeof(*req)], data, n);
+    tx.request.inline_len = sizeof(*req) + n;
+    expect(what, run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx)), SYS_OK);
+}
+
+/* Read n bytes from the front of a file inline and panic unless they are the
+ * n bytes expected. */
+static void
+fs_read_check(sys_handle_t file, const uint8_t *want, uint32_t n,
+  const char *what)
+{
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+    const fs_reply_t *rep;
+    uint32_t i;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = sizeof(*req);
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_READ;
+    req->fr_offset = 0;
+    req->fr_length = n;
+    expect(what, run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx)), SYS_OK);
+
+    rep = (const fs_reply_t *)tx.reply.inline_data;
+    if (rep->fr_length != n) {
+        panic("fs: the made file read back %u bytes, not %u",
+          (unsigned int)rep->fr_length, (unsigned int)n);
+    }
+    for (i = 0; i < n; i++) {
+        if (tx.reply.inline_data[sizeof(*rep) + i] != want[i]) {
+            panic("fs: the made file read back the wrong bytes");
+        }
+    }
+}
+
+/* Send a protocol close and drop the handle the walk or create minted. */
+static void
+fs_close_conn(sys_handle_t file)
+{
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = sizeof(*req);
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_CLOSE;
+    (void)run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx));
+    handle_close(&proc_current()->p_handles, file);
+}
+
+/*
+ * A file created and written in one boot, found and read in the next. The
+ * filesystem keeps the made file's directory entry on the store, so a walk
+ * in a later boot finds a file no code made this boot, and a read returns
+ * the bytes the earlier boot wrote. A tree held in the server's memory alone
+ * would be gone at power off, which the two-boot check catches: the later
+ * boot would not find the file and its survived marker would never print.
+ *
+ * The presence of the file tells the boots apart, the way the persistence
+ * check reads its marker block. A fresh image has no file, so this boot
+ * makes it: create, a write that grows it past one block, a truncate that
+ * shortens it, and a write that grows it back, each read back and checked
+ * here so the whole path is load-bearing in this boot too. A later boot
+ * finds the file and checks the bytes the store kept.
+ */
+static void
+fs_create_checks(sys_handle_t root)
+{
+    static const uint8_t pattern[24] = {
+        0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+        0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f,
+        0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57,
+    };
+    struct sys_op_send_args tx;
+    fs_request_t *req;
+    const fs_reply_t *rep;
+    sys_handle_t file;
+    sys_err_t err;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = sizeof(*req);
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_WALK;
+    memcpy(req->fr_name, "made", sizeof("made"));
+    err = run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx));
+
+    if (err == SYS_OK) {
+        rep = (const fs_reply_t *)tx.reply.inline_data;
+        file = tx.reply.handle;
+        if (rep->fr_size != sizeof(pattern)) {
+            panic("fs: the made file came back %u bytes, not %u",
+              (unsigned int)rep->fr_size, (unsigned int)sizeof(pattern));
+        }
+        fs_read_check(file, pattern, sizeof(pattern),
+          "reading the made file in a later boot");
+        fs_close_conn(file);
+        cnputs("fs: a created file survived to this boot\n");
+        return;
+    }
+    if (err != SYS_ERR_NO_ENT) {
+        panic("fs: walking to the made file answered %d", (int)err);
+    }
+
+    /* A fresh image. Make the file and leave it for a later boot to find. */
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = sizeof(*req);
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_CREATE;
+    req->fr_length = FS_KIND_FILE;
+    memcpy(req->fr_name, "made", sizeof("made"));
+    expect("creating a file on disk",
+      run(SYS_OP_IPC_SEND, root, &tx, sizeof(tx)), SYS_OK);
+    file = tx.reply.handle;
+
+    /* A write that reaches past the first block grows the file into a second. */
+    fs_write_bytes(file, pattern, sizeof(pattern), "writing the made file");
+    fs_read_check(file, pattern, sizeof(pattern), "reading the made file back");
+
+    /* Shorten it, and read the shorter file back. */
+    memset(&tx, 0, sizeof(tx));
+    tx.request.handle = SYS_HANDLE_INVALID;
+    tx.request.inline_len = sizeof(*req);
+    req = (fs_request_t *)tx.request.inline_data;
+    req->fr_op = FS_OP_TRUNCATE;
+    req->fr_length = 8;
+    expect("truncating the made file",
+      run(SYS_OP_IPC_SEND, file, &tx, sizeof(tx)), SYS_OK);
+    rep = (const fs_reply_t *)tx.reply.inline_data;
+    if (rep->fr_size != 8) {
+        panic("fs: truncate left the file %u bytes, not 8",
+          (unsigned int)rep->fr_size);
+    }
+    fs_read_check(file, pattern, 8, "reading the truncated file");
+
+    /* Grow it back to the whole pattern, the state a later boot reads. */
+    fs_write_bytes(file, pattern, sizeof(pattern), "growing the made file back");
+    fs_read_check(file, pattern, sizeof(pattern), "reading the regrown file");
+
+    fs_close_conn(file);
+    cnputs("fs: made a file, grew it past a block, and shortened it\n");
+}
+
 /*
  * A reader resolves an address in an archived member to the name of the
  * function that contains it. The member's lowest function symbol is found
@@ -19477,6 +19639,7 @@ user_slice(void)
     }
 
     fs_write_checks(h_fs_root);
+    fs_create_checks(h_fs_root);
 
     /*
      * The same file, read two ways. One message should

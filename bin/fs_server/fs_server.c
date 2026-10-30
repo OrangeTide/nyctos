@@ -68,9 +68,23 @@ static struct {
     { "motd",  BLK_ALT_MOTD_BLOCK, BLK_ALT_MOTD_BYTES, FS_NODE_ALT },
     { "notes", BLK_NOTES_BLOCK,    BLK_NOTES_BYTES,    FS_NODE_ALT },
     { "data",  BLK_DATA_BLOCK,     0,                  FS_NODE_ROOT },
+    { "",      FS_NOT_A_FILE,      0,                  FS_NODE_ROOT },
 };
 
 #define FS_NODE_COUNT   (sizeof(fs_nodes) / sizeof(fs_nodes[0]))
+
+/*
+ * The last entry is the slot a created file fills. It is empty until a file
+ * is made: its name is blank and its block is FS_NOT_A_FILE, so a walk skips
+ * it the way it skips a directory. A create fills it, points its block at
+ * the content run, and gives it a name; the name lives in a buffer of its
+ * own, because unlike the static entries this one's name is not a string the
+ * program was compiled with. One slot, so the directory holds one made file
+ * at a time, which is the smallest thing that shows a file surviving a boot.
+ */
+#define FS_CREATE_NODE  (FS_NODE_COUNT - 1u)
+
+static char created_name[FS_NAME_MAX + 1];
 
 /*
  * Whether any component of a name is `..`, which is the one thing a
@@ -297,6 +311,78 @@ store_write(const void *src, uint32_t blocknr)
 }
 
 /*
+ * The on-disk directory entry, one block wide. It names the made file, the
+ * block its content starts at, and how long it is, which is all a later boot
+ * needs to find the file and read it back. A zeroed block, which is what a
+ * fresh image holds, reads as no file: ds_used is zero and the slot stays
+ * empty.
+ *
+ * The name fits what is left of the block after the three fields, which is
+ * shorter than a full path component. A create of a longer name is refused
+ * rather than stored short.
+ */
+#define DIR_NAME_MAX    12u
+
+struct dir_slot {
+    uint8_t     ds_used;                /* a file is present when nonzero */
+    uint8_t     ds_start;               /* first content block */
+    uint16_t    ds_len;                 /* byte length */
+    char        ds_name[DIR_NAME_MAX];  /* zero-padded to fill the block */
+};
+
+_Static_assert(sizeof(struct dir_slot) == BLK_BLOCK_BYTES,
+  "the directory entry must be exactly one block");
+
+/*
+ * Read the directory block at startup and fill the created-file slot from
+ * it, so a file made in an earlier boot is present before the first request.
+ * A store that cannot answer, or a slot that is empty, leaves the slot as it
+ * was, which is empty.
+ */
+static void
+dir_load(void)
+{
+    struct dir_slot slot;
+
+    fs_nodes[FS_CREATE_NODE].name = created_name;
+
+    if (store_read(block, BLK_DIR_BLOCK) != SYS_OK) {
+        return;
+    }
+    memcpy(&slot, block, sizeof(slot));
+    if (slot.ds_used == 0) {
+        return;
+    }
+
+    memcpy(created_name, slot.ds_name, DIR_NAME_MAX);
+    created_name[DIR_NAME_MAX] = '\0';
+    fs_nodes[FS_CREATE_NODE].block = slot.ds_start;
+    fs_nodes[FS_CREATE_NODE].len = slot.ds_len;
+}
+
+/*
+ * Write the created-file slot back to the directory block, so a create, a
+ * grow, or a truncate is on the store before the reply is sent. An empty
+ * slot writes a zeroed entry, which a later boot reads as no file.
+ */
+static sys_err_t
+dir_persist(void)
+{
+    struct dir_slot slot;
+
+    memset(&slot, 0, sizeof(slot));
+    if (fs_nodes[FS_CREATE_NODE].block != FS_NOT_A_FILE) {
+        slot.ds_used = 1;
+        slot.ds_start = (uint8_t)fs_nodes[FS_CREATE_NODE].block;
+        slot.ds_len = (uint16_t)fs_nodes[FS_CREATE_NODE].len;
+        memcpy(slot.ds_name, created_name, DIR_NAME_MAX);
+    }
+    memcpy(block, &slot, sizeof(slot));
+
+    return store_write(block, BLK_DIR_BLOCK);
+}
+
+/*
  * Copy file bytes into the buffer the client supplied. A server does not
  * hand back memory of its own,
  * because it could never tell when the client had finished with it.
@@ -499,28 +585,44 @@ do_read(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
 }
 
 /*
+ * How many bytes a file node can hold. The made file spans its content run,
+ * so a write that outgrows one block has room in the next; every other file
+ * is one block, which is all the static files and the stage-one data file
+ * need.
+ */
+static uint32_t
+node_capacity(uint32_t node)
+{
+    if (node == FS_CREATE_NODE) {
+        return BLK_CREATE_BLOCKS * BLK_BLOCK_BYTES;
+    }
+    return BLK_BLOCK_BYTES;
+}
+
+/*
  * Write bytes into a file, through the store, and move the file's length to
  * cover them. The bytes travel inline after the request header, the small
  * case a console line is too, so the store below gets them the same way.
  *
- * A block at a time, and this stage within the file's first block: the
- * store serves whole blocks, so a write of part of one reads the block,
- * lays the new bytes over the part the write names, and writes the whole
- * block back. Writing the block without reading it first would zero the
- * bytes beside the ones written, so a five-byte write would lose the rest
- * of the block.
+ * A block at a time: the store serves whole blocks, so a write of part of
+ * one reads the block, lays the new bytes over the part the write names, and
+ * writes the whole block back, which keeps the bytes beside the write. A
+ * write past the first block carries on into the next, because the content
+ * run is contiguous and the block a byte falls in is the file's start plus
+ * the offset in blocks. That is what grows a file: the length moves to cover
+ * a write that reached past the old end.
  *
  * The length moves last, after the bytes are on the store, so a read that
- * follows a write reads bytes that are there. A length moved first would
- * let a reader ask for bytes the store does not hold yet, which is the
- * failure this order avoids.
+ * follows a write reads bytes that are there, and for the made file the new
+ * length goes to the store too, so a later boot finds it. A length moved
+ * first would let a reader ask for bytes the store does not hold yet.
  */
 static void
 do_write(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
   fs_reply_t *rep)
 {
     const uint8_t *src;
-    uint32_t len, within, blocknr;
+    uint32_t len, off, base, done;
     sys_err_t err;
 
     if (node >= FS_NODE_COUNT || fs_nodes[node].block == FS_NOT_A_FILE) {
@@ -529,14 +631,14 @@ do_write(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
     }
 
     len = req->fr_length;
+    off = (uint32_t)req->fr_offset;
 
     /*
-     * Within the file's first block, this stage. A write that reaches past
-     * it, or past the end of the payload it says it carries, is refused
-     * whole rather than served short.
+     * Within the file's capacity, and no further than the payload says it
+     * carries. A write past either is refused whole rather than served short.
      */
-    if (len == 0 || req->fr_offset >= BLK_BLOCK_BYTES ||
-      req->fr_offset + len > BLK_BLOCK_BYTES) {
+    if (len == 0 || req->fr_offset >= node_capacity(node) ||
+      req->fr_offset + len > node_capacity(node)) {
         rep->fr_status = SYS_ERR_INVALID_ARG;
         return;
     }
@@ -546,26 +648,142 @@ do_write(const sys_msg_t *message, const fs_request_t *req, uint32_t node,
     }
 
     src = &message->inline_data[sizeof(fs_request_t)];
-    within = (uint32_t)req->fr_offset;
-    blocknr = (uint32_t)fs_nodes[node].block;
+    base = (uint32_t)fs_nodes[node].block;
 
-    err = store_read(block, blocknr);
-    if (err != SYS_OK) {
-        rep->fr_status = err;
-        return;
-    }
-    memcpy(&block[within], src, len);
-    err = store_write(block, blocknr);
-    if (err != SYS_OK) {
-        rep->fr_status = err;
-        return;
+    done = 0;
+    while (done < len) {
+        uint32_t pos = off + done;
+        uint32_t within = pos % BLK_BLOCK_BYTES;
+        uint32_t n = BLK_BLOCK_BYTES - within;
+        uint32_t blocknr = base + pos / BLK_BLOCK_BYTES;
+
+        if (n > len - done) {
+            n = len - done;
+        }
+
+        err = store_read(block, blocknr);
+        if (err != SYS_OK) {
+            rep->fr_status = err;
+            return;
+        }
+        memcpy(&block[within], src + done, n);
+        err = store_write(block, blocknr);
+        if (err != SYS_OK) {
+            rep->fr_status = err;
+            return;
+        }
+
+        done += n;
     }
 
-    if (within + len > fs_nodes[node].len) {
-        fs_nodes[node].len = within + len;
+    if (off + len > fs_nodes[node].len) {
+        fs_nodes[node].len = off + len;
     }
-    rep->fr_status = SYS_OK;
+
+    if (node == FS_CREATE_NODE) {
+        rep->fr_status = dir_persist();
+        if (rep->fr_status != SYS_OK) {
+            return;
+        }
+    } else {
+        rep->fr_status = SYS_OK;
+    }
     rep->fr_length = len;
+    rep->fr_size = fs_nodes[node].len;
+}
+
+/*
+ * Make a file in the directory this connection names and hand back a
+ * connection to it. One slot, so a second made file while one exists is a
+ * pool that is full rather than a tree that grew. The length starts at zero;
+ * the file gains bytes from a write, which is where a file grows. The entry
+ * goes to the store before the reply, so the file is found after a boot.
+ */
+static void
+do_create(sys_handle_t chan, const fs_request_t *req, uint32_t node,
+  sys_msg_t *reply, fs_reply_t *rep)
+{
+    sys_handle_t conn;
+    uint32_t len;
+
+    /* A create under a file, not a directory, is the wrong type. */
+    if (node >= FS_NODE_COUNT || fs_nodes[node].block != FS_NOT_A_FILE) {
+        rep->fr_status = SYS_ERR_WRONG_TYPE;
+        return;
+    }
+
+    len = name_len(req->fr_name);
+    if (len == 0 || len > DIR_NAME_MAX) {
+        rep->fr_status = SYS_ERR_INVALID_ARG;
+        return;
+    }
+    if (climbs_out(req->fr_name, len)) {
+        rep->fr_status = SYS_ERR_PERM_DENIED;
+        return;
+    }
+
+    /* A file only; a made directory is a later stage. fr_length is the kind. */
+    if (req->fr_length == FS_KIND_DIR) {
+        rep->fr_status = SYS_ERR_NOT_SUPPORTED;
+        return;
+    }
+    if (fs_nodes[FS_CREATE_NODE].block != FS_NOT_A_FILE) {
+        rep->fr_status = SYS_ERR_NO_MEMORY;
+        return;
+    }
+
+    memset(created_name, 0, sizeof(created_name));
+    memcpy(created_name, req->fr_name, len);
+    fs_nodes[FS_CREATE_NODE].name = created_name;
+    fs_nodes[FS_CREATE_NODE].block = BLK_CREATE_BASE;
+    fs_nodes[FS_CREATE_NODE].len = 0;
+    fs_nodes[FS_CREATE_NODE].dir = node;
+
+    rep->fr_status = dir_persist();
+    if (rep->fr_status != SYS_OK) {
+        /* Not on the store, so it must not look made. */
+        fs_nodes[FS_CREATE_NODE].block = FS_NOT_A_FILE;
+        created_name[0] = '\0';
+        return;
+    }
+
+    rep->fr_status = sys_chan_connect(chan, FS_CREATE_NODE,
+      SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER, &conn);
+    if (rep->fr_status == SYS_OK) {
+        reply->handle = conn;
+        rep->fr_size = 0;
+    }
+}
+
+/*
+ * Set the length of the file this connection names, and put the new length
+ * on the store for the made file so a later boot reads the shortened file.
+ * A length below the current one drops the bytes above it, the blocks they
+ * were in left where they are: the run is the file's whole reservation, not
+ * only the part in use, so a later write grows back into it.
+ */
+static void
+do_truncate(const fs_request_t *req, uint32_t node, fs_reply_t *rep)
+{
+    if (node >= FS_NODE_COUNT || fs_nodes[node].block == FS_NOT_A_FILE) {
+        rep->fr_status = SYS_ERR_NO_ENT;
+        return;
+    }
+    if (req->fr_length > node_capacity(node)) {
+        rep->fr_status = SYS_ERR_INVALID_ARG;
+        return;
+    }
+
+    fs_nodes[node].len = req->fr_length;
+
+    if (node == FS_CREATE_NODE) {
+        rep->fr_status = dir_persist();
+        if (rep->fr_status != SYS_OK) {
+            return;
+        }
+    } else {
+        rep->fr_status = SYS_OK;
+    }
     rep->fr_size = fs_nodes[node].len;
 }
 
@@ -722,6 +940,13 @@ main(void)
         return 4;
     }
 
+    /*
+     * The directory a create wrote in an earlier boot. Read before the first
+     * request so a file made then is found now; a fresh image has none and
+     * the slot stays empty.
+     */
+    dir_load();
+
     for (;;) {
         if (sys_msg_recv(chan, &message, &peer, &cookie) != SYS_OK) {
             return 1;
@@ -747,6 +972,12 @@ main(void)
             break;
         case FS_OP_WRITE:
             do_write(&message, &req, node, &rep);
+            break;
+        case FS_OP_CREATE:
+            do_create(chan, &req, node, &reply, &rep);
+            break;
+        case FS_OP_TRUNCATE:
+            do_truncate(&req, node, &rep);
             break;
         case FS_OP_CLOSE:
             rep.fr_status = SYS_OK;

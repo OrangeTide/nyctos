@@ -95,6 +95,9 @@ check: all
 	@grep -q '^fs: a written file read back the new bytes' $(OBJTOP)/check/burst.out \
 	    || { echo 'check: a file written through the filesystem did not read back'; \
 	         false; }
+	@grep -q '^fs: a created file survived to this boot' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: a created file did not survive to the second boot'; \
+	         false; }
 	@echo "check: $(ARCH), symbols"
 	@$(TOPDIR)/scripts/symcheck.sh $(NYCSYM) $(KERNEL_ELF)
 	@$(TOPDIR)/scripts/klinecheck.sh $(MKLINE) $(KLINE_BLOB) $(KERNEL_ELF)

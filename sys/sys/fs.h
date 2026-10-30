@@ -33,6 +33,7 @@
 #define FS_OP_CREATE    5
 #define FS_OP_UNLINK    6
 #define FS_OP_READDIR   8
+#define FS_OP_TRUNCATE  9
 #define FS_OP_CLOSE     11
 #define FS_OP_BATCH     12
 
@@ -92,6 +93,11 @@ typedef struct fs_readdir_reply {
  * name a create finds taken, and no ENOTEMPTY for an unlink of a directory
  * that still has children; both are SYS_ERR_INVALID_ARG until the error
  * set grows the distinction.
+ *
+ * FS_OP_TRUNCATE sets the length of the node the connection names, carried
+ * in fr_length. A length below the current one drops the bytes above it; a
+ * length above it is not a grow on its own, since a file grows where a
+ * write reaches past its end. It answers with status and the new size.
  */
 
 

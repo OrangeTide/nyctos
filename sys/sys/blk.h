@@ -63,4 +63,22 @@
  */
 #define BLK_DATA_BLOCK      9u
 
+/*
+ * The on-disk directory of files made at run time, and the blocks their
+ * content lives in. The directory is one block holding one entry, so a file
+ * created in one boot is found in the next: the filesystem reads this block
+ * at startup and writes it back when a file is made, grown, or truncated.
+ * The content is a contiguous run, so a file's blocks are its start and the
+ * blocks that follow, which keeps the on-disk record to a start and a length
+ * and needs no list stored beside it.
+ *
+ * These step around the two blocks the store keeps for its own use: block 12
+ * carries its snapshot-persistence demonstration and block 15 its in-boot
+ * fork self-test, so the directory takes block 10 and the content run takes
+ * 13 and 14.
+ */
+#define BLK_DIR_BLOCK       10u
+#define BLK_CREATE_BASE     13u
+#define BLK_CREATE_BLOCKS   2u      /* blocks 13..14 */
+
 #endif /* _SYS_BLK_H_ */
