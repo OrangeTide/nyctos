@@ -763,12 +763,22 @@ proc_prot(const struct proc *p, uintptr_t va)
     }
 
     /*
-     * Above everything the image asked for, which is where the system
-     * page is: read-only, because it is the machine's and is mapped
-     * into every process, and a program able to write it could move
-     * every other program's clock.
+     * The system page sits one page above everything the image asked
+     * for: read-only, because it is the machine's and is mapped into
+     * every process, and a program able to write it could move every
+     * other program's clock.
      */
-    return VM_READ | VM_USER;
+    if (p->p_syspage_off != 0 && off == p->p_syspage_off) {
+        return VM_READ | VM_USER;
+    }
+
+    /*
+     * Above the system page is the anonymous region, which the pager
+     * supplies writable on a fault. A page of it lent across a
+     * rendezvous and mapped back comes back writable, which is what it
+     * was.
+     */
+    return VM_READ | VM_WRITE | VM_USER;
 #else
     /*
      * Flat memory has no permissions to set, so there is nothing here
@@ -929,6 +939,43 @@ proc_reaches(const struct proc *p, uintptr_t va, size_t len)
     }
 
     return proc_reach_len(p, va) >= len;
+}
+
+/*
+ * Whether this address is in the process's anonymous region: the pages
+ * above the system page and within the slot. The loader leaves that
+ * region unmapped and the pager supplies it writable on a fault, so a
+ * write fault there is a heap page to be filled rather than a write to
+ * read-only text, which stays fatal. The system page itself is one page
+ * below, read-only, and is not part of this.
+ */
+bool
+proc_anon_contains(const struct proc *p, uintptr_t va)
+{
+#if SYS_TIER == 2
+    uintptr_t base;
+    size_t slot, off;
+
+    if (!proc_slot(p, &base, &slot) || p->p_syspage_off == 0) {
+        return false;
+    }
+    if (va < base || va - base >= slot) {
+        return false;
+    }
+
+    off = va - base;
+
+    return off >= (uintptr_t)p->p_syspage_off + PAGE_SIZE;
+#else
+    /*
+     * Flat memory has no system page in the slot and nothing to fault,
+     * so there is no anonymous region to name.
+     */
+    (void)p;
+    (void)va;
+
+    return false;
+#endif
 }
 
 /*
@@ -1711,13 +1758,15 @@ proc_as(struct proc *p)
  * cohort's members share, so it cannot go back when any one of them is
  * reaped.
  *
- * Two pages of the slot are deliberately not touched. One is a page the
+ * Some pages of the slot are deliberately not touched. One is a page the
  * loader never allocated, which md_lookup reports as unmapped and this
  * skips: a process with a pager gets its image on a fault and not at
- * load. The other is a page the pager did supply, mapped here from a
- * grant at an address the pager chose nothing about, and freeing that
- * would hand back memory another process still holds. p_pager_bytes is
- * the boundary proc_load drew, read here the other way round.
+ * load. The others are pages the pager did supply, mapped here from a
+ * grant at an address the pager chose nothing about, and freeing one
+ * would hand back memory a grant still describes. The text pages sit
+ * below p_pager_bytes, the boundary proc_load drew, read here the other
+ * way round; a page of the anonymous region is above the system page and
+ * is left for the same reason, the grant giving it back and not the reap.
  *
  * Unmapped before freed, in that order, because a frame that is back in
  * the allocator while an entry still reaches it is a frame the next
@@ -1789,6 +1838,16 @@ proc_free_slot(struct proc *p)
          * whatever asked for a frame next.
          */
         if (p->p_syspage_off != 0 && off == p->p_syspage_off) {
+            continue;
+        }
+
+        /*
+         * And except a page of the anonymous region, which the pager
+         * supplied from a grant. The grant describes it still and is
+         * what gives it back, so freeing it here would hand back a frame
+         * a grant names and leave the ledger counting it twice.
+         */
+        if (proc_anon_contains(p, base + off)) {
             continue;
         }
 

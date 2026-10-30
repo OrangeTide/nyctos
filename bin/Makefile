@@ -10,6 +10,7 @@ SUBDIR := blk_server virtio_blk peer_a peer_b peer_c wedged orphan echoes superv
           resolve \
           namespace \
           paged \
+          anon \
           granted \
           grabber \
           touch_addr \

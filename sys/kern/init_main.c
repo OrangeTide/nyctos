@@ -13293,6 +13293,13 @@ static struct channel_scan channel_report;
 static uint8_t pager_prio_seen;
 static bool pager_served_over_spinner;
 
+static struct channel *ch_anon;
+static sys_handle_t h_anon_recv;
+
+/* Text pages and fresh anonymous pages the anon pager answered faults with. */
+static uint32_t anon_pages_text;
+static uint32_t anon_pages_fresh;
+
 static void
 root_pager(void *arg)
 {
@@ -13641,6 +13648,197 @@ paging_checks(void)
     }
 
     (void)h;
+}
+
+/*
+ * A pager that serves the anonymous region as well as the text.
+ *
+ * A fault below where the image's memory ends is a text page, read out
+ * of the member and granted read and execute, which is what the root
+ * pager does. A fault above it is a page of the anonymous region: a
+ * fresh frame, zeroed by the allocator, granted read and write so the
+ * program can store into it. The faulting offset is what tells them
+ * apart, and nothing else does.
+ */
+static void
+anon_pager(void *arg)
+{
+    struct sys_op_recv_args rx;
+    struct sys_op_reply_args tx;
+
+    (void)arg;
+
+    for (;;) {
+        const struct sys_fault_msg *fm;
+        const struct boot_member *m;
+        struct thread *client;
+        struct proc *cp;
+        struct grant *g;
+        uintptr_t pa, off;
+        sys_handle_t h;
+        uint32_t rights;
+
+        memset(&rx, 0, sizeof(rx));
+        if (run(SYS_OP_IPC_RECV, h_anon_recv, &rx, sizeof(rx)) != SYS_OK) {
+            panic("anon pager: the receive failed");
+        }
+
+        fm = (const struct sys_fault_msg *)rx.message.inline_data;
+        client = thread_by_id(rx.peer);
+        cp = client != NULL ? client->t_proc : NULL;
+        m = cp != NULL ? boot_lookup(cp->p_name) : NULL;
+        if (m == NULL) {
+            panic("anon pager: a fault from something with no image");
+        }
+
+        off = fm->addr - (uintptr_t)m->bm_load;
+
+        pa = page_alloc();
+        if (pa == 0) {
+            panic("anon pager: no frame for %s", cp->p_name);
+        }
+
+        if (off < m->bm_mem) {
+            size_t n = m->bm_size > off ? m->bm_size - off : 0;
+
+            if (n > PAGE_SIZE) {
+                n = PAGE_SIZE;
+            }
+            if (n > 0) {
+                boot_copy_image(m, off, (void *)pa, n);
+            }
+            rights = SYS_RIGHT_READ | SYS_RIGHT_EXEC | SYS_RIGHT_TRANSFER;
+            anon_pages_text++;
+        } else {
+            /*
+             * Nothing is copied in. page_alloc returns a zeroed frame,
+             * and a zeroed frame is what a fresh anonymous page is.
+             */
+            rights = SYS_RIGHT_READ | SYS_RIGHT_WRITE | SYS_RIGHT_TRANSFER;
+            anon_pages_fresh++;
+        }
+
+        g = grant_create("an-anon-page", pa, PAGE_SIZE, false);
+        if (g == NULL) {
+            panic("anon pager: no grant for %s", cp->p_name);
+        }
+        if (handle_insert(&proc_current()->p_handles, g, SYS_OBJ_GRANT,
+          rights, &h) != SYS_OK) {
+            panic("anon pager: no handle for the page");
+        }
+
+        memset(&tx, 0, sizeof(tx));
+        tx.peer = rx.peer;
+        tx.reply.handle = h;
+        if (run(SYS_OP_IPC_REPLY, 0, &tx, sizeof(tx)) != SYS_OK) {
+            panic("anon pager: the reply failed");
+        }
+    }
+}
+
+/*
+ * A program given a pager that serves the anonymous region, writing a
+ * page above its image and reading it back.
+ *
+ * The write is the point. The region above the system page is unmapped
+ * at load, so a store there faults, and a write fault used to be fatal.
+ * The pager answers it with a zeroed writable page, the store lands, and
+ * the program reads back what it wrote. A pager that still refused the
+ * write would kill the program at the first store, which is this check
+ * run the other way.
+ *
+ * At Tier 0 there is no paging and the slot is flat memory, so the same
+ * program writes and reads the same page without a fault ever reaching
+ * the pager.
+ */
+static void
+anon_paging_checks(void)
+{
+    struct proc *self = proc_current();
+    struct sys_op_connect_args cargs;
+    const struct boot_member *m;
+    sys_ns_spec_t ns[1];
+    struct thread *t;
+    struct child c;
+    const char *argv[2];
+    char addr[19];
+    uintptr_t where;
+    int32_t code;
+    sys_err_t err;
+
+    cnputs("the anonymous region: a page above the image, written\n");
+
+    m = boot_lookup("anon");
+    if (m == NULL) {
+        panic("anon: no such image");
+    }
+
+    /*
+     * One page above the system page, which is itself one page above
+     * everything the image asked for. That is the first page of the
+     * anonymous region, and the kernel passes it because it is what
+     * knows the slot's layout: a virtual address inside the slot at Tier
+     * 2, and the same offset into the slot's flat memory at Tier 0.
+     */
+    where = (uintptr_t)m->bm_load + m->bm_mem + PAGE_SIZE;
+    hex_into(addr, where);
+    argv[0] = "anon";
+    argv[1] = addr;
+
+    ch_anon = channel_create("anon-pager", self);
+    if (ch_anon == NULL) {
+        panic("anon: no channel");
+    }
+    err = handle_insert(&self->p_handles, ch_anon, SYS_OBJ_CHANNEL,
+      SYS_RIGHT_RECV, &h_anon_recv);
+    expect("a channel for the anon pager", err, SYS_OK);
+
+    memset(&cargs, 0, sizeof(cargs));
+    cargs.cookie = 0;
+    cargs.rights = SYS_RIGHT_SEND | SYS_RIGHT_TRANSFER;
+    expect("a connection to it, for the program",
+      run(SYS_OP_CHAN_CONNECT, h_anon_recv, &cargs, sizeof(cargs)),
+      SYS_OK);
+
+    t = thread_create("anon-pager", 5, anon_pager, NULL);
+    sched_ready(t);
+
+    memset(ns, 0, sizeof(ns));
+    ns[0].id = SYS_NS_PAGER;
+    ns[0].handle = cargs.out_handle;
+
+    sched_defer();
+    child_watch(&c, proc_spawn_image("anon", 20, ns, 1, argv, 2));
+    sched_undefer();
+
+    code = child_join(&c, JOIN_MS);
+
+    if (code != 0) {
+        panic("anon: it returned %ld, %s fault at 0x%lx pc 0x%lx",
+          (long)code, fault_name(c.c_proc->p_fault),
+          (unsigned long)c.c_proc->p_fault_addr,
+          (unsigned long)c.c_proc->p_fault_pc);
+    }
+
+#if SYS_TIER == 2
+    if (anon_pages_fresh == 0) {
+        panic("anon: it ran without a fresh page arriving");
+    }
+    cnprintf("    %-38s %u\n", "fresh pages above the image",
+      (unsigned int)anon_pages_fresh);
+#else
+    /*
+     * The write still lands, on a tier where a flat slot has nothing
+     * absent to fault on, so no page ever reaches the pager.
+     */
+    if (anon_pages_fresh != 0) {
+        panic("anon: %u fresh pages arrived on a tier with no paging",
+          (unsigned int)anon_pages_fresh);
+    }
+    cnprintf("    %-38s %s\n", "fresh pages above the image",
+      "none, the slot is flat");
+#endif
+    cnputs("anon: a page above the image took a write\n");
 }
 
 /*
@@ -19801,6 +19999,23 @@ kernel_main(void)
          */
         grant_holder("pages a pager supplied", a, pager_pages,
           "the pager's grants");
+    }
+
+    {
+        uint32_t a = grant_frames();
+
+        anon_paging_checks();
+
+        /*
+         * The anon pager's pages, text and fresh, still held after its
+         * program was reaped. The text pages are held the way the root
+         * pager's are; the fresh page above the image is held the same
+         * way, its grant describing it and the reap leaving it, which is
+         * what keeps the ledger from counting a frame it had freed. It
+         * is nothing at Tier 0, where a flat slot never faults.
+         */
+        grant_holder("pages the anon pager supplied", a,
+          anon_pages_text + anon_pages_fresh, "the anon pager's grants");
     }
 
     cnputs("the slice again, with both halves in user mode\n");

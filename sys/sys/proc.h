@@ -465,6 +465,14 @@ bool proc_reaches(const struct proc *p, uintptr_t va, size_t len);
 
 bool proc_owns(const struct proc *p, uintptr_t va, size_t len);
 
+/*
+ * Whether this address is in the process's anonymous region, the pages
+ * above the system page that the pager supplies writable on a fault. It
+ * is what tells a write fault to the heap from a write to read-only
+ * text.
+ */
+bool proc_anon_contains(const struct proc *p, uintptr_t va);
+
 #if SYS_TIER == 2
 /* The address space this process's threads run in. */
 struct addrspace *proc_as(struct proc *p);

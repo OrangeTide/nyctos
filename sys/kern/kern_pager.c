@@ -72,14 +72,18 @@ pager_install(struct proc *p, uintptr_t va, sys_handle_t h)
 
     /*
      * What the mapping permits is what the grant carries, as everywhere
-     * else, with one subtraction: a pager supplies read-only pages and
-     * nothing else, so a grant carrying write does
-     * not become a writable mapping on this path. Execute is the
-     * difference between a page of text and a page of anything else,
-     * and assuming it made every page a pager supplied executable.
+     * else. A page of text arrives with read and execute and a page of
+     * the anonymous region with read and write, so the grant's rights
+     * are what tell them apart: execute is the difference between a page
+     * of text and a page of anything else, and write is what makes an
+     * anonymous page a heap page the program can store into rather than
+     * one more read-only page.
      */
     if ((rights & SYS_RIGHT_EXEC) != 0) {
         flags |= VM_EXEC;
+    }
+    if ((rights & SYS_RIGHT_WRITE) != 0) {
+        flags |= VM_WRITE;
     }
 
     err = md_map(proc_as(p), va, g->g_base, PAGE_SIZE, flags);
@@ -122,12 +126,14 @@ pager_fault(uintptr_t addr, uintptr_t pc, uint32_t access)
     }
 
     /*
-     * A pager supplies read-only pages, so a fault that
-     * wanted to write is not one a pager can answer. Refused here rather
-     * than after the reply, because asking costs the pager a frame and a
-     * grant and the answer was never going to be usable.
+     * A write fault is answered only in the anonymous region, where the
+     * pager supplies a writable page. A write anywhere else the pager
+     * serves is a write to read-only text, which no page it could reply
+     * with would make right, so it is refused here rather than after the
+     * reply: asking costs the pager a frame and a grant, and the answer
+     * was never going to be usable.
      */
-    if (access == SYS_RIGHT_WRITE) {
+    if (access == SYS_RIGHT_WRITE && !proc_anon_contains(p, addr)) {
         return false;
     }
 

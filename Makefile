@@ -86,6 +86,9 @@ check: all
 	@grep -q '^blk: a damaged metadata sector is rejected' $(OBJTOP)/check/burst.out \
 	    || { echo 'check: a damaged metadata sector was not rejected'; \
 	         false; }
+	@grep -q '^anon: a page above the image took a write' $(OBJTOP)/check/burst.out \
+	    || { echo 'check: a write to a page above the image was not served'; \
+	         false; }
 	@echo "check: $(ARCH), symbols"
 	@$(TOPDIR)/scripts/symcheck.sh $(NYCSYM) $(KERNEL_ELF)
 	@$(TOPDIR)/scripts/klinecheck.sh $(MKLINE) $(KLINE_BLOB) $(KERNEL_ELF)
